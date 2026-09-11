@@ -136,6 +136,8 @@ mod tests {
                 status: crate::comments::Status::Open,
                 line: 1,
                 quote: "цитата".to_string(),
+                prefix: None,
+                suffix: None,
                 replies: vec![crate::comments::Reply {
                     author: "Макс".to_string(),
                     at: "2026-08-24 14:02".to_string(),

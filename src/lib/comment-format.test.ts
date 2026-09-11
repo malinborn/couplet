@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
+  anchorContextAt,
   anchorPosition,
   buildHandoffPrompt,
   buildWatchPrompt,
   documentDir,
+  escapeAttr,
   parseComments,
   quotePreview,
+  unescapeAttr,
 } from './comment-format';
 
 const SAMPLE = `<!-- mdmini:comments v=1 doc=spec.md -->
@@ -111,6 +114,154 @@ describe('anchorPosition', () => {
     const result = anchorPosition(doc, 'absent', 999);
     expect(result.orphaned).toBe(true);
     expect(result.pos).toBeLessThanOrEqual(doc.length);
+  });
+});
+
+
+/**
+ * Real misses, collected by running both candidate strategies over this
+ * repository's own markdown (~21k generated cases — see the #20 research in
+ * the PR). Every document below is an excerpt of a real file, kept verbatim
+ * so the ambiguity is the one that actually occurs, not a constructed one.
+ */
+describe('anchorPosition — the cases that used to land on the wrong copy', () => {
+  /** Comment on a word that also appears in a table far above it. */
+  const TABS = [
+    '| Команда | Что делает |',
+    '|---|---|',
+    '| Табы | переключают документ |',
+    '',
+    '## Редактор',
+    '',
+    'Табы в списке сдвигают пункт на уровень глубже.',
+    '',
+  ].join('\n');
+
+  it('does not jump to an earlier duplicate in a table (the live repro in #20)', () => {
+    const from = TABS.indexOf('Табы в списке');
+    const context = anchorContextAt(TABS, from, from + 4);
+    const { pos } = anchorPosition(TABS, 'Табы', 7, context);
+    expect(pos).toBe(from);
+  });
+
+  it('still lands right when the recorded line has drifted', () => {
+    const from = TABS.indexOf('Табы в списке');
+    const context = anchorContextAt(TABS, from, from + 4);
+    // The agent inserted a section above: the stored line is now wrong by 40,
+    // and the only thing left pointing at the right copy is the context.
+    const { pos } = anchorPosition(TABS, 'Табы', 47, context);
+    expect(pos).toBe(from);
+  });
+
+  it('with no stored context falls back to the occurrence nearest the line', () => {
+    const from = TABS.indexOf('Табы в списке');
+    expect(anchorPosition(TABS, 'Табы', 7).pos).toBe(from);
+    // …and the first occurrence when the line points there instead.
+    expect(anchorPosition(TABS, 'Табы', 3).pos).toBe(TABS.indexOf('| Табы |') + 2);
+  });
+
+  /** An identical line three lines above — line distance alone cannot decide. */
+  const DUPLICATE = [
+    '- `npm run dev` — Vite',
+    '',
+    'Ниже описано то же самое подробнее.',
+    '',
+    '- `npm run dev` — Vite',
+    '',
+  ].join('\n');
+
+  it('tells two identical lines apart by what surrounds them', () => {
+    const second = DUPLICATE.lastIndexOf('- `npm run dev`');
+    const quote = '- `npm run dev` — Vite';
+    const context = anchorContextAt(DUPLICATE, second, second + quote.length);
+    expect(anchorPosition(DUPLICATE, quote, 5, context).pos).toBe(second);
+    const first = DUPLICATE.indexOf('- `npm run dev`');
+    const firstContext = anchorContextAt(DUPLICATE, first, first + quote.length);
+    expect(anchorPosition(DUPLICATE, quote, 1, firstContext).pos).toBe(first);
+  });
+
+  /** A word that repeats dozens of times — `mdmini` in docs/ai-interface.md. */
+  const REPEATED = [
+    '# AI Interface — `mdmini show`',
+    '',
+    'The `mdmini` CLI speaks to a running window.',
+    '',
+    '## Protocol',
+    '',
+    'Every `mdmini` verb returns JSON on stdout.',
+    '',
+  ].join('\n');
+
+  it('picks the occurrence whose surroundings match, not the first in the file', () => {
+    const third = REPEATED.lastIndexOf('`mdmini`') + 1;
+    const context = anchorContextAt(REPEATED, third, third + 6);
+    expect(anchorPosition(REPEATED, 'mdmini', 7, context).pos).toBe(third);
+  });
+
+  it('survives the neighbouring line being rewritten by the agent', () => {
+    const third = REPEATED.lastIndexOf('`mdmini`') + 1;
+    const context = anchorContextAt(REPEATED, third, third + 6);
+    const edited = REPEATED.replace('## Protocol', '## Протокол, переписанный агентом');
+    const moved = edited.lastIndexOf('`mdmini`') + 1;
+    expect(anchorPosition(edited, 'mdmini', 7, context).pos).toBe(moved);
+  });
+
+  it('marks a thread detached rather than showing it confidently in the wrong place', () => {
+    const result = anchorPosition(REPEATED, 'текст, которого тут нет', 3);
+    expect(result.orphaned).toBe(true);
+    expect(result.to).toBe(result.pos);
+  });
+});
+
+describe('anchorContextAt', () => {
+  it('takes text from both sides of the fragment', () => {
+    const doc = 'слева фрагмент справа';
+    const from = doc.indexOf('фрагмент');
+    const { prefix, suffix } = anchorContextAt(doc, from, from + 8);
+    expect(prefix).toBe('слева ');
+    expect(suffix).toBe(' справа');
+  });
+
+  it('clips at the document edges instead of going negative', () => {
+    const { prefix, suffix } = anchorContextAt('abc', 0, 3);
+    expect(prefix).toBe('');
+    expect(suffix).toBe('');
+  });
+});
+
+describe('marker attribute escaping', () => {
+  it('removes the characters that would split or truncate a marker', () => {
+    const escaped = escapeAttr('в таблице: 100% > всего\nи перенос');
+    expect(escaped).not.toMatch(/\s/);
+    expect(escaped).not.toContain('>');
+    // Cyrillic stays literal — the file is read by people.
+    expect(escaped).toContain('таблице');
+  });
+
+  it('round-trips', () => {
+    const raw = 'в таблице: 100% > всего\nи перенос';
+    expect(unescapeAttr(escapeAttr(raw))).toBe(raw);
+  });
+
+  it('leaves a hand-written stray percent alone instead of throwing', () => {
+    expect(unescapeAttr('100%')).toBe('100%');
+    expect(unescapeAttr('%zz')).toBe('%zz');
+  });
+});
+
+describe('parseComments — anchor context', () => {
+  it('reads pre= and suf= off the marker', () => {
+    const text =
+      '<!-- mdmini:c id=c-1 status=open line=3 pre=в%20таблице:%20 suf=%20и%20отступы -->\n> Табы\n';
+    const [thread] = parseComments(text);
+    expect(thread.prefix).toBe('в таблице: ');
+    expect(thread.suffix).toBe(' и отступы');
+  });
+
+  it('leaves them undefined on a thread written without them', () => {
+    const [thread] = parseComments('<!-- mdmini:c id=c-1 status=open line=3 -->\n> Табы\n');
+    expect(thread.prefix).toBeUndefined();
+    expect(thread.suffix).toBeUndefined();
   });
 });
 

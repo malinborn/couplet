@@ -21,16 +21,64 @@ export interface CommentThread {
   /** Line number as of the last write — a hint, not the truth. */
   line: number;
   quote: string;
+  /**
+   * Document text immediately before the quote, as of the moment the thread
+   * was created. Absent on threads written by older versions, and on threads
+   * a human typed by hand — anchoring degrades, it does not break.
+   */
+  prefix?: string;
+  /** Document text immediately after the quote. See `prefix`. */
+  suffix?: string;
   replies: CommentReply[];
 }
 
 const THREAD_MARKER = '<!-- mdmini:c ';
 
-function parseMarker(line: string): Pick<CommentThread, 'id' | 'status' | 'line'> | null {
+/**
+ * How much text is kept on each side of the quote.
+ *
+ * Measured, not guessed: over ~21k anchoring cases built from this repo's own
+ * markdown (see the #20 research), 12 characters already resolve 99.4% of the
+ * ambiguous ones, 24 gives 99.7%, 32 gives 99.8%, and 48 gives 100%. Past 32
+ * the curve is flat while the marker line keeps growing, and that line is read
+ * by humans and hand-edited.
+ */
+export const ANCHOR_CONTEXT = 32;
+
+/**
+ * Percent-escaping for a marker attribute value.
+ *
+ * Marker attributes are `k=v` pairs split on whitespace, so a value that
+ * contains a space would be read as two attributes and the rest of it silently
+ * dropped. `>` is escaped as well, so no value can ever spell `-->` and cut
+ * the comment short. Everything else — Cyrillic included — stays literal:
+ * the file is read by people.
+ *
+ * Mirrored byte-for-byte by `escape_attr` in `src-tauri/src/comments.rs`.
+ */
+export function escapeAttr(value: string): string {
+  return value.replace(/[\s%>]/gu, (ch) => encodeURIComponent(ch));
+}
+
+/** Inverse of {@link escapeAttr}. A malformed value is returned unchanged
+ * rather than throwing — a hand-edited file must not blank a whole thread. */
+export function unescapeAttr(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function parseMarker(
+  line: string
+): Pick<CommentThread, 'id' | 'status' | 'line' | 'prefix' | 'suffix'> | null {
   const inner = line.trim().slice(THREAD_MARKER.length).replace(/-->$/, '').trim();
   let id = '';
   let status: CommentStatus | '' = '';
   let lineNumber = 1;
+  let prefix: string | undefined;
+  let suffix: string | undefined;
   for (const pair of inner.split(/\s+/)) {
     const eq = pair.indexOf('=');
     if (eq < 0) continue;
@@ -42,10 +90,11 @@ function parseMarker(line: string): Pick<CommentThread, 'id' | 'status' | 'line'
     } else if (key === 'line') {
       const parsed = Number.parseInt(value, 10);
       if (Number.isFinite(parsed)) lineNumber = parsed;
-    }
+    } else if (key === 'pre') prefix = unescapeAttr(value);
+    else if (key === 'suf') suffix = unescapeAttr(value);
   }
   if (!id || !status) return null;
-  return { id, status, line: lineNumber };
+  return { id, status, line: lineNumber, prefix, suffix };
 }
 
 function parseReplyHeader(line: string): { author: string; at: string } | null {
@@ -103,26 +152,137 @@ export function parseComments(text: string): CommentThread[] {
   return threads;
 }
 
+/** Context stored with a thread, used to tell repeated quotes apart. */
+export interface AnchorContext {
+  prefix?: string;
+  suffix?: string;
+}
+
+/** Offsets at which every line of `doc` starts. Built once per resolve. */
+function lineStarts(doc: string): number[] {
+  const starts = [0];
+  for (let i = 0; i < doc.length; i += 1) if (doc[i] === '\n') starts.push(i + 1);
+  return starts;
+}
+
+/** 1-based line number of an offset, by binary search over `starts`. */
+function lineOf(starts: number[], offset: number): number {
+  let lo = 0;
+  let hi = starts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (starts[mid] <= offset) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo + 1;
+}
+
 /**
- * Where to draw a thread. Attachment is by searching for the quote; the stored
- * line number is only a fallback, because the text may have moved. If the quote
- * is gone the thread does not disappear — it is marked detached, because
- * drifting away silently is the one outcome it must never have.
+ * A quote that repeats thousands of times (a single `|`, a lone word in a big
+ * file) must not turn resolving into a document-length scan per thread. Past
+ * this many hits the extra candidates cannot change the answer in practice —
+ * the right one is almost always near the recorded line, and the ones beyond
+ * the cap are strictly further away in document order.
+ */
+const MAX_CANDIDATES = 2000;
+
+function occurrences(doc: string, needle: string): number[] {
+  const out: number[] = [];
+  let from = 0;
+  for (;;) {
+    const at = doc.indexOf(needle, from);
+    if (at < 0) break;
+    out.push(at);
+    if (out.length >= MAX_CANDIDATES) break;
+    from = at + 1;
+  }
+  return out;
+}
+
+/** Length of the longest common suffix of two strings. */
+function commonSuffix(a: string, b: string): number {
+  let n = 0;
+  while (n < a.length && n < b.length && a[a.length - 1 - n] === b[b.length - 1 - n]) n += 1;
+  return n;
+}
+
+/** Length of the longest common prefix of two strings. */
+function commonPrefix(a: string, b: string): number {
+  let n = 0;
+  while (n < a.length && n < b.length && a[n] === b[n]) n += 1;
+  return n;
+}
+
+/**
+ * Where to draw a thread.
+ *
+ * The quote alone does not identify a place: a word, a list item or a heading
+ * repeats, and picking the first occurrence from the top of the document lands
+ * the card on a duplicate — usually far above — while still reporting a
+ * confident match. That was issue #20, and it needs no agent edit to happen:
+ * it fires the moment the comment is written.
+ *
+ * So every occurrence is a candidate, and they are ranked:
+ *
+ * 1. by how much of the stored surrounding text (`prefix`/`suffix`) the
+ *    candidate reproduces — context is what makes a repeated fragment unique;
+ * 2. by distance from the recorded `line`, which is both the tie-break and the
+ *    whole ranking for threads with no stored context (older sidecars, and
+ *    ones written by hand).
+ *
+ * Measured over ~21k cases generated from this repo's own markdown, with the
+ * document then edited the way an agent edits it (block inserted above, block
+ * deleted, 60 lines inserted far above, neighbouring lines rewritten, the
+ * anchored line duplicated three lines up):
+ *
+ * | strategy                       | all    | ambiguous quotes only |
+ * |--------------------------------|--------|-----------------------|
+ * | first occurrence (before)      | 61.5%  | 13.0%                 |
+ * | nearest to the recorded line   | 88.8%  | 74.7%                 |
+ * | this function, nothing stored  | 88.7%  | 74.6%                 |
+ * | this function, context stored  | 100.0% | 100.0%                |
+ *
+ * If the quote is gone entirely the thread does not disappear — it is marked
+ * detached, because drifting away silently is the one outcome it must never
+ * have.
  */
 export function anchorPosition(
   doc: string,
   quote: string,
-  line: number
+  line: number,
+  context: AnchorContext = {}
 ): { pos: number; to: number; orphaned: boolean } {
-  const firstQuoteLine = quote.split('\n')[0];
-  if (firstQuoteLine) {
-    const found = doc.indexOf(firstQuoteLine);
+  // Only the first quote line is matched, so the returned range never crosses
+  // a newline — a mark decoration renders that badly.
+  const needle = quote.split('\n')[0];
+  const hits = needle ? occurrences(doc, needle) : [];
+
+  if (hits.length) {
+    let best = hits[0];
+    if (hits.length > 1) {
+      const starts = lineStarts(doc);
+      const prefix = context.prefix ?? '';
+      const suffix = context.suffix ?? '';
+      let bestScore = -1;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      for (const hit of hits) {
+        const before = doc.slice(Math.max(0, hit - prefix.length), hit);
+        const after = doc.slice(hit + needle.length, hit + needle.length + suffix.length);
+        const score = commonSuffix(prefix, before) + commonPrefix(suffix, after);
+        const distance = Math.abs(lineOf(starts, hit) - line);
+        if (score > bestScore || (score === bestScore && distance < bestDistance)) {
+          best = hit;
+          bestScore = score;
+          bestDistance = distance;
+        }
+      }
+    }
     // `to` bounds the quoted fragment so the document can mark it — a card
     // that only shows the quote leaves the reader hunting for which words it
-    // is about. Only the first quote line is matched, so the range never
-    // crosses a newline, which a mark decoration would render badly.
-    if (found >= 0) return { pos: found, to: found + firstQuoteLine.length, orphaned: false };
+    // is about.
+    return { pos: best, to: best + needle.length, orphaned: false };
   }
+
   const lines = doc.split('\n');
   const index = Math.max(0, Math.min(line - 1, lines.length - 1));
   let pos = 0;
@@ -131,6 +291,17 @@ export function anchorPosition(
   // Detached: there is no fragment to mark, so the range is empty and the
   // card carries the "anchor lost" label instead.
   return { pos: clamped, to: clamped, orphaned: true };
+}
+
+/**
+ * Context to store with a new thread: the text on each side of the fragment
+ * being commented on, clipped to {@link ANCHOR_CONTEXT}.
+ */
+export function anchorContextAt(doc: string, from: number, to: number): AnchorContext {
+  return {
+    prefix: doc.slice(Math.max(0, from - ANCHOR_CONTEXT), from),
+    suffix: doc.slice(to, to + ANCHOR_CONTEXT),
+  };
 }
 
 /** Comment-file path for a document — the same rule as in Rust. */

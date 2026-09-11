@@ -77,9 +77,20 @@ export async function commentCreate(
   path: string,
   line: number,
   quote: string,
-  text: string
+  text: string,
+  context: { prefix?: string; suffix?: string } = {}
 ): Promise<string> {
-  return invoke<string>('comment_create', { path, line, quote, text });
+  // `prefix`/`suffix` are the document text on either side of the fragment.
+  // They are what lets a repeated quote be told apart from its duplicates when
+  // the thread is resolved again later — see `anchorPosition` (#20).
+  return invoke<string>('comment_create', {
+    path,
+    line,
+    quote,
+    text,
+    prefix: context.prefix ?? null,
+    suffix: context.suffix ?? null,
+  });
 }
 
 /**

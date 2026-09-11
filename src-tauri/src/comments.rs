@@ -143,27 +143,125 @@ pub struct Thread {
     /// Anchoring is done by searching for `quote`, not by this number.
     pub line: usize,
     pub quote: String,
+    /// Document text immediately before the quote, as of the moment the
+    /// thread was created. `None` on threads written before this existed and
+    /// on ones typed by hand — anchoring degrades to the line hint, it does
+    /// not break. See `anchorPosition` in `src/lib/comment-format.ts`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    /// Document text immediately after the quote. See [`Thread::prefix`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suffix: Option<String>,
     pub replies: Vec<Reply>,
+}
+
+/// Text kept on each side of the quote, in characters. Mirrors
+/// `ANCHOR_CONTEXT` in `src/lib/comment-format.ts`; the number was measured,
+/// see the doc comment on `anchorPosition` there.
+pub const ANCHOR_CONTEXT: usize = 32;
+
+/// Surrounding text stored with a thread so a repeated quote can still be
+/// told apart from its duplicates.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Context<'a> {
+    pub prefix: &'a str,
+    pub suffix: &'a str,
 }
 
 const THREAD_MARKER: &str = "<!-- mdmini:c ";
 
+/// Percent-escape a marker attribute value.
+///
+/// Attributes are `k=v` pairs split on whitespace, so a value containing a
+/// space would be read as two attributes with the tail silently dropped. `>`
+/// is escaped too, so no value can spell `-->` and cut the comment short.
+/// Everything else — Cyrillic included — stays literal: humans read this file.
+///
+/// Mirrored by `escapeAttr` in `src/lib/comment-format.ts`; the shared
+/// fixture test is what keeps the two honest.
+pub fn escape_attr(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_whitespace() || ch == '%' || ch == '>' {
+            let mut buf = [0u8; 4];
+            for byte in ch.encode_utf8(&mut buf).as_bytes() {
+                out.push_str(&format!("%{byte:02X}"));
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// Inverse of [`escape_attr`]. Malformed input is kept as written rather than
+/// rejected — a hand-edited file must not lose a thread over a stray `%`.
+pub fn unescape_attr(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(byte) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The first `ANCHOR_CONTEXT` characters of `text`, counted in chars so a
+/// multi-byte boundary is never cut.
+pub fn context_head(text: &str) -> String {
+    text.chars().take(ANCHOR_CONTEXT).collect()
+}
+
+/// The last `ANCHOR_CONTEXT` characters of `text`.
+pub fn context_tail(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    chars[chars.len().saturating_sub(ANCHOR_CONTEXT)..].iter().collect()
+}
+
+/// What a thread marker line declares.
+struct Marker {
+    id: String,
+    status: Status,
+    line: usize,
+    prefix: Option<String>,
+    suffix: Option<String>,
+}
+
 /// Parse `k=v` attributes from a thread marker line.
-fn parse_marker(line: &str) -> Option<(String, Status, usize)> {
+fn parse_marker(line: &str) -> Option<Marker> {
     let inner = line.trim().strip_prefix(THREAD_MARKER)?.strip_suffix("-->")?;
     let mut id = None;
     let mut status = None;
     let mut num = None;
+    let mut prefix = None;
+    let mut suffix = None;
     for pair in inner.split_whitespace() {
         let (key, value) = pair.split_once('=')?;
         match key {
             "id" => id = Some(value.to_string()),
             "status" => status = Status::parse(value),
             "line" => num = value.parse::<usize>().ok(),
+            "pre" => prefix = Some(unescape_attr(value)),
+            "suf" => suffix = Some(unescape_attr(value)),
             _ => {} // unknown attributes are ignored intentionally
         }
     }
-    Some((id?, status?, num.unwrap_or(1)))
+    Some(Marker {
+        id: id?,
+        status: status?,
+        line: num.unwrap_or(1),
+        prefix,
+        suffix,
+    })
 }
 
 /// Parse a reply header `**author** · at`.
@@ -195,13 +293,15 @@ pub fn parse(text: &str) -> Vec<Thread> {
             }
             reply = None;
             match parse_marker(line) {
-                Some((id, status, num)) => {
+                Some(marker) => {
                     skipping = false;
                     current = Some(Thread {
-                        id,
-                        status,
-                        line: num,
+                        id: marker.id,
+                        status: marker.status,
+                        line: marker.line,
                         quote: String::new(),
+                        prefix: marker.prefix,
+                        suffix: marker.suffix,
                         replies: Vec::new(),
                     });
                 }
@@ -293,10 +393,31 @@ fn guard_not_sidecar(doc: &Path) -> Result<(), String> {
 }
 
 /// Render a single thread block — the one place where the format is assembled.
-fn render_thread(id: &str, status: Status, line: usize, quote: &str, author: &str, at: &str, text: &str) -> String {
+///
+/// `pre=`/`suf=` are written only when there is context to write. An empty
+/// attribute would carry no information and would still have to be read back,
+/// and leaving it out keeps the marker of a hand-written thread identical to
+/// what a person would type.
+fn render_thread(
+    id: &str,
+    status: Status,
+    line: usize,
+    quote: &str,
+    context: Context<'_>,
+    author: &str,
+    at: &str,
+    text: &str,
+) -> String {
     let quoted: String = quote.lines().map(|l| format!("> {l}\n")).collect();
+    let mut attrs = String::new();
+    if !context.prefix.is_empty() {
+        attrs.push_str(&format!(" pre={}", escape_attr(context.prefix)));
+    }
+    if !context.suffix.is_empty() {
+        attrs.push_str(&format!(" suf={}", escape_attr(context.suffix)));
+    }
     format!(
-        "<!-- mdmini:c id={id} status={status} line={line} -->\n{quoted}\n**{author}** · {at}\n{text}\n",
+        "<!-- mdmini:c id={id} status={status} line={line}{attrs} -->\n{quoted}\n**{author}** · {at}\n{text}\n",
         status = status.as_str()
     )
 }
@@ -310,7 +431,21 @@ pub fn append_thread(
     author: &str,
     text: &str,
 ) -> Result<(), String> {
-    append_thread_at(doc, id, line, quote, author, text, &fmt_utc(now_epoch()))
+    append_thread_ctx(doc, id, line, quote, Context::default(), author, text)
+}
+
+/// Like [`append_thread`], but records the text surrounding the quote so the
+/// thread can be re-found after the document moves. See `anchorPosition`.
+pub fn append_thread_ctx(
+    doc: &Path,
+    id: &str,
+    line: usize,
+    quote: &str,
+    context: Context<'_>,
+    author: &str,
+    text: &str,
+) -> Result<(), String> {
+    append_thread_ctx_at(doc, id, line, quote, context, author, text, &fmt_utc(now_epoch()))
 }
 
 /// Like [`append_thread`], but the reply's timestamp is given explicitly
@@ -322,6 +457,22 @@ pub fn append_thread_at(
     id: &str,
     line: usize,
     quote: &str,
+    author: &str,
+    text: &str,
+    at: &str,
+) -> Result<(), String> {
+    append_thread_ctx_at(doc, id, line, quote, Context::default(), author, text, at)
+}
+
+/// The one that does the work: [`append_thread`] with both the context and
+/// the timestamp given explicitly.
+#[allow(clippy::too_many_arguments)]
+pub fn append_thread_ctx_at(
+    doc: &Path,
+    id: &str,
+    line: usize,
+    quote: &str,
+    context: Context<'_>,
     author: &str,
     text: &str,
     at: &str,
@@ -344,7 +495,7 @@ pub fn append_thread_at(
         e
     };
     out.push('\n');
-    out.push_str(&render_thread(id, Status::Open, line, quote, author, at, text));
+    out.push_str(&render_thread(id, Status::Open, line, quote, context, author, at, text));
     write_atomic(&path, &out)
 }
 
@@ -718,6 +869,68 @@ Nginx там был сломан.
         assert_eq!(found[0].doc, doc);
     }
 
+    #[test]
+    fn escaping_survives_the_characters_that_would_break_a_marker() {
+        // A space would split the value into two attributes, and `>` could
+        // spell `-->` and end the comment early. Cyrillic must stay readable.
+        let raw = "в таблице: 100% > всего\nи перенос";
+        let escaped = escape_attr(raw);
+        assert!(!escaped.contains(' '));
+        assert!(!escaped.contains('>'));
+        assert!(!escaped.contains('\n'));
+        assert!(escaped.contains("таблице"), "Cyrillic must not be encoded: {escaped}");
+        assert_eq!(unescape_attr(&escaped), raw);
+    }
+
+    #[test]
+    fn unescaping_leaves_a_hand_written_stray_percent_alone() {
+        assert_eq!(unescape_attr("100%"), "100%");
+        assert_eq!(unescape_attr("%zz"), "%zz");
+    }
+
+    #[test]
+    fn context_round_trips_through_the_file() {
+        let doc = temp_doc("spec.md");
+        append_thread_ctx(
+            &doc,
+            "c-aaaaaa",
+            12,
+            "Табы",
+            Context {
+                prefix: "в таблице: ",
+                suffix: " и отступы",
+            },
+            "Макс",
+            "Вопрос?",
+        )
+        .unwrap();
+        let threads = load(&doc).unwrap();
+        assert_eq!(threads[0].prefix.as_deref(), Some("в таблице: "));
+        assert_eq!(threads[0].suffix.as_deref(), Some(" и отступы"));
+    }
+
+    #[test]
+    fn a_thread_without_context_reads_back_as_none_not_as_empty() {
+        // The distinction matters to the frontend: `None` means "resolve by
+        // the line hint", not "the fragment sits at the start of the file".
+        let doc = temp_doc("spec.md");
+        append_thread(&doc, "c-aaaaaa", 12, "цитата", "Макс", "Вопрос?").unwrap();
+        let threads = load(&doc).unwrap();
+        assert_eq!(threads[0].prefix, None);
+        assert_eq!(threads[0].suffix, None);
+        let raw = std::fs::read_to_string(sidecar_path(&doc).unwrap()).unwrap();
+        assert!(!raw.contains("pre="), "no empty attribute should be written: {raw}");
+    }
+
+    #[test]
+    fn context_head_and_tail_never_split_a_multibyte_character() {
+        let long = "я".repeat(100);
+        assert_eq!(context_head(&long).chars().count(), ANCHOR_CONTEXT);
+        assert_eq!(context_tail(&long).chars().count(), ANCHOR_CONTEXT);
+        assert_eq!(context_head("аб"), "аб");
+        assert_eq!(context_tail("аб"), "аб");
+    }
+
     /// Cross-language contract for the format: this test must generate
     /// exactly `src/lib/__fixtures__/comments-contract.md`, byte for byte.
     /// The mirror test on the TypeScript side (`comment-contract.test.ts`)
@@ -749,6 +962,20 @@ Nginx там был сломан.
             "Вы",
             "Тут точно нужен отдельный раздел?",
             "2026-08-24 15:10:00 UTC",
+        )
+        .unwrap();
+        append_thread_ctx_at(
+            &doc,
+            "c-cccccc",
+            157,
+            "Табы",
+            Context {
+                prefix: "в таблице горячих клавиш: ",
+                suffix: " и отступы в списках",
+            },
+            "Вы",
+            "Тут про клавишу или про отступ?",
+            "2026-08-24 16:00:00 UTC",
         )
         .unwrap();
         append_reply_at(

@@ -49,7 +49,13 @@
     CommentWidget,
     type CommentActions,
   } from './lib/editor/ai-comment';
-  import { anchorPosition, buildHandoffPrompt, buildWatchPrompt } from './lib/comment-format';
+  import {
+    anchorContextAt,
+    anchorPosition,
+    buildHandoffPrompt,
+    buildWatchPrompt,
+    type AnchorContext,
+  } from './lib/comment-format';
   import './lib/theme/dark.css';
   import './lib/theme/light.css';
   import './lib/theme/aurora-dark.css';
@@ -352,7 +358,10 @@
    * Keyed by the synthetic id the draft widget carries; `commentActions.reply`
    * uses the presence of a key here to decide "create" versus "append".
    */
-  let commentDrafts = new Map<string, { line: number; quote: string }>();
+  let commentDrafts = new Map<
+    string,
+    { line: number; quote: string; context: AnchorContext }
+  >();
   let commentDraftSeq = 0;
 
   /**
@@ -376,13 +385,16 @@
     const effects: StateEffect<unknown>[] = [clearAiComments.of(null)];
     for (const thread of threads) {
       if (thread.status === 'resolved') continue;
-      const { pos, to, orphaned } = anchorPosition(doc, thread.quote, thread.line);
+      const { pos, to, orphaned } = anchorPosition(doc, thread.quote, thread.line, {
+        prefix: thread.prefix,
+        suffix: thread.suffix,
+      });
       effects.push(addAiComment.of({ thread, pos, to, orphaned, actions: commentActions }));
     }
     // Drafts are not in the file, so a reload would otherwise silently discard
     // half-typed comments — re-add them on top.
     for (const [id, draft] of commentDrafts) {
-      const { pos, to, orphaned } = anchorPosition(doc, draft.quote, draft.line);
+      const { pos, to, orphaned } = anchorPosition(doc, draft.quote, draft.line, draft.context);
       effects.push(
         addAiComment.of({
           thread: { id, status: 'open', line: draft.line, quote: draft.quote, replies: [] },
@@ -418,7 +430,7 @@
       if (draft) {
         // First text on a draft is what creates the thread in the file.
         commentDrafts.delete(id);
-        void commentCreate(path, draft.line, draft.quote, text).then(async () => {
+        void commentCreate(path, draft.line, draft.quote, text, draft.context).then(async () => {
           // The sidecar has only just come into existence, so the watcher armed
           // when this document was opened isn't watching it yet. Re-registering
           // the file rebuilds the watcher over both paths — otherwise the very
@@ -510,21 +522,37 @@
     if (!view || !fileState.filePath) return;
     const range = view.state.selection.main;
     const line = view.state.doc.lineAt(range.from);
-    const quote = range.empty
-      ? line.text.trim()
-      : view.state.sliceDoc(range.from, range.to).trim();
+    const raw = range.empty ? line.text : view.state.sliceDoc(range.from, range.to);
+    const quote = raw.trim();
     if (!quote) return;
+
+    // Exact document range of the quote. The quote is trimmed, so the range
+    // has to skip the same leading whitespace — otherwise the highlight and
+    // the stored context would both be off by the indentation of the line.
+    const quoteFrom = (range.empty ? line.from : range.from) + (raw.length - raw.trimStart().length);
+    const quoteTo = quoteFrom + quote.length;
+    // Recorded now, while the exact position is known: after this the only way
+    // back to it is a search, and a search needs something to disambiguate on.
+    const context = anchorContextAt(view.state.doc.toString(), quoteFrom, quoteTo);
 
     commentDraftSeq += 1;
     const id = `draft:${commentDraftSeq}`;
-    commentDrafts.set(id, { line: line.number, quote });
+    commentDrafts.set(id, { line: line.number, quote, context });
     view.dispatch({
       effects: addAiComment.of({
-        thread: { id, status: 'open', line: line.number, quote, replies: [] },
-        pos: range.from,
+        thread: {
+          id,
+          status: 'open',
+          line: line.number,
+          quote,
+          prefix: context.prefix,
+          suffix: context.suffix,
+          replies: [],
+        },
+        pos: quoteFrom,
         // A draft already knows its exact range — no quote search needed, and
         // the fragment gets highlighted from the moment the card appears.
-        to: range.empty ? line.to : range.to,
+        to: quoteTo,
         orphaned: false,
         actions: commentActions,
       }),

@@ -22,7 +22,7 @@ import { parseComments } from './comment-format';
 describe('comment file format — cross-language contract', () => {
   it('parses every thread the fixture declares', () => {
     const threads = parseComments(FIXTURE);
-    expect(threads.map((t) => t.id)).toEqual(['c-aaaaaa', 'c-bbbbbb']);
+    expect(threads.map((t) => t.id)).toEqual(['c-aaaaaa', 'c-bbbbbb', 'c-cccccc']);
   });
 
   it('reads the status written by the Rust side', () => {
@@ -58,6 +58,16 @@ describe('comment file format — cross-language contract', () => {
     expect(first.replies[1].text).toBe(
       'Nginx на этом хосте был сломан.\nПоэтому переехали на Caddy.'
     );
+  });
+
+  it('reads the anchor context Rust escaped into the marker', () => {
+    // The third thread is the one carrying `pre=`/`suf=`. Escaping is part of
+    // the contract: Rust writes percent-escaped values because a raw space
+    // would be parsed as the start of another attribute, and TypeScript has to
+    // unescape them the same way or anchoring silently loses its context.
+    const [, , contextual] = parseComments(FIXTURE);
+    expect(contextual.prefix).toBe('в таблице горячих клавиш: ');
+    expect(contextual.suffix).toBe(' и отступы в списках');
   });
 
   it('does not leak the file header into the first thread', () => {
