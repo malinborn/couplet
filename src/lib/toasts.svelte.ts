@@ -19,7 +19,14 @@ export type ToastPayload =
    * every other toast here, which suits this one: the instruction stays on
    * screen while the user switches to their agent.
    */
-  | { kind: 'ai-watch-copied'; saved: boolean };
+  | { kind: 'ai-watch-copied'; saved: boolean }
+  /**
+   * The bind-to-agent prompt was put on the clipboard by the top-left button
+   * (#29) — or could not be, because the document has never been saved and so
+   * has no path to hand an agent. Persistent like the rest: the instruction
+   * has to stay up while the user switches to their agent and pastes.
+   */
+  | { kind: 'ai-bind-copied'; saved: boolean };
 
 export type ToastKind = ToastPayload['kind'];
 
@@ -41,6 +48,7 @@ const ORDER: Record<ToastKind, number> = {
   // clicked, so it belongs nearest their attention rather than above notices
   // they have not acted on.
   'ai-watch-copied': 3,
+  'ai-bind-copied': 3,
 };
 
 export function createToastStore() {

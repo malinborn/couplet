@@ -21,6 +21,7 @@
   import RecentFilesPanel from './lib/RecentFilesPanel.svelte';
   import ToastStack from './lib/ToastStack.svelte';
   import AiHintBadge from './lib/AiHintBadge.svelte';
+  import AiBindButton from './lib/AiBindButton.svelte';
   import { createToastStore } from './lib/toasts.svelte';
   import { shouldShowHint, nextCheckDelay } from './lib/ai-hint';
   import { previewCompartment, lineGlowCompartment } from './lib/editor/setup';
@@ -50,6 +51,7 @@
     type CommentActions,
   } from './lib/editor/ai-comment';
   import { anchorPosition, buildHandoffPrompt, buildWatchPrompt } from './lib/comment-format';
+  import { buildBindPrompt } from './lib/ai-bind';
   import './lib/theme/dark.css';
   import './lib/theme/light.css';
   import './lib/theme/aurora-dark.css';
@@ -471,6 +473,25 @@
    * reaches every window, and only the focused one should answer for its own
    * document. The toast is the whole point — a clipboard write is invisible.
    */
+  /**
+   * Put the "here is the document I'm looking at" prompt on the clipboard —
+   * the top-left button's whole job (#29).
+   *
+   * No focus guard, unlike `copyWatchCommand` below: this is a click inside
+   * this window's own chrome, so which document is meant is never in question.
+   */
+  function copyBindPrompt(): void {
+    const path = fileState.filePath;
+    if (!path) {
+      toasts.push({ kind: 'ai-bind-copied', saved: false });
+      return;
+    }
+    void navigator.clipboard
+      .writeText(buildBindPrompt(path))
+      .then(() => toasts.push({ kind: 'ai-bind-copied', saved: true }))
+      .catch(() => toasts.push({ kind: 'ai-bind-copied', saved: false }));
+  }
+
   function copyWatchCommand(): void {
     if (!document.hasFocus()) return;
     const path = fileState.filePath;
@@ -1111,6 +1132,8 @@
 </main>
 
 <AiHintBadge visible={showAiHint} />
+
+<AiBindButton onclick={copyBindPrompt} />
 
 {#if showRecentFiles}
   <RecentFilesPanel

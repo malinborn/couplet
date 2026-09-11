@@ -8,7 +8,10 @@
      * The update notice uses this to dismiss itself in every window at once.
      */
     onDismiss,
-  }: { store: ToastStore; onDismiss?: (entry: ToastEntry) => void } = $props();
+  }: {
+    store: ToastStore;
+    onDismiss?: (entry: ToastEntry) => void;
+  } = $props();
 
   function dismiss(entry: ToastEntry): void {
     store.dismiss(entry.id);
@@ -74,6 +77,21 @@
           >
             Getting Started
           </button>
+        {:else if toast.payload.kind === 'ai-bind-copied'}
+          <!-- Same shape as the watch notice below, and for the same reason:
+               the clipboard write is invisible, and the copy is only half the
+               action — the prompt still has to reach an agent. -->
+          {#if toast.payload.saved}
+            <span class="md-toast-text">
+              <strong>Prompt copied</strong>
+              <span class="md-toast-dim">— send it to your AI agent to connect it to this file</span>
+            </span>
+          {:else}
+            <span class="md-toast-text">
+              <strong>Save the file first</strong>
+              <span class="md-toast-dim">— an agent needs a path to open</span>
+            </span>
+          {/if}
         {:else if toast.payload.kind === 'ai-watch-copied'}
           <!-- Says what to do next, not just that a copy happened: the
                clipboard is only half the action — the prompt still has to be
