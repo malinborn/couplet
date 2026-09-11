@@ -75,7 +75,22 @@
   cursor: pointer;
 }
 
-/* Lists */
+/* Lists
+ *
+ * Nesting indent. The source's own two spaces per level render as ~9px, which
+ * is not enough to read as a hierarchy, so each level adds padding on top of
+ * them. Two class names deep (`.cm-line.cm-md-list-dN`) to beat CM6's own
+ * generated `.ͼ1 .cm-line`. `em` so the step follows the zoom level.
+ *
+ * Applied by `preview/lists.ts` whether or not the caret reveals the marker,
+ * so clicking into an item does not shift it sideways.
+ */
+.cm-line.cm-md-list-d2 { padding-left: 1.1em; }
+.cm-line.cm-md-list-d3 { padding-left: 2.2em; }
+.cm-line.cm-md-list-d4 { padding-left: 3.3em; }
+.cm-line.cm-md-list-d5 { padding-left: 4.4em; }
+.cm-line.cm-md-list-d6 { padding-left: 5.5em; }
+
 .cm-md-bullet {
   color: var(--color-list-marker);
   font-size: 1.2em;
