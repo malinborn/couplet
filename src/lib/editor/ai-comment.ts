@@ -105,6 +105,36 @@ const STATUS_LABEL: Record<CommentThread['status'], string> = {
   resolved: 'resolved',
 };
 
+/**
+ * Makes an element inside the card's DOM selectable with the mouse.
+ *
+ * A CM6 widget sits in a `contenteditable="false"` island inside the
+ * `contenteditable="true"` content, and Chrome treats such an island as one
+ * atomic thing: a drag that starts inside it selects the surrounding line
+ * instead of the words under the pointer. `user-select: text` does not help —
+ * measured in a browser, so was `-webkit-user-modify: read-only`,
+ * `contenteditable="plaintext-only"` and `user-select: all`; of the four only
+ * a nested editing host selects at all (#28).
+ *
+ * So the text becomes its own editing host, and every way of actually editing
+ * it is refused. `beforeinput` covers typing, paste, cut and delete in one
+ * place — it fires before the DOM is touched, so nothing has to be undone.
+ * Without this the reply could be typed over, and since CM6 does not own this
+ * DOM, the edit would go nowhere and vanish on the next rebuild.
+ */
+function makeSelectable(el: HTMLElement): void {
+  el.setAttribute('contenteditable', 'true');
+  el.setAttribute('spellcheck', 'false');
+  // Read-only in every respect but selection.
+  el.addEventListener('beforeinput', (event) => event.preventDefault());
+  el.addEventListener('dragstart', (event) => event.preventDefault());
+  // CM6's keymaps must not see keys pressed while the caret is parked in a
+  // card — Escape especially, which clears AI highlights.
+  el.addEventListener('keydown', (event) => event.stopPropagation());
+  el.addEventListener('keypress', (event) => event.stopPropagation());
+  el.addEventListener('keyup', (event) => event.stopPropagation());
+}
+
 export class CommentWidget extends WidgetType {
   constructor(readonly spec: CommentSpec) {
     super();
@@ -174,6 +204,7 @@ export class CommentWidget extends WidgetType {
       excerpt.title = thread.quote;
       head.appendChild(excerpt);
     }
+    makeSelectable(head);
     card.appendChild(head);
 
     // Finished turns. Outlined and left alone — the visual difference from the
@@ -186,11 +217,15 @@ export class CommentWidget extends WidgetType {
       const who = document.createElement('div');
       who.className = 'cm-ai-comment-author';
       who.textContent = `${reply.author} · ${reply.at}`;
+      makeSelectable(who);
       item.appendChild(who);
 
       const body = document.createElement('div');
       body.className = 'cm-ai-comment-text';
       body.textContent = reply.text;
+      // The formulation in here is the thing people want to carry off into a
+      // task, a chat or a commit message.
+      makeSelectable(body);
       item.appendChild(body);
 
       card.appendChild(item);

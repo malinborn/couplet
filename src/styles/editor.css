@@ -1433,15 +1433,38 @@
   background-color: var(--bg-base);
   background-image: linear-gradient(var(--ai-ask-bg), var(--ai-ask-bg));
   font-size: 0.9em;
-  /* Протяжённое выделение по документу не должно закрашивать карточку. */
+  /* Хром карточки — рамка, отступы, ряд кнопок — из выделения выключен:
+   * протяжённое выделение по документу не должно закрашивать карточку целиком.
+   * А вот текст внутри выделяться обязан. */
   -webkit-user-select: none;
   user-select: none;
 }
 
-/* Поле ввода — единственное место в карточке, где выделение текста нужно. */
-.cm-ai-comment-input:focus {
+/* Содержательный текст карточки: ответ агента, свой вопрос, автор и время,
+ * цитата в шапке. Формулировку регулярно нужно перенести в задачу, в чат, в
+ * коммит — а `user-select: none` на карточке не давал её даже выделить (#28).
+ *
+ * Именно эти элементы, а не карточка целиком: кнопки и рамка остаются вне
+ * выделения, поэтому протяжённое выделение по документу по-прежнему не
+ * закрашивает карточку как блок. */
+.cm-ai-comment-text,
+.cm-ai-comment-author,
+.cm-ai-comment-head,
+.cm-ai-comment-excerpt,
+.cm-ai-comment-input {
   -webkit-user-select: text;
   user-select: text;
+  cursor: text;
+}
+
+/* Эти блоки — вложенные editing hosts (иначе Chrome не даёт выделить в них
+ * текст, см. `makeSelectable`), но редактировать их нельзя, поэтому мигающая
+ * каретка в них врала бы. Выделение при этом красится как обычно. */
+.cm-ai-comment-text,
+.cm-ai-comment-author,
+.cm-ai-comment-head {
+  caret-color: transparent;
+  outline: none;
 }
 
 .cm-ai-comment-orphaned {

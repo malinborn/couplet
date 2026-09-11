@@ -459,6 +459,61 @@ describe('CommentWidget.toDOM action buttons', () => {
   });
 });
 
+describe('CommentWidget.toDOM selectable text (#28)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function answered() {
+    return thread({
+      status: 'answered',
+      replies: [
+        { author: 'You', at: '14:02', text: 'Почему не nginx?' },
+        { author: 'agent', at: '14:05', text: 'Он был сломан.' },
+      ],
+    });
+  }
+
+  it('makes the reply text its own editing host — the only thing Chrome will select inside a widget', () => {
+    vi.stubGlobal('document', { createElement: createFakeElement });
+    const widget = new CommentWidget({ thread: answered(), orphaned: false, actions: makeActions() });
+
+    const dom = widget.toDOM() as unknown as FakeElement;
+    for (const el of findByClass(dom, 'cm-ai-comment-text')) {
+      expect(el.attributes['contenteditable']).toBe('true');
+    }
+  });
+
+  it('refuses every edit to it, so an answer cannot be typed over', () => {
+    vi.stubGlobal('document', { createElement: createFakeElement });
+    const widget = new CommentWidget({ thread: answered(), orphaned: false, actions: makeActions() });
+
+    const dom = widget.toDOM() as unknown as FakeElement;
+    const [text] = findByClass(dom, 'cm-ai-comment-text');
+    expect(fire(text, 'beforeinput').preventDefault).toHaveBeenCalled();
+    expect(fire(text, 'dragstart').preventDefault).toHaveBeenCalled();
+  });
+
+  it('keeps its keys away from CM6 keymaps, Escape included', () => {
+    vi.stubGlobal('document', { createElement: createFakeElement });
+    const widget = new CommentWidget({ thread: answered(), orphaned: false, actions: makeActions() });
+
+    const dom = widget.toDOM() as unknown as FakeElement;
+    const [text] = findByClass(dom, 'cm-ai-comment-text');
+    expect(fire(text, 'keydown', { key: 'Escape' }).stopPropagation).toHaveBeenCalled();
+    expect(fire(text, 'keyup').stopPropagation).toHaveBeenCalled();
+  });
+
+  it('covers the author line and the header too — a quote is worth copying as well', () => {
+    vi.stubGlobal('document', { createElement: createFakeElement });
+    const widget = new CommentWidget({ thread: answered(), orphaned: false, actions: makeActions() });
+
+    const dom = widget.toDOM() as unknown as FakeElement;
+    expect(findByClass(dom, 'cm-ai-comment-author')[0].attributes['contenteditable']).toBe('true');
+    expect(findByClass(dom, 'cm-ai-comment-head')[0].attributes['contenteditable']).toBe('true');
+  });
+});
+
 describe('CommentWidget.toDOM comment box', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
