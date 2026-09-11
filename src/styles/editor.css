@@ -259,6 +259,18 @@
   border-bottom: 1px solid var(--color-table-border);
 }
 
+/* Текст ячейки — вложенный editing host (иначе Chrome не даёт выделить текст
+ * внутри виджета, см. `makeWidgetTextSelectable`). Редактировать его нельзя —
+ * правка идёт через оверлей по двойному клику, — поэтому мигающая каретка тут
+ * врала бы. Подсветка выделения при этом рисуется как обычно. */
+.cm-md-table .cm-md-table-celltext {
+  caret-color: transparent;
+  outline: none;
+  cursor: text;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 .cm-md-table .cm-md-table-row-ctrl {
   width: var(--table-row-gutter);
   vertical-align: middle;
