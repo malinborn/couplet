@@ -52,6 +52,7 @@
   } from './lib/editor/ai-comment';
   import { anchorPosition, buildHandoffPrompt, buildWatchPrompt } from './lib/comment-format';
   import { buildBindPrompt } from './lib/ai-bind';
+  import { applyJsonOffer, formatJsonCommand } from './lib/editor/json-paste';
   import './lib/theme/dark.css';
   import './lib/theme/light.css';
   import './lib/theme/aurora-dark.css';
@@ -492,6 +493,21 @@
       .catch(() => toasts.push({ kind: 'ai-bind-copied', saved: false }));
   }
 
+  /**
+   * Expand the JSON the offer toast is pointing at, or — when invoked from the
+   * hotkey or the menu with no offer pending — the selection, falling back to
+   * the whole document.
+   *
+   * One ordinary transaction either way, so Cmd+Z undoes it in one press. The
+   * document is never reformatted without one of these three explicit acts.
+   */
+  function formatJson(fromOffer: boolean): void {
+    const view = editorHandle?.view;
+    if (!view) return;
+    if (fromOffer && applyJsonOffer(view)) return;
+    formatJsonCommand(view);
+  }
+
   function copyWatchCommand(): void {
     if (!document.hasFocus()) return;
     const path = fileState.filePath;
@@ -875,6 +891,12 @@
         case 'ai_watch_command':
           copyWatchCommand();
           break;
+        case 'format_json':
+          // The native accelerator wins over the webview, so in the app this
+          // is the path that actually runs for Cmd+Shift+J; the CM6 binding in
+          // json-paste.ts covers the browser build of the same editor.
+          if (document.hasFocus()) formatJson(false);
+          break;
       }
 
       // macOS/muda toggles the clicked CheckMenuItem natively before this
@@ -1128,6 +1150,8 @@
     bind:handle={editorHandle}
     onchange={handleChange}
     onAiHighlightVisibilityChange={handleAiHighlightVisibilityChange}
+    onJsonOffer={() => toasts.push({ kind: 'json-offer' })}
+    onJsonOfferWithdrawn={() => toasts.dismissKind('json-offer')}
   />
 </main>
 
@@ -1145,6 +1169,7 @@
 
 <ToastStack
   store={toasts}
+  onFormatJson={() => formatJson(true)}
   onDismiss={(entry) => {
     // Closing the update notice closes it everywhere, not just here.
     if (entry.payload.kind === 'update') {

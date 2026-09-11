@@ -8,9 +8,15 @@
      * The update notice uses this to dismiss itself in every window at once.
      */
     onDismiss,
+    /**
+     * Applies the pending JSON expansion (#30). Supplied by the window shell,
+     * which owns the editor handle — this component stays presentational.
+     */
+    onFormatJson,
   }: {
     store: ToastStore;
     onDismiss?: (entry: ToastEntry) => void;
+    onFormatJson?: () => void;
   } = $props();
 
   function dismiss(entry: ToastEntry): void {
@@ -77,6 +83,21 @@
           >
             Getting Started
           </button>
+        {:else if toast.payload.kind === 'json-offer'}
+          <!-- The offer, not the act. Nothing has changed in the document at
+               this point and nothing will until this button is clicked — a
+               false positive costs exactly one ignored toast. -->
+          <span class="md-toast-text">
+            <strong>That looks like JSON</strong>
+            <span class="md-toast-dim">— expand it?</span>
+          </span>
+          <button
+            class="md-toast-cmd md-toast-action"
+            onclick={() => { onFormatJson?.(); dismiss(toast); }}
+          >
+            Format
+          </button>
+          <span class="md-toast-dim">or <kbd>⇧⌘J</kbd></span>
         {:else if toast.payload.kind === 'ai-bind-copied'}
           <!-- Same shape as the watch notice below, and for the same reason:
                the clipboard write is invisible, and the copy is only half the

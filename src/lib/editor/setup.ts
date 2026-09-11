@@ -24,6 +24,7 @@ import { headingSlugsField, navigateToHeading } from './heading-slugs';
 import { aiHighlightField, aiHighlightKeymap } from './ai-highlight';
 import { aiAskField } from './ai-ask';
 import { aiCommentAttention, aiCommentField } from './ai-comment';
+import { jsonFormatKeymap, jsonOfferField } from './json-paste';
 
 export const previewCompartment = new Compartment();
 export const languageCompartment = new Compartment();
@@ -54,6 +55,8 @@ export function createExtensions(): Extension[] {
     aiAskField,
     aiCommentField,
     aiCommentAttention,
+    jsonOfferField,
+    jsonFormatKeymap,
     lineGlowCompartment.of([]),
     drawSelection(),
     listContinuation(),

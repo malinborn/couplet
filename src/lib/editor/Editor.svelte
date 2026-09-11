@@ -12,6 +12,7 @@
   import { envPreviewPlugin } from './preview/env';
   import { computeReplacement } from './content-diff';
   import { aiHighlightPresenceNotifier } from './ai-highlight';
+  import { jsonPasteNotifier } from './json-paste';
   import '../../styles/editor-metrics.css';
 
   export interface EditorHandle {
@@ -22,9 +23,19 @@
     setEnvMode: (enabled: boolean) => void;
   }
 
-  let { onchange, onAiHighlightVisibilityChange, handle = $bindable() }: {
+  let {
+    onchange,
+    onAiHighlightVisibilityChange,
+    onJsonOffer,
+    onJsonOfferWithdrawn,
+    handle = $bindable(),
+  }: {
     onchange?: (doc: string) => void;
     onAiHighlightVisibilityChange?: (visible: boolean) => void;
+    /** Pasted content parses as JSON worth expanding — raise the offer toast. */
+    onJsonOffer?: () => void;
+    /** The pending offer stopped being applicable — take the toast down. */
+    onJsonOfferWithdrawn?: () => void;
     handle?: EditorHandle;
   } = $props();
 
@@ -131,6 +142,10 @@
         // onchange listener above — createExtensions() is a static list shared by
         // every consumer, so per-window callbacks are wired here instead.
         aiHighlightPresenceNotifier((visible) => onAiHighlightVisibilityChange?.(visible)),
+        jsonPasteNotifier({
+          onOffer: () => onJsonOffer?.(),
+          onWithdraw: () => onJsonOfferWithdrawn?.(),
+        }),
       ],
     });
 
