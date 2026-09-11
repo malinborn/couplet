@@ -35,6 +35,34 @@ export interface CommentThread {
 const THREAD_MARKER = '<!-- mdmini:c ';
 
 /**
+ * The author md-mini writes for the person using it. Mirrors `SELF_AUTHOR` in
+ * `src-tauri/src/comments.rs`, and decides which reply the comment box edits
+ * in place rather than showing as finished.
+ */
+export const SELF_AUTHOR = 'You';
+
+/**
+ * Splits a thread into the part that is done and the part still being written.
+ *
+ * A trailing reply by the user is not a sent message — nobody has seen it yet,
+ * and it is what the always-editable box holds (#23). Everything before it is
+ * finished: either an agent's answer, or a turn the agent has already replied
+ * under. Once an answer lands, the user's previous turn moves into `frozen` on
+ * its own, which is precisely the "area freezes and a new one appears below"
+ * behaviour — no state machine needed, the file says it.
+ */
+export function splitThread(thread: CommentThread): {
+  frozen: CommentReply[];
+  editable: string;
+} {
+  const last = thread.replies[thread.replies.length - 1];
+  if (last && last.author === SELF_AUTHOR) {
+    return { frozen: thread.replies.slice(0, -1), editable: last.text };
+  }
+  return { frozen: thread.replies, editable: '' };
+}
+
+/**
  * How much text is kept on each side of the quote.
  *
  * Measured, not guessed: over ~21k anchoring cases built from this repo's own

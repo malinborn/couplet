@@ -549,6 +549,98 @@ pub fn append_reply_at(doc: &Path, id: &str, author: &str, text: &str, at: &str)
     write_atomic(&path, &format!("{}\n", out.join("\n")))
 }
 
+/// The author md-mini writes for the person using it. A trailing reply by
+/// this author is the one the comment box edits in place — see
+/// [`set_last_reply`].
+pub const SELF_AUTHOR: &str = "You";
+
+/// Bounds of the thread block with the given id: the marker line index, and
+/// the index one past its last line.
+fn thread_bounds(lines: &[&str], id: &str) -> Option<(usize, usize)> {
+    let start = marker_line_index(lines, id)?;
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find(|(_, line)| line.trim_start().starts_with(THREAD_MARKER))
+        .map(|(i, _)| i)
+        .unwrap_or(lines.len());
+    Some((start, end))
+}
+
+/// Write `text` as `author`'s reply, replacing their own trailing reply if
+/// they already have one.
+///
+/// This is what makes the comment box an always-editable area rather than a
+/// field with a send button (#23): every keystroke run ends up here, and the
+/// thread carries one reply per turn instead of one per pause in typing. The
+/// in-place branch is also how editing an existing comment works — as long as
+/// nobody has answered yet, the last reply is still the author's own.
+///
+/// An empty `text` is rejected rather than deleting the reply: removing the
+/// only reply would leave a thread that `mdmini question` reports as an empty
+/// question, and "delete this comment" already has a name — resolve.
+pub fn set_last_reply(doc: &Path, id: &str, author: &str, text: &str) -> Result<(), String> {
+    set_last_reply_at(doc, id, author, text, &fmt_utc(now_epoch()))
+}
+
+/// Like [`set_last_reply`], but the timestamp is given explicitly — see
+/// [`append_thread_at`].
+pub fn set_last_reply_at(
+    doc: &Path,
+    id: &str,
+    author: &str,
+    text: &str,
+    at: &str,
+) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("refusing to write an empty comment".to_string());
+    }
+    let path = sidecar_path(doc).ok_or_else(|| "bad document path".to_string())?;
+    let existing = std::fs::read_to_string(&path)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let lines: Vec<&str> = existing.lines().collect();
+    let (start, end) = thread_bounds(&lines, id).ok_or_else(|| format!("unknown comment id: {id}"))?;
+
+    // The author's own trailing reply, if the last reply in the block is
+    // theirs. A reply by anyone else in between (the agent answered) means
+    // this turn is a new one and must not overwrite the answer.
+    let last_header = (start + 1..end)
+        .rev()
+        .find(|&i| parse_reply_header(lines[i]).is_some());
+    let own_trailing = last_header.filter(|&i| {
+        parse_reply_header(lines[i]).is_some_and(|(who, _)| who == author)
+    });
+
+    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    match own_trailing {
+        Some(header) => {
+            // Replace the header (the timestamp is the time of this edit) and
+            // everything under it up to the end of the block, minus the blank
+            // lines separating it from the next thread.
+            let mut body_end = end;
+            while body_end > header + 1 && out[body_end - 1].trim().is_empty() {
+                body_end -= 1;
+            }
+            let mut block: Vec<String> = vec![format!("**{author}** · {at}")];
+            block.extend(text.lines().map(|l| l.to_string()));
+            out.splice(header..body_end, block);
+        }
+        None => {
+            let block = format!("\n**{author}** · {at}\n{text}");
+            let mut insert_at = end;
+            while insert_at > start + 1 && out[insert_at - 1].trim().is_empty() {
+                insert_at -= 1;
+            }
+            for (offset, line) in block.lines().enumerate() {
+                out.insert(insert_at + offset, line.to_string());
+            }
+        }
+    }
+
+    write_atomic(&path, &format!("{}\n", out.join("\n")))
+}
+
 /// Read the `status=` value from a marker line; `open` if the attribute is missing.
 fn status_in_marker(line: &str) -> &str {
     line.split_whitespace()
@@ -929,6 +1021,71 @@ Nginx там был сломан.
         assert_eq!(context_tail(&long).chars().count(), ANCHOR_CONTEXT);
         assert_eq!(context_head("аб"), "аб");
         assert_eq!(context_tail("аб"), "аб");
+    }
+
+    #[test]
+    fn set_last_reply_rewrites_the_authors_own_trailing_reply_in_place() {
+        let doc = temp_doc("spec.md");
+        append_thread(&doc, "c-aaaaaa", 1, "цитата", SELF_AUTHOR, "Поч").unwrap();
+        set_last_reply(&doc, "c-aaaaaa", SELF_AUTHOR, "Почему не nginx?").unwrap();
+        let threads = load(&doc).unwrap();
+        // One reply, not two: typing is not a sequence of separate comments.
+        assert_eq!(threads[0].replies.len(), 1);
+        assert_eq!(threads[0].replies[0].text, "Почему не nginx?");
+    }
+
+    #[test]
+    fn set_last_reply_starts_a_new_turn_under_an_agent_answer() {
+        let doc = temp_doc("spec.md");
+        append_thread(&doc, "c-aaaaaa", 1, "цитата", SELF_AUTHOR, "Почему не nginx?").unwrap();
+        append_reply(&doc, "c-aaaaaa", "agent", "Он был сломан.").unwrap();
+        set_last_reply(&doc, "c-aaaaaa", SELF_AUTHOR, "А теперь?").unwrap();
+        let threads = load(&doc).unwrap();
+        // The answer must survive: an agent reply between the turns is exactly
+        // what makes the previous one finished.
+        assert_eq!(threads[0].replies.len(), 3);
+        assert_eq!(threads[0].replies[1].text, "Он был сломан.");
+        assert_eq!(threads[0].replies[2].author, SELF_AUTHOR);
+        assert_eq!(threads[0].replies[2].text, "А теперь?");
+    }
+
+    #[test]
+    fn set_last_reply_keeps_a_multi_line_body_whole() {
+        let doc = temp_doc("spec.md");
+        append_thread(&doc, "c-aaaaaa", 1, "цитата", SELF_AUTHOR, "первая").unwrap();
+        set_last_reply(&doc, "c-aaaaaa", SELF_AUTHOR, "первая\nвторая\nтретья").unwrap();
+        let threads = load(&doc).unwrap();
+        assert_eq!(threads[0].replies[0].text, "первая\nвторая\nтретья");
+    }
+
+    #[test]
+    fn set_last_reply_does_not_touch_a_neighbouring_thread() {
+        let doc = temp_doc("spec.md");
+        append_thread(&doc, "c-aaaaaa", 1, "q1", SELF_AUTHOR, "первый").unwrap();
+        append_thread(&doc, "c-bbbbbb", 2, "q2", SELF_AUTHOR, "второй").unwrap();
+        set_last_reply(&doc, "c-aaaaaa", SELF_AUTHOR, "первый, переписанный").unwrap();
+        let threads = load(&doc).unwrap();
+        assert_eq!(threads.len(), 2);
+        assert_eq!(threads[0].replies[0].text, "первый, переписанный");
+        assert_eq!(threads[1].replies[0].text, "второй");
+        assert_eq!(threads[1].quote, "q2");
+    }
+
+    #[test]
+    fn set_last_reply_refuses_to_write_an_empty_comment() {
+        let doc = temp_doc("spec.md");
+        append_thread(&doc, "c-aaaaaa", 1, "цитата", SELF_AUTHOR, "текст").unwrap();
+        assert!(set_last_reply(&doc, "c-aaaaaa", SELF_AUTHOR, "   ").is_err());
+        // The previously saved text is still there — clearing the box is not
+        // a way to delete a comment, resolving is.
+        assert_eq!(load(&doc).unwrap()[0].replies[0].text, "текст");
+    }
+
+    #[test]
+    fn set_last_reply_on_an_unknown_id_is_an_error_not_a_silent_no_op() {
+        let doc = temp_doc("spec.md");
+        append_thread(&doc, "c-aaaaaa", 1, "цитата", SELF_AUTHOR, "текст").unwrap();
+        assert!(set_last_reply(&doc, "c-nope00", SELF_AUTHOR, "мимо").is_err());
     }
 
     /// Cross-language contract for the format: this test must generate

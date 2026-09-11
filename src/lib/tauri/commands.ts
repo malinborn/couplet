@@ -104,6 +104,18 @@ export async function commentReply(path: string, id: string, text: string): Prom
   return invoke('comment_reply', { path, id, text });
 }
 
+/**
+ * Writes what is currently in a thread's comment box.
+ *
+ * Replaces the user's own trailing reply rather than appending one, so a pause
+ * in typing is not a separate comment; once an agent has answered, the next
+ * write starts a new reply under the answer. This is the autosave behind the
+ * always-editable comment area — there is no send action (#23).
+ */
+export async function commentSetReply(path: string, id: string, text: string): Promise<void> {
+  return invoke('comment_set_reply', { path, id, text });
+}
+
 /** Marks a thread `resolved`. It stays in the file as history, never deleted. */
 export async function commentResolve(path: string, id: string): Promise<void> {
   return invoke('comment_resolve', { path, id });

@@ -118,7 +118,15 @@ pub async fn comment_create(
         prefix: &prefix,
         suffix: &suffix,
     };
-    crate::comments::append_thread_ctx(doc, &id, line, &quote, context, "You", &text)?;
+    crate::comments::append_thread_ctx(
+        doc,
+        &id,
+        line,
+        &quote,
+        context,
+        crate::comments::SELF_AUTHOR,
+        &text,
+    )?;
     Ok(id)
 }
 
@@ -131,7 +139,26 @@ pub async fn comment_create(
 #[command]
 pub async fn comment_reply(path: String, id: String, text: String) -> Result<(), String> {
     let doc = std::path::Path::new(&path);
-    crate::comments::append_reply(doc, &id, "You", &text)?;
+    crate::comments::append_reply(doc, &id, crate::comments::SELF_AUTHOR, &text)?;
+    crate::comments::set_status(doc, &id, crate::comments::Status::Open)
+}
+
+/// Writes what is currently in the comment box, replacing the user's own
+/// trailing reply instead of appending a new one.
+///
+/// This is the autosave behind the always-editable comment area (#23): the
+/// frontend calls it on a debounce while typing, so a pause of a few hundred
+/// milliseconds is not a separate reply. Once an agent has answered, the
+/// user's next keystrokes start a new reply under the answer rather than
+/// rewriting it.
+///
+/// The status goes back to `open` for the same reason as [`comment_reply`]:
+/// the user writing again means they are waiting again, and `open` is what
+/// `mdmini watch` wakes an agent on.
+#[command]
+pub async fn comment_set_reply(path: String, id: String, text: String) -> Result<(), String> {
+    let doc = std::path::Path::new(&path);
+    crate::comments::set_last_reply(doc, &id, crate::comments::SELF_AUTHOR, &text)?;
     crate::comments::set_status(doc, &id, crate::comments::Status::Open)
 }
 

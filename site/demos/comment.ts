@@ -221,7 +221,8 @@ function addRow(term: TerminalDom, kind: RowKind): HTMLElement {
 
 /** The cards are exhibits in this demo — see the file header. */
 const INERT_ACTIONS = {
-  reply: () => {},
+  save: () => {},
+  flush: () => {},
   resolve: () => {},
   handoff: () => {},
   insertIntoText: () => {},
@@ -287,8 +288,8 @@ export function mount(container: HTMLElement): void {
     return view.dom.querySelector<HTMLElement>(`[data-comment-thread="${id}"]`);
   }
 
-  function replyInput(id: string): HTMLInputElement | null {
-    return cardEl(id)?.querySelector<HTMLInputElement>('.cm-ai-comment-input') ?? null;
+  function replyInput(id: string): HTMLTextAreaElement | null {
+    return cardEl(id)?.querySelector<HTMLTextAreaElement>('.cm-ai-comment-input') ?? null;
   }
 
   /** One of the app's own buttons, found by its label. */
