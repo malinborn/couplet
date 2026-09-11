@@ -29,4 +29,16 @@ tauri-plugin-dialog = "2.6.0"
 tauri-plugin-shell = "2"
 dirs = "6.0.0"
 cocoa = "0.26"
-tauri-plugin-mcp-bridge = "0.10"
+# DEV-ONLY agent driving bridge. `optional = true` + the `mcp-bridge` feature
+# below means that with the feature off this crate is NOT COMPILED AT ALL — it is
+# absent from the binary, not merely disabled at runtime.
+tauri-plugin-mcp-bridge = { version = "0.12", optional = true }
+
+[features]
+# Deliberately EMPTY. `mcp-bridge` must never become a default feature.
+default = []
+# Enable ONLY for local dev: `npm run tauri dev -- --features mcp-bridge`.
+# `tauri/dynamic-acl` is pulled in HERE rather than in the base `tauri` dependency
+# on purpose: the bridge's webview->host commands need an ACL grant, and granting
+# it at runtime behind this feature keeps `capabilities/default.json` clean.
+mcp-bridge = ["dep:tauri-plugin-mcp-bridge", "tauri/dynamic-acl"]

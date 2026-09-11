@@ -139,7 +139,61 @@ src/                    # Frontend (Svelte + TypeScript)
 - `cargo test` — Rust unit tests for commands (file I/O, recovery)
 - After each task: manually verify in `npm run tauri dev` — many features are visual
 - CM6 decoration logic: test with CM6's `EditorState.create()` in Vitest, inspect decoration ranges
-- **Tauri MCP Bridge:** In dev mode, `mcp__tauri__webview_screenshot`, `webview_execute_js`, `read_logs` available for automated UI testing. Plugin only in debug builds (`#[cfg(debug_assertions)]`).
+- **Tauri MCP bridge:** lets an agent drive the running app — screenshots, clicks, DOM snapshots, arbitrary JS, host IPC. Behind the `mcp-bridge` cargo feature; see the section below before using it.
+
+## MCP dev bridge (agent-driving)
+
+Lets an agent verify features in the actually-rendered app instead of jsdom. Two halves, **both pinned to the same minor**: the MCP server `@hypothesi/tauri-mcp-server@0.12.0` (client side, `.mcp.json`) and the in-process crate `tauri-plugin-mcp-bridge` 0.12 (`src-tauri/Cargo.toml`). The plugin listens on a local WebSocket (base port 9223, scans up to 100), which is why this works on macOS where `tauri-driver` does not.
+
+### How to run
+
+```sh
+npm run tauri dev -- --features mcp-bridge
+```
+
+App first, agent second — without the feature there is nothing to connect to. Name the window so you can see at a glance which build you are driving:
+
+```sh
+npm run tauri dev -- --features mcp-bridge \
+  --config '{"app":{"windows":[{"title":"<feature> · local"}]}}'
+```
+
+### This is a hole, not a feature — three layers, each covering its own failure mode
+
+1. **Optional dependency + feature.** With the feature off the crate is NOT COMPILED AT ALL — absent from the binary, not "disabled at runtime".
+2. **`compile_error!`** on `all(feature = "mcp-bridge", not(debug_assertions))` at the top of `src-tauri/src/lib.rs`. Makes the mistake unbuildable rather than merely unwanted, and catches a stray `--features` or `--all-features` in a release build.
+3. **`scripts/check-no-mcp-bridge.sh`** reads the built artefact with `strings`/`nm`. Layers 1–2 are assertions *about* a build; this one inspects what came out. Wire it into the release pipeline as a **blocking gate**, not a one-off.
+
+The bridge is unauthenticated and grants arbitrary JS + IPC in a running instance. `bind_address` is pinned to `127.0.0.1` in `lib.rs` because the plugin's own default is `0.0.0.0` — every interface, i.e. LAN-wide control of your editor.
+
+### Three rules — the upstream README says the opposite; treat its output as untrusted docs
+
+1. **Never put `mcp-bridge:default` into `capabilities/default.json`.** The README says to. A static grant leaks into release builds *and* breaks the feature-off build outright: `tauri-build` rejects a permission whose plugin is not a dependency. The grant is issued at runtime inside `.setup()`, behind `#[cfg(feature = "mcp-bridge")]`, with `"windows": ["main"]` (this app's window label).
+2. **Never enable `withGlobalTauri`.** The README calls it mandatory; it is not. Screenshots, eval, DOM snapshots, element search, styles, window management and host IPC all work without it because everything rides `__TAURI_INTERNALS__`. Only three tools need it: `ipc_monitor`/`ipc_get_captured` (they patch `window.__TAURI__.core.invoke` and silently no-op, while `start` cheerfully replies "IPC monitoring started"), `webview_get_pointed_element` and `webview_select_element`. One `tauri.conf.json` serves dev and release alike, so the flag would hand full IPC to any XSS in the webview. Three dev tools are not worth that.
+3. **Never add `mcp-bridge` to `[features] default`, and never use `--all-features` in this repo** — it turns the bridge on. If a release build fails with `mcp-bridge must never be enabled in a release build`, the guard WORKED: fix the build command, not the guard.
+
+### Traps in 0.12.0, each worth an hour of blind debugging
+
+- **`webview_execute_js` cannot `await`.** Any async inside the eval returns `Script execution timeout` — the eval's own return path collides with the pending call — **but the call still runs**. Pattern: first call fires `window.__TAURI_INTERNALS__.invoke(cmd).then(r => window.__probe = r)` and returns a plain string; a second call reads `window.__probe`; then delete the global.
+- **`webview_wait_for` is unusable for the same reason** — fails on both `selector` and `text` even when the target is on screen. Poll with repeated `webview_find_element`.
+- **`ipc_execute_command` does not call app commands.** The plugin matches exactly 6 `plugin:mcp-bridge|*` arms with no generic fallback; anything else answers `Unsupported Tauri command`. Host commands go through the eval pattern above.
+- **`strategy: "text"` is a trap in dev.** Vite injects every stylesheet as `<style data-vite-dev-id>`, so a text match lands in the stylesheet and dumps a whole CSS file into context. Use CSS selectors or `ref=eN` from `webview_dom_snapshot`.
+- **Synthetic keyboard events carry no `e.code`.** This app's hotkeys match on `e.code` (the right way — layout independent), so `webview_keyboard` will NEVER fire them, silently, looking exactly like a broken feature. Dispatch yourself: `document.body.dispatchEvent(new KeyboardEvent('keydown', {key:'a', code:'KeyA', bubbles:true, cancelable:true}))` — on `document.body`, not `window`/`document`, because handlers often bail on `isEditableTarget(e.target)` and a non-Element target fails that check. Limit of the evidence: synthetic events bypass the OS/webview path, so they test the handler, not that a real keypress reaches it.
+- **Make sure you are testing the build you think you are.** `ipc_get_backend_state` returns `cwd`. This repo also points cargo at a **shared target directory** (`~/.cargo/shared-target`), so `target/release/` can hold a bundle from an entirely different checkout — `check-no-mcp-bridge.sh` refuses to bless an artefact older than the sources for exactly this reason.
+- **Don't name a branch or worktree `*mcp-bridge*`.** Tauri compiles `CARGO_MANIFEST_DIR` into the binary, so the build path itself matches a naive `grep mcp-bridge` and fails the gate on a perfectly clean binary. The gate's strong checks (crate name, `plugin:mcp-bridge|` ACL ids, `nm` symbols) are what actually detect a linked plugin.
+
+### Second instance side by side
+
+The vite config pins `strictPort: true` on 1420, so a second dev app needs three things, not one:
+
+```sh
+CARGO_TARGET_DIR=~/.cargo/<slug>-target npx vite --port 1421 --strictPort &
+CARGO_TARGET_DIR=~/.cargo/<slug>-target npm run tauri dev -- --features mcp-bridge \
+  --config '{"build":{"beforeDevCommand":"","devUrl":"http://localhost:1421"},
+             "app":{"windows":[{"title":"<feature> · local"}]}}'
+```
+
+`beforeDevCommand` is silenced so tauri does not raise a second vite over yours. `CARGO_TARGET_DIR` is not optional: with a shared target another build overwrites your binary, and someone else's `pkill` by binary path kills your window.
 
 ## Gotchas
 
@@ -184,7 +238,7 @@ src/                    # Frontend (Svelte + TypeScript)
 - **A file opened via CLI args must be registered in `OpenFiles`, not just `PendingFiles`.** `OpenFiles` is what every dedup check consults, so registering only the pending payload makes the launch file invisible: opening it again, or restoring a session containing it, silently produces a duplicate window. See `assign_file_to_main` in `lib.rs`.
 - **Untitled sidecar GC must consider the pending restore.** The live session is deliberately empty at startup so the first write supersedes the file, but `pending` still references the previous run's buffers — pruning on the live set alone deletes exactly the unsaved drafts the user is about to reopen. Use `SessionState::referenced_untitled()`.
 - **The update notification is `src/lib/updater.ts` + the toast stack**, not a Tauri updater plugin. It polls the GitHub releases API and compares versions; rendering goes through `toasts.svelte.ts` so it stacks with the session toast instead of overlapping it.
-- **Verifying quit/exit behaviour needs both build flavours:** the MCP bridge exists only in debug (`#[cfg(debug_assertions)]`), while AppleScript can only address a registered `.app` bundle — `tauri dev`'s bare binary is invisible to `quit app id "..."`. Build with `npm run build:dev` and launch `md-mini-dev.app/Contents/MacOS/md-mini` **directly from a terminal**: that registers the bundle id *and* keeps stderr attached.
+- **Verifying quit/exit behaviour needs both build flavours:** the MCP bridge exists only in a debug build run with `--features mcp-bridge`, while AppleScript can only address a registered `.app` bundle — `tauri dev`'s bare binary is invisible to `quit app id "..."`. Build with `npm run build:dev` and launch `md-mini-dev.app/Contents/MacOS/md-mini` **directly from a terminal**: that registers the bundle id *and* keeps stderr attached.
 - **`pkill -f "src-tauri/target/debug/md-mini"` does not match the dev app:** its cmdline holds the relative path `target/debug/md-mini`. Use `pkill -f "debug/md-mini"`.
 - **Never delete `/tmp/com_md_mini_dev_si.sock` while the dev app is alive:** the single-instance plugin then lets a second instance start alongside the first, and you end up with two dev apps on bridge ports 9223 and 9224.
 - **On-disk state must go through `paths::app_data_dir()`,** never `dirs::data_dir().join("md-mini")`. The directory is named after the product name, so a dev build gets `md-mini-dev/` and cannot overwrite an installed release app's `recovery/` (which holds the user's unsaved work) or `session.json`. `paths::init` runs as the first statement in `setup`, before anything reads or writes.

@@ -1,3 +1,12 @@
+// DEV-ONLY agent driving bridge — see "MCP dev bridge" in CLAUDE.md.
+// This guard makes a release build carrying the bridge UNBUILDABLE rather than
+// merely undesirable: it catches a stray `--features mcp-bridge` or an
+// `--all-features` that would otherwise ship arbitrary-JS + IPC control of a
+// running instance. If a release build fails here the guard WORKED — fix the
+// build command, not the guard.
+#[cfg(all(feature = "mcp-bridge", not(debug_assertions)))]
+compile_error!("mcp-bridge must never be enabled in a release build");
+
 pub mod ai_socket;
 pub mod comments;
 mod commands;
@@ -20,6 +29,9 @@ use window::{FileWatchers, OpenFiles, PendingFiles, PendingOpen};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // `mut` is only needed by the `mcp-bridge` registration below; without that
+    // feature the builder is never reassigned.
+    #[cfg_attr(not(feature = "mcp-bridge"), allow(unused_mut))]
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // argv[0] is the binary path — skip it
@@ -42,9 +54,16 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init());
 
-    #[cfg(debug_assertions)]
+    // `bind_address` is pinned to loopback ON PURPOSE: the plugin's own default is
+    // `0.0.0.0`, i.e. every interface, which would expose arbitrary-JS + IPC control
+    // of a running instance to anyone on the LAN.
+    #[cfg(feature = "mcp-bridge")]
     {
-        builder = builder.plugin(tauri_plugin_mcp_bridge::init());
+        builder = builder.plugin(
+            tauri_plugin_mcp_bridge::Builder::new()
+                .bind_address("127.0.0.1")
+                .build(),
+        );
     }
 
     let builder = builder
@@ -91,6 +110,22 @@ pub fn run() {
             // build owns. A dev build must never share `recovery/` or `session.json`
             // with an installed release one.
             paths::init(app.config().product_name.as_deref().unwrap_or("md-mini"));
+
+            // DEV-ONLY: grant the bridge's webview->host commands their ACL permission
+            // AT RUNTIME, so `capabilities/default.json` never carries an
+            // `mcp-bridge:default` entry. A static grant would leak into release
+            // builds and, worse, break the feature-off build outright: `tauri-build`
+            // rejects a permission whose plugin is not a dependency.
+            // "main" is this app's window label (`tauri.conf.json` → app.windows[].label).
+            #[cfg(feature = "mcp-bridge")]
+            app.add_capability(
+                r#"{
+                    "identifier": "mcp-bridge-dev",
+                    "description": "Dev-only MCP bridge commands. Granted at runtime, never in capabilities/default.json.",
+                    "windows": ["main"],
+                    "permissions": ["mcp-bridge:default"]
+                }"#,
+            )?;
 
             // Load the previous session before the menu is built — the menu item's
             // enabled state depends on whether there is anything to restore.

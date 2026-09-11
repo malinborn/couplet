@@ -1,8 +1,9 @@
 {
+  "$schema": "https://json.schemastore.org/mcp.json",
   "mcpServers": {
     "tauri": {
       "command": "npx",
-      "args": ["-y", "@hypothesi/tauri-mcp-server"]
+      "args": ["-y", "@hypothesi/tauri-mcp-server@0.12.0"]
     }
   }
 }

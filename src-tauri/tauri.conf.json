@@ -23,7 +23,7 @@
         "backgroundColor": "#191724"
       }
     ],
-    "withGlobalTauri": true,
+    "withGlobalTauri": false,
     "security": {
       "csp": null
     }
