@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { EditorState } from '@codemirror/state';
-import { resolveShowTarget, changedLineRanges } from './ai-commands';
-import { computeReplacement } from './editor/content-diff';
+import { resolveShowTarget, changedLineRanges, docRangesForLineRanges } from './ai-commands';
+import { computeReplacement, computeChangedLineRanges } from './editor/content-diff';
 
 function makeState(doc: string): EditorState {
   return EditorState.create({ doc });
@@ -85,5 +85,56 @@ describe('changedLineRanges', () => {
     const repl = computeReplacement(oldText, newText)!;
     const state = makeState(newText);
     expect(changedLineRanges(state, repl)).toEqual([2, 2]);
+  });
+});
+
+describe('docRangesForLineRanges', () => {
+  it('maps a single-line range to that line span', () => {
+    const doc = makeState('aaa\nbbbb\nccccc\n').doc;
+    expect(docRangesForLineRanges(doc, [[2, 2]])).toEqual([{ from: 4, to: 8 }]);
+  });
+
+  it('maps a multi-line range from the first line start to the last line end', () => {
+    const doc = makeState('aaa\nbbbb\nccccc\n').doc;
+    expect(docRangesForLineRanges(doc, [[1, 3]])).toEqual([{ from: 0, to: 14 }]);
+  });
+
+  it('maps several ranges independently, leaving the gap between them out', () => {
+    const doc = makeState('aaa\nbbb\nccc\nddd\n').doc;
+    expect(
+      docRangesForLineRanges(doc, [
+        [1, 1],
+        [4, 4],
+      ])
+    ).toEqual([
+      { from: 0, to: 3 },
+      { from: 12, to: 15 },
+    ]);
+  });
+
+  it('yields a zero-width range for a blank line, which the highlight field then drops', () => {
+    const doc = makeState('aaa\n\nccc\n').doc;
+    expect(docRangesForLineRanges(doc, [[2, 2]])).toEqual([{ from: 4, to: 4 }]);
+  });
+
+  it('clamps out-of-range line numbers instead of throwing', () => {
+    const doc = makeState('aaa\nbbb\n').doc;
+    expect(docRangesForLineRanges(doc, [[0, 99]])).toEqual([{ from: 0, to: 8 }]);
+  });
+
+  it('composes with computeChangedLineRanges over the post-change document', () => {
+    const oldText = 'alpha\nbeta\ngamma\ndelta\nepsilon\nzeta';
+    const newText = 'alpha\nBETA!\ngamma\ndelta\nepsilon\nZETA!';
+    const doc = makeState(newText).doc;
+    const ranges = docRangesForLineRanges(doc, computeChangedLineRanges(oldText, newText));
+    // Only the two edited lines, with the four untouched lines between them left
+    // alone — the whole point of issue #27.
+    expect(ranges).toEqual([
+      { from: 6, to: 11 },
+      { from: 32, to: 37 },
+    ]);
+    for (const r of ranges) {
+      expect(doc.sliceString(r.from, r.to)).not.toContain('\n');
+    }
   });
 });

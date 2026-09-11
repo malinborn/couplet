@@ -25,7 +25,7 @@
   import { shouldShowHint, nextCheckDelay } from './lib/ai-hint';
   import { previewCompartment, lineGlowCompartment } from './lib/editor/setup';
   import { EditorView, highlightActiveLine } from '@codemirror/view';
-  import { ChangeSet, type StateEffect } from '@codemirror/state';
+  import { ChangeSet, Text, type StateEffect } from '@codemirror/state';
   import { livePreviewPlugin } from './lib/editor/preview/plugin';
   import { LIVE_PREVIEW, LIVE_RENDER, flavourFacet } from './lib/editor/preview/flavour';
   import { liveRenderExtensions } from './lib/editor/live-render';
@@ -33,8 +33,12 @@
   import { shellSecretsPlugin } from './lib/editor/preview/shell-secrets';
   import { isShellConfig } from './lib/editor/file-language';
   import { reinitializeTheme } from './lib/editor/preview/mermaid';
-  import { computeReplacement } from './lib/editor/content-diff';
-  import { resolveShowTarget, changedLineRanges } from './lib/ai-commands';
+  import { computeReplacement, computeChangedLineRanges } from './lib/editor/content-diff';
+  import {
+    resolveShowTarget,
+    changedLineRanges,
+    docRangesForLineRanges,
+  } from './lib/ai-commands';
   import {
     setAiHighlights,
     pulseAiLine,
@@ -672,7 +676,9 @@
     }
 
     // cmd === 'edit'
-    const repl = computeReplacement(view.state.doc.toString(), payload.content ?? '');
+    const oldContent = view.state.doc.toString();
+    const newContent = payload.content ?? '';
+    const repl = computeReplacement(oldContent, newContent);
     if (!repl) {
       await respondToAi(payload.id, { ok: true, changed_lines: [] });
       return;
@@ -682,7 +688,13 @@
     // CM6's automatic selection mapping intact and preserves scroll position.
     const changes = ChangeSet.of(repl, view.state.doc.length);
     const scrollEffect = view.scrollSnapshot().map(changes);
-    const highlightRange = { from: repl.from, to: repl.from + repl.insert.length };
+    // The *change* is deliberately one coalescing span; the *highlight* is not.
+    // Edits scattered across the file would otherwise wash everything between
+    // the first and last of them (issue #27). Positions must be post-change,
+    // since the highlight field reads effect values in the end state — hence
+    // the diff runs against `newContent` rather than the live doc.
+    const lineRanges = computeChangedLineRanges(oldContent, newContent);
+    const highlightRanges = docRangesForLineRanges(Text.of(newContent.split('\n')), lineRanges);
     view.dispatch({
       changes,
       // With `show` the user is being led to the change — bring the caret
@@ -690,7 +702,7 @@
       ...(payload.show ? { selection: { anchor: repl.from } } : {}),
       effects: [
         ...(scrollEffect ? [scrollEffect] : []),
-        setAiHighlights.of([highlightRange]),
+        setAiHighlights.of(highlightRanges),
         ...(payload.show ? [EditorView.scrollIntoView(repl.from, { y: 'center' })] : []),
       ],
       // Unlike an external-reload or an untitled-restore transaction, an AI
@@ -703,7 +715,9 @@
 
     await respondToAi(payload.id, {
       ok: true,
-      changed_lines: [changedLineRanges(view.state, repl)],
+      // A pure deletion produces no new lines to report, so fall back to the
+      // single span's line (`view.state` is post-change after the dispatch).
+      changed_lines: lineRanges.length > 0 ? lineRanges : [changedLineRanges(view.state, repl)],
     });
   }
 

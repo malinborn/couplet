@@ -1078,9 +1078,10 @@ JSON RESPONSE CONTRACT
     ask --multi --free-text, both:    {"ok":true,"answers":["A"],"custom":"and also this"}
     error (any verb):                 {"ok":false,"error":"target not found"}
 
-  changed_lines is a [start,end] pair, 1-based inclusive line numbers in the
-  resulting document — one pair, since md-mini computes a single minimal
-  common-prefix/common-suffix span, not a multi-hunk diff.
+  changed_lines holds one [start,end] pair per changed region, 1-based
+  inclusive line numbers in the resulting document. Edits scattered across the
+  file report several pairs rather than one span covering everything between
+  them; a block that was rewritten wholesale is reported in full.
 
 EXIT CODES
     0   Request reached md-mini and succeeded ("ok":true).
