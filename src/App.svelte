@@ -24,6 +24,7 @@
   import { createToastStore } from './lib/toasts.svelte';
   import { shouldShowHint, nextCheckDelay } from './lib/ai-hint';
   import { previewCompartment, lineGlowCompartment } from './lib/editor/setup';
+  import { stashAndUnfoldAll, restoreStashedFolds } from './lib/editor/fold-memory';
   import { EditorView, highlightActiveLine } from '@codemirror/view';
   import { ChangeSet, type StateEffect } from '@codemirror/state';
   import { livePreviewPlugin } from './lib/editor/preview/plugin';
@@ -59,6 +60,7 @@
 
   const theme = createThemeStore();
   const engine = createEngineStore();
+
   const zoom = createZoomStore();
   const lineGlow = createLineGlowStore();
   const fileState = createFileState();
@@ -1060,10 +1062,16 @@
     const v = editorHandle?.view;
     if (!v) return;
 
+    // Folds are a preview-mode affordance: their only indicator is the
+    // heading line decoration, which the reconfigure below removes. Left
+    // folded, a Raw document silently hides the sections the user went to Raw
+    // to read. Unfold on the way in, refold on the way out.
     if (e === 'raw') {
+      stashAndUnfoldAll(v);
       v.dispatch({ effects: previewCompartment.reconfigure([]) });
       return;
     }
+    restoreStashedFolds(v);
 
     if (activePreview !== 'markdown') {
       const plugin = activePreview === 'shell' ? shellSecretsPlugin
