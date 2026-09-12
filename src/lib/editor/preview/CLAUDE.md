@@ -145,9 +145,39 @@ line and dispatches a redirect to either the header line (moved up) or the
 line after the table (moved down). The redirect is deferred via
 `queueMicrotask` to avoid recursing inside the updateListener.
 
-### `ignoreEvent()` Returns `false`
+### `ignoreEvent()` — `false` Everywhere Except Cell Text
 
-This means the widget absorbs all DOM events (CM6 doesn't process them). This prevents CM6 from placing the cursor inside the table on click, which would trigger decoration removal if `cursorInRange` were used.
+The sense of this method is the opposite of what the name suggests to most
+readers, and this file used to state it backwards. `eventBelongsToEditor` in
+`@codemirror/view` bails out of CM6's own handling when `ignoreEvent(event)`
+returns **`true`**. So returning `false`, as `TableWidget` does, means CM6
+**does** process the widget's events — which is how a click on a table still
+moves the document selection.
+
+The one exemption is a cell's text. It is wrapped in a
+`.cm-md-table-celltext` span that is its own nested editing host
+(`makeWidgetTextSelectable`, `../widget-text-selection.ts`), because a
+`contenteditable="false"` widget island is atomic to Chrome and a drag inside
+it selects nothing at all (#31; `user-select: text`,
+`-webkit-user-modify: read-only`, `contenteditable="plaintext-only"` and
+`user-select: all` were all measured and none of them help).
+
+For that subtree `ignoreEvent` returns `true`, so:
+
+- the browser's own selection stands instead of `MouseSelection` snapping it
+  out to the whole table through `atomicRanges`;
+- `copy` copies the visible cell text rather than the table's markdown source.
+
+The host refuses every input route (`beforeinput`, `dragstart`) — CM6 does not
+own that DOM, so an edit made there would go nowhere and vanish on the next
+rebuild — and hides its caret in CSS, since editing still happens through the
+double-click overlay. The hover controls stay **outside** the host: a
+`contenteditable` ancestor would swallow the mousedown that starts a column
+drag.
+
+Consequence worth knowing: while a cell selection is live, DOM focus is on the
+cell, so `view.hasFocus` is `false` and the live-render selection toolbar
+(including its 💬 button) does not appear for table text.
 
 ### Hover Controls (±)
 

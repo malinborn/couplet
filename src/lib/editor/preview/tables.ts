@@ -6,6 +6,10 @@ import { markdownTable } from 'markdown-table';
 import { toggleTableMode, getTableMode } from './table-state';
 import { encodeForCommit, decodeForEdit } from './table-encoding';
 import { navigateToHeading } from '../heading-slugs';
+import { makeWidgetTextSelectable, eventInside } from '../widget-text-selection';
+
+/** Class of the per-cell nested editing host that carries the cell's text. */
+export const CELL_TEXT_CLASS = 'cm-md-table-celltext';
 
 export interface CellInfo {
   text: string;
@@ -442,8 +446,23 @@ class TableWidget extends WidgetType {
     });
   }
 
-  ignoreEvent(): boolean {
-    return false;
+  /**
+   * `false` everywhere except inside a cell's text.
+   *
+   * The widget deliberately lets CM6 handle its events (that is what `false`
+   * means here — see `eventBelongsToEditor` in `@codemirror/view`), which is
+   * how a click on a table still moves the document selection.
+   *
+   * But cell text is a nested editing host (`makeWidgetTextSelectable`), and
+   * CM6's `MouseSelection` would immediately snap a drag started there out to
+   * the whole table range via `atomicRanges`, leaving the browser with an
+   * empty selection — measured, that is exactly what #31 reported. Handing
+   * those events back to the browser lets the native selection stand, and the
+   * same exemption makes `copy` copy the visible cell text instead of the
+   * table's markdown source.
+   */
+  ignoreEvent(event: Event): boolean {
+    return eventInside(event, `.${CELL_TEXT_CLASS}`);
   }
 }
 
@@ -707,7 +726,15 @@ function buildCell(
   const cellEl = document.createElement('span');
   cellEl.className = 'cm-md-table-cell';
   if (isHeader) cellEl.classList.add('cm-md-table-cell-header');
-  renderCellContent(cellEl, cell.text, view);
+
+  // The text gets its own element so the nested editing host covers exactly
+  // the cell's content and none of the hover controls: a `contenteditable`
+  // ancestor would swallow the mousedown that starts a column drag.
+  const textEl = document.createElement('span');
+  textEl.className = CELL_TEXT_CLASS;
+  makeWidgetTextSelectable(textEl);
+  renderCellContent(textEl, cell.text, view);
+  cellEl.appendChild(textEl);
 
   cellEl.addEventListener('dblclick', (e) => {
     e.preventDefault();

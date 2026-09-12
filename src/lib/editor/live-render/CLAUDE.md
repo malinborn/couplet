@@ -228,3 +228,30 @@ Three traps cost real time here:
 3. **Vite module caching.** After editing a file, `import('…/index.ts?v=x')`
    re-fetches that module but its transitive imports stay cached. Reload the
    webview instead.
+
+### Driving it in a plain browser — the mode does not turn on by itself
+
+`npm run dev` + Playwright is the cheaper route, and it has a trap of its own
+that silently measures **the wrong mode**.
+
+Setting `localStorage['md-mini:engine'] = '"live-render"'` is not enough.
+Without Tauri, the first `$effect` in `App.svelte` throws on
+`__TAURI_INTERNALS__.metadata`, Svelte never reaches the effect that
+reconfigures `previewCompartment`, and the editor stays on the compartment's
+default — `livePreviewPlugin` alone, i.e. live-preview. Everything then looks
+plausible: the document renders, markers are hidden while the caret is
+elsewhere, and a probe concludes the mode works or does not.
+
+So stub `window.__TAURI_INTERNALS__` (`metadata`, `transformCallback`,
+`invoke`) in an init script before the page loads, and then **assert the mode
+two ways** before measuring anything:
+
+- put the caret inside `**bold**` and check the `**` did *not* reappear — in
+  live-preview they do;
+- look for `SelectionToolbarPlugin` and `InspectorPlugin` in `view.plugins`.
+  They are the only ViewPlugins this bundle contributes, so their absence is
+  proof the bundle is not installed.
+
+Reach the view at `document.querySelector('.cm-content').cmTile.root.view`,
+and launch with `chromium.launch({ channel: 'chrome' })` — the cached
+chromium build lags the Playwright CLI in this repo.
