@@ -556,6 +556,98 @@
   opacity: 1;
 }
 
+/* ⓘ — the table hotkey cheatsheet (#69)
+ *
+ * Sits in the header row's leading ctrl-cell, beside ⇔, so it shares that
+ * cell's reserved width and adds nothing to the strip above the header line —
+ * which belongs to the column buttons (#48) and is exactly where a table at the
+ * top of the document has no room. The two buttons fade in together with the
+ * row, so the corner stays quiet until the pointer is on the table.
+ *
+ * `font-size` is a touch smaller than ⇔: ⓘ is a circled glyph and renders
+ * visually larger than the arrows at the same size. */
+.cm-md-table-btn-info {
+  opacity: 0;
+  transition: opacity 0.15s;
+  cursor: help;
+  background: none;
+  border: none;
+  /* `--text-subtle`, not the `--color-text` the ⇔ button next to it names:
+   * that variable does not exist in any of the four themes, so that rule has
+   * always resolved to "inherit". Left alone there rather than changed as a
+   * side effect of this feature. */
+  color: var(--text-subtle);
+  font-size: 0.9em;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.cm-md-table .cm-md-table-row:hover .cm-md-table-btn-info {
+  opacity: 0.5;
+}
+
+.cm-md-table-btn-info:hover,
+.cm-md-table-btn-info:focus-visible {
+  opacity: 1;
+}
+
+.cm-md-table-btn-info:focus-visible {
+  outline: 1px solid var(--color-checkbox);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
+/* The cheatsheet panel itself.
+ *
+ * It carries `.cm-toolbar-tooltip` for its chrome — the same blur, border and
+ * radius as the selection toolbar's hotkey tooltips, so the app has one popup
+ * look rather than two. Everything below is only what a multi-row panel needs
+ * on top of a one-line caption.
+ *
+ * `max-width` is written from JS by floating-ui's `size()` middleware, against
+ * the *available* width, so a narrow window narrows the panel instead of
+ * pushing it off the edge. Do not fix a width here. */
+.cm-toolbar-tooltip.cm-table-hotkeys {
+  white-space: normal;
+  padding: 8px 10px;
+  pointer-events: none;
+}
+
+.cm-table-hotkeys-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 5px 10px;
+  align-items: baseline;
+}
+
+.cm-table-hotkeys-key {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  /* Full-strength text against the subtler description, so the eye finds the
+   * key column first — it is what someone opening this panel came for. */
+  color: var(--text-primary);
+  background: var(--color-code-bg);
+  border: 1px solid var(--color-table-border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  white-space: nowrap;
+  justify-self: start;
+}
+
+.cm-table-hotkeys-desc {
+  color: var(--text-subtle);
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+/* The edge-case line under a description — quieter than the description, and
+ * on its own line so the key column never has to widen for it. */
+.cm-table-hotkeys-note {
+  display: block;
+  opacity: 0.62;
+  font-size: 0.68rem;
+}
+
 .cm-md-table-cell-header {
   font-weight: 600;
   color: var(--color-heading);
