@@ -143,8 +143,8 @@ the first keystroke after a click parked the caret there (#53):
 - Textarea is positioned using `getBoundingClientRect()` of the cell element
 - Auto-grows on every `input` event, and the cell grows with it — see
   "Cell Editing Expands the Cell, Not the Table" below
-- Cmd/Ctrl+Enter commits, Tab commits, Escape cancels, blur auto-commits after 50ms
-- Plain Enter inserts a newline (textarea default)
+- Keys come from `table-keys.ts` — see "Keyboard navigation" below
+- Blur auto-commits after 50ms
 - `destroy()` removes the class and the inline sizing it wrote on the cell
 
 Newlines and pipes roundtrip through encoding helpers in
@@ -155,6 +155,55 @@ Newlines and pipes roundtrip through encoding helpers in
 
 GFM tables can't contain real newlines or unescaped pipes, so the markdown
 source always carries `<br>` tags and `\|` escapes for these characters.
+
+### Keyboard Navigation Between Cells (#68, #69)
+
+`TABLE_CELL_BINDINGS` in `table-keys.ts` is the single declaration of the
+overlay's keys. The `keydown` handler resolves an event through
+`matchCellBinding` and switches on the `CellAction`; the ⓘ cheatsheet
+(`table-hotkey-sheet.ts`) renders the same rows through `hotkey-label.ts`. A
+second, hand-kept caption list is exactly the drift #59 already paid for — do
+not add one.
+
+| key | action |
+|---|---|
+| `Tab` / `Shift-Tab` | next / previous column, **wrapping inside the row** |
+| `Enter` | next row, **same column**; on the last row, leaves the table |
+| `Shift-Enter` | line break inside the cell (the textarea's own newline) |
+| `Mod-Enter` | commit — **unchanged**, the path the regression battery covers |
+| `Mod-Shift-Enter` | commit, then a fresh row right below this one |
+| `Escape` | cancel |
+
+Four things about this are load-bearing:
+
+- **None of it is a CM6 keymap.** While the overlay is open the keyboard
+  belongs to a `<textarea>` in `document.body`, which CM6 never sees. That is
+  what lets these keys coexist with the two-Enter exit from a fenced code block
+  (#52) and with Tab indenting a list (#24) instead of shadowing them — by
+  construction, not by precedence. The root `CLAUDE.md`'s `Prec.highest` rule
+  for keys carrying an `inputType` therefore does not apply here; there is no
+  precedence to get wrong. Both were re-measured in a browser after the change.
+- **A move commits first, then re-reads the table.** The commit moves every
+  position after the edited cell, so `moveAfterCommit` resolves the table again
+  through `tableContextAtLine` (`ensureSyntaxTree`, not `syntaxTree` — the
+  commit may not have been reparsed, and after `Mod-Shift-Enter` the row being
+  navigated into does not exist in the old tree). What survives the commit is
+  the pair *(table's first line number, row index)*: a commit rewrites text
+  inside one line but never adds or removes a line, because `encodeForCommit`
+  turns newlines into `<br>`.
+- **The destination cell is found by `data-source-from`/`-to`** on the nested
+  editing host. Safe because `TableWidget.eq()` compares every cell `from`, so a
+  widget whose cells moved is rebuilt rather than reused.
+- **A row with no cells is not a destination.** GFM only ends a table at a blank
+  line or another block-level structure, so a bare paragraph written directly
+  under a table parses as one more row of it — with no pipes and so no cells.
+  Treating it as a destination made Enter close the overlay and do nothing.
+  `nextNavigableRow` skips it, so Enter leaves the table instead.
+
+Arithmetic lives in `table-navigation.ts` and is unit-tested: `stepColumn`,
+`nextNavigableRow`, `clampColumn`, `planTableExit`, `newRowMarkdown`,
+`rowInsertAfter`. `planTableExit` is the one that refuses to stack a second
+blank line under a table that already has one.
 
 ### Per-Table Mode (Wrap/Full)
 
