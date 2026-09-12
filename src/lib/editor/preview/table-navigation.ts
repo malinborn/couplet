@@ -55,10 +55,19 @@ export function stepColumn(col: number, cellCount: number, delta: 1 | -1): numbe
  * `null` is the signal to leave the table — see {@link planTableExit}. The
  * delimiter is skipped rather than visited, so Enter in a header cell lands in
  * the first data row.
+ *
+ * A row with no cells is skipped for a less obvious reason, and it is a shape
+ * that really occurs: GFM only ends a table at a blank line or another
+ * block-level structure, so a bare paragraph line written directly under a
+ * table (`Сразу текст.`, no pipes at all) is parsed as one more row of it.
+ * There is no cell there to open an overlay on, so treating it as a destination
+ * means Enter closes the editor and does nothing — a dead end at the bottom of
+ * the table. Skipping it means Enter leaves the table, which is what the user
+ * asked for.
  */
 export function nextNavigableRow(rows: NavRow[], from: number): number | null {
   for (let i = from + 1; i < rows.length; i++) {
-    if (!rows[i].isDelimiter) return i;
+    if (!rows[i].isDelimiter && rows[i].cellCount > 0) return i;
   }
   return null;
 }

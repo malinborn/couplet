@@ -52,6 +52,12 @@ describe('nextNavigableRow', () => {
   it('answers null for a single-row table, where the header is the last row', () => {
     expect(nextNavigableRow([header, delim], 0)).toBeNull();
   });
+
+  it('skips a cell-less row — a bare paragraph GFM swallowed into the table', () => {
+    const paragraph: NavRow = { isDelimiter: false, cellCount: 0 };
+    expect(nextNavigableRow([header, delim, data(), paragraph], 2)).toBeNull();
+    expect(nextNavigableRow([header, delim, paragraph, data()], 0)).toBe(3);
+  });
 });
 
 describe('clampColumn', () => {
