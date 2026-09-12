@@ -26,12 +26,34 @@
  * and snaps the selection out to the whole widget range before the browser
  * ever gets to draw one.
  */
-export function makeWidgetTextSelectable(el: HTMLElement): void {
+export interface SelectableOptions {
+  /**
+   * Also swallow key events before they leave the element.
+   *
+   * `ignoreEvent()` only tells CM6's own widget handling to keep its hands
+   * off; it does not stop a DOM event from bubbling past `contentDOM` to
+   * document-level listeners. A caret parked inside a comment card must not
+   * let Escape reach the clears-AI-highlights keymap (#28), so those widgets
+   * ask for this. Table cells do not: their own Escape/arrow handling still
+   * has to run (#31).
+   */
+  swallowKeys?: boolean;
+}
+
+export function makeWidgetTextSelectable(
+  el: HTMLElement,
+  options: SelectableOptions = {},
+): void {
   el.setAttribute('contenteditable', 'true');
   el.setAttribute('spellcheck', 'false');
   // Read-only in every respect but selection.
   el.addEventListener('beforeinput', (event) => event.preventDefault());
   el.addEventListener('dragstart', (event) => event.preventDefault());
+  if (options.swallowKeys) {
+    el.addEventListener('keydown', (event) => event.stopPropagation());
+    el.addEventListener('keypress', (event) => event.stopPropagation());
+    el.addEventListener('keyup', (event) => event.stopPropagation());
+  }
 }
 
 /**
