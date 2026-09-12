@@ -71,7 +71,71 @@ function handleEnterInList(view: EditorView): boolean {
 }
 
 const LIST_LINE_RE = /^\s*([-*+]|\d+\.)\s/;
-const INDENT_UNIT = '  ';
+const LIST_COLUMNS_RE = /^(\s*)([-*+]|\d+\.)(\s+)/;
+// Used only where a line has no item above it to nest under, where no width
+// nests and the number is arbitrary.
+const FALLBACK_INDENT = 2;
+
+interface ListColumns {
+  /** Column the marker starts at. */
+  indent: number;
+  /** Column the item's content starts at — where a child's marker must reach. */
+  content: number;
+}
+
+function listColumns(text: string): ListColumns | null {
+  const m = text.match(LIST_COLUMNS_RE);
+  if (!m) return null;
+  return { indent: m[1].length, content: m[1].length + m[2].length + m[3].length };
+}
+
+/**
+ * The nearest list item above `lineNumber` that `accept` recognises as the one
+ * to line up against. Stops at a blank line, which ends the list; skips lines
+ * that are not list items at all (a wrapped paragraph inside an item).
+ */
+function findItemAbove(
+  doc: Text,
+  lineNumber: number,
+  accept: (cols: ListColumns) => boolean
+): ListColumns | null {
+  for (let ln = lineNumber - 1; ln >= 1; ln--) {
+    const { text } = doc.line(ln);
+    if (text.trim() === '') return null;
+    const cols = listColumns(text);
+    if (cols && accept(cols)) return cols;
+  }
+  return null;
+}
+
+/**
+ * How many spaces one Tab adds to the list line at `lineNumber`.
+ *
+ * Not a constant. CommonMark nests a sub-list only once its marker reaches the
+ * parent item's *content* column, and that column depends on the marker's
+ * width: 2 for `-`, 3 for `1.`, 4 for `10.`. A fixed two-space unit nests
+ * bullet lists and silently fails to nest ordered ones — the sub-item stays a
+ * sibling, so it renders at its parent's indent. That is #44.
+ */
+export function indentStepFor(doc: Text, lineNumber: number): number {
+  const self = listColumns(doc.line(lineNumber).text);
+  if (!self) return FALLBACK_INDENT;
+  // The previous sibling, i.e. the nearest item not nested deeper than this one.
+  const parent = findItemAbove(doc, lineNumber, (cols) => cols.indent <= self.indent);
+  if (!parent) return FALLBACK_INDENT;
+  return Math.max(parent.content - self.indent, 1);
+}
+
+/**
+ * How many spaces one Shift-Tab removes from the list line at `lineNumber`:
+ * enough to land on its parent item's own column, one level out.
+ */
+export function outdentStepFor(doc: Text, lineNumber: number): number {
+  const self = listColumns(doc.line(lineNumber).text);
+  if (!self || self.indent === 0) return 0;
+  const parent = findItemAbove(doc, lineNumber, (cols) => cols.indent < self.indent);
+  return parent ? self.indent - parent.indent : self.indent;
+}
 
 /**
  * Line numbers a selection covers, for the purpose of a block operation.
@@ -110,6 +174,11 @@ export function selectedLineNumbers(
  *
  * Returns `null` when the selection contains no list line at all, so the
  * caller can fall through to whatever else is bound to Tab.
+ *
+ * Indenting uses one step for the whole selection — the step the topmost
+ * selected item needs — so a nested block keeps its shape instead of having
+ * each line snap to its own parent's column. Outdenting stays per line, so a
+ * mixed selection moves the items that have room and leaves the rest alone.
  */
 export function computeListIndentChanges(
   doc: Text,
@@ -118,17 +187,21 @@ export function computeListIndentChanges(
 ): ChangeSpec[] | null {
   const changes: ChangeSpec[] = [];
   let sawListLine = false;
+  let step = 0;
 
   for (const ln of selectedLineNumbers(doc, ranges)) {
     const line = doc.line(ln);
     if (!LIST_LINE_RE.test(line.text)) continue;
+    if (!sawListLine) step = indentStepFor(doc, ln);
     sawListLine = true;
 
     if (indent) {
-      changes.push({ from: line.from, insert: INDENT_UNIT });
-    } else if (line.text.startsWith(INDENT_UNIT)) {
-      changes.push({ from: line.from, to: line.from + INDENT_UNIT.length, insert: '' });
+      changes.push({ from: line.from, insert: ' '.repeat(step) });
+      continue;
     }
+
+    const back = outdentStepFor(doc, ln);
+    if (back > 0) changes.push({ from: line.from, to: line.from + back, insert: '' });
   }
 
   return sawListLine ? changes : null;
