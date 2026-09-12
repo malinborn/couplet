@@ -59,12 +59,41 @@ const isDelimiter = /^\s*\|[\s|:-]+\|\s*$/.test(line.text);
 
 The regex approach breaks when users type dashes in cells — the row gets classified as delimiter and hidden. The position-based approach is correct because GFM delimiter is always the 2nd row.
 
-### Widget `eq()` Must Compare `mode` and `ctx`
+### Comment Anchors Are Drawn by the Widget (#62)
+
+A comment anchored to text inside a table used to leave no visible trace. The
+`Decoration.mark` from `ai-comment.ts` is created correctly and maps through
+every edit — it just lands on a data line drawn at `height: 0`, so it is painted
+onto nothing. Only the card's excerpt said what the thread was about.
+
+The widget therefore repeats the highlight on the characters that are on screen:
+
+- `decorateTable` reads the fragments from `commentAnchorsIn(view.state, …)`.
+  The field stays the single source of truth; nothing keeps a copy that could
+  drift when the document is edited above the table.
+- `cellHighlights(cell, anchors)` clips each anchor to the cell and maps source
+  → rendered offsets with `visibleRangeForSource` (`live-render/cell-anchor.ts`,
+  the inverse of the function the selection toolbar already uses). Formatted
+  spans are atomic in that direction too, so an anchor storing `**and**`
+  highlights the word "and".
+- `renderCellContent` wraps the overlapping run in a span carrying the same
+  class and `data-comment-anchor` attribute as the document decoration — so it
+  looks identical to a highlight in prose, and the attention shimmer, which
+  finds its elements by that attribute, covers it with no extra code.
+- The anchors are part of `TableWidget.eq()` (see below), and `plugin.ts`
+  rebuilds when the comment field changes.
+
+`parseInlineMarkdown` lives in `inline-tokens.ts` rather than `tables.ts` for
+this: `cell-anchor.ts` needs it too, and leaving it here made the two files
+import each other.
+
+### Widget `eq()` Must Compare `mode`, `ctx` and Comment Anchors
 
 The new `TableWidget` (one per table, rendered on the header line via
-`Decoration.replace`) holds the wrap/full `mode` plus the entire
-`TableContext`. Its `eq()` must compare:
+`Decoration.replace`) holds the wrap/full `mode`, the entire `TableContext`, and
+the comment anchors inside the table. Its `eq()` must compare:
 - `mode` (changes from wrap → full and vice versa via the toggle button)
+- the anchors (id and both offsets) — they decide what the cells draw
 - ctx structural fields (`nodeFrom`, `nodeTo`, `rows.length`, `colCount`)
 - `ctx.colWidths` element-wise (so addRow placeholder sizing stays correct)
 - Per-row cell `text` and `from` positions

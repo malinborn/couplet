@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { cellSpans, sourceRangeForVisible, visibleLength } from './cell-anchor';
-import { parseInlineMarkdown } from '../preview/tables';
+import {
+  cellSpans,
+  sourceRangeForVisible,
+  visibleLength,
+  visibleRangeForSource,
+} from './cell-anchor';
+import { parseInlineMarkdown } from '../preview/inline-tokens';
 
 /**
  * The pure half of the table-cell comment anchor (#42). What it proves is the
@@ -106,5 +111,64 @@ describe('sourceRangeForVisible', () => {
 
   it('returns null when the range runs past the rendered text', () => {
     expect(sourceRangeForVisible('crisp **and** sweet', 0, 99)).toBeNull();
+  });
+});
+
+describe('visibleRangeForSource', () => {
+  /** The rendered characters a stored anchor would highlight. */
+  function shown(cell: string, source: string): string | null {
+    const at = cell.indexOf(source);
+    const range = visibleRangeForSource(cell, at, at + source.length);
+    if (!range) return null;
+    // The text the cell puts on screen, built the way `renderCellContent`
+    // builds it, so the offsets can be read against something real.
+    const visible = parseInlineMarkdown(cell)
+      .map((token) => (token.type === 'link' ? token.text : token.value))
+      .join('');
+    return visible.slice(range.from, range.to);
+  }
+
+  it('maps an anchor in plain text one-to-one', () => {
+    expect(visibleRangeForSource('soft yellow fruit', 5, 11)).toEqual({ from: 5, to: 11 });
+  });
+
+  it('subtracts the markers of everything before it', () => {
+    // `sweet` sits at source 14 and at rendered 10 — the four asterisks of
+    // `**and**` are not on screen.
+    expect(visibleRangeForSource('crisp **and** sweet', 14, 19)).toEqual({ from: 10, to: 15 });
+    expect(shown('crisp **and** sweet', 'sweet')).toBe('sweet');
+  });
+
+  it('shows the whole word for an anchor that stored the markers', () => {
+    // This is what a comment on bold cell text actually stores (#42): the
+    // quote is `**and**`, and the reader has to see "and" marked.
+    expect(shown('crisp **and** sweet', '**and**')).toBe('and');
+  });
+
+  it('shows the whole word for an anchor that caught only a marker', () => {
+    // Nothing else would be honest: half a marker pair renders as no
+    // characters at all, and no highlight reads as "the comment is not here".
+    expect(shown('crisp **and** sweet', '**')).toBe('and');
+  });
+
+  it('shows a link by its text, never by its URL', () => {
+    expect(shown('see [docs](https://x.test) now', '[docs](https://x.test)')).toBe('docs');
+    expect(shown('see [docs](https://x.test) now', 'https://x.test')).toBe('docs');
+  });
+
+  it('spans several tokens', () => {
+    expect(shown('**a** plain *b*', '**a** plain *b*')).toBe('a plain b');
+  });
+
+  it('is the inverse of sourceRangeForVisible on plain runs', () => {
+    const cell = 'crisp **and** sweet';
+    const source = sourceRangeForVisible(cell, 10, 15);
+    expect(source).toEqual({ from: 14, to: 19 });
+    expect(visibleRangeForSource(cell, source!.from, source!.to)).toEqual({ from: 10, to: 15 });
+  });
+
+  it('returns null for an empty or reversed range', () => {
+    expect(visibleRangeForSource('abc', 2, 2)).toBeNull();
+    expect(visibleRangeForSource('abc', 2, 1)).toBeNull();
   });
 });

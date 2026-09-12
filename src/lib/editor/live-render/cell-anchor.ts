@@ -1,4 +1,4 @@
-import { parseInlineMarkdown } from '../preview/tables';
+import { parseInlineMarkdown } from '../preview/inline-tokens';
 
 /**
  * Turning a selection made inside a rendered table cell back into a range in
@@ -117,6 +117,50 @@ export function cellSpans(text: string): CellSpan[] | null {
 /** Length of the text a cell renders on screen, per {@link cellSpans}. */
 export function visibleLength(spans: CellSpan[]): number {
   return spans.length === 0 ? 0 : spans[spans.length - 1].visTo;
+}
+
+/**
+ * Map a range of the cell's source to the rendered text that came from it.
+ *
+ * The inverse of {@link sourceRangeForVisible}, and it exists for the in-
+ * document highlight of a comment (#62). A comment anchors to *source* offsets
+ * — that is how it survives a reload — but a table row's source lines are
+ * drawn at zero height, so a `Decoration.mark` over them is painted onto
+ * nothing at all. The highlight therefore has to be placed inside the widget,
+ * on the characters the reader can actually see, and this is the step that says
+ * which ones those are.
+ *
+ * Formatted spans are atomic in this direction too: an anchor that stored
+ * `**and**` highlights the whole of "and", and one that stored only a marker
+ * still highlights the word rather than nothing.
+ *
+ * Returns `null` for an empty or out-of-range range, and for a cell whose text
+ * does not reconstruct — better no highlight than one a few characters off.
+ */
+export function visibleRangeForSource(
+  text: string,
+  srcFrom: number,
+  srcTo: number
+): { from: number; to: number } | null {
+  if (srcTo <= srcFrom) return null;
+  const spans = cellSpans(text);
+  if (!spans) return null;
+
+  let from = -1;
+  let to = -1;
+  for (const span of spans) {
+    if (span.srcTo <= srcFrom || span.srcFrom >= srcTo) continue;
+    const start = span.atomic
+      ? span.visFrom
+      : span.visFrom + Math.max(srcFrom - span.srcFrom, 0);
+    const end = span.atomic
+      ? span.visTo
+      : span.visFrom + Math.min(srcTo - span.srcFrom, span.visTo - span.visFrom);
+    if (from < 0 || start < from) from = start;
+    if (end > to) to = end;
+  }
+
+  return from < 0 || to <= from ? null : { from, to };
 }
 
 /**

@@ -219,10 +219,19 @@ What a comment on cell text anchors to is decided in `cell-anchor.ts`: the
 fails the re-anchor search on the next open — the quote has to be findable in
 the file, and `and sweet` is not in `**and** sweet`.
 
-Known gap: the in-document anchor highlight lands on a table data line, which is
-zero-height, so the mark is invisible. The card's excerpt carries the quote.
-Highlighting inside the rendered cell would mean teaching `tables.ts` about
-comment ranges.
+That mapping now runs in both directions. `visibleRangeForSource` is the
+inverse, and it exists because the in-document anchor highlight lands on a table
+data line, which is zero-height — the `Decoration.mark` is there, it is simply
+painted onto nothing (#62). So `tables.ts` asks `ai-comment.ts` which fragments
+are commented, maps them back to rendered offsets through the same token split,
+and draws the highlight inside the cell with the same class the document
+decoration uses. Two consequences worth knowing:
+
+- The anchors are part of `TableWidget`'s `eq()`. They are structural here: they
+  decide what the DOM contains, and without them CM6 reuses the widget and a new
+  comment leaves no mark until something else rebuilds the table.
+- `livePreviewPlugin` rebuilds when the comment field changes, for the same
+  reason it rebuilds on `toggleTableMode`.
 
 ### A task item is `Task`, not `Link`
 

@@ -8,6 +8,7 @@ import { headingSlugsField } from '../heading-slugs';
 import {
   cellEditWidth,
   parseCellsWithPositions,
+  cellHighlights,
   parseInlineMarkdown,
   routeLinkClick,
   tableToGrid,
@@ -668,5 +669,58 @@ describe('cellEditWidth', () => {
 
   it('уважает переданный минимум', () => {
     expect(cellEditWidth(20, 900, 120)).toBe(120);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cellHighlights — comment anchors, clipped to one cell (#62)
+// ---------------------------------------------------------------------------
+
+describe('cellHighlights', () => {
+  /** A cell holding `text`, starting at document position `from`. */
+  function cell(text: string, from = 100): CellInfo {
+    return { text, from, to: from + text.length };
+  }
+
+  it('maps an anchor inside the cell to the rendered characters', () => {
+    const c = cell('как дела');
+    expect(cellHighlights(c, [{ id: 'c-aaaaaa', from: 100, to: 103 }])).toEqual([
+      { id: 'c-aaaaaa', visFrom: 0, visTo: 3 },
+    ]);
+  });
+
+  it('ignores an anchor that belongs to another cell', () => {
+    const c = cell('как дела');
+    expect(cellHighlights(c, [{ id: 'c-aaaaaa', from: 200, to: 204 }])).toEqual([]);
+  });
+
+  it('clips an anchor that runs past the cell', () => {
+    // A quote found by search can cross a `|`; each cell marks only its own
+    // part of it rather than refusing to mark anything.
+    const c = cell('как дела');
+    expect(cellHighlights(c, [{ id: 'c-aaaaaa', from: 104, to: 140 }])).toEqual([
+      { id: 'c-aaaaaa', visFrom: 4, visTo: 8 },
+    ]);
+  });
+
+  it('subtracts the markers of formatting before the anchor', () => {
+    const c = cell('**как** дела');
+    // `дела` sits at source offset 8, rendered offset 4.
+    expect(cellHighlights(c, [{ id: 'c-aaaaaa', from: 108, to: 112 }])).toEqual([
+      { id: 'c-aaaaaa', visFrom: 4, visTo: 8 },
+    ]);
+  });
+
+  it('returns several anchors in rendered order, whatever order they arrive in', () => {
+    const c = cell('как дела');
+    const out = cellHighlights(c, [
+      { id: 'c-bbbbbb', from: 104, to: 108 },
+      { id: 'c-aaaaaa', from: 100, to: 103 },
+    ]);
+    expect(out.map((h) => h.id)).toEqual(['c-aaaaaa', 'c-bbbbbb']);
+  });
+
+  it('has nothing to mark in an empty cell', () => {
+    expect(cellHighlights(cell(''), [{ id: 'c-aaaaaa', from: 100, to: 101 }])).toEqual([]);
   });
 });

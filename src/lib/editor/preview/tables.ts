@@ -12,6 +12,14 @@ import {
 } from '../cell-edit-session';
 import { navigateToHeading } from '../heading-slugs';
 import { makeWidgetTextSelectable, eventInside } from '../widget-text-selection';
+import { parseInlineMarkdown } from './inline-tokens';
+import { visibleRangeForSource } from '../live-render/cell-anchor';
+import {
+  commentAnchorsIn,
+  COMMENT_ANCHOR_ATTR,
+  COMMENT_ANCHOR_CLASS,
+  type CommentAnchorSpan,
+} from '../ai-comment';
 
 /** Class of the per-cell nested editing host that carries the cell's text. */
 export const CELL_TEXT_CLASS = 'cm-md-table-celltext';
@@ -386,7 +394,13 @@ function startColDrag(
 class TableWidget extends WidgetType {
   constructor(
     private ctx: TableContext,
-    private mode: 'wrap' | 'full'
+    private mode: 'wrap' | 'full',
+    /**
+     * Commented fragments inside this table, in document coordinates. Part of
+     * the widget's identity (see `eq`): a comment appearing or going away
+     * changes what the cells draw, and nothing else in the context moves (#62).
+     */
+    private anchors: CommentAnchorSpan[] = []
   ) {
     super();
   }
@@ -403,13 +417,13 @@ class TableWidget extends WidgetType {
 
     const headerRow = this.ctx.rows.find((r) => r.isHeader);
     if (headerRow) {
-      table.appendChild(buildHeaderRow(headerRow, this.ctx, view, colCtrl));
+      table.appendChild(buildHeaderRow(headerRow, this.ctx, view, colCtrl, this.anchors));
     }
 
     const dataRows = this.ctx.rows.filter((r) => !r.isDelimiter && !r.isHeader);
     const dataCount = dataRows.length;
     dataRows.forEach((row, i) => {
-      table.appendChild(buildDataRow(row, i, this.ctx, view, dataCount));
+      table.appendChild(buildDataRow(row, i, this.ctx, view, dataCount, this.anchors));
     });
 
     wrap.appendChild(table);
@@ -440,6 +454,19 @@ class TableWidget extends WidgetType {
 
   eq(other: TableWidget): boolean {
     if (this.mode !== other.mode) return false;
+    // Anchors are structural context here in exactly the sense the root
+    // CLAUDE.md means: they decide what the DOM contains. Left out, CM6 would
+    // keep the widget it already had and a comment made on cell text would
+    // leave no mark until something else happened to rebuild the table.
+    if (this.anchors.length !== other.anchors.length) return false;
+    if (
+      !this.anchors.every((a, i) => {
+        const o = other.anchors[i];
+        return a.id === o.id && a.from === o.from && a.to === o.to;
+      })
+    ) {
+      return false;
+    }
     if (this.ctx.nodeFrom !== other.ctx.nodeFrom) return false;
     if (this.ctx.nodeTo !== other.ctx.nodeTo) return false;
     if (this.ctx.rows.length !== other.ctx.rows.length) return false;
@@ -476,61 +503,10 @@ class TableWidget extends WidgetType {
   }
 }
 
-export type InlineToken =
-  | { type: 'text'; value: string }
-  | { type: 'code'; value: string }
-  | { type: 'boldItalic'; value: string }
-  | { type: 'bold'; value: string }
-  | { type: 'italic'; value: string }
-  | { type: 'strike'; value: string }
-  | { type: 'link'; text: string; url: string };
-
-/**
- * Parse a cell's text into inline markdown tokens.
- *
- * Supported: code, bold+italic, bold, italic, strikethrough, links `[text](url)`.
- * Order matters — longer patterns are matched first to avoid emphasis swallowing link
- * brackets. Unmatched text becomes `text` tokens.
- */
-export function parseInlineMarkdown(text: string): InlineToken[] {
-  if (!text) return [];
-
-  // Order: code | link | ***bi*** | **b** | *i* | ~~s~~. Link before emphasis so the
-  // square brackets don't get treated as italic-eligible text.
-  const inlineRegex = /(`+)(.*?)\1|\[([^\]\n]+)\]\(([^)\s]+)\)|(\*\*\*|___)(.*?)\5|(\*\*|__)(.*?)\7|(\*|_)(.*?)\9|(~~)(.*?)\11/g;
-
-  const tokens: InlineToken[] = [];
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = inlineRegex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      tokens.push({ type: 'text', value: text.slice(lastIndex, match.index) });
-    }
-
-    if (match[1] !== undefined) {
-      tokens.push({ type: 'code', value: match[2] });
-    } else if (match[3] !== undefined) {
-      tokens.push({ type: 'link', text: match[3], url: match[4] });
-    } else if (match[5] !== undefined) {
-      tokens.push({ type: 'boldItalic', value: match[6] });
-    } else if (match[7] !== undefined) {
-      tokens.push({ type: 'bold', value: match[8] });
-    } else if (match[9] !== undefined) {
-      tokens.push({ type: 'italic', value: match[10] });
-    } else if (match[11] !== undefined) {
-      tokens.push({ type: 'strike', value: match[12] });
-    }
-
-    lastIndex = match.index + match[0].length;
-  }
-
-  if (lastIndex < text.length) {
-    tokens.push({ type: 'text', value: text.slice(lastIndex) });
-  }
-
-  return tokens;
-}
+// Re-exported so `./tables` stays the import path callers already use; the
+// implementation moved to `inline-tokens.ts` to break the cycle with
+// `live-render/cell-anchor.ts`, which this file now imports in turn (#62).
+export { parseInlineMarkdown, type InlineToken } from './inline-tokens';
 
 /** Open a URL via the Tauri shell, falling back to `window.open` in non-Tauri builds. */
 function openUrl(url: string): void {
@@ -566,8 +542,100 @@ export function routeLinkClick(
   }
 }
 
+/**
+ * A commented fragment of one cell, in *rendered* characters.
+ *
+ * The document-level highlight (`ai-comment.ts`) cannot serve a table: the
+ * source lines of every row but the header are drawn at zero height, so the
+ * mark is painted onto nothing and the reader sees no sign that a comment is
+ * attached to anything (#62). The widget repeats it on the visible text, which
+ * means translating the thread's source offsets through the same token split
+ * that produced the DOM.
+ */
+export interface CellHighlight {
+  id: string;
+  visFrom: number;
+  visTo: number;
+}
+
+/**
+ * Which parts of a cell's rendered text carry a comment highlight.
+ *
+ * Anchors are clipped to the cell first — a quote found by search can run past
+ * a `|` — and then mapped from source to visible offsets. A cell whose text
+ * does not reconstruct yields nothing rather than a highlight a few characters
+ * off: a mark on the wrong word is worse than the card's quote alone.
+ */
+export function cellHighlights(
+  cell: CellInfo,
+  anchors: CommentAnchorSpan[]
+): CellHighlight[] {
+  if (!cell.text) return [];
+  const out: CellHighlight[] = [];
+  for (const anchor of anchors) {
+    const srcFrom = Math.max(0, anchor.from - cell.from);
+    const srcTo = Math.min(cell.text.length, anchor.to - cell.from);
+    if (srcTo <= srcFrom) continue;
+    const visible = visibleRangeForSource(cell.text, srcFrom, srcTo);
+    if (!visible) continue;
+    out.push({ id: anchor.id, visFrom: visible.from, visTo: visible.to });
+  }
+  return out.sort((a, b) => a.visFrom - b.visFrom);
+}
+
+/**
+ * Append `value` to `parent`, wrapping the highlighted parts of it.
+ *
+ * `visStart` is where this run of text begins in the cell's rendered text, so
+ * one counter walks the whole cell across `<strong>`, `<code>` and `<a>`
+ * boundaries. Where two threads overlap the earlier one keeps the shared
+ * characters — nesting two marks would double the wash and say nothing extra.
+ */
+function appendCellText(
+  parent: HTMLElement,
+  value: string,
+  visStart: number,
+  highlights: CellHighlight[]
+): void {
+  if (!value) return;
+  const hits = highlights.filter(
+    (h) => h.visFrom < visStart + value.length && h.visTo > visStart
+  );
+  if (hits.length === 0) {
+    parent.appendChild(document.createTextNode(value));
+    return;
+  }
+
+  let cursor = 0;
+  for (const hit of hits) {
+    const start = Math.max(hit.visFrom - visStart, cursor);
+    const end = Math.min(hit.visTo - visStart, value.length);
+    if (end <= start) continue;
+    if (start > cursor) {
+      parent.appendChild(document.createTextNode(value.slice(cursor, start)));
+    }
+    const span = document.createElement('span');
+    // The same class the document decoration uses, so a comment on cell text
+    // looks exactly like a comment on a paragraph — and the attention shimmer,
+    // which finds its spans by the attribute, covers this one too.
+    span.className = COMMENT_ANCHOR_CLASS;
+    span.setAttribute(COMMENT_ANCHOR_ATTR, hit.id);
+    span.textContent = value.slice(start, end);
+    parent.appendChild(span);
+    cursor = end;
+  }
+  if (cursor < value.length) {
+    parent.appendChild(document.createTextNode(value.slice(cursor)));
+  }
+}
+
 /** Render inline markdown (code, bold, italic, strikethrough, links) into a cell element. */
-function renderCellContent(cellEl: HTMLElement, text: string, view: EditorView): void {
+function renderCellContent(
+  cellEl: HTMLElement,
+  text: string,
+  view: EditorView,
+  highlights: CellHighlight[] = []
+): void {
   if (!text) return;
 
   const tokens = parseInlineMarkdown(text);
@@ -577,41 +645,51 @@ function renderCellContent(cellEl: HTMLElement, text: string, view: EditorView):
     return;
   }
 
+  // Where the token being rendered starts in the cell's rendered text — the
+  // coordinate `highlights` speaks in.
+  let vis = 0;
+
   for (const token of tokens) {
     switch (token.type) {
       case 'text':
-        cellEl.appendChild(document.createTextNode(token.value));
+        appendCellText(cellEl, token.value, vis, highlights);
+        vis += token.value.length;
         break;
       case 'code': {
         const code = document.createElement('code');
         code.className = 'cm-md-table-inline-code';
-        code.textContent = token.value;
+        appendCellText(code, token.value, vis, highlights);
+        vis += token.value.length;
         cellEl.appendChild(code);
         break;
       }
       case 'boldItalic': {
         const strong = document.createElement('strong');
         const em = document.createElement('em');
-        em.textContent = token.value;
+        appendCellText(em, token.value, vis, highlights);
+        vis += token.value.length;
         strong.appendChild(em);
         cellEl.appendChild(strong);
         break;
       }
       case 'bold': {
         const el = document.createElement('strong');
-        el.textContent = token.value;
+        appendCellText(el, token.value, vis, highlights);
+        vis += token.value.length;
         cellEl.appendChild(el);
         break;
       }
       case 'italic': {
         const el = document.createElement('em');
-        el.textContent = token.value;
+        appendCellText(el, token.value, vis, highlights);
+        vis += token.value.length;
         cellEl.appendChild(el);
         break;
       }
       case 'strike': {
         const el = document.createElement('s');
-        el.textContent = token.value;
+        appendCellText(el, token.value, vis, highlights);
+        vis += token.value.length;
         cellEl.appendChild(el);
         break;
       }
@@ -620,7 +698,8 @@ function renderCellContent(cellEl: HTMLElement, text: string, view: EditorView):
         a.className = 'cm-md-link';
         a.href = token.url;
         a.rel = 'noopener noreferrer';
-        a.textContent = token.text;
+        appendCellText(a, token.text, vis, highlights);
+        vis += token.text.length;
         // mousedown drives the actual routing — same trigger setup.ts uses for
         // top-level Link nodes. The click handler is a backstop that kills the
         // native `<a>` activation on every code path (keyboard activation,
@@ -849,7 +928,8 @@ function buildCell(
   isHeader: boolean,
   ctx: TableContext,
   view: EditorView,
-  colCtrl?: ColCtrl
+  colCtrl?: ColCtrl,
+  anchors: CommentAnchorSpan[] = []
 ): HTMLElement {
   const cellEl = document.createElement('span');
   cellEl.className = 'cm-md-table-cell';
@@ -866,7 +946,7 @@ function buildCell(
   // `live-render/cell-anchor.ts`. Safe to freeze into the DOM because the
   // widget's `eq()` compares every cell `from`, so any shift rebuilds it.
   makeWidgetTextSelectable(textEl, { source: { from: cell.from, to: cell.to } });
-  renderCellContent(textEl, cell.text, view);
+  renderCellContent(textEl, cell.text, view, cellHighlights(cell, anchors));
   cellEl.appendChild(textEl);
 
   cellEl.addEventListener('dblclick', (e) => {
@@ -1027,7 +1107,8 @@ function buildHeaderRow(
   row: RowData,
   ctx: TableContext,
   view: EditorView,
-  colCtrl: ColCtrl
+  colCtrl: ColCtrl,
+  anchors: CommentAnchorSpan[] = []
 ): HTMLElement {
   const tr = document.createElement('span');
   tr.className = 'cm-md-table-row cm-md-table-row-header';
@@ -1035,7 +1116,7 @@ function buildHeaderRow(
   tr.appendChild(buildHeaderCtrlCell(view, ctx));
 
   row.cells.forEach((cell, i) => {
-    tr.appendChild(buildCell(cell, i, true, ctx, view, colCtrl));
+    tr.appendChild(buildCell(cell, i, true, ctx, view, colCtrl, anchors));
   });
 
   tr.addEventListener('mouseleave', colCtrl.scheduleHide);
@@ -1048,7 +1129,8 @@ function buildDataRow(
   dataRowIndex: number,
   ctx: TableContext,
   view: EditorView,
-  dataCount: number
+  dataCount: number,
+  anchors: CommentAnchorSpan[] = []
 ): HTMLElement {
   const tr = document.createElement('span');
   tr.className = 'cm-md-table-row cm-md-table-row-data';
@@ -1057,7 +1139,7 @@ function buildDataRow(
   tr.appendChild(ctrlCell);
 
   row.cells.forEach((cell, i) => {
-    tr.appendChild(buildCell(cell, i, false, ctx, view));
+    tr.appendChild(buildCell(cell, i, false, ctx, view, undefined, anchors));
   });
 
   return tr;
@@ -1120,6 +1202,10 @@ export function decorateTable(
   if (!headerRow) return;
 
   const mode = getTableMode(view.state, ctx.nodeFrom);
+  // Read straight from the comment field, which maps its ranges through every
+  // edit — including edits above the table, which is the case where a copy
+  // kept anywhere else would drift (#62).
+  const anchors = commentAnchorsIn(view.state, node.from, node.to);
 
   // Header line: host of the full-table widget
   builder.add(
@@ -1130,7 +1216,7 @@ export function decorateTable(
   builder.add(
     headerRow.from,
     headerRow.to,
-    Decoration.replace({ widget: new TableWidget(ctx, mode) })
+    Decoration.replace({ widget: new TableWidget(ctx, mode, anchors) })
   );
 
   // Hide all non-header lines (delimiter + data rows)
