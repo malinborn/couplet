@@ -654,12 +654,48 @@ function mkBtn(text: string, className: string, onClick: () => void): HTMLElemen
   return btn;
 }
 
+/**
+ * Комфортная ширина поля ввода ячейки (px).
+ *
+ * В колонке шириной в три символа набирать текст нечитаемо, поэтому на время
+ * ввода поле расширяется хотя бы до этого значения — но никогда не сужает
+ * ячейку и никогда не вылезает за правый край строки.
+ */
+const CELL_EDIT_MIN_WIDTH = 280;
+
+/** Совпадает с `--table-side-gutter` в editor.css — полоса справа под кнопки. */
+const TABLE_SIDE_GUTTER = 32;
+
+/**
+ * Ширина поля ввода ячейки на время редактирования.
+ *
+ * Правило: не уже самой ячейки, по возможности — не уже `min`, но никогда не
+ * шире места, оставшегося до правого края строки. Считается один раз, при
+ * открытии поля: если бы она пересчитывалась по ходу набора, получилась бы
+ * петля «ширина ячейки → ширина поля → ширина ячейки» — то есть пересчёт
+ * геометрии таблицы на каждый символ.
+ */
+export function cellEditWidth(
+  cellWidth: number,
+  available: number,
+  min = CELL_EDIT_MIN_WIDTH
+): number {
+  return Math.max(cellWidth, Math.min(min, Math.max(cellWidth, available)));
+}
+
 function showCellEditor(view: EditorView, cellEl: HTMLElement, cell: CellInfo): void {
   document.querySelector('.cm-md-table-editor')?.remove();
 
   const rect = cellEl.getBoundingClientRect();
-  const originalColor = cellEl.style.color;
-  cellEl.style.color = 'transparent';
+  const cellStyle = getComputedStyle(cellEl);
+  const lineEl = cellEl.closest('.cm-md-table-line');
+  const rightLimit = lineEl
+    ? lineEl.getBoundingClientRect().right - TABLE_SIDE_GUTTER
+    : window.innerWidth - TABLE_SIDE_GUTTER;
+
+  const editWidth = cellEditWidth(rect.width, rightLimit - rect.left);
+
+  cellEl.classList.add('cm-md-table-cell-editing');
 
   const ta = document.createElement('textarea');
   ta.className = 'cm-md-table-editor';
@@ -668,20 +704,56 @@ function showCellEditor(view: EditorView, cellEl: HTMLElement, cell: CellInfo): 
   ta.style.position = 'fixed';
   ta.style.left = `${rect.left}px`;
   ta.style.top = `${rect.top}px`;
-  ta.style.width = `${Math.max(rect.width, 100)}px`;
+  ta.style.width = `${editWidth}px`;
+  // Метрики берём у ячейки, чтобы символы стояли ровно там же, где стояли до
+  // двойного клика: у поля свой контекст (оно висит в `document.body`), и
+  // относительные единицы в его CSS считались бы от размера шрифта body.
+  ta.style.fontFamily = cellStyle.fontFamily;
+  ta.style.fontSize = cellStyle.fontSize;
+  ta.style.lineHeight = cellStyle.lineHeight;
+  ta.style.padding = cellStyle.padding;
+  ta.style.textAlign = cellStyle.textAlign;
 
-  const grow = (): void => {
+  /**
+   * Раскрыть ячейку под размер поля ввода.
+   *
+   * Единственная запись, которую делает ввод, — инлайновые `min-width` /
+   * `min-height` на АКТИВНОЙ ячейке. Транзакции CM6 тут нет вовсе, а колонку
+   * расширяет и строку растит сам браузер по `table-layout: auto` — ширины
+   * соседних строк никто не считает и не выравнивает в JS.
+   *
+   * Расширение колонки может перевёрстывать соседние колонки и сдвинуть саму
+   * ячейку, поэтому позиция поля берётся заново уже после раскладки.
+   */
+  const reflow = (): void => {
     ta.style.height = '0';
-    ta.style.height = `${Math.max(ta.scrollHeight, rect.height)}px`;
+    const height = Math.max(ta.scrollHeight, rect.height);
+    ta.style.height = `${height}px`;
+
+    cellEl.style.boxSizing = 'border-box';
+    cellEl.style.minWidth = `${editWidth}px`;
+    // Именно `height`, а не `min-height`: на `display: table-cell` Chrome
+    // min-height игнорирует (в CSS 2.1 его действие на ячейку не определено),
+    // зато `height` трактует как минимум — строка от него растёт, но никогда
+    // не становится ниже своего содержимого. Измерено: с `min-height` ячейка
+    // оставалась 32px при поле в 67px.
+    cellEl.style.height = `${height}px`;
+
+    const live = cellEl.getBoundingClientRect();
+    ta.style.left = `${live.left}px`;
+    ta.style.top = `${live.top}px`;
   };
-  ta.addEventListener('input', grow);
+  ta.addEventListener('input', reflow);
 
   let committed = false;
 
   const destroy = (): void => {
-    ta.removeEventListener('input', grow);
+    ta.removeEventListener('input', reflow);
     ta.remove();
-    cellEl.style.color = originalColor;
+    cellEl.classList.remove('cm-md-table-cell-editing');
+    cellEl.style.boxSizing = '';
+    cellEl.style.minWidth = '';
+    cellEl.style.height = '';
     view.focus();
   };
 
@@ -716,7 +788,7 @@ function showCellEditor(view: EditorView, cellEl: HTMLElement, cell: CellInfo): 
   document.body.appendChild(ta);
   ta.focus();
   ta.select();
-  grow(); // initial size
+  reflow(); // initial size
 }
 
 // --- DOM builder helpers (used by TableWidget in Task 5) ---

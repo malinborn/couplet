@@ -104,12 +104,16 @@ cells.push({ text: '', from: midpoint, to: midpoint });
 
 Double-click on a cell shows a `position: fixed` `<textarea>` over the cell:
 
-- Cell text is made `transparent` while editing (prevents text overlap)
+- The rendered cell text is hidden via the `cm-md-table-cell-editing` class
+- The textarea copies the cell's font, line-height and padding, so the glyphs
+  land where they were before the double-click (it lives in `document.body`,
+  where relative CSS units would resolve against the body font size instead)
 - Textarea is positioned using `getBoundingClientRect()` of the cell element
-- Auto-grows on every `input` event via `el.style.height = '0'; el.style.height = max(scrollHeight, rect.height) + 'px'`
+- Auto-grows on every `input` event, and the cell grows with it — see
+  "Cell Editing Expands the Cell, Not the Table" below
 - Cmd/Ctrl+Enter commits, Tab commits, Escape cancels, blur auto-commits after 50ms
 - Plain Enter inserts a newline (textarea default)
-- The original cell color is restored on cleanup via the `destroy()` helper
+- `destroy()` removes the class and the inline sizing it wrote on the cell
 
 Newlines and pipes roundtrip through encoding helpers in
 `table-encoding.ts`:
@@ -224,6 +228,28 @@ things are load-bearing in the fix and each one has a dead end behind it:
 The reserved strip is why a table at the very top of the document works: there
 is nothing to overflow into up there, so the widget owns the space instead of
 borrowing it.
+
+### Cell Editing Expands the Cell, Not the Table (#50)
+
+While a cell is being edited it grows to hold the overlay: `showCellEditor`
+writes `min-width` and `height` inline **on the active cell only**. The column
+widens and the row grows because `table-layout: auto` reacts to those two
+properties — no JS measures or syncs any other row, and no CM6 transaction is
+dispatched until the commit.
+
+Three details that are easy to get wrong:
+
+- **`height`, not `min-height`.** Chrome ignores `min-height` on
+  `display: table-cell` (CSS 2.1 leaves it undefined); `height` is treated as a
+  minimum. With `min-height` the cell stayed 32px under a 67px overlay.
+- **The width is computed once** (`cellEditWidth`, unit-tested). Recomputing it
+  on input would close the loop *cell width → field width → cell width*, which
+  is the per-keystroke table-geometry recalculation this is meant to avoid.
+  Only the height follows the text, and the overlay is repositioned from the
+  cell's fresh rect afterwards, since widening one column can reflow the others.
+- **The rendered text is hidden with `visibility` on the
+  `.cm-md-table-cell-editing` class**, not `color: transparent` on the cell:
+  `<code>` and `<a>` children set their own colour and used to show through.
 
 ### Visual Styles Live on Row and Wrap Elements, Not `.cm-line`
 

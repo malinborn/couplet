@@ -857,13 +857,19 @@
   opacity: 1;
 }
 
+/* Поле ввода ячейки. Переменных `--color-bg` / `--color-text` /
+ * `--color-accent` в темах нет — они молча резолвились в ничто, поле было
+ * ПРОЗРАЧНЫМ, и вводимый текст рисовался поверх строк под ним. Метрики
+ * (шрифт, padding) поле забирает у самой ячейки в `showCellEditor`, чтобы
+ * буквы стояли там же, где стояли до двойного клика. */
 .cm-md-table-editor {
   font-family: var(--font-code);
-  font-size: 0.9em;
   line-height: 1.6;
-  background: var(--color-bg);
-  color: var(--color-text);
-  border: 1px solid var(--color-accent);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  /* `--color-checkbox` — единственный акцент, заданный во всех четырёх темах
+   * (в light `--color-heading` почти чёрный и читается как жирная рамка). */
+  border: 1px solid var(--color-checkbox);
   border-radius: 3px;
   padding: 0.2em 0.8ch;
   margin: 0;
@@ -873,6 +879,13 @@
   overflow: hidden;
   box-sizing: border-box;
   white-space: pre-wrap;
+}
+
+/* Пока ячейка редактируется, её отрисованный текст скрыт целиком, вместе с
+ * `<code>` / `<a>` внутри: прежний `color: transparent` на ячейке до них не
+ * доставал — у них свой цвет, — и они просвечивали сквозь поле ввода. */
+.cm-md-table .cm-md-table-cell-editing > .cm-md-table-celltext {
+  visibility: hidden;
 }
 
 /* ===== Heading fold toggle (inline ::after, right of text) ===== */

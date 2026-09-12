@@ -6,6 +6,7 @@ import { Strikethrough, Table } from '@lezer/markdown';
 import { EditorView } from '@codemirror/view';
 import { headingSlugsField } from '../heading-slugs';
 import {
+  cellEditWidth,
   parseCellsWithPositions,
   parseInlineMarkdown,
   routeLinkClick,
@@ -638,5 +639,34 @@ describe('routeLinkClick', () => {
 
     expect(openExternal).toHaveBeenCalledExactlyOnceWith('https://x.test/page#section');
     expect(dispatch).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cellEditWidth (#50) — раскрытие ячейки на время ввода
+// ---------------------------------------------------------------------------
+
+describe('cellEditWidth', () => {
+  it('расширяет узкую колонку до комфортного минимума', () => {
+    expect(cellEditWidth(20, 900)).toBe(280);
+  });
+
+  it('не сужает ячейку, которая и так шире минимума', () => {
+    expect(cellEditWidth(520, 900)).toBe(520);
+  });
+
+  it('не вылезает за остаток строки справа', () => {
+    expect(cellEditWidth(40, 150)).toBe(150);
+  });
+
+  it('у правого края строки остаётся шириной с саму ячейку', () => {
+    // Места справа не осталось вовсе (или оно отрицательное) — раскрывать
+    // некуда, но и схлопывать ячейку нельзя.
+    expect(cellEditWidth(90, 0)).toBe(90);
+    expect(cellEditWidth(90, -40)).toBe(90);
+  });
+
+  it('уважает переданный минимум', () => {
+    expect(cellEditWidth(20, 900, 120)).toBe(120);
   });
 });
