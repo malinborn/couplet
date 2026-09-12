@@ -7,7 +7,12 @@
  * Nothing from Tauri or CodeMirror — this module is tested in isolation.
  */
 
-export type CommentStatus = 'open' | 'answered' | 'resolved';
+/**
+ * `paused` means a human is still typing in this thread: `mdmini watch` skips
+ * it, and the marker line carries the moment the pause runs out. See
+ * {@link isAwaiting} and `Status` in `src-tauri/src/comments.rs`.
+ */
+export type CommentStatus = 'open' | 'paused' | 'answered' | 'resolved';
 
 export interface CommentReply {
   author: string;
@@ -29,7 +34,52 @@ export interface CommentThread {
   prefix?: string;
   /** Document text immediately after the quote. See `prefix`. */
   suffix?: string;
+  /**
+   * Epoch **seconds** at which a `paused` thread stops being paused. Absent on
+   * every other status, and on threads written before pausing existed — see
+   * {@link isAwaiting} for what a missing deadline means.
+   */
+  until?: number;
   replies: CommentReply[];
+}
+
+/**
+ * Seconds of quiet after the last keystroke before a paused thread is handed
+ * to the agent.
+ *
+ * Mirrors `PAUSE_SECS` in `src-tauri/src/comments.rs`: Rust writes the
+ * deadline into the file, the card counts down to it, and the two must agree
+ * or the countdown would show a number the file does not honour.
+ */
+export const COMMENT_PAUSE_SECONDS = 20;
+
+/**
+ * Is this thread waiting for an agent?
+ *
+ * The same rule as `awaiting` in `src-tauri/src/comments.rs`, and it has to
+ * stay the same: this decides what the card says, that decides who gets woken,
+ * and a card claiming "waiting" over a thread no agent will be told about is
+ * worse than no card at all.
+ *
+ * An expired pause counts as waiting. md-mini can be closed — or killed — in
+ * the seconds before it would have committed the pause itself, and a thread
+ * nobody ever un-pauses is a comment that never arrives.
+ */
+export function isAwaiting(thread: CommentThread, nowSeconds: number): boolean {
+  if (thread.status === 'open') return true;
+  if (thread.status !== 'paused') return false;
+  return thread.until === undefined || nowSeconds >= thread.until;
+}
+
+/**
+ * What the card writes next to the box while a pause is running.
+ *
+ * Seconds, rounded up, so the label reaches "1s" before it disappears rather
+ * than sitting on "0s". Written straight into the DOM once a second — never
+ * through a rebuild, which would take the caret out of the box being typed in.
+ */
+export function countdownLabel(msLeft: number): string {
+  return `sending in ${Math.max(0, Math.ceil(msLeft / 1000))}s`;
 }
 
 const THREAD_MARKER = '<!-- mdmini:c ';
@@ -98,31 +148,37 @@ export function unescapeAttr(value: string): string {
   }
 }
 
+const STATUSES: readonly string[] = ['open', 'paused', 'answered', 'resolved'];
+
 function parseMarker(
   line: string
-): Pick<CommentThread, 'id' | 'status' | 'line' | 'prefix' | 'suffix'> | null {
+): Pick<CommentThread, 'id' | 'status' | 'line' | 'prefix' | 'suffix' | 'until'> | null {
   const inner = line.trim().slice(THREAD_MARKER.length).replace(/-->$/, '').trim();
   let id = '';
   let status: CommentStatus | '' = '';
   let lineNumber = 1;
   let prefix: string | undefined;
   let suffix: string | undefined;
+  let until: number | undefined;
   for (const pair of inner.split(/\s+/)) {
     const eq = pair.indexOf('=');
     if (eq < 0) continue;
     const key = pair.slice(0, eq);
     const value = pair.slice(eq + 1);
     if (key === 'id') id = value;
-    else if (key === 'status' && (value === 'open' || value === 'answered' || value === 'resolved')) {
-      status = value;
+    else if (key === 'status' && STATUSES.includes(value)) {
+      status = value as CommentStatus;
     } else if (key === 'line') {
       const parsed = Number.parseInt(value, 10);
       if (Number.isFinite(parsed)) lineNumber = parsed;
+    } else if (key === 'until') {
+      const parsed = Number.parseInt(value, 10);
+      if (Number.isFinite(parsed)) until = parsed;
     } else if (key === 'pre') prefix = unescapeAttr(value);
     else if (key === 'suf') suffix = unescapeAttr(value);
   }
   if (!id || !status) return null;
-  return { id, status, line: lineNumber, prefix, suffix };
+  return { id, status, line: lineNumber, prefix, suffix, until };
 }
 
 function parseReplyHeader(line: string): { author: string; at: string } | null {

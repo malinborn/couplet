@@ -4,11 +4,15 @@ import {
   anchorPosition,
   buildHandoffPrompt,
   buildWatchPrompt,
+  countdownLabel,
   documentDir,
   escapeAttr,
+  isAwaiting,
   parseComments,
   quotePreview,
   unescapeAttr,
+  COMMENT_PAUSE_SECONDS,
+  type CommentThread,
 } from './comment-format';
 
 const SAMPLE = `<!-- mdmini:comments v=1 doc=spec.md -->
@@ -343,5 +347,70 @@ describe('buildHandoffPrompt', () => {
     expect(prompt).toContain('/repo/spec.md');
     expect(prompt).toContain('c-7f3a2c');
     expect(prompt).toContain('mdmini answer');
+  });
+});
+
+// --- the pause while a human is typing (#36) ---
+
+function paused(overrides: Partial<CommentThread> = {}): CommentThread {
+  return {
+    id: 'c-7f3a2c',
+    status: 'paused',
+    line: 1,
+    quote: 'цитата',
+    replies: [],
+    ...overrides,
+  };
+}
+
+describe('parseComments with a paused thread', () => {
+  it('reads the status and the deadline off the marker', () => {
+    const [thread] = parseComments(
+      '<!-- mdmini:c id=c-1 status=paused line=4 until=1787580123 -->\n> q\n'
+    );
+    expect(thread.status).toBe('paused');
+    expect(thread.until).toBe(1787580123);
+  });
+
+  it('keeps reading a marker that has no deadline — older sidecars have none', () => {
+    const [thread] = parseComments('<!-- mdmini:c id=c-1 status=open line=4 -->\n> q\n');
+    expect(thread.status).toBe('open');
+    expect(thread.until).toBeUndefined();
+  });
+
+  it('skips a thread whose status it cannot read, as it always has', () => {
+    expect(parseComments('<!-- mdmini:c id=c-1 status=нечто line=1 -->\n> q\n')).toEqual([]);
+  });
+});
+
+describe('isAwaiting', () => {
+  it('holds a pause back until its deadline, then delivers it', () => {
+    const thread = paused({ until: 1000 });
+    expect(isAwaiting(thread, 999)).toBe(false);
+    expect(isAwaiting(thread, 1000)).toBe(true);
+  });
+
+  it('delivers a pause with no deadline rather than losing it forever', () => {
+    // Hand-written, or left by a version that recorded no deadline. Never
+    // waking an agent is the worse of the two failures.
+    expect(isAwaiting(paused(), 0)).toBe(true);
+  });
+
+  it('agrees with Rust on every other status', () => {
+    expect(isAwaiting(paused({ status: 'open' }), 0)).toBe(true);
+    expect(isAwaiting(paused({ status: 'answered' }), 0)).toBe(false);
+    expect(isAwaiting(paused({ status: 'resolved' }), 0)).toBe(false);
+  });
+});
+
+describe('countdownLabel', () => {
+  it('rounds up, so the label reaches 1s instead of sitting on 0s', () => {
+    expect(countdownLabel(COMMENT_PAUSE_SECONDS * 1000)).toBe('sending in 20s');
+    expect(countdownLabel(1)).toBe('sending in 1s');
+    expect(countdownLabel(4200)).toBe('sending in 5s');
+  });
+
+  it('never shows a negative number when a tick arrives late', () => {
+    expect(countdownLabel(-3000)).toBe('sending in 0s');
   });
 });

@@ -223,6 +223,7 @@ function addRow(term: TerminalDom, kind: RowKind): HTMLElement {
 const INERT_ACTIONS = {
   save: () => {},
   flush: () => {},
+  sendNow: () => {},
   resolve: () => {},
   handoff: () => {},
   insertIntoText: () => {},

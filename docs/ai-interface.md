@@ -167,8 +167,32 @@ Nginx on this host was broken, so…
   never silently disappears.
 - A reply is `**author** · timestamp` followed by its body, up to the next reply
   or the next thread.
-- Statuses are `open` / `answered` / `resolved`. Threads are never deleted;
-  `resolved` is history.
+- Statuses are `open` / `paused` / `answered` / `resolved`. Threads are never
+  deleted; `resolved` is history.
+- `paused` means **a human is typing in this thread right now**. The comment box
+  saves as you type, and every save used to set `open` — so `watch` woke an agent
+  on the first three words of a question. A paused thread carries a deadline,
+  `until=<epoch seconds>`, and counts as waiting only once that moment has
+  passed:
+
+  ```markdown
+  <!-- mdmini:c id=c-7f3a2c status=paused line=42 until=1787580123 -->
+  ```
+
+  Twenty seconds of quiet flips it to `open`; so does the card's "send now"
+  button, leaving md-mini, closing the window, or quitting. If none of that
+  happens — the app was killed — the deadline in the file is enough on its own:
+  `question` and `watch` read an expired pause as waiting. A `paused` thread with
+  no `until` at all also counts as waiting. The bias is deliberate: a comment
+  delivered late is a nuisance, a comment never delivered is a lie.
+- **Answering a paused thread is fine.** Nothing about `answer` changes: it finds
+  the thread by id, appends the reply and sets `answered`, deadline included.
+  What you will not do is *arrive* at one on your own — that is the point.
+- An **older `mdmini` binary** reading a `paused` thread cannot parse its status
+  and skips the thread, which for `question` and `watch` amounts to the same
+  behaviour as this version: no wake-up while someone is typing. It still
+  answers such a thread by id if you give it one, because the point-edits go by
+  id and not by parsed status.
 - md-mini only ever appends a thread, appends a reply, or rewrites one marker
   line. It never regenerates the file, because you may have edited it by hand.
 

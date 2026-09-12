@@ -72,18 +72,32 @@ export async function commentThreads(path: string): Promise<CommentThread[]> {
   return invoke<CommentThread[]>('comment_threads', { path });
 }
 
-/** Creates a thread anchored to `quote` and returns its new id. */
-export async function commentCreate(
+/** What creating a thread hands back: its id, and when its pause runs out. */
+export interface StartedComment {
+  id: string;
+  /** Epoch **seconds** at which the thread stops being `paused`. */
+  until: number;
+}
+
+/**
+ * Creates a thread anchored to `quote`, `paused` because the person is still
+ * typing it (#36).
+ *
+ * The pause is part of the creating write, not a second one after it: a thread
+ * that exists as `open` for even a moment is a thread `mdmini watch` can wake
+ * an agent on, with one word of a question in it.
+ */
+export async function commentStart(
   path: string,
   line: number,
   quote: string,
   text: string,
   context: { prefix?: string; suffix?: string } = {}
-): Promise<string> {
+): Promise<StartedComment> {
   // `prefix`/`suffix` are the document text on either side of the fragment.
   // They are what lets a repeated quote be told apart from its duplicates when
   // the thread is resolved again later — see `anchorPosition` (#20).
-  return invoke<string>('comment_create', {
+  return invoke<StartedComment>('comment_start', {
     path,
     line,
     quote,
@@ -111,9 +125,28 @@ export async function commentReply(path: string, id: string, text: string): Prom
  * in typing is not a separate comment; once an agent has answered, the next
  * write starts a new reply under the answer. This is the autosave behind the
  * always-editable comment area — there is no send action (#23).
+ *
+ * Returns the epoch second at which the thread's pause runs out, or `null` when
+ * there is no pause to wait for because the thread is already `open` — the
+ * point of no return, see `status_after_edit` in `src-tauri/src/comments.rs`.
  */
-export async function commentSetReply(path: string, id: string, text: string): Promise<void> {
-  return invoke('comment_set_reply', { path, id, text });
+export async function commentWriteReply(
+  path: string,
+  id: string,
+  text: string
+): Promise<number | null> {
+  return invoke<number | null>('comment_write_reply', { path, id, text });
+}
+
+/**
+ * Ends a thread's pause now: `paused` becomes `open` and the agent is woken.
+ *
+ * Resolves to `false` when there was nothing to end — an agent can answer the
+ * thread while its countdown is still running, and that answer must not be
+ * undone by a timer that fires a moment later.
+ */
+export async function commentCommit(path: string, id: string): Promise<boolean> {
+  return invoke<boolean>('comment_commit', { path, id });
 }
 
 /** Marks a thread `resolved`. It stays in the file as history, never deleted. */

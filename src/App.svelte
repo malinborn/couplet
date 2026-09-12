@@ -3,7 +3,7 @@
   import Editor from './lib/editor/Editor.svelte';
   import type { EditorHandle } from './lib/editor/Editor.svelte';
   import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createFileState, createRecentFilesStore } from './lib/stores.svelte';
-  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncBetaInCycleMenu, commentThreads, commentCreate, commentResolve, commentSetReply, type PendingOpen } from './lib/tauri/commands';
+  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncBetaInCycleMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type PendingOpen } from './lib/tauri/commands';
   import {
     onMenuEvent,
     onOpenFile,
@@ -53,6 +53,7 @@
     aiCommentField,
     clearAiComments,
     CommentWidget,
+    COMMENT_IDLE,
     type CommentActions,
   } from './lib/editor/ai-comment';
   import {
@@ -60,8 +61,10 @@
     anchorPosition,
     buildHandoffPrompt,
     buildWatchPrompt,
+    countdownLabel,
     splitThread,
     type AnchorContext,
+    type CommentThread,
   } from './lib/comment-format';
   import { buildBindPrompt } from './lib/ai-bind';
   import { applyJsonOffer, formatJsonCommand } from './lib/editor/json-paste';
@@ -418,6 +421,156 @@
   /** What the file currently says is in each thread's box. */
   let commentEditable = new Map<string, string>();
 
+  /**
+   * Threads whose pause is still running, and when each one ends (ms epoch).
+   *
+   * The deadline is the app's copy of what is already written on the thread's
+   * marker line, so a card can count down to the same moment the file will be
+   * judged against. Losing the map — a reload, a reopened document — loses
+   * nothing that matters: `syncCommentCountdowns` rebuilds it from the file,
+   * and the file alone is what decides whether an agent is woken.
+   */
+  let commentCountdowns = new Map<string, { path: string; deadline: number }>();
+
+  /** One ticker for every card, started on demand. */
+  let commentTicker: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * Paint the seconds left into the cards, and fire the ones that have run out.
+   *
+   * Writing `textContent` into an existing span is the whole mechanism, and
+   * that is deliberate: a countdown kept in CM6 state would rebuild the widget
+   * once a second, and a rebuilt widget is a new textarea — the caret jumps to
+   * the end and an IME composition in progress is destroyed. Same rule as the
+   * per-frame transaction ban in CLAUDE.md, for the same reason.
+   */
+  function tickCommentCountdowns(): void {
+    const view = editorHandle?.view;
+    const now = Date.now();
+    for (const [id, entry] of [...commentCountdowns]) {
+      if (now >= entry.deadline) {
+        void fireCommentCountdown(id);
+        continue;
+      }
+      const label = view?.dom.querySelector(
+        `[data-comment-countdown="${CSS.escape(id)}"]`
+      );
+      if (label) {
+        label.textContent = countdownLabel(entry.deadline - now);
+        label.classList.remove(COMMENT_IDLE);
+      }
+      const button = view?.dom.querySelector(`[data-comment-send-now="${CSS.escape(id)}"]`);
+      button?.classList.remove(COMMENT_IDLE);
+    }
+    if (!commentCountdowns.size && commentTicker !== null) {
+      clearInterval(commentTicker);
+      commentTicker = null;
+    }
+  }
+
+  /** Start (or restart) a thread's countdown, ending at `deadline` ms epoch. */
+  function armCommentCountdown(id: string, path: string, deadline: number): void {
+    commentCountdowns.set(id, { path, deadline });
+    if (commentTicker === null) commentTicker = setInterval(tickCommentCountdowns, 1000);
+    // Paint at once rather than waiting a second: the label must appear with
+    // the first keystroke, or the pause is invisible for the moment that
+    // matters most — when someone is wondering whether the agent already saw
+    // their half-written sentence.
+    tickCommentCountdowns();
+  }
+
+  /** Stop a thread's countdown and put its card back to the idle look. */
+  function disarmCommentCountdown(id: string): void {
+    commentCountdowns.delete(id);
+    const view = editorHandle?.view;
+    const label = view?.dom.querySelector(`[data-comment-countdown="${CSS.escape(id)}"]`);
+    if (label) {
+      label.textContent = '';
+      label.classList.add(COMMENT_IDLE);
+    }
+    view?.dom
+      .querySelector(`[data-comment-send-now="${CSS.escape(id)}"]`)
+      ?.classList.add(COMMENT_IDLE);
+    if (!commentCountdowns.size && commentTicker !== null) {
+      clearInterval(commentTicker);
+      commentTicker = null;
+    }
+  }
+
+  /**
+   * Hand a thread to the agent now: write what is in the box, then end the
+   * pause.
+   *
+   * The order is the point. Committing first would open the thread with the
+   * text as of the last autosave — up to `COMMENT_AUTOSAVE_MS` behind what is
+   * on screen — and `mdmini watch` would wake an agent on a sentence that is
+   * already stale.
+   */
+  async function fireCommentCountdown(id: string): Promise<void> {
+    const entry = commentCountdowns.get(id);
+    if (!entry) return;
+    disarmCommentCountdown(id);
+    // A draft becomes a real thread on its first write, under an id the file
+    // gives it — the commit has to follow it there.
+    const written = (await writeComment(id)) ?? id;
+    try {
+      await commentCommit(entry.path, written);
+    } catch (err) {
+      console.error('Comment commit failed:', err);
+      return;
+    }
+    await reloadComments();
+  }
+
+  /**
+   * End every running pause immediately.
+   *
+   * Called when the window loses focus — which, for a comment, usually means
+   * the person has gone to the agent they are writing to, and every second of
+   * countdown after that is a second of waiting for nothing. It is also the
+   * cheapest insurance against the countdown dying with the app: the window
+   * that is about to be closed or quit is almost always one that lost focus
+   * first. The paths where it is not are covered in Rust — `CloseRequested`
+   * and `save_session_on_exit` in `src-tauri/src/lib.rs` — and, failing even
+   * those, by the deadline written on the marker line itself.
+   */
+  function commitAllCommentPauses(): void {
+    for (const id of [...commentCountdowns.keys()]) void fireCommentCountdown(id);
+  }
+
+  /**
+   * Bring the countdowns in line with what the file says.
+   *
+   * Runs after every rebuild of the cards. Three cases, and the third is the
+   * one that matters: a thread that is `paused` with a deadline already behind
+   * it was left that way by an md-mini that did not survive to commit it, and
+   * committing it here is how the app heals the file it just opened. The same
+   * state also reaches agents on its own — `awaiting` in `comments.rs` reads an
+   * expired pause as waiting — this only makes it prompt.
+   */
+  function syncCommentCountdowns(threads: CommentThread[]): void {
+    const path = fileState.filePath;
+    if (!path) return;
+    for (const thread of threads) {
+      if (thread.status !== 'paused') {
+        if (commentCountdowns.has(thread.id)) disarmCommentCountdown(thread.id);
+        continue;
+      }
+      const deadline = (thread.until ?? 0) * 1000;
+      if (deadline <= Date.now()) {
+        // Nothing is being typed into it right now, so there is nothing to
+        // wait for: hand it over.
+        armCommentCountdown(thread.id, path, 0);
+        continue;
+      }
+      const known = commentCountdowns.get(thread.id);
+      // A live countdown wins over the file's: the app's own deadline is the
+      // one the user's last keystroke set, and the file may be a write behind.
+      if (!known || known.deadline < deadline) armCommentCountdown(thread.id, path, deadline);
+      else armCommentCountdown(thread.id, path, known.deadline);
+    }
+  }
+
   /** Thread whose box should take the caret on the next rebuild, and where. */
   let commentFocus: { id: string; at: number } | null = null;
 
@@ -445,11 +598,17 @@
     }, 2500);
   }
 
-  /** Write a thread's pending text now. Creating the thread if this is its
-   * first text — that is what turns a draft card into a real one. */
-  async function writeComment(id: string): Promise<void> {
+  /**
+   * Write a thread's pending text now. Creating the thread if this is its
+   * first text — that is what turns a draft card into a real one.
+   *
+   * Returns the id the text ended up under, so a caller that has more to do
+   * with this thread — the pause commit — can follow a draft to the real id
+   * the file just gave it. `null` when nothing was written.
+   */
+  async function writeComment(id: string): Promise<string | null> {
     const entry = commentPending.get(id);
-    if (!entry) return;
+    if (!entry) return null;
     if (entry.timer !== null) {
       clearTimeout(entry.timer);
       entry.timer = null;
@@ -458,14 +617,26 @@
     // An empty box writes nothing. Clearing it is not how a comment is
     // deleted — resolve is — and an empty thread would reach an agent as an
     // empty question.
-    if (!text.trim() || text === entry.saved) return;
+    if (!text.trim() || text === entry.saved) return null;
 
     const draft = commentDrafts.get(id);
     if (draft) {
       commentDrafts.delete(id);
       const caret = focusedCommentBox();
       try {
-        const realId = await commentCreate(entry.path, draft.line, draft.quote, text, draft.context);
+        const started = await commentStart(
+          entry.path,
+          draft.line,
+          draft.quote,
+          text,
+          draft.context
+        );
+        const realId = started.id;
+        // The countdown was started under the draft's id by the keystroke that
+        // created this thread; move it, with the deadline the file actually
+        // recorded rather than the one this side guessed.
+        disarmCommentCountdown(id);
+        armCommentCountdown(realId, entry.path, started.until * 1000);
         commentPending.delete(id);
         commentPending.set(realId, { path: entry.path, text, saved: text, timer: null });
         commentEditable.set(realId, text);
@@ -480,22 +651,30 @@
         await invoke('register_open_file', { path: entry.path }).catch(() => {});
         await reloadComments();
         markCommentSaved(realId);
+        return realId;
       } catch (err) {
         // Put the draft back, or the card would keep collecting text that has
         // nowhere to go.
         commentDrafts.set(id, draft);
         console.error('Comment create failed:', err);
+        return null;
       }
-      return;
     }
 
     try {
-      await commentSetReply(entry.path, id, text);
+      // The status the write implies comes back with it: a deadline while the
+      // thread is still being held back, `null` once it has been handed over
+      // and cannot be taken back.
+      const until = await commentWriteReply(entry.path, id, text);
       entry.saved = text;
       commentEditable.set(id, text);
+      if (until === null) disarmCommentCountdown(id);
+      else armCommentCountdown(id, entry.path, until * 1000);
       markCommentSaved(id);
+      return id;
     } catch (err) {
       console.error('Comment save failed:', err);
+      return null;
     }
   }
 
@@ -556,7 +735,10 @@
       const { pos, to, orphaned } = anchorPosition(doc, draft.quote, draft.line, draft.context);
       effects.push(
         addAiComment.of({
-          thread: { id, status: 'open', line: draft.line, quote: draft.quote, replies: [] },
+          // `paused`, not `open`: a draft is a comment being typed, which is
+          // exactly what the pause means. Saying `open` on the card would
+          // promise a wake-up that the first write is about to hold back.
+          thread: { id, status: 'paused', line: draft.line, quote: draft.quote, replies: [] },
           pos,
           to,
           orphaned,
@@ -567,6 +749,9 @@
       );
     }
     view.dispatch({ effects });
+    // After the dispatch: the cards were just replaced, so the countdown spans
+    // in them are the new, empty ones.
+    syncCommentCountdowns(threads);
   }
 
   /**
@@ -623,10 +808,18 @@
     flush: (id) => {
       void writeComment(id);
     },
+    sendNow: (id) => {
+      // Deliberately not "flush, then let the timer do its thing": the button
+      // says now, and what it does is exactly what the countdown would have
+      // done when it ran out.
+      void fireCommentCountdown(id);
+    },
     resolve: (id) => {
       const path = fileState.filePath;
       if (!path) return;
       forgetCommentPending(id);
+      // A pause on a resolved thread has nothing left to hand over.
+      disarmCommentCountdown(id);
       if (commentDrafts.delete(id)) {
         // Nothing was ever written; just drop the card.
         void reloadComments();
@@ -766,8 +959,10 @@
     view.dispatch({
       effects: addAiComment.of({
         thread: {
+          // See the draft branch of `reloadComments`: a card being written is
+          // paused, and says so.
           id,
-          status: 'open',
+          status: 'paused',
           line: line.number,
           quote,
           prefix: context.prefix,
@@ -1016,6 +1211,18 @@
     if (fileState.isDirty && fileState.filePath) {
       performSave();
     }
+    // Leaving md-mini ends every running comment pause on the spot.
+    //
+    // Two reasons, and the second is the load-bearing one. Someone who switches
+    // away from a comment they were writing has almost always switched to the
+    // agent they were writing it for, and sitting out the rest of the countdown
+    // there helps nobody. And a window about to be closed or quit is usually
+    // one that lost focus first — so this is the earliest of the several places
+    // that keep a thread from staying `paused` with nobody left to un-pause it.
+    // The later ones are in Rust (`CloseRequested`, `save_session_on_exit`),
+    // and the last one is the deadline on the marker line, which needs no
+    // process at all.
+    commitAllCommentPauses();
   }
 
   onMount(() => {

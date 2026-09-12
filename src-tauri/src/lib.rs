@@ -8,6 +8,7 @@
 compile_error!("mcp-bridge must never be enabled in a release build");
 
 pub mod ai_socket;
+pub mod comment_pause;
 pub mod comments;
 mod commands;
 pub mod mcp_server;
@@ -80,10 +81,11 @@ pub fn run() {
             commands::file_exists,
             commands::get_pending_file,
             commands::comment_threads,
-            commands::comment_create,
             commands::comment_reply,
-            commands::comment_set_reply,
             commands::comment_resolve,
+            comment_pause::comment_start,
+            comment_pause::comment_write_reply,
+            comment_pause::comment_commit,
             window::open_file_window_cmd,
             window::register_open_file,
             recovery::save_recovery,
@@ -289,7 +291,17 @@ pub fn run() {
         .on_window_event(|window, event| {
             match event {
                 tauri::WindowEvent::CloseRequested { .. } => {
-                    // Allow close — the frontend auto-saves, so no need to prompt
+                    // Allow close — the frontend auto-saves, so no need to prompt.
+                    //
+                    // A comment paused a second ago is a different matter: its
+                    // countdown is about to stop existing along with this
+                    // window, and a thread left `paused` is one no agent ever
+                    // comes to. So the pause is ended here, while the window
+                    // still knows which document it was showing.
+                    let app = window.app_handle();
+                    if let Some(doc) = comment_pause::document_of_window(app, window.label()) {
+                        comment_pause::commit_document(&doc);
+                    }
                 }
                 tauri::WindowEvent::Destroyed => {
                     let app = window.app_handle();
@@ -399,6 +411,11 @@ fn save_session_on_exit(app: &tauri::AppHandle) {
     // clean up the command socket file here rather than duplicating it at each
     // `RunEvent` match arm.
     ai_socket::remove_socket(app);
+    // Same reason as in `CloseRequested`, for the path where no window is ever
+    // asked to close: Cmd+Q and the AppleEvent quit reach us through
+    // `RunEvent::Exit` alone. A comment paused seconds before a quit has to be
+    // handed over on the way out, or nothing is left to hand it over.
+    comment_pause::commit_all_open(app);
     let snapshot = state.snapshot(session::now_secs());
     state.mark_quitting();
     // A quit records the session, it never erases it. An empty snapshot here

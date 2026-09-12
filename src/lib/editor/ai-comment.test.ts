@@ -25,6 +25,7 @@ function makeActions(overrides: Partial<CommentActions> = {}): CommentActions {
   return {
     save: vi.fn(),
     flush: vi.fn(),
+    sendNow: vi.fn(),
     resolve: vi.fn(),
     handoff: vi.fn(),
     insertIntoText: vi.fn(),
@@ -196,6 +197,37 @@ describe('CommentWidget.eq', () => {
       orphaned: false,
       actions,
     });
+    expect(a.eq(b)).toBe(false);
+  });
+
+  it('ignores a moving pause deadline — the countdown must not rebuild the card (#36)', () => {
+    // Every keystroke pushes `until` forward in the file, and every autosave
+    // reads the thread back. If the deadline counted towards equality, typing
+    // would replace the textarea about once a second: caret to the end of the
+    // box, IME composition destroyed. The countdown is written into the DOM
+    // instead, precisely so this stays true.
+    const actions = makeActions();
+    const a = new CommentWidget({
+      thread: thread({ status: 'paused', until: 1_787_580_100 }),
+      orphaned: false,
+      actions,
+    });
+    const b = new CommentWidget({
+      thread: thread({ status: 'paused', until: 1_787_580_117 }),
+      orphaned: false,
+      actions,
+    });
+    expect(a.eq(b)).toBe(true);
+  });
+
+  it('differs when the pause ends, so the card stops offering to send', () => {
+    const actions = makeActions();
+    const a = new CommentWidget({
+      thread: thread({ status: 'paused', until: 1_787_580_100 }),
+      orphaned: false,
+      actions,
+    });
+    const b = new CommentWidget({ thread: thread({ status: 'open' }), orphaned: false, actions });
     expect(a.eq(b)).toBe(false);
   });
 
@@ -445,6 +477,42 @@ describe('CommentWidget.toDOM action buttons', () => {
       (el) => el.textContent === 'insert into text'
     );
     expect(insertButtons).toHaveLength(0);
+  });
+
+  it('renders a send-now button and a countdown on every card, both idle until a pause runs (#36)', () => {
+    vi.stubGlobal('document', { createElement: createFakeElement });
+    const widget = new CommentWidget({ thread: thread(), orphaned: false, actions: makeActions() });
+
+    const dom = widget.toDOM() as unknown as FakeElement;
+    const [sendNow] = findByClass(dom, 'cm-ai-comment-send-now');
+    const [countdown] = findByClass(dom, 'cm-ai-comment-countdown');
+
+    // Rendered unconditionally and hidden by a class, because showing them is
+    // the app toggling that class — never a rebuild. A rebuild would replace
+    // the textarea being typed into, which is the whole trap this avoids.
+    expect(sendNow.className.split(' ')).toContain('cm-ai-comment-idle');
+    expect(countdown.className.split(' ')).toContain('cm-ai-comment-idle');
+    expect(countdown.textContent).toBe('');
+    expect(sendNow.attributes['data-comment-send-now']).toBe('c-7f3a2c');
+    expect(countdown.attributes['data-comment-countdown']).toBe('c-7f3a2c');
+  });
+
+  it('clicking send now asks for the pause to end, not just for a write', () => {
+    vi.stubGlobal('document', { createElement: createFakeElement });
+    const actions = makeActions();
+    const widget = new CommentWidget({
+      thread: thread({ id: 'c-aaaaaa', status: 'paused' }),
+      orphaned: false,
+      actions,
+    });
+
+    const dom = widget.toDOM() as unknown as FakeElement;
+    fire(findByClass(dom, 'cm-ai-comment-send-now')[0], 'click');
+
+    expect(actions.sendNow).toHaveBeenCalledWith('c-aaaaaa');
+    // `flush` alone would write the text and leave the thread paused — the
+    // agent would still not be woken, which is the opposite of "send now".
+    expect(actions.flush).not.toHaveBeenCalled();
   });
 
   it('action buttons call preventDefault on mousedown, so the editor selection never moves', () => {

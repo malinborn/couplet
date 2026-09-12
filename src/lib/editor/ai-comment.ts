@@ -27,6 +27,13 @@ export interface CommentActions {
   /** Write whatever is pending for this thread now, without waiting for the
    * debounce. Fired on blur and when the widget's DOM goes away. */
   flush: (id: string) => void;
+  /**
+   * End the pause now instead of waiting out the countdown: write what is in
+   * the box and hand the thread to the agent. The button behind it exists
+   * because the twenty seconds are for the person who is still writing, and
+   * someone who has finished should not have to sit through them (#36).
+   */
+  sendNow: (id: string) => void;
   resolve: (id: string) => void;
   handoff: (id: string) => void;
   insertIntoText: (id: string, text: string) => void;
@@ -102,9 +109,18 @@ export const clearAiComments = StateEffect.define<null>();
 
 const STATUS_LABEL: Record<CommentThread['status'], string> = {
   open: 'waiting for agent',
+  // Says the true thing even when the countdown next to it is not running —
+  // after a reload, or once the card has been rebuilt for another reason.
+  paused: 'not sent yet',
   answered: 'answered',
   resolved: 'resolved',
 };
+
+/**
+ * Class on the countdown label and the "send now" button while there is no
+ * pause running. The app toggles it; the widget never rebuilds for it.
+ */
+export const COMMENT_IDLE = 'cm-ai-comment-idle';
 
 export class CommentWidget extends WidgetType {
   constructor(readonly spec: CommentSpec) {
@@ -263,7 +279,7 @@ export class CommentWidget extends WidgetType {
     row.className = 'cm-ai-comment-actions';
 
     const button = (label: string, onClick: () => void, confirmLabel?: string) => {
-      const element = document.createElement('button');
+      const element: HTMLButtonElement = document.createElement('button');
       element.type = 'button';
       element.className = 'cm-ai-comment-button';
       element.textContent = label;
@@ -289,7 +305,19 @@ export class CommentWidget extends WidgetType {
         }, 5000);
       });
       row.appendChild(element);
+      return element;
     };
+
+    // "send now" and the countdown below are rendered for every card and
+    // hidden until a pause is actually running — the app shows them by
+    // toggling a class, never by rebuilding the widget. A rebuild is what
+    // replaces the textarea, and replacing a textarea once a second (which is
+    // what a countdown held in state would do) drops the caret and kills IME
+    // composition mid-word.
+    const sendNow = button('send now', () => actions.sendNow(thread.id));
+    sendNow.className = `cm-ai-comment-button cm-ai-comment-send-now ${COMMENT_IDLE}`;
+    sendNow.setAttribute('data-comment-send-now', thread.id);
+    sendNow.title = 'Hand this comment to the agent now, without waiting out the pause';
 
     button(
       'send to agent',
@@ -308,6 +336,14 @@ export class CommentWidget extends WidgetType {
     if (thread.status !== 'resolved') {
       button('resolve', () => actions.resolve(thread.id));
     }
+
+    // How long is left before this thread is handed over. Written into by the
+    // app once a second — see the note on `sendNow` above for why it is a bare
+    // span and not part of the widget's state.
+    const countdown = document.createElement('span');
+    countdown.className = `cm-ai-comment-countdown ${COMMENT_IDLE}`;
+    countdown.setAttribute('data-comment-countdown', thread.id);
+    row.appendChild(countdown);
 
     // Autosave is invisible, and invisible saving is exactly what people did
     // not believe was happening. The app writes "saved" in here.

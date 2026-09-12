@@ -1838,6 +1838,30 @@
   background: var(--ai-ask-accent);
 }
 
+/* Отсчёт до момента, когда комментарий уйдёт агенту. Живёт рядом с подписью
+ * «saved» и в том же тоне: это не действие, а сообщение о том, что сейчас
+ * произойдёт. Текст в него пишет приложение раз в секунду — виджет ради
+ * отсчёта не перестраивается, иначе каретка выпрыгивала бы из поля ввода. */
+.cm-ai-comment-countdown {
+  margin-left: auto;
+  align-self: center;
+  opacity: 0.7;
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Подпись «saved» и отсчёт делят правый край. Когда есть оба, отступ вправо
+ * задаёт отсчёт, а «saved» встаёт сразу за ним. */
+.cm-ai-comment-countdown:not(.cm-ai-comment-idle) ~ .cm-ai-comment-saved {
+  margin-left: 0.5rem;
+}
+
+/* Пауза не идёт — ни отсчёта, ни кнопки «отправить сейчас». Скрываем классом,
+ * а не пересборкой карточки. */
+.cm-ai-comment-idle {
+  display: none;
+}
+
 /* The fragment a thread is anchored to. The card alone states its quote but
  * leaves the reader hunting for the words in the text — this is what makes a
  * comment feel attached to something. An underline plus a faint wash rather
