@@ -24,7 +24,9 @@ import { chromium, type Browser, type ConsoleMessage, type Page } from 'playwrig
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
-const BASE_URL = 'http://localhost:8901';
+// Overridable so two agents can each serve their own build without fighting
+// over one port — see site/CLAUDE.md on the shared Playwright browser.
+const BASE_URL = process.env.LANDING_BASE_URL ?? 'http://localhost:8901';
 const SCREENSHOT_DIR = path.join(process.env.CLAUDE_JOB_DIR ?? process.cwd(), 'tmp');
 
 const SLIDE_HEADINGS = [
@@ -38,11 +40,59 @@ const SLIDE_HEADINGS = [
   'And it&rsquo;s basically just a good markdown editor.',
 ] as const;
 
+/**
+ * Copy that has to be in the *served* HTML, not painted in by a module. These
+ * are the sentences 1.2.0 added or rewrote; the page's whole SEO story is that
+ * every one of them ships in the markup (site/CLAUDE.md), and a demo module
+ * quietly becoming the source of a headline is exactly the regression that is
+ * invisible in a browser.
+ */
+const SERVED_COPY = [
+  // hero tagline — the page now claims a human and an agent share a document
+  'Where you and your agent edit the same',
+  // the AI cycle, above the carousel
+  'The loop closes inside the file.',
+  'You ask, in the text',
+  'Your agent answers in place',
+  'You write back',
+  'mdmini ships no AI of its own.',
+  // the live-render block
+  'The markers go away. Your markup doesn&rsquo;t.',
+  'Real editor &mdash; click in and type',
+  'Type the asterisks, keep the asterisks',
+  'The caret says which format you&rsquo;re in',
+  'Typing continues the format',
+  // the two feature cards 1.2.0 rewrote / added
+  'Editable Tables',
+  'Saves That Don&rsquo;t Damage Files',
+] as const;
+
 const CHANGELOG_VERSIONS = [
-  'v1.1.0', 'v1.0.1', 'v1.0.0', 'v0.5.1', 'v0.5.0', 'v0.4.0', 'v0.3.5', 'v0.3.4', 'v0.3.3', 'v0.3.2',
+  'v1.2.0', 'v1.1.0', 'v1.0.1', 'v1.0.0', 'v0.5.1', 'v0.5.0', 'v0.4.0', 'v0.3.5', 'v0.3.4', 'v0.3.3', 'v0.3.2',
   'v0.3.1', 'v0.3.0', 'v0.2.2', 'v0.2.1', 'v0.2.0', 'v0.1.6', 'v0.1.5',
   'v0.1.4', 'v0.1.3', 'v0.1.0',
 ] as const;
+
+/**
+ * How CM6 hangs its `EditorView` off the `.cm-content` element. It is the only
+ * handle into a mounted editor from outside the bundle (see the root
+ * CLAUDE.md), and the live-render check needs it to read the *document* rather
+ * than the pixels. Declared as an interface extending `Element` so the
+ * `querySelector` result narrows with a plain downcast instead of the
+ * `as unknown as` double-cast a structural literal would require.
+ */
+interface CmContentElement extends Element {
+  cmTile: {
+    root: {
+      view: {
+        dom: HTMLElement;
+        state: { doc: { toString(): string } };
+        focus(): void;
+        dispatch(spec: unknown): void;
+      };
+    };
+  };
+}
 
 let failureCount = 0;
 
@@ -63,12 +113,29 @@ async function checkRawHtmlNoJs(): Promise<void> {
     report(`slide heading present: "${heading}"`, html.includes(heading));
   }
 
+  const missingCopy = SERVED_COPY.filter((line) => !html.includes(line));
+  report(
+    `all ${SERVED_COPY.length} headline sentences present in the markup`,
+    missingCopy.length === 0,
+    missingCopy.join(' | ')
+  );
+
   const missingVersions = CHANGELOG_VERSIONS.filter((v) => !html.includes(v));
   report(
     `all ${CHANGELOG_VERSIONS.length} changelog versions present`,
     missingVersions.length === 0,
     missingVersions.join(', ')
   );
+
+  report(
+    'JSON-LD softwareVersion matches the newest changelog entry',
+    html.includes(`"softwareVersion": "${CHANGELOG_VERSIONS[0].slice(1)}"`),
+    `expected ${CHANGELOG_VERSIONS[0].slice(1)}`
+  );
+
+  // The newest entry is the only one that should be expanded.
+  const openEntries = html.match(/<details class="changelog-entry" open>/g) ?? [];
+  report('exactly one changelog entry is open', openEntries.length === 1, `found ${openEntries.length}`);
 }
 
 async function gotoSlide(page: Page, index: number): Promise<void> {
@@ -273,6 +340,157 @@ async function checkShowcaseRibbon(page: Page): Promise<void> {
   }
 }
 
+/**
+ * The live-render block, and the only check on this page that types.
+ *
+ * Every other demo is a scripted exhibit, so "it rendered" is the whole
+ * assertion available. This card hands the visitor a real editor, and the
+ * claim it makes — the asterisks leave the screen and stay in the file, the
+ * caret reports the format, Backspace repairs rather than tears — is a claim
+ * about what happens to the *document* when keys are pressed. So this reads
+ * `view.state.doc` back after typing, rather than looking at pixels.
+ *
+ * `.cmTile.root.view` is how CM6 hangs the view off `.cm-content` (see the
+ * root CLAUDE.md); it is the only handle available from outside the bundle.
+ */
+async function checkLiveRenderDemo(page: Page): Promise<void> {
+  console.log('\nCheck 10 — the live-render block is a real, typeable editor');
+
+  const content = '.demo--live .cm-content';
+  await page.locator('#live-render').scrollIntoViewIfNeeded();
+  try {
+    await page.waitForSelector(content, { timeout: 10000 });
+  } catch {
+    report('live-render editor mounted', false, `${content} not found within 10s`);
+    return;
+  }
+  report('live-render editor mounted', true);
+
+  const readDoc = (): Promise<string> =>
+    page.evaluate(
+      (sel) =>
+        (document.querySelector(sel) as CmContentElement).cmTile.root.view.state.doc.toString(),
+      content
+    );
+  const setCaret = (pos: number): Promise<void> =>
+    page.evaluate(
+      ([sel, at]: [string, number]) => {
+        const view = (document.querySelector(sel) as CmContentElement).cmTile.root.view;
+        view.focus();
+        view.dispatch({ selection: { anchor: at } });
+      },
+      [content, pos] as [string, number]
+    );
+  const formatClasses = (): Promise<string[]> =>
+    page.evaluate((sel) => {
+      const view = (document.querySelector(sel) as CmContentElement).cmTile.root.view;
+      return Array.from(view.dom.classList).filter((c) => c.startsWith('cm-fmt-'));
+    }, content);
+
+  report(
+    'it is editable, unlike every other demo on the page',
+    (await page.getAttribute(content, 'contenteditable')) === 'true'
+  );
+
+  const before = await readDoc();
+  report('the markers are in the source', /\*\*gradual\*\*/.test(before) && /~~definitely~~/.test(before));
+  const painted = await page.locator(content).innerText();
+  report(
+    'and not on the screen',
+    !painted.includes('**') && !painted.includes('~~') && !painted.includes('`'),
+    JSON.stringify(painted.slice(0, 80))
+  );
+
+  // 1. Typing. The asterisks the visitor types must reach the file and leave
+  //    the screen — that is the entire pitch of the mode in one keystroke run.
+  await page.click(content, { position: { x: 200, y: 240 } });
+  await setCaret(before.length - 2);
+  await page.keyboard.type('Typed **live** here.');
+  await page.waitForTimeout(300);
+  const typed = await readDoc();
+  report('typed text reaches the document with its markers', typed.includes('Typed **live** here.'));
+  const paintedAfter = await page.locator(content).innerText();
+  report(
+    'the asterisks the visitor typed are not on screen',
+    paintedAfter.includes('Typed live here.') && !paintedAfter.includes('**live**')
+  );
+
+  // 2. Deletion at a span edge. Backspace with the caret just past a hidden
+  //    closing `**` must eat the last *visible* character and put the marker
+  //    back — the 1.1 behaviour tore the pair and leaked `**` into the file.
+  const spanAt = typed.indexOf('**gradual**');
+  await setCaret(spanAt + '**gradual**'.length);
+  await page.keyboard.press('Backspace');
+  await page.waitForTimeout(250);
+  const repaired = await readDoc();
+  report(
+    'Backspace at a span edge deletes a visible character, not a marker',
+    repaired.includes('**gradua**') && !repaired.includes('**gradual*,'),
+    JSON.stringify(repaired.slice(spanAt - 4, spanAt + 14))
+  );
+
+  // 3. The caret's shape is driven by a class on the editor root, so checking
+  //    the class checks the same thing the CSS keys off.
+  const positions: ReadonlyArray<[string, string, number]> = [
+    ['cm-fmt-strong', '**gradua**', 4],
+    ['cm-fmt-emphasis', '*instant*', 4],
+    ['cm-fmt-strikethrough', '~~definitely~~', 5],
+    ['cm-fmt-code', '`metrics.dashboard`', 4],
+  ];
+  for (const [expected, needle, offset] of positions) {
+    await setCaret(repaired.indexOf(needle) + offset);
+    await page.waitForTimeout(150);
+    const classes = await formatClasses();
+    report(`caret reports ${expected.replace('cm-fmt-', '')}`, classes.includes(expected), classes.join(' '));
+  }
+
+  // 4. The affordance has to go once it has been obeyed, and the escape hatch
+  //    has to exist — a visitor who mangles the document needs a way back.
+  report(
+    'the "click in and type" hint retires after first focus',
+    (await page.getAttribute('.demo--live [data-lr-hint]', 'class'))?.includes('is-dismissed') === true
+  );
+  await page.click('.demo--live [data-lr-reset]');
+  await page.waitForTimeout(250);
+  const reset = await readDoc();
+  report('reset restores the document', reset.includes('Your turn') && !reset.includes('Typed'));
+
+  // 5. An editable card is a new way for CM6 to reach for a scrollable
+  //    ancestor. If it ever finds <body>, the page jumps under the reader —
+  //    the exact failure landing.css's `.cm-editor` height comment describes.
+  const scrollBefore = await page.evaluate(() => window.scrollY);
+  await setCaret(0);
+  await page.waitForTimeout(300);
+  const scrollAfter = await page.evaluate(() => window.scrollY);
+  report(
+    'moving the caret does not scroll the page',
+    scrollBefore === scrollAfter,
+    `${scrollBefore} -> ${scrollAfter}`
+  );
+
+  // 6. All four editor themes, on the card the block claims them for.
+  for (const theme of ['dark', 'light', 'aurora-dark', 'aurora-light'] as const) {
+    await page.click(`.demo--live [data-lr-theme="${theme}"]`);
+    await page.waitForTimeout(150);
+    const state = await page.evaluate(() => {
+      const card = document.querySelector('.demo--live') as HTMLElement;
+      const text = getComputedStyle(card.querySelector('.cm-content') as HTMLElement).color;
+      return {
+        demo: card.getAttribute('data-demo-theme'),
+        theme: card.getAttribute('data-theme'),
+        bg: getComputedStyle(card).backgroundColor,
+        text,
+      };
+    });
+    report(
+      `theme chip "${theme}" retints the card`,
+      state.demo === theme && state.theme === theme && state.bg !== state.text,
+      JSON.stringify(state)
+    );
+  }
+  await page.click('.demo--live [data-lr-theme="aurora-dark"]');
+}
+
 async function checkThemeScreenshots(browser: Browser): Promise<void> {
   console.log('\nCheck 8 — both themes render (screenshots saved for visual review)');
   await mkdir(SCREENSHOT_DIR, { recursive: true });
@@ -310,6 +528,7 @@ async function main(): Promise<void> {
     await checkAskDemo(page);
     await checkCommentRoundTrip(page);
     await checkShowcaseRibbon(page);
+    await checkLiveRenderDemo(page);
 
     console.log('\nCheck 6 — no horizontal page scroll');
     await checkNoHorizontalScroll(page, '1280x900');

@@ -25,6 +25,7 @@ import './styles/demo-ask.css';
 import './styles/demo-comment.css';
 import './styles/demo-anyway.css';
 import './styles/demo-showcase.css';
+import './styles/demo-liverender.css';
 
 const THEME_KEY = 'mdmini-site:theme';
 const INSTALL_CMD = 'brew tap malinborn/mdmini && brew trust malinborn/mdmini && brew install --cask mdmini';
@@ -171,7 +172,7 @@ interface DemoModule {
   mount: (container: HTMLElement) => void;
 }
 
-type DemoName = 'point' | 'edit' | 'ask' | 'comment' | 'anyway' | 'showcase';
+type DemoName = 'point' | 'edit' | 'ask' | 'comment' | 'anyway' | 'showcase' | 'liverender';
 
 async function loadDemo(name: DemoName): Promise<DemoModule> {
   switch (name) {
@@ -187,6 +188,8 @@ async function loadDemo(name: DemoName): Promise<DemoModule> {
       return import('./demos/anyway');
     case 'showcase':
       return import('./demos/showcase');
+    case 'liverender':
+      return import('./demos/liverender');
   }
 }
 
@@ -197,8 +200,38 @@ function isDemoName(value: string | undefined): value is DemoName {
     value === 'ask' ||
     value === 'comment' ||
     value === 'anyway' ||
-    value === 'showcase'
+    value === 'showcase' ||
+    value === 'liverender'
   );
+}
+
+/**
+ * The live-render card's own theme picker.
+ *
+ * Lives here rather than in the demo module because it must work whether or
+ * not the editor mounted: the chips swap `data-demo-theme` / `data-theme` on
+ * the card, which is pure CSS scoping (see demo-themes.css) and re-themes the
+ * chrome even over an empty body. Both attributes, and with the same value —
+ * the first scopes the token block, the second is what the app's own
+ * theme-dependent code keys off (`view.dom.closest('[data-theme]')`).
+ */
+function setupLiveRenderThemes(): void {
+  const card = document.querySelector<HTMLElement>('.demo--live');
+  if (!card) return;
+  const buttons = Array.from(card.querySelectorAll<HTMLButtonElement>('[data-lr-theme]'));
+  if (buttons.length === 0) return;
+
+  for (const button of buttons) {
+    button.addEventListener('click', () => {
+      const theme = button.dataset.lrTheme;
+      if (!theme) return;
+      card.setAttribute('data-demo-theme', theme);
+      card.setAttribute('data-theme', theme);
+      for (const other of buttons) {
+        other.setAttribute('aria-pressed', String(other === button));
+      }
+    });
+  }
 }
 
 function setupDemoMounting(): void {
@@ -279,4 +312,5 @@ function setupDemoMounting(): void {
 setupThemeToggle();
 setupCopyButton();
 setupCarousel();
+setupLiveRenderThemes();
 setupDemoMounting();
