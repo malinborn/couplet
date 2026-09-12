@@ -2,7 +2,7 @@ import { keymap } from '@codemirror/view';
 import { EditorSelection, type Extension } from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
 import {
-  exitContinuationOnFormatToggle,
+  armContinuationOnFormatToggle,
   isLiveRenderActive,
   type ExitableFormatKind,
 } from './live-render/inline-continuation';
@@ -51,9 +51,11 @@ function toggleWrap(view: EditorView, marker: string): boolean {
  * Three behaviours share these keys.
  *
  * First, in live-render, sitting at the boundary of a hidden span means the
- * next keystroke continues that format, and these keys are how the user says
- * "stop" — the arrow keys deliberately are not, since at that boundary they
- * move the caret without moving it on screen.
+ * next keystroke lands *outside* it, and these keys are how the user says
+ * "actually, keep going in this format" — the arrow keys deliberately are not,
+ * since at that boundary they move the caret without moving it on screen. This
+ * also protects the span: letting the toggle run there would resolve the
+ * enclosing node and unwrap the very formatting the user was extending.
  *
  * Second, in live-render the keys apply formatting through the same
  * tree-aware command the selection toolbar uses, so the two cannot disagree.
@@ -66,7 +68,7 @@ function toggleWrap(view: EditorView, marker: string): boolean {
  * Third, in every other flavour `toggleWrap` runs exactly as before.
  */
 function toggleOrExit(view: EditorView, marker: string, kind: ExitableFormatKind): boolean {
-  if (exitContinuationOnFormatToggle(view, kind)) return true;
+  if (armContinuationOnFormatToggle(view, kind)) return true;
   if (isLiveRenderActive(view.state)) return toggleInlineFormat(view, kind);
   return toggleWrap(view, marker);
 }

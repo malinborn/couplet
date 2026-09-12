@@ -24,20 +24,19 @@ import '../../../styles/live-render-caret.css';
  * difference between "about to type inside the bold" and "about to type
  * after it".
  *
- * This module resolves the ambiguity by policy, the same way Notion and
- * Google Docs do: typing at that boundary **continues** the format by
- * default (`continuationRedirect`). Leaving the format is an explicit act —
- * `Escape`, or a Cmd+B-family toggle with an empty selection at the
- * boundary (see `continuationFormatExitSpec`) — never the arrow keys. An
- * arrow press at this boundary would move the caret two document offsets
- * without moving it one screen pixel (the marker is zero-width), which
- * reads as a dead key; binding exit to arrows was rejected in planning for
- * exactly that reason, so this module does not touch arrow key handling at
- * all.
+ * This module resolves the ambiguity by policy: typing at that boundary lands
+ * **outside** the span, because that is where the caret is and because the
+ * offsets already distinguish the two cases (see `continuationRedirect` for the
+ * measurement). Continuing the format is the explicit act — a Cmd+B-family
+ * toggle with an empty selection at the boundary arms it
+ * (`continuationFormatArmSpec`), `Escape` disarms it, and the caret carries a
+ * visible hint while it is armed. The arrow keys are neither: an arrow press at
+ * this boundary moves the caret two document offsets without moving it one
+ * screen pixel (the marker is zero-width), which reads as a dead key.
  *
  * Everything that decides *whether* to redirect is a pure function of
  * `EditorState` (`findContinuationBoundary`, `continuationRedirect`,
- * `continuationEscapeSpec`, `continuationFormatExitSpec`,
+ * `continuationEscapeSpec`, `continuationFormatArmSpec`,
  * `isContinuationActive`) so it is testable without a DOM — this project's
  * test env has no jsdom and no test constructs a real `EditorView`. Only
  * the thin wrappers at the bottom (`continuationInputHandler`, the caret
@@ -46,7 +45,7 @@ import '../../../styles/live-render-caret.css';
 
 export type ContinuableKind = 'strong' | 'emphasis' | 'strikethrough' | 'inlineCode';
 
-/** The subset continuable via the existing Cmd+B / Cmd+I / Cmd+Shift+X bindings — see `continuationFormatExitSpec`. */
+/** The subset continuable via the existing Cmd+B / Cmd+I / Cmd+Shift+X bindings — see `continuationFormatArmSpec`. */
 export type ExitableFormatKind = 'strong' | 'emphasis' | 'strikethrough';
 
 const NODE_NAME: Record<ContinuableKind, string> = {
@@ -114,27 +113,31 @@ export function findContinuationBoundary(state: EditorState, pos: number): Conti
   return null;
 }
 
-/** Effect carrying the boundary position where continuation is explicitly suppressed, or `null` to clear it. */
-export const setSuppressedBoundary = StateEffect.define<number | null>();
+/** Effect carrying the boundary position where continuation is explicitly armed, or `null` to clear it. */
+export const setArmedBoundary = StateEffect.define<number | null>();
 
 /**
- * The one boundary position (if any) where the user has explicitly opted
- * out of continuation — via `Escape` or a Cmd+B-family toggle. `null` means
- * "no suppression active", which is the default (continue).
+ * The one boundary position (if any) where the user has explicitly asked for
+ * the next character to **join** the span that ends there — via a Cmd+B-family
+ * toggle. `null`, the default, means the next character lands where the caret
+ * actually is, i.e. outside.
+ *
+ * This used to be the mirror image — a *suppressed* boundary, with continuation
+ * on by default. See `continuationRedirect` for why that default was wrong and
+ * why inverting it costs nothing in the flows that matter.
  *
  * Cleared automatically the moment the selection ends up anywhere other
  * than this exact position with an empty selection — "moves away and comes
- * back" is not sticky, matching the plan's requirement that suppression is
- * a one-shot exit, not a mode. Mapped through document changes (bias -1,
- * matching the boundary's own "outer edge" convention) so an edit earlier
- * in the document doesn't desync it from the position it actually refers
- * to.
+ * back" is not sticky; arming is a one-shot, not a mode. Mapped through
+ * document changes (bias -1, matching the boundary's own "outer edge"
+ * convention) so an edit earlier in the document doesn't desync it from the
+ * position it actually refers to.
  */
-export const suppressedBoundaryField: StateField<number | null> = StateField.define<number | null>({
+export const armedBoundaryField: StateField<number | null> = StateField.define<number | null>({
   create: () => null,
   update(value, tr) {
     for (const effect of tr.effects) {
-      if (effect.is(setSuppressedBoundary)) {
+      if (effect.is(setArmedBoundary)) {
         value = effect.value;
       }
     }
@@ -146,8 +149,8 @@ export const suppressedBoundaryField: StateField<number | null> = StateField.def
   },
 });
 
-function isSuppressedAt(state: EditorState, pos: number): boolean {
-  return state.field(suppressedBoundaryField, false) === pos;
+function isArmedAt(state: EditorState, pos: number): boolean {
+  return state.field(armedBoundaryField, false) === pos;
 }
 
 /**
@@ -158,6 +161,31 @@ function isSuppressedAt(state: EditorState, pos: number): boolean {
  * Only handles the simple, single-position case (`from === to`, a plain
  * typed character) — a DOM change that already spans a range is a
  * selection replacement, not a continuation decision, so it's left alone.
+ *
+ * ### Why this needs arming, and why it used to not
+ *
+ * Continuation used to be the default and `Escape` the way out. That reads
+ * well until you look at *which offsets the caret actually reaches*, which is
+ * the thing the two-offsets-one-pixel note in `CLAUDE.md` is about:
+ *
+ * - Typing inside a span and reaching its end leaves the caret at the content's
+ *   end (16 for `Абзац с **жирным**`), because the inserted character's mapped
+ *   position is a boundary, not a strict interior, and the caret filter leaves
+ *   boundaries alone. Typing continues inside with no help from this module.
+ * - Walking right with the arrow keys stops at 16 for the same reason —
+ *   `skipAtomicRanges` only moves a caret that is *strictly* inside a marker.
+ * - A **click** at that pixel resolves to 18, outside, because the atomic skip
+ *   breaks the tie toward `to`.
+ *
+ * So the offset already carries the intent: 16 means "I came from inside", 18
+ * means "I clicked next to it". Redirecting 18 back to 16 threw that away, and
+ * every measured complaint was the same one — click in the space after a bold
+ * word, type, get bold. Defaulting to "insert where the caret is" costs nothing
+ * (the inside-typing flow never goes through here) and fixes all of them.
+ *
+ * What is left for this function is the case the offsets genuinely cannot
+ * express: the caret is legitimately outside, and the user wants back in
+ * anyway. That is what the Cmd+B family arms — see `continuationFormatArmSpec`.
  */
 export function continuationRedirect(
   state: EditorState,
@@ -168,7 +196,7 @@ export function continuationRedirect(
   if (from !== to || !insert) return null;
   const boundary = findContinuationBoundary(state, from);
   if (!boundary) return null;
-  if (isSuppressedAt(state, from)) return null;
+  if (!isArmedAt(state, from)) return null;
 
   return {
     changes: { from: boundary.insertAt, to: boundary.insertAt, insert },
@@ -177,34 +205,19 @@ export function continuationRedirect(
   };
 }
 
-/** Pure decision for `Escape`: suppress continuation at the current boundary, or `null` if there is none. */
+/**
+ * Pure decision for `Escape`: disarm continuation, or `null` if it is not
+ * armed. Escape stays the way out, so the gesture the mode already documents
+ * keeps working — it simply has something to undo now instead of something to
+ * prevent.
+ */
 export function continuationEscapeSpec(state: EditorState): TransactionSpec | null {
   const sel = state.selection.main;
   if (!sel.empty) return null;
-  if (!findContinuationBoundary(state, sel.head)) return null;
-  return { effects: setSuppressedBoundary.of(sel.head) };
+  if (!isArmedAt(state, sel.head)) return null;
+  return { effects: setArmedBoundary.of(null) };
 }
 
-/**
- * Pure decision for a Cmd+B-family toggle: if the selection is empty and
- * sits exactly at `kind`'s continuation boundary, suppress continuation
- * (same effect as `Escape`) instead of letting the normal toggle run.
- *
- * Contract for the integration step that wires this into `keybindings.ts`
- * (not this module — see report): call this *before* the existing
- * `toggleWrap` for the matching marker. A non-null return means "handled,
- * dispatch this and stop" — do not also call `toggleWrap` for this
- * keypress. A `null` return means "not at this boundary" — proceed with
- * `toggleWrap` exactly as today.
- *
- * The kind must match the key: Cmd+B only exits a `'strong'` boundary,
- * Cmd+I only `'emphasis'`, Cmd+Shift+X only `'strikethrough'`. Pressing the
- * "wrong" one at a boundary (e.g. Cmd+I while sitting right after a bold's
- * closing marker) is not an exit for that boundary and falls through to
- * `toggleWrap`'s normal behavior. There is no Cmd+B-family key for
- * `inlineCode` in `keybindings.ts` today, so exiting an inline-code
- * continuation is only reachable via `Escape`.
- */
 /**
  * Whether the live-render bundle is installed in this state. The field below
  * is added only by that bundle, so its absence means the flavour is not
@@ -213,10 +226,34 @@ export function continuationEscapeSpec(state: EditorState): TransactionSpec | nu
  * existing mode's behaviour.
  */
 export function isLiveRenderActive(state: EditorState): boolean {
-  return state.field(suppressedBoundaryField, false) !== undefined;
+  return state.field(armedBoundaryField, false) !== undefined;
 }
 
-export function continuationFormatExitSpec(
+/**
+ * Pure decision for a Cmd+B-family toggle with an empty selection sitting
+ * exactly at `kind`'s span boundary: **arm** continuation, so the next typed
+ * character joins that span, instead of letting the normal toggle run.
+ *
+ * This is the affordance that makes "insert outside by default" complete.
+ * Clicking right after a bold word and wanting to extend it is a real need, and
+ * the click cannot express it — the caret has only one offset to land on there.
+ * Cmd+B at that spot now says "keep going in bold", which is both what the key
+ * means everywhere else and non-destructive, whereas letting the toggle run
+ * would resolve the enclosing node and **unwrap** the span the user was trying
+ * to extend.
+ *
+ * Contract for `keybindings.ts`: call this *before* the normal toggle for the
+ * matching marker. A non-null return means "handled, dispatch this and stop".
+ * A `null` return means "not at a boundary of this kind" — proceed exactly as
+ * before.
+ *
+ * The kind must match the key: Cmd+B only arms a `'strong'` boundary, Cmd+I
+ * only `'emphasis'`, Cmd+Shift+X only `'strikethrough'`. Pressing the "wrong"
+ * one at a boundary falls through to the normal toggle. There is no
+ * Cmd+B-family key for `inlineCode`, so an inline-code span cannot be continued
+ * this way — its content is literal text, where continuing is least useful.
+ */
+export function continuationFormatArmSpec(
   state: EditorState,
   kind: ExitableFormatKind
 ): TransactionSpec | null {
@@ -225,29 +262,33 @@ export function continuationFormatExitSpec(
   if (!sel.empty) return null;
   const boundary = findContinuationBoundary(state, sel.head);
   if (!boundary || boundary.kind !== kind) return null;
-  return { effects: setSuppressedBoundary.of(sel.head) };
+  // Pressing the key a second time at the same spot means "no, actually not" —
+  // the toggle reads as a toggle rather than as a one-way latch.
+  if (isArmedAt(state, sel.head)) return { effects: setArmedBoundary.of(null) };
+  return { effects: setArmedBoundary.of(sel.head) };
 }
 
-/** View wrapper around `continuationFormatExitSpec` for the future `keybindings.ts` integration — see its contract above. */
-export function exitContinuationOnFormatToggle(view: EditorView, kind: ExitableFormatKind): boolean {
-  const spec = continuationFormatExitSpec(view.state, kind);
+/** View wrapper around `continuationFormatArmSpec` — see its contract above. */
+export function armContinuationOnFormatToggle(view: EditorView, kind: ExitableFormatKind): boolean {
+  const spec = continuationFormatArmSpec(view.state, kind);
   if (!spec) return false;
   view.dispatch(spec);
   return true;
 }
 
 /**
- * Whether the caret is currently in a continuing position: an empty
- * selection sitting at a continuation boundary that is not suppressed.
- * Drives the caret affordance below; exported for testing that logic
- * without touching the DOM-dependent `ViewPlugin`.
+ * Whether the caret is currently in a continuing position: an empty selection
+ * sitting at an **armed** span boundary. Drives the caret affordance below —
+ * which now means something the user can act on, "the next character will be
+ * bold", rather than reporting a default they never chose. Exported for testing
+ * that logic without touching the DOM-dependent `ViewPlugin`.
  */
 export function isContinuationActive(state: EditorState): ContinuableKind | null {
   const sel = state.selection.main;
   if (!sel.empty) return null;
   const boundary = findContinuationBoundary(state, sel.head);
   if (!boundary) return null;
-  if (isSuppressedAt(state, sel.head)) return null;
+  if (!isArmedAt(state, sel.head)) return null;
   return boundary.kind;
 }
 
@@ -309,7 +350,7 @@ const continuationCaretPlugin = ViewPlugin.fromClass(
  */
 export function inlineContinuation(): Extension {
   return [
-    suppressedBoundaryField,
+    armedBoundaryField,
     EditorView.inputHandler.of(continuationInputHandler),
     continuationCaretPlugin,
     Prec.high(keymap.of([{ key: 'Escape', run: exitContinuationOnEscape }])),
