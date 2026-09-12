@@ -176,8 +176,14 @@ double-click overlay. The hover controls stay **outside** the host: a
 drag.
 
 Consequence worth knowing: while a cell selection is live, DOM focus is on the
-cell, so `view.hasFocus` is `false` and the live-render selection toolbar
-(including its 💬 button) does not appear for table text.
+cell and `view.hasFocus` is `false`, and `state.selection` never learns the
+selection exists at all — CM6 does not process the drag, so it keeps whatever it
+held before. Anything asking "is the user working in this editor" must therefore
+ask about the hosts too, and anything wanting the selected text must map it back
+through `live-render/cell-anchor.ts` (#42). The cell's source range rides on the
+host as `data-source-from` / `data-source-to`, put there by
+`makeWidgetTextSelectable`; it is safe to freeze into the DOM only because the
+widget's `eq()` compares every cell `from`.
 
 ### Hover Controls (±)
 

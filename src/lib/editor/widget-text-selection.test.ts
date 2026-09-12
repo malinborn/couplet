@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
-import { makeWidgetTextSelectable, eventInside } from './widget-text-selection';
+import {
+  makeWidgetTextSelectable,
+  eventInside,
+  WIDGET_TEXT_HOST_ATTR,
+} from './widget-text-selection';
 
 /**
  * There is no jsdom in this project's vitest setup, so these tests use the
@@ -15,6 +19,7 @@ import { makeWidgetTextSelectable, eventInside } from './widget-text-selection';
 
 interface FakeEl {
   attrs: Record<string, string>;
+  dataset: Record<string, string>;
   handlers: Record<string, (event: { preventDefault: () => void }) => void>;
   setAttribute(name: string, value: string): void;
   addEventListener(type: string, fn: (event: { preventDefault: () => void }) => void): void;
@@ -23,6 +28,7 @@ interface FakeEl {
 function fakeElement(): FakeEl {
   const el: FakeEl = {
     attrs: {},
+    dataset: {},
     handlers: {},
     setAttribute(name, value) {
       el.attrs[name] = value;
@@ -40,6 +46,29 @@ describe('makeWidgetTextSelectable', () => {
     makeWidgetTextSelectable(el as unknown as HTMLElement);
     expect(el.attrs.contenteditable).toBe('true');
     expect(el.attrs.spellcheck).toBe('false');
+  });
+
+  it('marks the element as a host so focus checks can recognise it', () => {
+    const el = fakeElement();
+    makeWidgetTextSelectable(el as unknown as HTMLElement);
+    // `view.hasFocus` is false while a selection lives in here, so the toolbar
+    // has to be able to ask "is the focused element one of mine" (#42).
+    expect(el.attrs[WIDGET_TEXT_HOST_ATTR]).toBe('');
+  });
+
+  it('carries a source range when the host renders document text', () => {
+    const el = fakeElement();
+    makeWidgetTextSelectable(el as unknown as HTMLElement, { source: { from: 12, to: 31 } });
+    expect(el.dataset.sourceFrom).toBe('12');
+    expect(el.dataset.sourceTo).toBe('31');
+  });
+
+  it('leaves a host with no document text unannotated', () => {
+    // A comment card's quote is copied from elsewhere — nothing to anchor to,
+    // which is also how the toolbar knows not to offer a comment on it.
+    const el = fakeElement();
+    makeWidgetTextSelectable(el as unknown as HTMLElement);
+    expect(el.dataset.sourceFrom).toBeUndefined();
   });
 
   it('refuses every route to an actual edit', () => {

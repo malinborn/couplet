@@ -504,13 +504,22 @@
     startCommentFromSelection();
   }
 
-  /** The actual work, with no focus guard — see `createCommentFromSelection`. */
-  function startCommentFromSelection(): void {
+  /**
+   * The actual work, with no focus guard — see `createCommentFromSelection`.
+   *
+   * `target` overrides the document selection. The live-render toolbar passes
+   * one for text selected inside a table cell: that selection lives in the
+   * widget's nested editing host, so `state.selection` knows nothing about it
+   * and the range has been resolved back to the source by `cell-anchor.ts`
+   * (#42).
+   */
+  function startCommentFromSelection(target?: { from: number; to: number }): void {
     const view = editorHandle?.view;
     if (!view || !fileState.filePath) return;
-    const range = view.state.selection.main;
+    const range = target ?? view.state.selection.main;
+    const empty = range.from === range.to;
     const line = view.state.doc.lineAt(range.from);
-    const quote = range.empty
+    const quote = empty
       ? line.text.trim()
       : view.state.sliceDoc(range.from, range.to).trim();
     if (!quote) return;
@@ -524,7 +533,7 @@
         pos: range.from,
         // A draft already knows its exact range — no quote search needed, and
         // the fragment gets highlighted from the moment the card appears.
-        to: range.empty ? line.to : range.to,
+        to: empty ? line.to : range.to,
         orphaned: false,
         actions: commentActions,
       }),
@@ -1087,7 +1096,7 @@
         // item, minus the focus guard: a click in this window's own toolbar is
         // unambiguous about which document is meant.
         ...(liveRender
-          ? liveRenderExtensions({ onComment: () => startCommentFromSelection() })
+          ? liveRenderExtensions({ onComment: (range) => startCommentFromSelection(range) })
           : []),
       ]),
     });

@@ -26,7 +26,8 @@ The flavour facet decides whether markup is *revealed*; this bundle decides how
 | `inline-continuation.ts` | Typing at a span boundary continues the format; `isLiveRenderActive` |
 | `heading-input.ts` | Supplies the space that makes a `#` run a heading |
 | `format-commands.ts` | Tree-aware inline toggles used by both the toolbar and the shortcuts |
-| `selection-toolbar.ts` | Floating inline-format toolbar |
+| `selection-toolbar.ts` | Floating inline-format toolbar; also the only place that can see a selection inside a widget |
+| `cell-anchor.ts` | Rendered table-cell offsets → source offsets, for commenting on cell text |
 | `inspector.ts` / `inspector-model.ts` | Link URL and fenced-code language |
 | `effects.ts` | `openInspectorFor`, the toolbar → inspector handoff |
 
@@ -153,6 +154,42 @@ before `mouseup`, and the trailing click of the drag was closing the toolbar on
 the very selection that opened it. Deferring registration by a macrotask does
 not help. Clicks inside the editor are already governed by the selection: the
 plugin hides the toolbar when the selection collapses.
+
+### `view.hasFocus` is not the question any more
+
+A selection inside a table cell lives in a nested editing host (#31), so
+`activeElement` is the cell, not `contentDOM`, and `view.hasFocus` — which
+requires the latter — is `false`. Worse, CM6 never processes the drag at all:
+the widget returns `true` from `ignoreEvent`, so `state.selection` still holds
+whatever it held before, *stale rather than empty*. Measured: `hasFocus: false`,
+`activeEl: cm-md-table-celltext`, `state.selection` still on the previous prose
+selection.
+
+So the toolbar asks two things instead (`currentTarget`):
+
+- **Is focus in this editor?** — the window has focus, and the focused element
+  is inside a host (`[data-widget-text-host]`) that is inside this `view.dom`.
+  Deleting the focus test rather than widening it would pop the toolbar up over
+  a stale selection while the user is in another window or another app; all
+  three failure modes were driven in a browser.
+- **Where is the selection?** — a live host selection outranks
+  `state.selection`, and produces a comment-only toolbar. The format commands
+  edit the document through the selection and there is nothing here for them to
+  edit; rewriting a cell's source from a mapped range is a separate feature.
+
+A host selection also fires no `ViewUpdate`, in either direction, so the plugin
+listens to `selectionchange` and to the window's `blur` as well as `update()`.
+All three funnel into one `sync()`.
+
+What a comment on cell text anchors to is decided in `cell-anchor.ts`: the
+**source** of the selected span, with formatted spans taken whole. Anything else
+fails the re-anchor search on the next open — the quote has to be findable in
+the file, and `and sweet` is not in `**and** sweet`.
+
+Known gap: the in-document anchor highlight lands on a table data line, which is
+zero-height, so the mark is invisible. The card's excerpt carries the quote.
+Highlighting inside the rendered cell would mean teaching `tables.ts` about
+comment ranges.
 
 ### A task item is `Task`, not `Link`
 

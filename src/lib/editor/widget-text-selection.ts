@@ -26,9 +26,45 @@
  * and snaps the selection out to the whole widget range before the browser
  * ever gets to draw one.
  */
-export function makeWidgetTextSelectable(el: HTMLElement): void {
+/**
+ * Marks an element as a nested editing host created by this module.
+ *
+ * Needed because "the editor has focus" can no longer be asked of
+ * `view.hasFocus` alone: while a selection inside one of these hosts is live,
+ * DOM focus sits on the host and `view.hasFocus` is `false` even though the
+ * user is plainly working in this editor (#42). Anything that used to test
+ * `view.hasFocus` to mean "the user is here" must also accept focus sitting in
+ * a host that belongs to this editor's DOM.
+ */
+export const WIDGET_TEXT_HOST_ATTR = 'data-widget-text-host';
+
+/** Selector form of {@link WIDGET_TEXT_HOST_ATTR}. */
+export const WIDGET_TEXT_HOST_SELECTOR = `[${WIDGET_TEXT_HOST_ATTR}]`;
+
+export interface SelectableOptions {
+  /**
+   * Document range of the source text this host renders, when it has one.
+   *
+   * A table cell does: its span is `CellInfo.from`/`to`, which is what lets a
+   * selection inside the rendered cell be turned back into a document range
+   * (see `live-render/cell-anchor.ts`). A comment card's quote does not — it
+   * renders text copied from elsewhere — and stays unannotated, which is also
+   * how the selection toolbar knows not to offer a comment on it.
+   */
+  source?: { from: number; to: number };
+}
+
+export function makeWidgetTextSelectable(
+  el: HTMLElement,
+  options: SelectableOptions = {},
+): void {
   el.setAttribute('contenteditable', 'true');
   el.setAttribute('spellcheck', 'false');
+  el.setAttribute(WIDGET_TEXT_HOST_ATTR, '');
+  if (options.source) {
+    el.dataset.sourceFrom = String(options.source.from);
+    el.dataset.sourceTo = String(options.source.to);
+  }
   // Read-only in every respect but selection.
   el.addEventListener('beforeinput', (event) => event.preventDefault());
   el.addEventListener('dragstart', (event) => event.preventDefault());

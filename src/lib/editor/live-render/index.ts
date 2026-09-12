@@ -23,7 +23,14 @@ import { elementInspector } from './inspector';
  * resolved through the view's PendingKeys / beforeinput path rather than from
  * keydown alone. See the comment on `blockFormatKeymap`.
  */
-export function liveRenderExtensions(options?: { onComment?: () => void }): Extension[] {
+export function liveRenderExtensions(options?: {
+  /**
+   * `range` is set only when the selection lives inside a widget's nested
+   * editing host (table cell text), where `state.selection` cannot describe
+   * it — see `selection-toolbar.ts` and `cell-anchor.ts`.
+   */
+  onComment?: (range?: { from: number; to: number }) => void;
+}): Extension[] {
   return [
     ...liveRenderAtomic,
     blockFormatKeymap,
