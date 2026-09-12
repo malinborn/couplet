@@ -1,13 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import {
-  buildBindPrompt,
-  magnetOffset,
-  revealProgress,
-  MAGNET_RADIUS,
-  MAGNET_MAX_PULL,
-  REVEAL_NEAR,
-  REVEAL_FAR,
-} from './ai-bind';
+import { buildBindPrompt } from './ai-bind';
+// The component's own text, unprocessed.
+import source from './AiBindButton.svelte?raw';
 
 describe('buildBindPrompt', () => {
   const path = '/Users/me/notes/spec.md';
@@ -55,111 +49,91 @@ describe('buildBindPrompt', () => {
   });
 });
 
-describe('magnetOffset', () => {
-  const anchor = { x: 100, y: 100 };
+/*
+ * What replaced the magnet and proximity suites.
+ *
+ * Those were fifteen careful numeric tests about a behaviour the owner rejected
+ * on sight in the real window: the button slid out whenever the cursor merely
+ * passed nearby, and leaned toward it. Both are gone, and tests for them would
+ * now be asserting a bug. The reveal that replaced them is two CSS
+ * pseudo-classes and no JavaScript at all — there is no function left to feed
+ * numbers to.
+ *
+ * So these assertions read the component's source instead, and they are worth
+ * exactly what that implies: they cannot tell you the button looks right (a
+ * browser does that), only that the *mechanism* has not quietly grown back.
+ * That is the failure mode worth catching here — a proximity reveal reads as a
+ * feature in a diff, while its symptom only appears when a human moves a real
+ * mouse across the top-left corner of a document.
+ */
+describe('AiBindButton reveal', () => {
+  /**
+   * The component with every comment removed.
+   *
+   * Necessary rather than tidy: the component's comments explain at length what
+   * the magnet and the proximity reveal used to do and why they went, which is
+   * the documentation worth keeping and also exactly the prose that would
+   * satisfy a naive search for the words being banned below.
+   */
+  const code = source
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/.*$/gm, '');
 
-  it('is inert beyond the radius', () => {
-    const far = { x: 100 + MAGNET_RADIUS, y: 100 };
-    expect(magnetOffset({ pointer: far, anchor })).toEqual({ x: 0, y: 0 });
+  it('reveals on the element itself, not on an approach radius', () => {
+    // `--shown: 1` is the reveal. It may be reached by hovering the button or
+    // by focusing it, and by nothing else; any third selector here would be an
+    // approach rule wearing a different name.
+    const rules = [...code.matchAll(/([^{}]*)\{[^{}]*--shown:\s*1/g)].map(([, sel]) => sel.trim());
+    expect(rules).toHaveLength(1);
+    expect(
+      rules[0]
+        .split(',')
+        .map((s) => s.trim())
+        .sort()
+    ).toEqual(['.ai-bind-button:focus-visible', '.ai-bind-button:hover']);
   });
 
-  it('is inert well beyond the radius', () => {
-    expect(magnetOffset({ pointer: { x: 5000, y: 5000 }, anchor })).toEqual({ x: 0, y: 0 });
-  });
-
-  it('yields exactly zero when the pointer sits on the anchor', () => {
-    // No direction to move in — anything else here is jitter under the click.
-    expect(magnetOffset({ pointer: { ...anchor }, anchor })).toEqual({ x: 0, y: 0 });
-  });
-
-  it('pulls toward the pointer, not away from it', () => {
-    const right = magnetOffset({ pointer: { x: 130, y: 100 }, anchor });
-    expect(right.x).toBeGreaterThan(0);
-    const left = magnetOffset({ pointer: { x: 70, y: 100 }, anchor });
-    expect(left.x).toBeLessThan(0);
-  });
-
-  it('never exceeds maxPull anywhere in the field', () => {
-    for (let dx = -MAGNET_RADIUS; dx <= MAGNET_RADIUS; dx += 3) {
-      for (let dy = -MAGNET_RADIUS; dy <= MAGNET_RADIUS; dy += 3) {
-        const o = magnetOffset({ pointer: { x: anchor.x + dx, y: anchor.y + dy }, anchor });
-        expect(Math.hypot(o.x, o.y)).toBeLessThanOrEqual(MAGNET_MAX_PULL + 1e-9);
-      }
+  it('tracks no pointer and measures no geometry', () => {
+    // Every ingredient the old proximity reveal needed. Reintroducing any one
+    // of them is the thing this test exists to notice.
+    for (const banned of [
+      'pointermove',
+      'mousemove',
+      'addEventListener',
+      'getBoundingClientRect',
+      'requestAnimationFrame',
+    ]) {
+      expect(code).not.toContain(banned);
     }
   });
 
-  it('never overshoots past the pointer', () => {
-    // Overshoot is what turns a magnet into an oscillator: the button jumps
-    // past the cursor, the cursor is now on the other side, repeat.
-    for (let d = 1; d < MAGNET_RADIUS; d += 1) {
-      const o = magnetOffset({ pointer: { x: anchor.x + d, y: anchor.y }, anchor });
-      expect(o.x).toBeLessThanOrEqual(d + 1e-9);
+  it('carries no magnet offset in any form', () => {
+    // --mx/--my were the lean toward the cursor, written from JS each frame.
+    expect(code).not.toContain('--mx');
+    expect(code).not.toContain('--my');
+    expect(code).not.toContain('magnetOffset');
+    // Nothing is imported from `ai-bind` any more; the prompt is the caller's
+    // business and the geometry no longer exists.
+    expect(code).not.toMatch(/from '\.\/ai-bind'/);
+  });
+
+  it('still honours prefers-reduced-motion', () => {
+    // The button must still reveal under reduced motion — it is unusable
+    // otherwise — but it arrives instead of travelling.
+    expect(code).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*?transition:\s*none/);
+  });
+
+  it('tints itself from the per-theme accent token rather than fixed colours', () => {
+    // --color-glow is the one token all four themes define. A hex or a named
+    // colour in this gradient would look correct in whichever theme it was
+    // written against and wrong in the other three.
+    expect(code).toMatch(/background-image:\s*linear-gradient\(/);
+    const gradients = code.match(/linear-gradient\([\s\S]*?\);/g) ?? [];
+    expect(gradients.length).toBeGreaterThan(0);
+    for (const gradient of gradients) {
+      expect(gradient).toContain('var(--color-glow)');
+      expect(gradient).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
     }
-  });
-
-  it('grows monotonically as the pointer closes in', () => {
-    const at = (d: number) =>
-      Math.hypot(...(Object.values(
-        magnetOffset({ pointer: { x: anchor.x + d, y: anchor.y }, anchor })
-      ) as [number, number]));
-    // Sampled inside the region where distance is not yet the binding cap.
-    expect(at(120)).toBeLessThan(at(90));
-    expect(at(90)).toBeLessThan(at(60));
-    expect(at(60)).toBeLessThan(at(30));
-  });
-
-  it('stays subtle at mid-range — under two pixels at half the radius', () => {
-    const o = magnetOffset({ pointer: { x: anchor.x + MAGNET_RADIUS / 2, y: anchor.y }, anchor });
-    expect(Math.hypot(o.x, o.y)).toBeLessThan(2);
-  });
-
-  it('is fully disabled by maxPull: 0, which is how reduced-motion is honoured', () => {
-    expect(magnetOffset({ pointer: { x: 105, y: 100 }, anchor, maxPull: 0 })).toEqual({
-      x: 0,
-      y: 0,
-    });
-  });
-
-  it('is disabled by a zero radius', () => {
-    expect(magnetOffset({ pointer: { x: 105, y: 100 }, anchor, radius: 0 })).toEqual({
-      x: 0,
-      y: 0,
-    });
-  });
-
-  it('returns zero rather than NaN for non-finite input', () => {
-    expect(magnetOffset({ pointer: { x: NaN, y: 100 }, anchor })).toEqual({ x: 0, y: 0 });
-  });
-});
-
-describe('revealProgress', () => {
-  it('is fully out inside the near distance', () => {
-    expect(revealProgress(0)).toBe(1);
-    expect(revealProgress(REVEAL_NEAR)).toBe(1);
-  });
-
-  it('is fully retracted outside the far distance', () => {
-    expect(revealProgress(REVEAL_FAR)).toBe(0);
-    expect(revealProgress(REVEAL_FAR + 500)).toBe(0);
-  });
-
-  it('interpolates in between', () => {
-    const mid = revealProgress((REVEAL_NEAR + REVEAL_FAR) / 2);
-    expect(mid).toBeGreaterThan(0.45);
-    expect(mid).toBeLessThan(0.55);
-  });
-
-  it('decreases monotonically with distance', () => {
-    let prev = revealProgress(0);
-    for (let d = 0; d <= REVEAL_FAR + 20; d += 5) {
-      const cur = revealProgress(d);
-      expect(cur).toBeLessThanOrEqual(prev + 1e-9);
-      prev = cur;
-    }
-  });
-
-  it('stays within 0..1 for nonsense input', () => {
-    expect(revealProgress(NaN)).toBe(0);
-    expect(revealProgress(-50)).toBe(1);
   });
 });
