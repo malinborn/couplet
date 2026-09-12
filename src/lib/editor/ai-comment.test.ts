@@ -479,6 +479,29 @@ describe('CommentWidget.toDOM action buttons', () => {
     expect(insertButtons).toHaveLength(0);
   });
 
+  it('puts the countdown inside the send-now button, not beside it (#61)', () => {
+    // Beside the button the number stated a fact and the button stated an
+    // action, with nothing saying they were the same event — the owner read
+    // the button as having no purpose. The app writes the seconds into this
+    // span once a second, so it must be reachable from the button and must
+    // not be the button's only child: the verb has to survive a tick.
+    vi.stubGlobal('document', { createElement: createFakeElement });
+    const widget = new CommentWidget({ thread: thread(), orphaned: false, actions: makeActions() });
+
+    const dom = widget.toDOM() as unknown as FakeElement;
+    const [sendNow] = findByClass(dom, 'cm-ai-comment-send-now');
+    const [countdown] = findByClass(dom, 'cm-ai-comment-countdown');
+    const [verb] = findByClass(dom, 'cm-ai-comment-send-label');
+
+    expect(findByClass(sendNow, 'cm-ai-comment-countdown')).toHaveLength(1);
+    expect(findByClass(sendNow, 'cm-ai-comment-send-label')).toHaveLength(1);
+    expect(verb.textContent).toBe('send now');
+    // The button's own text is empty: everything it says lives in the two
+    // spans, so the app can rewrite either one without touching the other.
+    expect(sendNow.textContent).toBe('');
+    expect(countdown.textContent).toBe('');
+  });
+
   it('renders a send-now button and a countdown on every card, both idle until a pause runs (#36)', () => {
     vi.stubGlobal('document', { createElement: createFakeElement });
     const widget = new CommentWidget({ thread: thread(), orphaned: false, actions: makeActions() });

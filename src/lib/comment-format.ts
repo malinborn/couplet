@@ -72,14 +72,17 @@ export function isAwaiting(thread: CommentThread, nowSeconds: number): boolean {
 }
 
 /**
- * What the card writes next to the box while a pause is running.
+ * What the "send now" button writes after its own label while a pause runs.
  *
- * Seconds, rounded up, so the label reaches "1s" before it disappears rather
- * than sitting on "0s". Written straight into the DOM once a second — never
- * through a rebuild, which would take the caret out of the box being typed in.
+ * Just the seconds, rounded up, so the label reaches "1s" before it disappears
+ * rather than sitting on "0s". It sits *inside* the button (#61): away from it
+ * the number said what would happen but not what the button was for, and the
+ * two together read as one sentence — press it, or wait this long and it goes
+ * on its own. Written straight into the DOM once a second — never through a
+ * rebuild, which would take the caret out of the box being typed in.
  */
 export function countdownLabel(msLeft: number): string {
-  return `sending in ${Math.max(0, Math.ceil(msLeft / 1000))}s`;
+  return `${Math.max(0, Math.ceil(msLeft / 1000))}s`;
 }
 
 const THREAD_MARKER = '<!-- mdmini:c ';

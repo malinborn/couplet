@@ -405,12 +405,19 @@ describe('isAwaiting', () => {
 
 describe('countdownLabel', () => {
   it('rounds up, so the label reaches 1s instead of sitting on 0s', () => {
-    expect(countdownLabel(COMMENT_PAUSE_SECONDS * 1000)).toBe('sending in 20s');
-    expect(countdownLabel(1)).toBe('sending in 1s');
-    expect(countdownLabel(4200)).toBe('sending in 5s');
+    expect(countdownLabel(COMMENT_PAUSE_SECONDS * 1000)).toBe('20s');
+    expect(countdownLabel(1)).toBe('1s');
+    expect(countdownLabel(4200)).toBe('5s');
   });
 
   it('never shows a negative number when a tick arrives late', () => {
-    expect(countdownLabel(-3000)).toBe('sending in 0s');
+    expect(countdownLabel(-3000)).toBe('0s');
+  });
+
+  it('is only the number, because it is rendered inside the send-now button (#61)', () => {
+    // The button reads "send now  13s". A label that said "sending in 13s"
+    // there would repeat the verb the button already carries, and the pair
+    // that has to read as one sentence is button + number.
+    expect(countdownLabel(13_000)).not.toMatch(/sending/);
   });
 });

@@ -1,4 +1,4 @@
-import { StateEffect, StateField } from '@codemirror/state';
+import { StateEffect, StateField, type EditorState } from '@codemirror/state';
 import {
   Decoration,
   type DecorationSet,
@@ -76,6 +76,20 @@ export const addAiComment = StateEffect.define<{
 }>();
 
 /**
+ * Class of the in-document highlight over a commented fragment.
+ *
+ * Exported because a table draws its own: a table row's source line is hidden
+ * at zero height, so the decoration below is painted onto nothing and the
+ * widget has to repeat the highlight on the characters that are actually on
+ * screen (#62). Same class, so the two look identical and the attention
+ * shimmer covers both.
+ */
+export const COMMENT_ANCHOR_CLASS = 'cm-ai-comment-anchor';
+
+/** Attribute naming which thread a highlight belongs to — see above. */
+export const COMMENT_ANCHOR_ATTR = 'data-comment-anchor';
+
+/**
  * Marks the fragment a thread is about. Without it the card states its quote
  * but the reader has to find those words themselves — the whole point of
  * anchoring is lost. Deliberately a `mark`, not a `replace`: the document text
@@ -87,12 +101,45 @@ export const addAiComment = StateEffect.define<{
  */
 function anchorMark(threadId: string): Decoration {
   return Decoration.mark({
-    class: 'cm-ai-comment-anchor',
+    class: COMMENT_ANCHOR_CLASS,
     // Also on the DOM, so the attention plugin can find the spans belonging to
     // one thread without walking the decoration set.
-    attributes: { 'data-comment-anchor': threadId },
+    attributes: { [COMMENT_ANCHOR_ATTR]: threadId },
     threadId,
   });
+}
+
+/** A commented fragment, in document coordinates. */
+export interface CommentAnchorSpan {
+  id: string;
+  from: number;
+  to: number;
+}
+
+/**
+ * The commented fragments overlapping `[from, to]`.
+ *
+ * The field is the single source of truth for where a thread is anchored — it
+ * maps through every edit — so anything that wants to draw its own highlight
+ * asks here rather than keeping a copy. Used by the table widget, whose source
+ * lines are hidden and whose cells therefore have to paint the highlight
+ * themselves (#62).
+ */
+export function commentAnchorsIn(
+  state: EditorState,
+  from: number,
+  to: number
+): CommentAnchorSpan[] {
+  const set = state.field(aiCommentField, false);
+  if (!set) return [];
+  const out: CommentAnchorSpan[] = [];
+  set.between(from, to, (spanFrom, spanTo, value) => {
+    const id = (value.spec as { threadId?: string }).threadId;
+    // Widgets carry no threadId and are zero-length anyway; only anchors answer.
+    if (!id || spanTo <= spanFrom) return;
+    out.push({ id, from: spanFrom, to: spanTo });
+  });
+  return out;
 }
 
 /** True for an anchor highlight belonging to `threadId`. */
@@ -121,6 +168,32 @@ const STATUS_LABEL: Record<CommentThread['status'], string> = {
  * pause running. The app toggles it; the widget never rebuilds for it.
  */
 export const COMMENT_IDLE = 'cm-ai-comment-idle';
+
+/**
+ * Class on the verb inside the "send now" button, so the app can rewrite it
+ * without touching the countdown span that sits next to it (#61).
+ */
+export const COMMENT_SEND_LABEL = 'cm-ai-comment-send-label';
+
+/** What the send-now button says while a pause is running. */
+export const COMMENT_SEND_TEXT = 'send now';
+
+/**
+ * Class on the button between "it fired" and "the card was rebuilt". Visible
+ * where {@link COMMENT_IDLE} is not, so the button can stay on screen for that
+ * moment instead of disappearing under the pointer.
+ */
+export const COMMENT_SENDING = 'cm-ai-comment-sending';
+
+/**
+ * What it says between the moment it fires and the rebuild that takes it away.
+ *
+ * The card is reloaded once the commit lands — the thread turns `open` and its
+ * header reads "waiting for agent", which is the lasting answer to "what
+ * happened". This covers the second in between, where a button that simply
+ * vanished under the pointer would read as a misclick.
+ */
+export const COMMENT_SENDING_TEXT = 'sending…';
 
 export class CommentWidget extends WidgetType {
   constructor(readonly spec: CommentSpec) {
@@ -308,16 +381,36 @@ export class CommentWidget extends WidgetType {
       return element;
     };
 
-    // "send now" and the countdown below are rendered for every card and
-    // hidden until a pause is actually running — the app shows them by
-    // toggling a class, never by rebuilding the widget. A rebuild is what
-    // replaces the textarea, and replacing a textarea once a second (which is
-    // what a countdown held in state would do) drops the caret and kills IME
-    // composition mid-word.
-    const sendNow = button('send now', () => actions.sendNow(thread.id));
+    // "send now" is rendered for every card and hidden until a pause is
+    // actually running — the app shows it by toggling a class, never by
+    // rebuilding the widget. A rebuild is what replaces the textarea, and
+    // replacing a textarea once a second (which is what a countdown held in
+    // state would do) drops the caret and kills IME composition mid-word.
+    const sendNow = button(COMMENT_SEND_TEXT, () => actions.sendNow(thread.id));
     sendNow.className = `cm-ai-comment-button cm-ai-comment-send-now ${COMMENT_IDLE}`;
     sendNow.setAttribute('data-comment-send-now', thread.id);
     sendNow.title = 'Hand this comment to the agent now, without waiting out the pause';
+
+    // The countdown lives *inside* the button (#61). Next to it, at the far
+    // edge of the card, the number stated a fact ("sending in 13s") while the
+    // button stated an action, and nothing said the two were the same event —
+    // people read the button as unrelated and wondered what it was for. In the
+    // button they are one sentence: press it, or wait this long and it goes on
+    // its own.
+    //
+    // The two are separate elements so the app can rewrite either one without
+    // the other: the verb changes once, when the pause ends, and the seconds
+    // change every tick. Both are plain DOM writes — see the note above.
+    sendNow.textContent = '';
+    const sendLabel = document.createElement('span');
+    sendLabel.className = COMMENT_SEND_LABEL;
+    sendLabel.textContent = COMMENT_SEND_TEXT;
+    sendNow.appendChild(sendLabel);
+
+    const countdown = document.createElement('span');
+    countdown.className = `cm-ai-comment-countdown ${COMMENT_IDLE}`;
+    countdown.setAttribute('data-comment-countdown', thread.id);
+    sendNow.appendChild(countdown);
 
     button(
       'send to agent',
@@ -336,14 +429,6 @@ export class CommentWidget extends WidgetType {
     if (thread.status !== 'resolved') {
       button('resolve', () => actions.resolve(thread.id));
     }
-
-    // How long is left before this thread is handed over. Written into by the
-    // app once a second — see the note on `sendNow` above for why it is a bare
-    // span and not part of the widget's state.
-    const countdown = document.createElement('span');
-    countdown.className = `cm-ai-comment-countdown ${COMMENT_IDLE}`;
-    countdown.setAttribute('data-comment-countdown', thread.id);
-    row.appendChild(countdown);
 
     // Autosave is invisible, and invisible saving is exactly what people did
     // not believe was happening. The app writes "saved" in here.
@@ -516,10 +601,12 @@ class CommentAttentionPlugin {
 
   /** Card → fragment. */
   private syncAnchors(): void {
-    for (const el of this.view.dom.querySelectorAll('[data-comment-anchor]')) {
+    // Covers the marks over ordinary prose and the spans a table widget draws
+    // inside its cells alike — both carry the attribute (#62).
+    for (const el of this.view.dom.querySelectorAll(`[${COMMENT_ANCHOR_ATTR}]`)) {
       el.classList.toggle(
         ANCHOR_ATTENTION,
-        el.getAttribute('data-comment-anchor') === this.cardFocused
+        el.getAttribute(COMMENT_ANCHOR_ATTR) === this.cardFocused
       );
     }
   }

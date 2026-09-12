@@ -54,6 +54,10 @@
     clearAiComments,
     CommentWidget,
     COMMENT_IDLE,
+    COMMENT_SEND_LABEL,
+    COMMENT_SEND_TEXT,
+    COMMENT_SENDING,
+    COMMENT_SENDING_TEXT,
     type CommentActions,
   } from './lib/editor/ai-comment';
   import {
@@ -459,8 +463,17 @@
         label.textContent = countdownLabel(entry.deadline - now);
         label.classList.remove(COMMENT_IDLE);
       }
+      // The countdown is a child of the button (#61), so both come back into
+      // view together — and the verb is reset here as well, because a card
+      // whose pause is re-armed after a `sending…` may be the very same DOM.
       const button = view?.dom.querySelector(`[data-comment-send-now="${CSS.escape(id)}"]`);
       button?.classList.remove(COMMENT_IDLE);
+      if (button?.classList.contains(COMMENT_SENDING)) {
+        button.classList.remove(COMMENT_SENDING);
+        (button as HTMLButtonElement).disabled = false;
+        const verb = button.querySelector(`.${COMMENT_SEND_LABEL}`);
+        if (verb) verb.textContent = COMMENT_SEND_TEXT;
+      }
     }
     if (!commentCountdowns.size && commentTicker !== null) {
       clearInterval(commentTicker);
@@ -479,8 +492,18 @@
     tickCommentCountdowns();
   }
 
-  /** Stop a thread's countdown and put its card back to the idle look. */
-  function disarmCommentCountdown(id: string): void {
+  /**
+   * Stop a thread's countdown.
+   *
+   * Two endings, and they have to look different. A pause that was *cancelled*
+   * — the thread resolved, the file says it is no longer paused — leaves
+   * nothing to say, so the button goes away as if it had never been there. A
+   * pause that *fired* is the button doing its job, and a control that vanishes
+   * under the pointer at the moment you were reaching for it reads as a
+   * misclick: it stays, disabled, saying `sending…` until the reload replaces
+   * the card with one whose header reads "waiting for agent" (#61).
+   */
+  function disarmCommentCountdown(id: string, sending = false): void {
     commentCountdowns.delete(id);
     const view = editorHandle?.view;
     const label = view?.dom.querySelector(`[data-comment-countdown="${CSS.escape(id)}"]`);
@@ -488,9 +511,14 @@
       label.textContent = '';
       label.classList.add(COMMENT_IDLE);
     }
-    view?.dom
-      .querySelector(`[data-comment-send-now="${CSS.escape(id)}"]`)
-      ?.classList.add(COMMENT_IDLE);
+    const button = view?.dom.querySelector(`[data-comment-send-now="${CSS.escape(id)}"]`);
+    const verb = button?.querySelector(`.${COMMENT_SEND_LABEL}`);
+    if (button) {
+      button.classList.toggle(COMMENT_IDLE, !sending);
+      button.classList.toggle(COMMENT_SENDING, sending);
+      (button as HTMLButtonElement).disabled = sending;
+      if (verb) verb.textContent = sending ? COMMENT_SENDING_TEXT : COMMENT_SEND_TEXT;
+    }
     if (!commentCountdowns.size && commentTicker !== null) {
       clearInterval(commentTicker);
       commentTicker = null;
@@ -509,7 +537,7 @@
   async function fireCommentCountdown(id: string): Promise<void> {
     const entry = commentCountdowns.get(id);
     if (!entry) return;
-    disarmCommentCountdown(id);
+    disarmCommentCountdown(id, true);
     // A draft becomes a real thread on its first write, under an id the file
     // gives it — the commit has to follow it there.
     const written = (await writeComment(id)) ?? id;
