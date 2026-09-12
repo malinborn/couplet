@@ -12,7 +12,7 @@
 .cm-md-h1 {
   font-size: 2.2em;
   font-weight: 800;
-  color: var(--color-heading);
+  color: var(--heading-tone-1, var(--color-heading));
   line-height: 1.25;
   letter-spacing: -0.025em;
   padding: 0.8em 0 0.1em;
@@ -20,7 +20,7 @@
 .cm-md-h2 {
   font-size: 1.6em;
   font-weight: 700;
-  color: var(--color-heading);
+  color: var(--heading-tone-2, var(--color-heading));
   line-height: 1.3;
   letter-spacing: -0.014em;
   padding: 0.7em 0 0.05em;
@@ -28,8 +28,8 @@
 .cm-md-h3 {
   font-size: 1.25em;
   font-weight: 700;
-  color: var(--color-heading);
-  color: color-mix(in oklab, var(--color-heading) 88%, var(--text-primary));
+  color: var(--heading-tone-3, var(--color-heading));
+  color: var(--heading-tone-3, color-mix(in oklab, var(--color-heading) 88%, var(--text-primary)));
   line-height: 1.4;
   letter-spacing: -0.005em;
   padding: 0.55em 0 0;
@@ -37,23 +37,109 @@
 .cm-md-h4 {
   font-size: 1.05em;
   font-weight: 700;
-  color: var(--color-heading);
-  color: color-mix(in oklab, var(--color-heading) 62%, var(--text-primary));
+  color: var(--heading-tone-4, var(--color-heading));
+  color: var(--heading-tone-4, color-mix(in oklab, var(--color-heading) 62%, var(--text-primary)));
   padding: 0.5em 0 0;
 }
 .cm-md-h5 {
   font-size: 0.95em;
   font-weight: 700;
-  color: var(--text-subtle);
+  color: var(--heading-tone-5, var(--text-subtle));
   letter-spacing: 0.045em;
   padding: 0.45em 0 0;
 }
 .cm-md-h6 {
   font-size: 0.85em;
   font-weight: 700;
-  color: var(--text-muted);
+  color: var(--heading-tone-6, var(--text-muted));
   letter-spacing: 0.1em;
   padding: 0.4em 0 0;
+}
+
+/* Heading tone scheme — the theme declares it, these rules only consume it.
+ *
+ * A theme sets `--heading-tone-1..6` (solid colour per level) and may add
+ * `--heading-grad-1..6` (a gradient for that level). Nothing here knows which
+ * theme is active, so a new theme is a new `*.css` in `src/lib/theme/`, never
+ * an edit to this block. Both variables are optional: without them the rules
+ * above fall back to the old flat heading colour.
+ *
+ * Four things this has to survive:
+ *
+ * 1. No `background-clip: text` → invisible text. Everything that paints the
+ *    glyphs lives inside `@supports`; outside it only `color` above applies,
+ *    so the degraded state is a readable solid tone.
+ * 2. Gradient stretches over the element box, not the glyphs. `.cm-line` is
+ *    the full editor width, so a box-sized gradient would make a three-word
+ *    heading show only its first slice and would change with window width.
+ *    Instead the sweep is a fixed length in `em` of the heading's own font
+ *    size (`--heading-grad-span`): the same colour travel per character at
+ *    every level and every window size. Past the sweep the `background-color`
+ *    (the level's solid tone, which is also the gradient's last stop) takes
+ *    over, so a long heading settles into its base tone instead of vanishing.
+ * 3. `.cm-activeLine` also paints a background, and at equal specificity CM6's
+ *    injected `<style>` can win — its faint glow would then be what gets
+ *    clipped to the glyphs, i.e. near-invisible text. `.cm-content` in the
+ *    selector puts these rules decisively above it.
+ * 4. `-webkit-text-fill-color` is transparent for the line, so `color` stays
+ *    real (caret fallback, `currentColor`) — but it inherits, so the fold
+ *    arrow and inline children that carry their own colour restore it.
+ */
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .cm-content .cm-line.cm-md-h1,
+  .cm-content .cm-line.cm-md-h2,
+  .cm-content .cm-line.cm-md-h3,
+  .cm-content .cm-line.cm-md-h4,
+  .cm-content .cm-line.cm-md-h5,
+  .cm-content .cm-line.cm-md-h6 {
+    background-repeat: no-repeat;
+    background-size: var(--heading-grad-span, 18em) 100%;
+    background-position: 0 0;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    /* A transparent text fill is exactly the state in which a caret that
+     * takes its colour from the text disappears. It does not here, and not by
+     * luck: `drawSelection()` ships `.cm-line { caret-color: transparent
+     * !important }` and draws the caret as a `.cm-cursor` div tinted from
+     * `--color-caret-*` — measured present and correctly sized inside all six
+     * levels. This declaration loses to that `!important`; it only becomes
+     * load-bearing if `drawSelection()` ever leaves setup.ts. */
+    caret-color: var(--color-cursor);
+  }
+  .cm-content .cm-line.cm-md-h1 {
+    background-color: var(--heading-tone-1, var(--color-heading));
+    background-image: var(--heading-grad-1, none);
+  }
+  .cm-content .cm-line.cm-md-h2 {
+    background-color: var(--heading-tone-2, var(--color-heading));
+    background-image: var(--heading-grad-2, none);
+  }
+  .cm-content .cm-line.cm-md-h3 {
+    background-color: var(--heading-tone-3, var(--color-heading));
+    background-image: var(--heading-grad-3, none);
+  }
+  .cm-content .cm-line.cm-md-h4 {
+    background-color: var(--heading-tone-4, var(--color-heading));
+    background-image: var(--heading-grad-4, none);
+  }
+  .cm-content .cm-line.cm-md-h5 {
+    background-color: var(--heading-tone-5, var(--text-subtle));
+    background-image: var(--heading-grad-5, none);
+  }
+  .cm-content .cm-line.cm-md-h6 {
+    background-color: var(--heading-tone-6, var(--text-muted));
+    background-image: var(--heading-grad-6, none);
+  }
+
+  /* Transparent fill inherits. The fold arrow and anything inside a heading
+   * that has its own colour (link, inline code, a bold span) paint themselves
+   * again on top of the clipped background. */
+  :is(.cm-md-h1, .cm-md-h2, .cm-md-h3, .cm-md-h4, .cm-md-h5, .cm-md-h6)::after,
+  :is(.cm-md-h1, .cm-md-h2, .cm-md-h3, .cm-md-h4, .cm-md-h5, .cm-md-h6)
+    :is(.cm-md-link, .cm-md-inline-code, .cm-md-strikethrough, .tok-meta) {
+    -webkit-text-fill-color: currentColor;
+  }
 }
 
 /* Inline formatting */
