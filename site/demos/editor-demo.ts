@@ -9,22 +9,6 @@ export interface DemoEditorOptions {
   extensions?: Extension[];
   /** Max visible height in px; the card clips beyond it. */
   height?: number;
-  /**
-   * Opt out of the read-only exhibit and hand the visitor a real editor.
-   *
-   * Exactly one demo does this — the live-render block, where the whole claim
-   * ("the markers go away as you type, and the markup underneath survives it")
-   * is a claim about *typing*. A scripted playback of that is a video, and a
-   * video of an editor is precisely what this site refuses to ship. Every other
-   * demo stays read-only: they narrate an agent's actions, and a visitor typing
-   * into them would only fight the script.
-   *
-   * The card carrying this must also undo three rules `landing.css` applies to
-   * `.demo` — the hidden `.cm-cursor`, the clipped `.cm-scroller`, and the
-   * bottom fade — otherwise the visitor types into an invisible caret inside a
-   * box that cannot scroll to follow it. See `demo-liverender.css`.
-   */
-  editable?: boolean;
 }
 
 export interface DemoEditor {
@@ -50,16 +34,13 @@ export function mountDemoEditor(parent: HTMLElement, options: DemoEditorOptions)
 
   const doc = options.doc.endsWith('\n\n') ? options.doc : `${options.doc}\n\n`;
 
-  const interactive = options.editable === true;
-
   const state = EditorState.create({
     doc,
     selection: { anchor: doc.length },
     extensions: [
       createExtensions(),
-      ...(interactive
-        ? []
-        : [EditorState.readOnly.of(true), EditorView.editable.of(false)]),
+      EditorState.readOnly.of(true),
+      EditorView.editable.of(false),
       ...(options.extensions ?? []),
     ],
   });

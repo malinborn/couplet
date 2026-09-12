@@ -59,8 +59,8 @@
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 
-  <script type="module" crossorigin src="/assets/index-BhJWGfZ6.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-H57AyUKz.css">
+  <script type="module" crossorigin src="/assets/index-DHJ6rmrw.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-CQpmrFkD.css">
 </head>
 <body>
 
@@ -75,7 +75,6 @@
       </a>
       <ul class="nav-links">
         <li class="nav-anchor-only"><a href="#ai">AI-native</a></li>
-        <li class="nav-anchor-only"><a href="#live-render">Live Render</a></li>
         <li class="nav-anchor-only"><a href="#features">Features</a></li>
         <li><a href="#install">Install</a></li>
         <li class="nav-anchor-only"><a href="#changelog">Changelog</a></li>
@@ -109,7 +108,7 @@
     <div class="wrap">
     <div class="hero-content">
       <h1 class="hero-title hero-title--reveal">mdmini<span class="hero-caret caret-blink" aria-hidden="true"></span></h1>
-      <p class="hero-tagline">Where you and your agent edit the same <span class="reveal-word reveal-word--code">markdown</span> <span class="reveal-word reveal-word--bold">document</span>.</p>
+      <p class="hero-tagline">A minimalist yet powerful <span class="reveal-word reveal-word--code">markdown</span> editor your agent can <span class="reveal-word reveal-word--bold">drive</span>.</p>
       <div class="hero-pills">
         <span class="pill">macOS</span>
         <span class="pill">free</span>
@@ -130,34 +129,6 @@
 
   <section id="ai" class="ai-section">
     <div class="wrap">
-      <div class="ai-intro">
-      <div class="ai-head">
-        <div class="ai-eyebrow">HUMAN AND AGENT, ONE DOCUMENT</div>
-        <h2>The loop closes inside the file.</h2>
-        <p class="ai-lede">Your agent can point at a line, rewrite a paragraph and ask you a question in the margin &mdash; that is the carousel below. This is the other direction, and it is what turns the two into a loop.</p>
-      </div>
-
-      <ol class="ai-cycle">
-        <li class="ai-cycle-step">
-          <span class="ai-cycle-num" aria-hidden="true">1</span>
-          <h3>You ask, in the text</h3>
-          <p>Select a fragment, press <code>&#8679;&#8984;M</code>, write the question. It stays anchored to the words it is about &mdash; by the text around them, so it survives the document being rewritten underneath it.</p>
-        </li>
-        <li class="ai-cycle-step">
-          <span class="ai-cycle-num" aria-hidden="true">2</span>
-          <h3>Your agent answers in place</h3>
-          <p>It is already watching the file, so the comment wakes the session that has your context &mdash; after twenty seconds of quiet, not mid-sentence. The answer lands in the thread, or straight in the document as an edit <code>Esc</code> accepts and <code>&#8984;Z</code> rejects.</p>
-        </li>
-        <li class="ai-cycle-step">
-          <span class="ai-cycle-num" aria-hidden="true">3</span>
-          <h3>You write back</h3>
-          <p>The thread stays editable and saves itself as you type, so an answer arriving mid-reply freezes the previous turn without swallowing the sentence you are writing. Reply, and it goes round again.</p>
-        </li>
-      </ol>
-      <div class="ai-cycle-loop" aria-hidden="true"><span class="ai-cycle-loop-label">same document, same file on disk</span></div>
-      <p class="ai-cycle-note">mdmini ships no AI of its own. It is <strong>your</strong> agent, with your context, reaching the running app over a local socket &mdash; no daemon, no cloud, nothing to sign up for. The comments live beside your file in plain markdown you can read and diff.</p>
-      </div>
-
       <div class="ai-card">
         <div class="carousel" id="ai-carousel">
           <div class="carousel-track" id="carousel-track">
@@ -299,65 +270,6 @@
     </div>
   </section>
 
-  <section id="live-render" class="lr-section">
-    <div class="wrap">
-      <div class="lr-head">
-        <div class="lr-eyebrow">LIVE RENDER</div>
-        <h2>The markers go away. Your markup doesn&rsquo;t.</h2>
-        <p class="lr-lede">Live Render hides the asterisks permanently, Notion-style &mdash; which used to mean every edit that touched one quietly damaged the file. It doesn&rsquo;t any more: the markup repairs itself as you edit, typing carries the format forward, and the caret changes shape to say which one you&rsquo;re in. This card is the real editor, not a picture of it &mdash; click in and type.</p>
-      </div>
-
-      <div class="lr-stage">
-        <div class="demo demo--live" data-demo="liverender" data-demo-theme="aurora-dark" data-theme="aurora-dark" style="--demo-h: 330px">
-          <div class="demo-bar">
-            <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
-            <span class="demo-name">release.md &mdash; md-mini</span>
-          </div>
-          <div class="demo-body"><noscript>The live editor needs JavaScript. Everything it demonstrates is described beside it.</noscript></div>
-          <div class="lr-controls">
-            <span class="lr-hint" data-lr-hint><span class="lr-hint-dot" aria-hidden="true"></span>Real editor &mdash; click in and type</span>
-            <div class="lr-themes" role="group" aria-label="Editor theme">
-              <span class="lr-themes-label" aria-hidden="true">theme</span>
-              <button class="lr-theme-btn" type="button" data-lr-theme="dark" aria-pressed="false"><span class="lr-theme-swatch lr-theme-swatch--rp-dark" aria-hidden="true"></span>Ros&eacute; Pine</button>
-              <button class="lr-theme-btn" type="button" data-lr-theme="light" aria-pressed="false"><span class="lr-theme-swatch lr-theme-swatch--rp-dawn" aria-hidden="true"></span>Dawn</button>
-              <button class="lr-theme-btn" type="button" data-lr-theme="aurora-dark" aria-pressed="true"><span class="lr-theme-swatch lr-theme-swatch--aurora-dark" aria-hidden="true"></span>Aurora Dark</button>
-              <button class="lr-theme-btn" type="button" data-lr-theme="aurora-light" aria-pressed="false"><span class="lr-theme-swatch lr-theme-swatch--aurora-light" aria-hidden="true"></span>Aurora Light</button>
-            </div>
-            <button class="lr-reset" type="button" data-lr-reset hidden>reset</button>
-          </div>
-        </div>
-
-        <ul class="lr-notes">
-          <li class="lr-note">
-            <span class="lr-glyph lr-marker-glyph" aria-hidden="true">**</span>
-            <div>
-              <h3>Type the asterisks, keep the asterisks</h3>
-              <p>They vanish from the screen the moment the span closes, and stay in the file. Backspace back through a bold word and the pair is repaired rather than torn &mdash; the old behaviour left a stray <code>**</code> behind and turned the rest of your paragraph into literal punctuation.</p>
-            </div>
-          </li>
-          <li class="lr-note">
-            <span class="lr-glyph lr-glyph--trio" aria-hidden="true">
-              <span class="lr-caret lr-caret--bold"></span>
-              <span class="lr-caret lr-caret--italic"></span>
-              <span class="lr-caret lr-caret--strike"></span>
-            </span>
-            <div>
-              <h3>The caret says which format you&rsquo;re in</h3>
-              <p>Thick for bold, slanted for italic, a narrow stem with a crossbar for strikethrough. With the markers hidden, nothing else on screen could tell you &mdash; and it&rsquo;s right before the first character exists.</p>
-            </div>
-          </li>
-          <li class="lr-note">
-            <span class="lr-glyph lr-marker-glyph" aria-hidden="true">&#8677;</span>
-            <div>
-              <h3>Typing continues the format</h3>
-              <p>The character after a bold word is bold, because that is what you meant. <code>Esc</code> or the format shortcut ends it. Option+arrows step over the hidden markers, so a word is a word you can see.</p>
-            </div>
-          </li>
-        </ul>
-      </div>
-    </div>
-  </section>
-
   <section id="features" class="features-section">
     <div class="wrap">
       <h2>Features</h2>
@@ -377,30 +289,19 @@
         </div>
 
         <div class="feature-card">
-          <h3>Editable Tables</h3>
-          <p>Click a cell and the caret lands in <em>that</em> cell. <code>Tab</code> across columns, <code>&#8629;</code> down rows. Cell text selects, copies, formats and takes comments; rows and columns still drag to reorder.</p>
+          <h3>GFM Tables</h3>
+          <p>Create, edit, reorder, and delete table rows and columns. Drag to reorder.</p>
           <div class="feature-illustration">
             <div class="illus-table">
               <div class="illus-table-cell illus-table-cell--head">item</div>
               <div class="illus-table-cell illus-table-cell--head">qty</div>
               <div class="illus-table-cell illus-table-cell--head">tag</div>
               <div class="illus-table-cell illus-table-cell--hl">flour</div>
-              <div class="illus-table-cell illus-table-cell--hl">2<span class="illus-cell-caret caret-blink" aria-hidden="true"></span></div>
+              <div class="illus-table-cell illus-table-cell--hl">2</div>
               <div class="illus-table-cell illus-table-cell--hl">&#8942;&#8942;</div>
               <div class="illus-table-cell illus-table-cell--muted">eggs</div>
               <div class="illus-table-cell illus-table-cell--muted">6</div>
               <div class="illus-table-cell illus-table-cell--muted"></div>
-            </div>
-          </div>
-        </div>
-
-        <div class="feature-card">
-          <h3>Saves That Don&rsquo;t Damage Files</h3>
-          <p>Permissions, owner, ACLs and extended attributes survive a write, and a symlink stays a symlink. A crash mid-write can&rsquo;t truncate the file &mdash; a test really does <code>SIGKILL</code> the process to prove it.</p>
-          <div class="feature-illustration">
-            <div class="illus-keeps">
-              <div class="illus-keeps-row"><code class="illus-perm">-rw-r-----</code><span class="illus-small">before</span></div>
-              <div class="illus-keeps-row"><code class="illus-perm">-rw-r-----</code><span class="illus-small">after the save</span></div>
             </div>
           </div>
         </div>
