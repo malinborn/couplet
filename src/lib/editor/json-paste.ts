@@ -9,7 +9,7 @@
 
 import { StateEffect, StateField, type Extension } from '@codemirror/state';
 import { EditorView, ViewPlugin, keymap, type ViewUpdate } from '@codemirror/view';
-import { analyzeJson, formatJsonText } from './json-format';
+import { planJsonFormat } from './json-fence';
 
 /** Range of a pending offer, in current document coordinates. */
 export interface JsonOffer {
@@ -54,24 +54,23 @@ export function offeredText(view: EditorView): string | null {
 /**
  * Apply the pending offer. Returns false if there is nothing to apply —
  * including the case where the text stopped being JSON after further edits.
+ *
+ * The change itself comes from `planJsonFormat`, which also decides the
+ * trimmed span and whether a ```json fence goes around the result (#47a).
+ * One change, one transaction, one Cmd+Z.
  */
 export function applyJsonOffer(view: EditorView): boolean {
   const offer = view.state.field(jsonOfferField, false);
-  const text = offeredText(view);
-  if (!offer || text === null) return false;
+  if (!offer || offeredText(view) === null) return false;
 
-  const formatted = formatJsonText(text);
-  if (formatted === null) {
+  const plan = planJsonFormat(view.state, offer.from, offer.to);
+  if (plan === null) {
     view.dispatch({ effects: clearJsonOffer.of(null) });
     return false;
   }
 
-  // Replace the trimmed span only: the offer range can include the newline the
-  // paste landed against, and swallowing it would join two lines.
-  const lead = text.length - text.trimStart().length;
-  const tail = text.length - text.trimEnd().length;
   view.dispatch({
-    changes: { from: offer.from + lead, to: offer.to - tail, insert: formatted },
+    changes: { from: plan.from, to: plan.to, insert: plan.insert },
     effects: clearJsonOffer.of(null),
     userEvent: 'input.format.json',
   });
@@ -100,14 +99,11 @@ export function formatJsonCommand(view: EditorView): boolean {
   const from = hasSelection ? sel.from : 0;
   const to = hasSelection ? sel.to : state.doc.length;
 
-  const text = state.sliceDoc(from, to);
-  const formatted = formatJsonText(text);
-  if (formatted === null) return false;
+  const plan = planJsonFormat(state, from, to);
+  if (plan === null) return false;
 
-  const lead = text.length - text.trimStart().length;
-  const tail = text.length - text.trimEnd().length;
   view.dispatch({
-    changes: { from: from + lead, to: to - tail, insert: formatted },
+    changes: { from: plan.from, to: plan.to, insert: plan.insert },
     effects: clearJsonOffer.of(null),
     userEvent: 'input.format.json',
   });
@@ -117,10 +113,9 @@ export function formatJsonCommand(view: EditorView): boolean {
 /** True when the hotkey would do something — used to grey nothing, only to test. */
 export function canFormatJson(view: EditorView): boolean {
   const sel = view.state.selection.main;
-  const text = sel.empty
-    ? view.state.doc.toString()
-    : view.state.sliceDoc(sel.from, sel.to);
-  return formatJsonText(text) !== null;
+  const from = sel.empty ? 0 : sel.from;
+  const to = sel.empty ? view.state.doc.length : sel.to;
+  return planJsonFormat(view.state, from, to) !== null;
 }
 
 export const jsonFormatKeymap: Extension = keymap.of([
@@ -167,8 +162,7 @@ export function jsonPasteNotifier(callbacks: {
         // JSON. Withdraw rather than leave a button that silently does nothing.
         const offer = update.state.field(jsonOfferField, false);
         if (offer) {
-          const text = update.state.sliceDoc(offer.from, offer.to);
-          if (!formatJsonText(text)) {
+          if (!planJsonFormat(update.state, offer.from, offer.to)) {
             queueMicrotask(() => {
               this.view.dispatch({ effects: clearJsonOffer.of(null) });
               callbacks.onWithdraw();
@@ -186,12 +180,12 @@ export function jsonPasteNotifier(callbacks: {
         });
         if (from === -1 || to <= from) return;
 
-        const text = update.state.sliceDoc(from, to);
-        const analysis = analyzeJson(text);
-
-        // Already-expanded JSON is real JSON with nothing to do: withdraw any
-        // stale offer, but do not raise a new one.
-        if (!analysis || analysis.alreadyFormatted) {
+        // `planJsonFormat` answers the whole question: not JSON, or JSON that
+        // is already expanded *and* already fenced, both come back null. Note
+        // that already-expanded JSON pasted bare into markdown is NOT nothing
+        // to do — it still needs its fence (#47a) — so this is a wider offer
+        // than the text-only check it replaces.
+        if (!planJsonFormat(update.state, from, to)) {
           if (update.state.field(jsonOfferField, false)) {
             queueMicrotask(() => {
               this.view.dispatch({ effects: clearJsonOffer.of(null) });
