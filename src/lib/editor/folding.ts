@@ -24,9 +24,18 @@ function getHeadingLevel(state: EditorState, lineStart: number, lineEnd: number)
 }
 
 /**
- * Fold service for markdown headings.
+ * The fold range for the heading on this line, or null if the line is not a
+ * heading. Kept separate from the `foldService` wrapper so callers that mean
+ * *this* rule can ask for it directly: `foldable()` consults every registered
+ * service, and a stale position handed to it happily comes back with some
+ * unrelated construct's range (`fold-memory.ts` learned this by refolding a
+ * paragraph after its heading was deleted).
  */
-export const markdownFoldService = foldService.of((state, lineStart, lineEnd) => {
+export function headingFoldRange(
+  state: EditorState,
+  lineStart: number,
+  lineEnd: number
+): { from: number; to: number } | null {
   const headingLevel = getHeadingLevel(state, lineStart, lineEnd);
   if (headingLevel === 0) return null;
 
@@ -62,7 +71,12 @@ export const markdownFoldService = foldService.of((state, lineStart, lineEnd) =>
   if (foldFrom >= foldTo) return null;
 
   return { from: foldFrom, to: foldTo };
-});
+}
+
+/**
+ * Fold service for markdown headings.
+ */
+export const markdownFoldService = foldService.of(headingFoldRange);
 
 /**
  * Click handler: clicking the ::before area of a heading toggles fold.

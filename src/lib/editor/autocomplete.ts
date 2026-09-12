@@ -70,26 +70,87 @@ function handleEnterInList(view: EditorView): boolean {
   return false;
 }
 
+const LIST_LINE_RE = /^\s*([-*+]|\d+\.)\s/;
+const INDENT_UNIT = '  ';
+
+/**
+ * Line numbers a selection covers, for the purpose of a block operation.
+ *
+ * A range that ends exactly at the start of a line does not include that line:
+ * selecting three items by dragging past the third one's newline would
+ * otherwise also indent the untouched fourth.
+ */
+export function selectedLineNumbers(
+  doc: Text,
+  ranges: readonly { from: number; to: number }[]
+): number[] {
+  const seen = new Set<number>();
+  for (const range of ranges) {
+    const first = doc.lineAt(range.from);
+    let lastNumber = doc.lineAt(range.to).number;
+    if (
+      range.to > range.from &&
+      lastNumber > first.number &&
+      doc.line(lastNumber).from === range.to
+    ) {
+      lastNumber--;
+    }
+    for (let ln = first.number; ln <= lastNumber; ln++) seen.add(ln);
+  }
+  return [...seen].sort((a, b) => a - b);
+}
+
+/**
+ * One `changes` spec covering every list line in the selection.
+ *
+ * Built over all selected lines rather than the line under the main cursor:
+ * with several items selected, Tab used to move only the first one. Selected
+ * lines that are not list items are left alone — a wrapped paragraph inside an
+ * item must not collect two stray spaces.
+ *
+ * Returns `null` when the selection contains no list line at all, so the
+ * caller can fall through to whatever else is bound to Tab.
+ */
+export function computeListIndentChanges(
+  doc: Text,
+  ranges: readonly { from: number; to: number }[],
+  indent: boolean
+): ChangeSpec[] | null {
+  const changes: ChangeSpec[] = [];
+  let sawListLine = false;
+
+  for (const ln of selectedLineNumbers(doc, ranges)) {
+    const line = doc.line(ln);
+    if (!LIST_LINE_RE.test(line.text)) continue;
+    sawListLine = true;
+
+    if (indent) {
+      changes.push({ from: line.from, insert: INDENT_UNIT });
+    } else if (line.text.startsWith(INDENT_UNIT)) {
+      changes.push({ from: line.from, to: line.from + INDENT_UNIT.length, insert: '' });
+    }
+  }
+
+  return sawListLine ? changes : null;
+}
+
 function handleTabInList(view: EditorView, indent: boolean): boolean {
   const { state } = view;
-  const { from } = state.selection.main;
-  const line = state.doc.lineAt(from);
-  const text = line.text;
+  const changes = computeListIndentChanges(state.doc, state.selection.ranges, indent);
 
-  if (!/^\s*([-*+]|\d+\.)\s/.test(text)) return false;
+  // No list line in the selection — let the next binding have the key.
+  if (changes === null) return false;
+  // A list, but already flush left on outdent: swallow the key rather than
+  // letting Tab move focus out of the editor mid-list.
+  if (changes.length === 0) return true;
 
-  if (indent) {
-    view.dispatch({
-      changes: { from: line.from, insert: '  ' },
-      selection: { anchor: from + 2 },
-    });
-  } else {
-    if (!text.startsWith('  ')) return true;
-    view.dispatch({
-      changes: { from: line.from, to: line.from + 2, insert: '' },
-      selection: { anchor: Math.max(line.from, from - 2) },
-    });
-  }
+  const changeSet = state.changes(changes);
+  view.dispatch({
+    changes: changeSet,
+    // assoc 1 keeps a caret that sits at the very start of a line in front of
+    // the marker, instead of stranding it before the spaces just inserted.
+    selection: state.selection.map(changeSet, 1),
+  });
 
   renumberOrderedListAround(view);
   return true;

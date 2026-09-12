@@ -48,6 +48,29 @@ class BulletWidget extends WidgetType {
   }
 }
 
+/**
+ * How deep this item sits, counting from 1. Derived from the tree rather than
+ * from the leading whitespace so a document written with four-space indents
+ * steps by the same amount as one written with two.
+ */
+export function listItemDepth(node: SyntaxNode): number {
+  let depth = 0;
+  for (let p: SyntaxNode | null = node.parent; p; p = p.parent) {
+    if (p.name === 'BulletList' || p.name === 'OrderedList') depth++;
+  }
+  return depth;
+}
+
+// Two source spaces per level render as ~9px, which is too little to read as a
+// hierarchy. The line decoration adds the rest; levels past this cap share the
+// deepest step rather than marching off the right edge.
+const MAX_INDENT_DEPTH = 6;
+
+const depthLines: readonly Decoration[] = Array.from(
+  { length: MAX_INDENT_DEPTH + 1 },
+  (_, depth) => Decoration.line({ class: `cm-md-list-d${depth}` })
+);
+
 export function decorateListItem(
   view: EditorView,
   node: SyntaxNode,
@@ -57,6 +80,15 @@ export function decorateListItem(
   if (!listMark) return;
 
   const doc = view.state.doc;
+
+  // Emitted before every early return below, and regardless of `shouldReveal`:
+  // the indent must not shift sideways when the caret lands on the line.
+  const depth = Math.min(listItemDepth(node), MAX_INDENT_DEPTH);
+  if (depth > 1) {
+    const lineFrom = doc.lineAt(node.from).from;
+    builder.add(lineFrom, lineFrom, depthLines[depth]);
+  }
+
   const afterMark = doc.sliceString(listMark.to, Math.min(listMark.to + 5, doc.length));
 
   const checkboxMatch = afterMark.match(/^\s\[([x ])\]/);

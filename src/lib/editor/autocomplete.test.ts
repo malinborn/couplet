@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { EditorState } from '@codemirror/state';
-import { computeOrderedListRenumberChanges } from './autocomplete.js';
+import {
+  computeOrderedListRenumberChanges,
+  computeListIndentChanges,
+  selectedLineNumbers,
+} from './autocomplete.js';
 
 function applyRenumber(initial: string, anchorLineNumber: number): string {
   const state = EditorState.create({ doc: initial });
@@ -109,5 +113,110 @@ describe('computeOrderedListRenumberChanges', () => {
     const state = EditorState.create({ doc: 'just text\nno list here' });
     const changes = computeOrderedListRenumberChanges(state.doc, 1);
     expect(changes).toEqual([]);
+  });
+});
+
+describe('computeListIndentChanges', () => {
+  function apply(
+    initial: string,
+    range: { from: number; to: number },
+    indent: boolean
+  ): string | null {
+    const state = EditorState.create({ doc: initial });
+    const changes = computeListIndentChanges(state.doc, [range], indent);
+    if (changes === null) return null;
+    return state.update({ changes }).newDoc.toString();
+  }
+
+  /** A range running from inside `fromLine` to inside `toLine`. */
+  function spanLines(doc: string, fromLine: number, toLine: number) {
+    const state = EditorState.create({ doc });
+    return {
+      from: state.doc.line(fromLine).from + 3,
+      to: state.doc.line(toLine).from + 3,
+    };
+  }
+
+  it('indents every selected item, not just the first', () => {
+    const doc = ['- alpha', '- bravo', '- charlie', '- delta'].join('\n');
+    expect(apply(doc, spanLines(doc, 2, 4), true)).toBe(
+      ['- alpha', '  - bravo', '  - charlie', '  - delta'].join('\n')
+    );
+  });
+
+  it('outdents every selected item', () => {
+    const doc = ['- alpha', '  - bravo', '  - charlie'].join('\n');
+    expect(apply(doc, spanLines(doc, 2, 3), false)).toBe(
+      ['- alpha', '- bravo', '- charlie'].join('\n')
+    );
+  });
+
+  it('claims the key but changes nothing when every item is already flush left', () => {
+    const doc = ['- alpha', '- bravo'].join('\n');
+    const state = EditorState.create({ doc });
+    expect(
+      computeListIndentChanges(state.doc, [spanLines(doc, 1, 2)], false)
+    ).toEqual([]);
+  });
+
+  it('outdents only the items that have room, in a mixed selection', () => {
+    const doc = ['- alpha', '  - bravo', '- charlie'].join('\n');
+    expect(apply(doc, spanLines(doc, 1, 3), false)).toBe(
+      ['- alpha', '- bravo', '- charlie'].join('\n')
+    );
+  });
+
+  it('skips non-list lines inside the selection', () => {
+    const doc = ['- alpha', '  continuation', '- bravo', '', 'plain paragraph'].join('\n');
+    const state = EditorState.create({ doc });
+    expect(apply(doc, { from: 0, to: state.doc.length }, true)).toBe(
+      ['  - alpha', '  continuation', '  - bravo', '', 'plain paragraph'].join('\n')
+    );
+  });
+
+  it('returns null when the selection holds no list line at all', () => {
+    const doc = ['plain one', 'plain two'].join('\n');
+    const state = EditorState.create({ doc });
+    expect(
+      computeListIndentChanges(state.doc, [{ from: 0, to: state.doc.length }], true)
+    ).toBeNull();
+  });
+
+  it('handles a bare cursor exactly as before', () => {
+    const doc = ['- alpha', '- bravo'].join('\n');
+    const state = EditorState.create({ doc });
+    const at = state.doc.line(2).from + 3;
+    expect(apply(doc, { from: at, to: at }, true)).toBe(['- alpha', '  - bravo'].join('\n'));
+  });
+
+  it('works on ordered lists too', () => {
+    const doc = ['1. one', '2. two', '3. three'].join('\n');
+    expect(apply(doc, spanLines(doc, 2, 3), true)).toBe(
+      ['1. one', '  2. two', '  3. three'].join('\n')
+    );
+  });
+});
+
+describe('selectedLineNumbers', () => {
+  it('excludes a trailing line the selection only just reaches', () => {
+    const state = EditorState.create({ doc: ['a', 'b', 'c'].join('\n') });
+    const range = { from: state.doc.line(1).from, to: state.doc.line(3).from };
+    expect(selectedLineNumbers(state.doc, [range])).toEqual([1, 2]);
+  });
+
+  it('keeps a single line when the cursor sits at its start', () => {
+    const state = EditorState.create({ doc: ['a', 'b'].join('\n') });
+    const at = state.doc.line(2).from;
+    expect(selectedLineNumbers(state.doc, [{ from: at, to: at }])).toEqual([2]);
+  });
+
+  it('merges overlapping ranges without repeating a line', () => {
+    const { doc } = EditorState.create({ doc: ['a', 'b', 'c'].join('\n') });
+    expect(
+      selectedLineNumbers(doc, [
+        { from: doc.line(1).from, to: doc.line(2).to },
+        { from: doc.line(2).from, to: doc.line(3).to },
+      ])
+    ).toEqual([1, 2, 3]);
   });
 });
