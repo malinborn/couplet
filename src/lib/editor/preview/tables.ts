@@ -855,6 +855,14 @@ interface ColCtrl {
   scheduleHide(): void;
 }
 
+/** Живо ли выделение текста внутри `root` (ячейки — вложенные editing host'ы). */
+function selectionInside(root: HTMLElement): boolean {
+  const sel = document.getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
+  const node = sel.anchorNode;
+  return node !== null && root.contains(node);
+}
+
 function createColCtrl(view: EditorView, ctx: TableContext, wrap: HTMLElement): ColCtrl {
   const el = document.createElement('span');
   el.className = 'cm-md-table-col-ctrl';
@@ -879,6 +887,13 @@ function createColCtrl(view: EditorView, ctx: TableContext, wrap: HTMLElement): 
   const attach = (cellEl: HTMLElement, colIndex: number): void => {
     window.clearTimeout(hideTimer);
     target = { cellEl, colIndex };
+    // Выделение текста в ячейке поднимает над заголовком свой тулбар (💬 и
+    // прочее) — ровно в ту полосу, где стоит эта панель. Пока выделение живо,
+    // панель уступает место: намерение пользователя сейчас в выделении.
+    if (selectionInside(wrap)) {
+      el.dataset.visible = 'false';
+      return;
+    }
     const cellRect = cellEl.getBoundingClientRect();
     const wrapRect = wrap.getBoundingClientRect();
     el.style.left = `${cellRect.left - wrapRect.left + cellRect.width / 2}px`;
@@ -898,6 +913,23 @@ function createColCtrl(view: EditorView, ctx: TableContext, wrap: HTMLElement): 
 
   el.addEventListener('mouseenter', () => window.clearTimeout(hideTimer));
   el.addEventListener('mouseleave', scheduleHide);
+
+  // Начало любого взаимодействия внутри таблицы гасит панель. Нажатия на её
+  // собственные кнопки сюда не доходят: `mkBtn` глушит всплытие, поэтому
+  // перетаскивание колонки панель не прячет.
+  wrap.addEventListener('mousedown', () => {
+    el.dataset.visible = 'false';
+  });
+  // По отпусканию кнопки решаем заново: выделения нет — панель возвращается,
+  // хотя `mouseenter` больше не придёт (указатель так и стоит в той ячейке).
+  wrap.addEventListener('mouseup', () => {
+    const restore = target;
+    if (!restore) return;
+    window.setTimeout(() => {
+      if (drag.matches(':active')) return;
+      attach(restore.cellEl, restore.colIndex);
+    }, 0);
+  });
 
   return { el, attach, scheduleHide };
 }
