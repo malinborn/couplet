@@ -4,7 +4,7 @@ import { ensureSyntaxTree } from '@codemirror/language';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
 import { Strikethrough, Table } from '@lezer/markdown';
-import { planJsonFormat, shouldFenceAt } from './json-fence';
+import { documentPathField, planJsonFormat, setDocumentPath, shouldFenceAt } from './json-fence';
 
 const MINIFIED = '{"a":1,"b":[2,3]}';
 const EXPANDED = '{\n  "a": 1,\n  "b": [\n    2,\n    3\n  ]\n}';
@@ -13,16 +13,32 @@ const FENCED = '```json\n' + EXPANDED + '\n```';
 const md = (): Extension =>
   markdown({ base: markdownLanguage, codeLanguages: languages, extensions: [Strikethrough, Table] });
 
-/** A parsed state. The fence decision reads the tree, so it must exist. */
-function mdState(doc: string): EditorState {
-  const state = EditorState.create({ doc, extensions: [md()] });
+/**
+ * A state for a buffer at `path`, with the syntax tree parsed.
+ *
+ * The markdown language is installed in every case on purpose: for a `.py`
+ * buffer that is exactly the state the real editor is in for a moment, because
+ * `Editor.svelte` loads a code language asynchronously and never loads one at
+ * all for an unrecognised extension. If the fence decision could be reached
+ * through the active language, these tests would not catch it.
+ */
+function stateFor(path: string | null, doc: string): EditorState {
+  const state = EditorState.create({
+    doc,
+    extensions: [md(), documentPathField],
+  }).update({ effects: setDocumentPath.of(path) }).state;
   ensureSyntaxTree(state, doc.length, 5000);
   return state;
 }
 
-/** No language — md-mini's env mode, and the same branch code-file mode takes. */
+/** A markdown buffer — the branch that gets a fence. */
+function mdState(doc: string): EditorState {
+  return stateFor('/Users/me/notes.md', doc);
+}
+
+/** A `.json` buffer — bare, exactly as it formats today. */
 function codeState(doc: string): EditorState {
-  return EditorState.create({ doc });
+  return stateFor('/Users/me/data.json', doc);
 }
 
 /** Apply a plan to its own document, so the test reads as before/after. */
@@ -34,6 +50,71 @@ function applied(state: EditorState, from = 0, to = state.doc.length): string | 
   );
 }
 
+describe('the rule, keyed on file type', () => {
+  const FENCED_TYPES = [
+    null,                       // untitled — a new window
+    '/Users/me/notes.md',
+    '/Users/me/notes.markdown',
+    '/Users/me/notes.txt',
+    '/Users/me/NOTES.MD',       // the extension is lowercased before matching
+  ];
+
+  const BARE_TYPES = [
+    '/Users/me/data.json',
+    '/Users/me/script.py',
+    '/Users/me/Program.cs',
+    '/Users/me/deploy.sh',
+    '/Users/me/main.rs',
+    '/Users/me/index.ts',
+    '/Users/me/config.yml',
+    '/Users/me/.zshrc',         // extensionless shell config, not "no extension"
+    '/Users/me/.env.local',     // env mode
+    '/Users/me/README',         // no extension at all — still a code buffer
+  ];
+
+  for (const path of FENCED_TYPES) {
+    it(`fences in ${path ?? 'an untitled buffer'}`, () => {
+      const state = stateFor(path, MINIFIED);
+      expect(shouldFenceAt(state, 0)).toBe(true);
+      expect(planJsonFormat(state, 0, MINIFIED.length)?.fenced).toBe(true);
+    });
+  }
+
+  for (const path of BARE_TYPES) {
+    it(`does NOT fence in ${path}`, () => {
+      const state = stateFor(path, MINIFIED);
+      expect(shouldFenceAt(state, 0)).toBe(false);
+      const plan = planJsonFormat(state, 0, MINIFIED.length)!;
+      expect(plan.fenced).toBe(false);
+      expect(plan.insert).toBe(EXPANDED);
+    });
+  }
+
+  it('never writes a ``` line into a .py buffer — the corruption case', () => {
+    // Three backticks in Python source is a syntax error, not a cosmetic
+    // mistake. Checked on the plan and on the resulting document, for a
+    // selection, for the whole buffer, and for JSON sitting mid-line among
+    // real Python — every route the formatter can be reached by.
+    const source = 'payload = ' + MINIFIED + '\nprint(payload)\n';
+    const state = stateFor('/Users/me/script.py', source);
+
+    const whole = applied(state);
+    const selected = applied(state, source.indexOf('{'), source.indexOf('}') + 1);
+
+    expect(whole).toBeNull(); // the whole file is not JSON end to end
+    expect(selected).not.toBeNull();
+    expect(selected).not.toContain('```');
+    expect(selected!.startsWith('payload = ')).toBe(true);
+    expect(selected).toContain('print(payload)');
+  });
+
+  it('a .py buffer holding nothing but JSON still gets no fence', () => {
+    const state = stateFor('/Users/me/fixture.py', MINIFIED);
+    expect(applied(state)).toBe(EXPANDED);
+    expect(applied(state)).not.toContain('`');
+  });
+});
+
 describe('shouldFenceAt', () => {
   it('is true in ordinary markdown prose', () => {
     expect(shouldFenceAt(mdState('hello world'), 3)).toBe(true);
@@ -43,8 +124,24 @@ describe('shouldFenceAt', () => {
     expect(shouldFenceAt(mdState(''), 0)).toBe(true);
   });
 
-  it('is false when markdown is not the active language', () => {
+  it('is false in a .json buffer', () => {
     expect(shouldFenceAt(codeState(MINIFIED), 0)).toBe(false);
+  });
+
+  it('is false even while markdown is still the active language', () => {
+    // The window `Editor.svelte`'s async `lang.load()` leaves open. The state
+    // below has the markdown language installed and a `.py` path — which is
+    // precisely the real editor one tick after opening a Python file.
+    const state = stateFor('/Users/me/script.py', MINIFIED);
+    expect(markdownLanguage.isActiveAt(state, 0, 1)).toBe(true);
+    expect(shouldFenceAt(state, 0)).toBe(false);
+  });
+
+  it('treats a state with no documentPathField as untitled', () => {
+    // Editor.svelte always installs it; a bare EditorState in a test has no
+    // file, and no file is what an untitled buffer is.
+    const bare = EditorState.create({ doc: 'hello', extensions: [md()] });
+    expect(shouldFenceAt(bare, 0)).toBe(true);
   });
 
   it('is false inside a ```json fence', () => {
@@ -134,13 +231,13 @@ describe('planJsonFormat — inside code, where a fence would be wrong', () => {
     );
   });
 
-  it('never emits a fence when markdown is not the active language', () => {
+  it('never emits a fence in a .json buffer', () => {
     const plan = planJsonFormat(codeState(MINIFIED), 0, MINIFIED.length)!;
     expect(plan.fenced).toBe(false);
     expect(plan.insert).toBe(EXPANDED);
   });
 
-  it('has nothing to do for already-expanded JSON in code-file mode', () => {
+  it('has nothing to do for already-expanded JSON in a .json buffer', () => {
     expect(planJsonFormat(codeState(EXPANDED), 0, EXPANDED.length)).toBeNull();
   });
 });

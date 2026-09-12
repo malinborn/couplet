@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findCodeLanguage, FILENAME_LANGUAGE, isShellConfig } from './file-language';
+import { findCodeLanguage, FILENAME_LANGUAGE, isShellConfig, MARKDOWN_EXTENSIONS, isMarkdownBuffer } from './file-language';
 
 describe('isShellConfig', () => {
   it('returns true for .zshrc', () => {
@@ -145,5 +145,112 @@ describe('findCodeLanguage', () => {
       // language-data includes Markdown; main point is extension path works
       expect(lang).not.toBeNull();
     });
+  });
+});
+
+/**
+ * `isMarkdownBuffer` exists for one caller that cannot afford to be wrong: the
+ * JSON formatter decides from it whether it may write a ```json fence, and a
+ * ``` line in a `.py` or `.cs` buffer is a syntax error inserted into the
+ * user's source (#47).
+ */
+describe('isMarkdownBuffer', () => {
+  describe('markdown-flavoured — these get a fence', () => {
+    it('an untitled buffer', () => {
+      expect(isMarkdownBuffer(null)).toBe(true);
+      expect(isMarkdownBuffer(undefined)).toBe(true);
+      expect(isMarkdownBuffer('')).toBe(true);
+    });
+
+    it('.md and .markdown', () => {
+      expect(isMarkdownBuffer('/Users/me/notes.md')).toBe(true);
+      expect(isMarkdownBuffer('/Users/me/notes.markdown')).toBe(true);
+    });
+
+    it('.txt, which md-mini also opens with live preview', () => {
+      expect(isMarkdownBuffer('/Users/me/notes.txt')).toBe(true);
+    });
+
+    it('is case-insensitive about the extension', () => {
+      expect(isMarkdownBuffer('/Users/me/NOTES.MD')).toBe(true);
+    });
+
+    it('a bare filename with no directory', () => {
+      expect(isMarkdownBuffer('notes.md')).toBe(true);
+    });
+  });
+
+  describe('code buffers — these never get a fence', () => {
+    const codeFiles = [
+      '/Users/me/data.json',
+      '/Users/me/script.py',
+      '/Users/me/Program.cs',
+      '/Users/me/deploy.sh',
+      '/Users/me/main.rs',
+      '/Users/me/app.ts',
+      '/Users/me/style.css',
+      '/Users/me/config.yml',
+      '/Users/me/index.html',
+    ];
+
+    for (const path of codeFiles) {
+      it(path, () => {
+        expect(isMarkdownBuffer(path)).toBe(false);
+      });
+    }
+
+    it('a shell config dotfile, which has no extension but is not markdown', () => {
+      expect(isMarkdownBuffer('/Users/me/.zshrc')).toBe(false);
+      expect(isMarkdownBuffer('/Users/me/.bashrc')).toBe(false);
+    });
+
+    it('env files, which open in their own masking mode', () => {
+      expect(isMarkdownBuffer('/Users/me/.env')).toBe(false);
+      expect(isMarkdownBuffer('/Users/me/.env.local')).toBe(false);
+      expect(isMarkdownBuffer('/Users/me/prod.env')).toBe(false);
+    });
+
+    it('a file with no extension at all', () => {
+      // `path.split('.').pop()` returns the whole path here, which is in no
+      // extension set — the same answer App.svelte's branch gives.
+      expect(isMarkdownBuffer('/Users/me/README')).toBe(false);
+    });
+  });
+
+  describe('agrees with App.svelte\'s open-file branch', () => {
+    /**
+     * A transcription of that branch, kept here so a change to either side
+     * shows up as a failure rather than as a buffer that renders one way and
+     * formats another. Keep in step with `handleOpen` in App.svelte.
+     */
+    function appSvelteBranch(path: string): 'env' | 'code' | 'markdown' {
+      const basename = path.split('/').pop()?.toLowerCase() ?? '';
+      const ext = path.split('.').pop()?.toLowerCase() ?? '';
+      const isEnvFile = basename.startsWith('.env') || ext === 'env';
+      if (isEnvFile) return 'env';
+      if (!MARKDOWN_EXTENSIONS.has(ext)) return 'code';
+      return 'markdown';
+    }
+
+    const paths = [
+      '/Users/me/notes.md',
+      '/Users/me/notes.markdown',
+      '/Users/me/notes.txt',
+      '/Users/me/data.json',
+      '/Users/me/script.py',
+      '/Users/me/Program.cs',
+      '/Users/me/deploy.sh',
+      '/Users/me/.zshrc',
+      '/Users/me/.env',
+      '/Users/me/.env.local',
+      '/Users/me/README',
+      'notes.md',
+    ];
+
+    for (const path of paths) {
+      it(path, () => {
+        expect(isMarkdownBuffer(path)).toBe(appSvelteBranch(path) === 'markdown');
+      });
+    }
   });
 });

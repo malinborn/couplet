@@ -6,33 +6,42 @@
  * points — the paste offer and the `Cmd+Shift+J` / menu command — build their
  * change from, so the two cannot drift.
  *
- * ## The decision
+ * ## The rule (the owner's, keyed on file type)
  *
- * Expanded JSON goes into a ```` ```json ```` fence whenever the document
- * around it is markdown that would otherwise render it.
+ * | Buffer | Result |
+ * |---|---|
+ * | `.md`, `.markdown`, `.txt`, untitled | wrapped in a ```json fence |
+ * | `.json` | bare, exactly as it formats today |
+ * | anything else (`.py`, `.cs`, `.sh`, …) | bare — **never** a fence |
+ *
+ * The reasoning is the third row. Those files open as one big code block, so a
+ * markdown fence is foreign to them — and worse than foreign: three backticks
+ * written into a `.py` or `.cs` buffer is a syntax error inserted into valid
+ * source code. The fence is therefore strictly opt-in for markdown-flavoured
+ * buffers, never a default, and the check is the file type rather than
+ * anything about the editor's current state.
+ *
+ * That last point is the reason this does not ask CodeMirror which language is
+ * active. `Editor.svelte` loads a code language **asynchronously**, and for a
+ * file whose extension matches no language it never reconfigures at all — in
+ * both cases markdown is still the active language while a `.py` file sits on
+ * screen. Asking the file type closes that window; asking the editor does not.
+ *
+ * ## Why a fence at all, in the buffers that get one
  *
  * Bare pretty-printed JSON in a markdown document is not neutral text. Its
  * lines are indented by 4 or more spaces, its brackets read as link syntax
- * (`[` … `]` across lines — #51), and its blank-ish structure produces
- * paragraph breaks that were never in the data. The document ends up
- * displaying something that is not what the user pasted. A fence is the one
- * construct in markdown that means "these characters, exactly"; JSON is data,
- * and data is what a code block is for.
+ * (`[` … `]` across lines — #51), and its structure produces paragraph breaks
+ * that were never in the data. The document ends up displaying something that
+ * is not what the user pasted. A fence is the one construct in markdown that
+ * means "these characters, exactly".
  *
- * The cost is one extra pair of lines in the source. That is visible, easily
- * deleted, and not silent — unlike the render damage it prevents.
- *
- * ## The three edge cases
+ * ## The two calls still left to this file
  *
  * - **Already inside a fence.** No second fence. Nesting one fence inside
  *   another does not produce a nested block, it ends the outer one early, so
  *   the only safe answer is to re-indent in place. Detected structurally
  *   (`FencedCode` / `CodeBlock` ancestor), not by looking for backticks.
- * - **Not markdown at all.** A `.json` file opened in md-mini runs in code-file
- *   mode: the JSON language, no live preview, nothing to protect the text
- *   from. Fencing there would turn a valid JSON file into an invalid one. So
- *   the fence is conditional on markdown actually being the active language at
- *   that position.
  * - **Pasted mid-paragraph.** A fence has to own whole lines: an opening
  *   ```` ``` ```` with prose in front of it on the same line is not a fence at
  *   all. So when text precedes the JSON on its line, a newline is inserted
@@ -41,16 +50,42 @@
  *   sits on either side, the replaced range is widened to swallow it instead,
  *   so no blank line is left behind.
  *
- * Undo is unaffected: the fence, the JSON and the added newlines are one
- * `insert` in one change in one transaction, so one `Cmd+Z` still puts the
- * document back exactly as it was.
+ * Undo is unaffected in every branch of the rule: fenced or bare, the whole
+ * result is one `insert` in one change in one transaction, so one `Cmd+Z` puts
+ * the document back exactly as it was.
  */
 
-import { EditorState } from '@codemirror/state';
+import { EditorState, StateEffect, StateField, type Extension } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
-import { markdownLanguage } from '@codemirror/lang-markdown';
 import type { SyntaxNode } from '@lezer/common';
 import { analyzeJson } from './json-format';
+import { isMarkdownBuffer } from './file-language';
+
+/** Point the editor state at the file it is showing. `null` is untitled. */
+export const setDocumentPath = StateEffect.define<string | null>();
+
+/**
+ * The path of the file in this window, or `null` for an untitled buffer.
+ *
+ * A StateField rather than a prop because the fence decision is made inside a
+ * CM6 `Command` (`Cmd+Shift+J`) and a `ViewPlugin` (the paste notifier), and
+ * neither can be handed an extra argument.
+ *
+ * `Editor.svelte` installs it per window and keeps it current from
+ * `fileState.filePath`, which covers open, save-as and new alike.
+ */
+export const documentPathField = StateField.define<string | null>({
+  create: () => null,
+  update(value, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(setDocumentPath)) return effect.value;
+    }
+    return value;
+  },
+});
+
+/** Install the field. Appended per window in `Editor.svelte`. */
+export const jsonDocumentPath: Extension = documentPathField;
 
 /** The change to dispatch. `from`/`to` are current document coordinates. */
 export interface JsonFormatPlan {
@@ -74,15 +109,18 @@ const CODE_CONTEXT_NODES = new Set(['FencedCode', 'CodeBlock', 'CodeText']);
  * True when a fence should be added around JSON inserted at `pos`.
  *
  * Two independent reasons to say no, in the order they are cheapest to check.
+ *
+ * A state with no `documentPathField` reads as untitled, i.e. markdown. That is
+ * right for the editor (`Editor.svelte` always installs it, and a window with
+ * no file open genuinely is untitled) and it is the honest default for a plain
+ * `EditorState` in a test — but it does mean the field, not an omission, is
+ * what keeps a `.py` buffer safe.
  */
 export function shouldFenceAt(state: EditorState, pos: number): boolean {
-  // Code-file mode (a .json file), or env mode, or the body of a fence whose
-  // info string named a language that has been loaded — in all of those the
-  // active language at `pos` is not markdown.
-  if (!markdownLanguage.isActiveAt(state, pos, 1)) return false;
+  if (!isMarkdownBuffer(state.field(documentPathField, false) ?? null)) return false;
 
-  // A fence with no info string, or one whose language has not loaded yet,
-  // still parses as markdown inside. Catch it structurally.
+  // Inside a fence already, or inside an indented code block. Structural, so a
+  // fence with no info string counts the same as ```json.
   let node: SyntaxNode | null = syntaxTree(state).resolve(pos, 1);
   while (node) {
     if (CODE_CONTEXT_NODES.has(node.name)) return false;
