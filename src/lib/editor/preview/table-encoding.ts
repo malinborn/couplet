@@ -46,3 +46,35 @@ export function encodedOffset(textareaValue: string, offset: number): number {
   const clamped = Math.max(0, Math.min(offset, body.length));
   return encodeBody(body.slice(0, clamped)).length;
 }
+
+/**
+ * The inverse: where `offset` in a cell's source lands in
+ * `decodeForEdit(cellText)`.
+ *
+ * Needed when a click parks the caret in a cell and the user then types: the
+ * offset is computed against the *source* (through `cellSpans`), but the text
+ * the overlay opens on is the decoded form (#53).
+ *
+ * Walks the escapes rather than decoding a prefix, because `cellText.slice(0,
+ * offset)` can cut a `<br>` or a `\|` in half and the partial token would then
+ * survive the decode and count as several characters. An offset landing inside
+ * such a token resolves to just after it — there is no position between the
+ * `\` and the `|` in the decoded text to resolve to.
+ */
+export function decodedOffset(cellText: string, offset: number): number {
+  const clamped = Math.max(0, Math.min(offset, cellText.length));
+  let src = 0;
+  let dec = 0;
+  while (src < clamped) {
+    const br = /^<br\s*\/?>/i.exec(cellText.slice(src));
+    if (br) {
+      src += br[0].length;
+    } else if (cellText.startsWith('\\|', src)) {
+      src += 2;
+    } else {
+      src += 1;
+    }
+    dec += 1;
+  }
+  return dec;
+}

@@ -10,43 +10,96 @@ import {
 import { EditorView, ViewPlugin, keymap } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import type { SyntaxNode } from '@lezer/common';
+import { markupModelField, type MarkupPair } from './atomic';
+import { wellFormedMarkup } from './markup-repair';
+import { isDelimiterRunPair } from './markup-whitespace';
 import '../../../styles/live-render-caret.css';
 
 /**
- * Live-render, Phase 5 — inline-format continuation.
+ * Live-render — **inline-format continuation** (#32, #66) and the data behind
+ * the format-aware caret (#67).
  *
- * Under the `'never'` reveal policy (Phase 1) markdown markers stay hidden
- * permanently, and Phase 2's `caretNormalizeFilter` collapses every caret
- * position inside a hidden marker onto the single canonical position
- * *outside* it (`resolveInner`'s outer edge). That is correct for caret
- * placement, but it means the closing `**` of `**bold**` and the character
- * right after it now paint at the same screen pixel — there is no visual
- * difference between "about to type inside the bold" and "about to type
- * after it".
+ * ## What the caret's offset already tells us, and what it cannot
  *
- * This module resolves the ambiguity by policy, the same way Notion and
- * Google Docs do: typing at that boundary **continues** the format by
- * default (`continuationRedirect`). Leaving the format is an explicit act —
- * `Escape`, or a Cmd+B-family toggle with an empty selection at the
- * boundary (see `continuationFormatExitSpec`) — never the arrow keys. An
- * arrow press at this boundary would move the caret two document offsets
- * without moving it one screen pixel (the marker is zero-width), which
- * reads as a dead key; binding exit to arrows was rejected in planning for
- * exactly that reason, so this module does not touch arrow key handling at
- * all.
+ * For `**bold**`, the position before the closing marker and the position
+ * after it paint at the same pixel, because the markers are zero-width and
+ * absent from the DOM. #32 measured that the two are nevertheless reached by
+ * **different gestures**, on `Абзац с **жирным** словом.` (content 10..16,
+ * closing marker 16..18):
  *
- * Everything that decides *whether* to redirect is a pure function of
- * `EditorState` (`findContinuationBoundary`, `continuationRedirect`,
- * `continuationEscapeSpec`, `continuationFormatExitSpec`,
- * `isContinuationActive`) so it is testable without a DOM — this project's
- * test env has no jsdom and no test constructs a real `EditorView`. Only
- * the thin wrappers at the bottom (`continuationInputHandler`, the caret
- * `ViewPlugin`, `exitContinuationOnEscape`) touch a view.
+ * | how the caret gets there | offset | so typing goes |
+ * |---|---|---|
+ * | typing the last content character | 16 | inside |
+ * | ArrowRight from inside the word | 16 | inside |
+ * | clicking the space after the word | 18 | outside |
+ * | ArrowRight once more, from 16 | 18 | outside |
+ *
+ * That measurement is still true and this module still honours it. Offset 16
+ * means "I came from inside"; offset 18 means "I clicked next to it". Nothing
+ * here redirects 18 back to 16 — the single most reported thing about this mode
+ * was exactly that redirect, and it stays gone.
+ *
+ * ## Why continuation is nevertheless the default now (#66)
+ *
+ * #32 concluded from the table above that continuation should be *opt-in*. It
+ * read the evidence right and drew one conclusion too many, because there was a
+ * third thing happening at offset 16 that nobody had looked at: typing a
+ * **space** there produced `**как **`, which CommonMark refuses to parse
+ * (a closing delimiter run may not follow whitespace). Lezer dropped the
+ * `StrongEmphasis`, the markers stopped being hidden, and four characters of
+ * raw markup appeared mid-sentence — #66. So "typing at 16 continues the
+ * format" was never actually true; it was true for letters and broken for the
+ * one character that ends every word.
+ *
+ * With `markup-whitespace.ts` holding the invariant, the space is written
+ * *outside* the span (`**как** `) and the document is well-formed at every
+ * keystroke. What is left is the part a filter cannot know: the user has not
+ * finished the bold phrase, they have only finished a word. That is what this
+ * module now carries — a **pending format**, set when a space is deflected out
+ * of a span, which makes the next character step back inside.
+ *
+ * So the two things coexist without either being weakened:
+ *
+ * - **The offset still decides**, and continuation-by-default lives entirely at
+ *   offset 16. Typing there continues the format, for letters as before and now
+ *   for spaces too.
+ * - **A click still lands at 18 and still types plain text.** Pending format is
+ *   only ever set by an action taken *from inside* the span — deflecting a
+ *   space out of it — or by an explicit Cmd+B. A click sets nothing, so
+ *   "click in the space after a bold word, type, get bold" remains fixed.
+ *
+ * ## Turning it off
+ *
+ * Two gestures, and **neither touches the document** — they only change editor
+ * state, so no whitespace-sensitive markdown (a two-space hard line break, list
+ * indentation) can be disturbed by ending a format:
+ *
+ * - **Escape** — the meaning this mode already documents, "leave the inline
+ *   format span". At a pending boundary it clears the pending format; at the
+ *   inner edge it steps the caret out to the far side of the closing marker.
+ *   Where no inline format is active it returns `false` and falls through
+ *   untouched, so clearing AI highlights and closing panels still work.
+ * - **The matching format key** (Cmd+B for bold, Cmd+I for italic,
+ *   Cmd+Shift+X for strikethrough) — the toggle reading of a toggle key: the
+ *   format is on, the key turns it off. Pressed where that format is *not*
+ *   active it is the ordinary toggle, unchanged, in both engines.
+ *
+ * A third one is implicit and is the one people actually use: move the caret
+ * anywhere else and the pending format is gone, because it is validated against
+ * the caret on every transaction rather than stored as a mode.
+ *
+ * Everything that decides *what happens* is a pure function of `EditorState`
+ * (`planContinuationInsert`, `continuationEscapeSpec`, `continuationFormatKeySpec`,
+ * `activeFormatsAt`, `pendingFormatAt`) so it is testable without a DOM — this
+ * project's test env has no jsdom and no test constructs a real `EditorView`.
+ * Only the thin wrappers at the bottom touch a view. Note the standing warning
+ * in `CLAUDE.md` though: anything routed through a keymap or an `inputHandler`
+ * cannot be proved by those tests. Drive the real app.
  */
 
 export type ContinuableKind = 'strong' | 'emphasis' | 'strikethrough' | 'inlineCode';
 
-/** The subset continuable via the existing Cmd+B / Cmd+I / Cmd+Shift+X bindings — see `continuationFormatExitSpec`. */
+/** The subset continuable via the existing Cmd+B / Cmd+I / Cmd+Shift+X bindings. */
 export type ExitableFormatKind = 'strong' | 'emphasis' | 'strikethrough';
 
 const NODE_NAME: Record<ContinuableKind, string> = {
@@ -70,10 +123,16 @@ const KIND_BY_NODE_NAME: ReadonlyMap<string, ContinuableKind> = new Map(
   (Object.entries(NODE_NAME) as [ContinuableKind, string][]).map(([kind, name]) => [name, kind])
 );
 
+const CONTINUABLE_PAIR_KINDS: ReadonlySet<string> = new Set(Object.keys(NODE_NAME));
+
+function isContinuablePair(pair: MarkupPair): boolean {
+  return CONTINUABLE_PAIR_KINDS.has(pair.kind);
+}
+
 export interface ContinuationBoundary {
   kind: ContinuableKind;
   node: SyntaxNode;
-  /** Position right before the closing marker starts — where continued typing should land. */
+  /** Position right before the closing marker starts — where continued typing lands. */
   insertAt: number;
 }
 
@@ -86,12 +145,8 @@ export interface ContinuationBoundary {
  *
  * That bias also decides the adjacent-spans case (`**a**_b_`, boundary at
  * the position between them): it resolves to the `StrongEmphasis` that
- * ends there, not the `Emphasis` that begins there, so typing continues the
- * span that was just closed rather than reaching into the one that hasn't
- * started yet. Reaching into an unopened node has no natural meaning here —
- * "continuation" is inherently about the format you just finished, not one
- * you're about to start — so favoring the left side is the only reading
- * that makes sense, independent of which format happens to be which.
+ * ends there, not the `Emphasis` that begins there, so a key arms the span
+ * that was just closed rather than reaching into one that hasn't started.
  */
 export function findContinuationBoundary(state: EditorState, pos: number): ContinuationBoundary | null {
   let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, -1);
@@ -101,9 +156,7 @@ export function findContinuationBoundary(state: EditorState, pos: number): Conti
       if (kind) {
         const marks = node.getChildren(MARK_NAME[kind]);
         const closeMark = marks[marks.length - 1];
-        // Guard against a malformed/single-mark node (shouldn't happen for
-        // a well-formed StrongEmphasis/Emphasis/Strikethrough/InlineCode,
-        // but a missing closing mark means there's nothing to continue).
+        // A malformed/single-mark node means there is nothing to continue.
         if (closeMark && closeMark.to === node.to && closeMark.from > node.from) {
           return { kind, node, insertAt: closeMark.from };
         }
@@ -114,145 +167,325 @@ export function findContinuationBoundary(state: EditorState, pos: number): Conti
   return null;
 }
 
-/** Effect carrying the boundary position where continuation is explicitly suppressed, or `null` to clear it. */
-export const setSuppressedBoundary = StateEffect.define<number | null>();
+/**
+ * A format the next typed character should re-enter, even though the caret is
+ * standing outside the span.
+ *
+ * `caret` is where the caret must be for this to apply and `spanEnd` is the
+ * span's outer edge; the text between them is whatever was deflected out
+ * (whitespace, or nothing at all when a Cmd+B armed the boundary directly).
+ * Storing both is what lets the state be **re-validated** on every transaction
+ * instead of trusted: if the caret moved, if the gap stopped being whitespace,
+ * or if the span is no longer there, the pending format simply evaporates. That
+ * is why "move away and come back" is not sticky — it is not a mode.
+ */
+export interface PendingFormat {
+  caret: number;
+  spanEnd: number;
+  kind: ContinuableKind;
+}
+
+/** Effect carrying a pending format, or `null` to clear it. Values are in post-change coordinates. */
+export const setPendingFormat = StateEffect.define<PendingFormat | null>();
 
 /**
- * The one boundary position (if any) where the user has explicitly opted
- * out of continuation — via `Escape` or a Cmd+B-family toggle. `null` means
- * "no suppression active", which is the default (continue).
+ * Is the text between the span and the caret nothing but blanks *on one line*?
  *
- * Cleared automatically the moment the selection ends up anywhere other
- * than this exact position with an empty selection — "moves away and comes
- * back" is not sticky, matching the plan's requirement that suppression is
- * a one-shot exit, not a mode. Mapped through document changes (bias -1,
- * matching the boundary's own "outer edge" convention) so an edit earlier
- * in the document doesn't desync it from the position it actually refers
- * to.
+ * The line test is not a refinement, it is the difference between working and
+ * producing garbage. `\s` matches `\n`, so without it a pending format survived
+ * an Enter and the next character absorbed the closing marker **across the line
+ * break**: measured, `**как**  ` ⏎ `дальше` became `**как  \nдальше**`, which is
+ * not bold at all but two lines of literal asterisks — and it destroyed a
+ * two-space hard break on the way. A marker pair cannot straddle a newline
+ * (`live-render/CLAUDE.md`, "Enter inside a span"), so a format cannot be
+ * pending across one either.
  */
-export const suppressedBoundaryField: StateField<number | null> = StateField.define<number | null>({
-  create: () => null,
-  update(value, tr) {
-    for (const effect of tr.effects) {
-      if (effect.is(setSuppressedBoundary)) {
-        value = effect.value;
-      }
-    }
-    if (value === null) return null;
-    const mapped = tr.changes.mapPos(value, -1);
-    const sel = tr.state.selection.main;
-    if (!sel.empty || sel.head !== mapped) return null;
-    return mapped;
-  },
-});
-
-function isSuppressedAt(state: EditorState, pos: number): boolean {
-  return state.field(suppressedBoundaryField, false) === pos;
+function gapIsBlank(state: EditorState, from: number, to: number): boolean {
+  if (to < from) return false;
+  if (to === from) return true;
+  if (state.doc.lineAt(from).number !== state.doc.lineAt(to).number) return false;
+  return /^[^\S\n]+$/.test(state.sliceDoc(from, to));
 }
 
 /**
- * Pure decision for one typed insertion: redirect it to just before the
- * closing marker (continuing the format), or return `null` to let the
- * caller fall back to default insertion at `[from, to)`.
- *
- * Only handles the simple, single-position case (`from === to`, a plain
- * typed character) — a DOM change that already spans a range is a
- * selection replacement, not a continuation decision, so it's left alone.
+ * Does `value` still describe the state it was recorded against? Everything
+ * this field promises rests on this being re-checked rather than remembered.
  */
-export function continuationRedirect(
+function stillPending(state: EditorState, value: PendingFormat): boolean {
+  const sel = state.selection.main;
+  if (!sel.empty || sel.head !== value.caret) return false;
+  if (value.spanEnd > value.caret) return false;
+  if (!gapIsBlank(state, value.spanEnd, value.caret)) return false;
+  const boundary = findContinuationBoundary(state, value.spanEnd);
+  return !!boundary && boundary.kind === value.kind;
+}
+
+/**
+ * The one pending format, or `null`.
+ *
+ * Mapping happens **before** the effects are applied, which is the opposite of
+ * how this field was written for #32 and is the only order that lets a single
+ * transaction both change the document and set the state that describes the
+ * result: an effect dispatched alongside changes carries post-change
+ * coordinates, so mapping it again would move it twice.
+ */
+export const continuationField: StateField<PendingFormat | null> = StateField.define<PendingFormat | null>({
+  create: () => null,
+  update(value, tr) {
+    if (value && tr.docChanged) {
+      value = {
+        caret: tr.changes.mapPos(value.caret, 1),
+        spanEnd: tr.changes.mapPos(value.spanEnd, -1),
+        kind: value.kind,
+      };
+    }
+    for (const effect of tr.effects) {
+      if (effect.is(setPendingFormat)) value = effect.value;
+    }
+    if (!value) return null;
+    return stillPending(tr.state, value) ? value : null;
+  },
+});
+
+export function pendingFormatAt(state: EditorState, pos: number): PendingFormat | null {
+  const value = state.field(continuationField, false) ?? null;
+  return value && value.caret === pos ? value : null;
+}
+
+/**
+ * Whether the live-render bundle is installed in this state. The field above is
+ * added only by that bundle, so its absence means the flavour is not active.
+ * `keybindings.ts` is shared with live-preview and must be able to ask —
+ * swallowing a key or picking a different command there would change the
+ * existing mode's behaviour.
+ */
+export function isLiveRenderActive(state: EditorState): boolean {
+  return state.field(continuationField, false) !== undefined;
+}
+
+/** Every continuable pair whose *content* covers `pos` — i.e. typing at `pos` produces these formats. */
+function pairsCovering(state: EditorState, pos: number): MarkupPair[] {
+  const { pairs } = state.field(markupModelField);
+  return pairs.filter((p) => isContinuablePair(p) && p.contentFrom <= pos && pos <= p.contentTo);
+}
+
+/**
+ * The outermost delimiter-run span whose content *ends* exactly at `pos` — the
+ * "inner edge". Outermost, because whitespace deflected out of a nested span
+ * has to clear every marker it is inside of: at the end of `*a **b***` the
+ * position is the inner edge of both spans, and stopping at the inner one would
+ * leave the space against the outer one's closing marker.
+ *
+ * Inline code is excluded on purpose: `` `как ` `` is a valid `InlineCode`
+ * (measured), the space is content the user can see, and moving it would be a
+ * bug rather than a repair. See `markup-whitespace.ts`.
+ */
+function spanAtInnerEdge(state: EditorState, pos: number): MarkupPair | null {
+  const { pairs } = state.field(markupModelField);
+  let best: MarkupPair | null = null;
+  for (const pair of pairs) {
+    if (!isDelimiterRunPair(pair) || pair.contentTo !== pos) continue;
+    if (!best || pair.closeTo - pair.openFrom > best.closeTo - best.openFrom) best = pair;
+  }
+  return best;
+}
+
+function startsWithWhitespace(text: string): boolean {
+  return text.length > 0 && /\s/.test(text[0]);
+}
+
+function isAllWhitespace(text: string): boolean {
+  return text.length > 0 && /^\s+$/.test(text);
+}
+
+/**
+ * The whole typing decision for one inserted string, as a pure function.
+ * Returns the transaction to dispatch instead of the default insertion, or
+ * `null` to let CM6 insert normally.
+ *
+ * Only the single-position case (`from === to`, a plain typed character) is
+ * handled — a DOM change that already spans a range is a selection
+ * replacement, not a continuation decision.
+ *
+ * Three outcomes, in the order they are tested:
+ *
+ * 1. **Absorb.** A pending format is live at this caret and the character can
+ *    legally sit before a closing delimiter, so the closing marker moves past
+ *    the deflected whitespace and the new character: `**как** ` + `д` becomes
+ *    `**как д**`. This is the only place that rewrites a marker, and it is why
+ *    the transaction is annotated `wellFormedMarkup` — see below.
+ * 2. **Deflect.** No pending format, the caret is at a span's inner edge, and
+ *    the character is whitespace, which cannot legally sit there. It is written
+ *    on the far side of the closing marker (`**как**` + ` ` → `**как** `) and a
+ *    pending format is recorded so the next character comes back in. Without
+ *    this the document would hold `**как **` until the user typed again — #66.
+ * 3. **Nothing.** Default insertion. Covers a letter typed at the inner edge
+ *    (already inside, already correct, no help needed) and anything typed at
+ *    the outer edge with nothing pending (a click landed there; plain text).
+ *
+ * Whitespace typed *at* a pending boundary also falls to (3): absorbing it
+ * would recreate `**как **`. It inserts plainly and the pending format
+ * survives, so `**как** ` + ` ` + `д` gives `**как  д**` — the two spaces the
+ * user typed, inside the bold they never left.
+ */
+export function planContinuationInsert(
   state: EditorState,
   from: number,
   to: number,
   insert: string
 ): TransactionSpec | null {
   if (from !== to || !insert) return null;
-  const boundary = findContinuationBoundary(state, from);
-  if (!boundary) return null;
-  if (isSuppressedAt(state, from)) return null;
 
+  const pending = pendingFormatAt(state, from);
+  if (pending) {
+    if (startsWithWhitespace(insert)) return null;
+    const boundary = findContinuationBoundary(state, pending.spanEnd);
+    if (!boundary || boundary.kind !== pending.kind) return null;
+    const closeFrom = boundary.insertAt;
+    const closeText = state.sliceDoc(closeFrom, pending.spanEnd);
+    return {
+      changes: [
+        { from: closeFrom, to: pending.spanEnd, insert: '' },
+        { from, to: from, insert: insert + closeText },
+      ],
+      selection: EditorSelection.cursor(from - closeText.length + insert.length),
+      effects: setPendingFormat.of(null),
+      annotations: wellFormedMarkup.of(true),
+      userEvent: 'input.type',
+    };
+  }
+
+  if (!isAllWhitespace(insert)) return null;
+  const span = spanAtInnerEdge(state, from);
+  if (!span) return null;
+  const caret = span.closeTo + insert.length;
   return {
-    changes: { from: boundary.insertAt, to: boundary.insertAt, insert },
-    selection: EditorSelection.cursor(boundary.insertAt + insert.length),
+    changes: { from: span.closeTo, to: span.closeTo, insert },
+    selection: EditorSelection.cursor(caret),
+    effects: setPendingFormat.of({ caret, spanEnd: span.closeTo, kind: span.kind as ContinuableKind }),
     userEvent: 'input.type',
   };
 }
 
-/** Pure decision for `Escape`: suppress continuation at the current boundary, or `null` if there is none. */
+/**
+ * Pure decision for `Escape`. Two jobs, and `null` for everything else so the
+ * key keeps falling through to the AI-highlight and panel handlers exactly as
+ * before — Escape must not grow a third meaning here.
+ *
+ * - at a pending boundary: end the format (state only, no edit);
+ * - at a span's inner edge: leave the span, by moving the caret to the far side
+ *   of the closing marker. Zero pixels of movement, two offsets of meaning —
+ *   which is precisely the distinction the whole module is about.
+ */
 export function continuationEscapeSpec(state: EditorState): TransactionSpec | null {
   const sel = state.selection.main;
   if (!sel.empty) return null;
-  if (!findContinuationBoundary(state, sel.head)) return null;
-  return { effects: setSuppressedBoundary.of(sel.head) };
+  if (pendingFormatAt(state, sel.head)) return { effects: setPendingFormat.of(null) };
+  const span = spanAtInnerEdge(state, sel.head);
+  if (span) return { selection: EditorSelection.cursor(span.closeTo) };
+  return null;
 }
 
 /**
- * Pure decision for a Cmd+B-family toggle: if the selection is empty and
- * sits exactly at `kind`'s continuation boundary, suppress continuation
- * (same effect as `Escape`) instead of letting the normal toggle run.
+ * Pure decision for a Cmd+B-family key with an empty selection, *before* the
+ * ordinary toggle gets a turn. A non-null return means "handled, dispatch this
+ * and stop"; `null` means "not a continuation question" and `keybindings.ts`
+ * proceeds exactly as it did.
  *
- * Contract for the integration step that wires this into `keybindings.ts`
- * (not this module — see report): call this *before* the existing
- * `toggleWrap` for the matching marker. A non-null return means "handled,
- * dispatch this and stop" — do not also call `toggleWrap` for this
- * keypress. A `null` return means "not at this boundary" — proceed with
- * `toggleWrap` exactly as today.
+ * The kind must match the key — Cmd+B only answers for `'strong'` — so
+ * pressing the "wrong" one at a boundary falls through to the normal toggle.
+ * There is no key for `inlineCode`, so an inline-code span cannot be continued
+ * this way; its content is literal text, where continuing is least useful.
  *
- * The kind must match the key: Cmd+B only exits a `'strong'` boundary,
- * Cmd+I only `'emphasis'`, Cmd+Shift+X only `'strikethrough'`. Pressing the
- * "wrong" one at a boundary (e.g. Cmd+I while sitting right after a bold's
- * closing marker) is not an exit for that boundary and falls through to
- * `toggleWrap`'s normal behavior. There is no Cmd+B-family key for
- * `inlineCode` in `keybindings.ts` today, so exiting an inline-code
- * continuation is only reachable via `Escape`.
+ * | caret | effect |
+ * |---|---|
+ * | pending format of this kind | end it |
+ * | inner edge of a span of this kind | leave the span (caret to the outer edge) |
+ * | outer edge of a span of this kind | start a pending format — the opt-in from #32 |
+ * | anywhere else | `null`; ordinary toggle |
+ *
+ * The outer-edge row is also what stops the key from being destructive there:
+ * letting the normal toggle run would resolve the enclosing node and **unwrap**
+ * the span the user was trying to extend.
  */
-/**
- * Whether the live-render bundle is installed in this state. The field below
- * is added only by that bundle, so its absence means the flavour is not
- * active. `keybindings.ts` is shared with live-preview and must be able to ask
- * — swallowing a key or picking a different command there would change the
- * existing mode's behaviour.
- */
-export function isLiveRenderActive(state: EditorState): boolean {
-  return state.field(suppressedBoundaryField, false) !== undefined;
-}
-
-export function continuationFormatExitSpec(
+export function continuationFormatKeySpec(
   state: EditorState,
   kind: ExitableFormatKind
 ): TransactionSpec | null {
   if (!isLiveRenderActive(state)) return null;
   const sel = state.selection.main;
   if (!sel.empty) return null;
+
+  const pending = pendingFormatAt(state, sel.head);
+  if (pending) return pending.kind === kind ? { effects: setPendingFormat.of(null) } : null;
+
+  const inner = spanAtInnerEdge(state, sel.head);
+  if (inner) return inner.kind === kind ? { selection: EditorSelection.cursor(inner.closeTo) } : null;
+
   const boundary = findContinuationBoundary(state, sel.head);
   if (!boundary || boundary.kind !== kind) return null;
-  return { effects: setSuppressedBoundary.of(sel.head) };
+  return {
+    effects: setPendingFormat.of({ caret: sel.head, spanEnd: sel.head, kind }),
+  };
 }
 
-/** View wrapper around `continuationFormatExitSpec` for the future `keybindings.ts` integration — see its contract above. */
-export function exitContinuationOnFormatToggle(view: EditorView, kind: ExitableFormatKind): boolean {
-  const spec = continuationFormatExitSpec(view.state, kind);
+/** View wrapper around `continuationFormatKeySpec` — see its contract above. */
+export function armContinuationOnFormatToggle(view: EditorView, kind: ExitableFormatKind): boolean {
+  const spec = continuationFormatKeySpec(view.state, kind);
   if (!spec) return false;
   view.dispatch(spec);
   return true;
 }
 
 /**
- * Whether the caret is currently in a continuing position: an empty
- * selection sitting at a continuation boundary that is not suppressed.
- * Drives the caret affordance below; exported for testing that logic
- * without touching the DOM-dependent `ViewPlugin`.
+ * **The formats the next typed character will carry** — the data behind #67's
+ * format-aware caret, and the honest answer to "which format am I in", which
+ * in this mode is otherwise invisible because the markers are hidden.
+ *
+ * Two cases, and they are the same two the rest of the module turns on:
+ *
+ * - a pending format is live → report what the span the character will rejoin
+ *   contains, resolved at that span's content end rather than at the caret. So
+ *   the caret is bold *before the first character appears*, which is the whole
+ *   point of the feature.
+ * - otherwise → every continuable span whose **content** covers the caret.
+ *   `contentFrom <= pos <= contentTo` is deliberately inclusive at both ends
+ *   and is exactly #32's offset rule: at offset 16 (inner edge, reached by
+ *   typing or by an arrow) the span counts and the caret is bold; at offset 18
+ *   (outer edge, reached by a click) it does not and the caret is plain. The
+ *   caret therefore *paints* the gesture distinction that used to be
+ *   unobservable.
+ *
+ * Returns every applicable format rather than a winner: `***x***` is bold *and*
+ * italic, and a caret that showed only one of them would be telling the user
+ * something false. Combining the cues is a CSS problem, solved in
+ * `live-render-caret.css`.
+ *
+ * An empty selection only — a range selection has no single "next character",
+ * and the toolbar is the affordance there.
  */
+export function activeFormatsAt(state: EditorState): ContinuableKind[] {
+  const sel = state.selection.main;
+  if (!sel.empty) return [];
+
+  const pending = pendingFormatAt(state, sel.head);
+  if (pending) {
+    const boundary = findContinuationBoundary(state, pending.spanEnd);
+    if (!boundary) return [];
+    return pairsCovering(state, boundary.insertAt).map((p) => p.kind as ContinuableKind);
+  }
+  return pairsCovering(state, sel.head).map((p) => p.kind as ContinuableKind);
+}
+
+/** Kept for the caret affordance's "the user chose this" hint — see the CSS. */
 export function isContinuationActive(state: EditorState): ContinuableKind | null {
   const sel = state.selection.main;
-  if (!sel.empty) return null;
-  const boundary = findContinuationBoundary(state, sel.head);
-  if (!boundary) return null;
-  if (isSuppressedAt(state, sel.head)) return null;
-  return boundary.kind;
+  const pending = pendingFormatAt(state, sel.head);
+  return pending ? pending.kind : null;
 }
 
 function continuationInputHandler(view: EditorView, from: number, to: number, insert: string): boolean {
-  const spec = continuationRedirect(view.state, from, to, insert);
+  const spec = planContinuationInsert(view.state, from, to, insert);
   if (!spec) return false;
   view.dispatch(spec);
   return true;
@@ -265,17 +498,29 @@ function exitContinuationOnEscape(view: EditorView): boolean {
   return true;
 }
 
-/** CSS class toggled on `view.dom` while `isContinuationActive` holds — see `live-render-caret.css`. */
+/** Class on `view.dom` while a pending format is live — see `live-render-caret.css`. */
 const CONTINUATION_ACTIVE_CLASS = 'cm-continuation-active';
 
+/** One class per active format, for the caret shapes of #67. */
+const FORMAT_CLASS: Record<ContinuableKind, string> = {
+  strong: 'cm-fmt-strong',
+  emphasis: 'cm-fmt-emphasis',
+  strikethrough: 'cm-fmt-strikethrough',
+  inlineCode: 'cm-fmt-code',
+};
+
 /**
- * The only way the user can otherwise tell whether the next character will
- * join the format is to try it and see. This plugin toggles a class on the
- * editor root (same idiom as the horizontal-scroll gutter fix in
- * `setup.ts`) so the caret itself can carry the hint — see
- * `live-render-caret.css` for the subtle styling.
+ * Publishes the active formats as classes on the editor root (the same idiom as
+ * the horizontal-scroll gutter fix in `setup.ts`), so the caret can carry them.
+ *
+ * The caret itself stays CM6's: `drawSelection()` owns its position, its
+ * blinking and its `prefers-reduced-motion` handling, and this plugin never
+ * touches the `.cm-cursor` element — it only changes what CSS matches. Styling
+ * `caret-color` would do nothing, because `drawSelection()` ships
+ * `.cm-line { caret-color: transparent !important }` app-wide and draws a div
+ * instead (established in #45).
  */
-const continuationCaretPlugin = ViewPlugin.fromClass(
+const formatCaretPlugin = ViewPlugin.fromClass(
   class {
     constructor(private view: EditorView) {
       this.sync();
@@ -284,34 +529,37 @@ const continuationCaretPlugin = ViewPlugin.fromClass(
       this.sync();
     }
     destroy(): void {
-      this.view.dom.classList.remove(CONTINUATION_ACTIVE_CLASS);
+      this.apply([], false);
     }
     private sync(): void {
-      const active = isContinuationActive(this.view.state) !== null;
-      this.view.dom.classList.toggle(CONTINUATION_ACTIVE_CLASS, active);
+      this.apply(activeFormatsAt(this.view.state), isContinuationActive(this.view.state) !== null);
+    }
+    private apply(formats: ContinuableKind[], pending: boolean): void {
+      const { classList } = this.view.dom;
+      for (const [kind, cls] of Object.entries(FORMAT_CLASS) as [ContinuableKind, string][]) {
+        classList.toggle(cls, formats.includes(kind));
+      }
+      classList.toggle(CONTINUATION_ACTIVE_CLASS, pending);
     }
   }
 );
 
 /**
- * Bundles the input handler, the suppression field, and the `Escape`
- * binding. The keymap is wrapped in `Prec.high()` because the main keymap
- * is registered in `setup.ts` (`:50-56`) before `previewCompartment`
- * (`:62`), and equal-precedence handlers run in registration order — without
- * `Prec.high()` here, `aiHighlightKeymap`'s own `Escape` binding (registered
- * earlier in `setup.ts`, but at default precedence) would still lose to
- * ours whenever both apply, since default keymaps have no built-in
- * ordering guarantee against a keymap added later in the same extension
- * array. `aiHighlightKeymap`'s command already returns `false` when there
- * is nothing for it to clear, so the common case (no AI highlights active)
- * is unaffected either way — see report for the one case where the two
- * *do* overlap.
+ * Bundles the input handler, the pending-format field, the caret plugin and the
+ * `Escape` binding.
+ *
+ * The keymap is `Prec.high()` because the main keymap is registered in
+ * `setup.ts` before `previewCompartment`, and equal-precedence handlers run in
+ * registration order — without it `aiHighlightKeymap`'s own `Escape` would win
+ * whenever both apply. `Prec.high` is enough here and `Prec.highest` is not
+ * needed: Escape carries no `inputType`, so unlike Backspace it is resolved
+ * from `keydown` alone. Do not "simplify" the two to match.
  */
 export function inlineContinuation(): Extension {
   return [
-    suppressedBoundaryField,
+    continuationField,
     EditorView.inputHandler.of(continuationInputHandler),
-    continuationCaretPlugin,
+    formatCaretPlugin,
     Prec.high(keymap.of([{ key: 'Escape', run: exitContinuationOnEscape }])),
   ];
 }

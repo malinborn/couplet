@@ -39,6 +39,15 @@ export interface CellSpan {
   srcFrom: number;
   srcTo: number;
   /**
+   * Where the token's *visible* characters start in the source — i.e.
+   * `srcFrom` plus the opening marker.
+   *
+   * The anchor mapping never needs it (it takes formatted tokens whole), but a
+   * caret does: clicking between the "i" and the "r" of a bold word has to land
+   * between them in the source too, not at the `**` in front of it.
+   */
+  srcTextFrom: number;
+  /**
    * Whole-token anchoring: true for anything with markers, so a selection that
    * clips it still produces a quote the re-anchor search can find.
    */
@@ -102,6 +111,7 @@ export function cellSpans(text: string): CellSpan[] | null {
       visTo: vis + visible.length,
       srcFrom: src,
       srcTo,
+      srcTextFrom: src + lead,
       atomic: token.type !== 'text',
     });
     src = srcTo;
@@ -161,6 +171,39 @@ export function visibleRangeForSource(
   }
 
   return from < 0 || to <= from ? null : { from, to };
+}
+
+/**
+ * Map a *caret* — one offset in the rendered cell text — to an offset in the
+ * cell's source.
+ *
+ * Deliberately not the collapsed case of {@link sourceRangeForVisible}: that
+ * one takes a formatted token whole, which is right for a comment quote and
+ * wrong for a caret. A click between the "i" and the "r" of a bold "жирный"
+ * must land between them in `**жирный**` too, so that typing there continues
+ * the bold instead of landing in front of the markers (#53).
+ *
+ * Falls back to the end of the cell for text that does not reconstruct — a
+ * caret has to go *somewhere*, and appending is the harmless answer.
+ */
+export function sourceOffsetForVisibleCaret(text: string, vis: number): number {
+  const spans = cellSpans(text);
+  if (!spans) return text.length;
+  const len = visibleLength(spans);
+  const at = Math.max(0, Math.min(vis, len));
+  if (spans.length === 0) return 0;
+  if (at >= len) return text.length;
+
+  for (const span of spans) {
+    // `<=` on the closing edge would resolve the boundary between two tokens to
+    // the end of the earlier one, i.e. *after* its closing `**`. Preferring the
+    // later token puts the caret before the next token's markers instead, which
+    // is what both neighbours draw at that pixel.
+    if (at >= span.visFrom && at < span.visTo) {
+      return span.srcTextFrom + (at - span.visFrom);
+    }
+  }
+  return text.length;
 }
 
 /**

@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { encodeForCommit, decodeForEdit, encodedOffset } from './table-encoding';
+import {
+  encodeForCommit,
+  decodeForEdit,
+  encodedOffset,
+  decodedOffset,
+} from './table-encoding';
 
 describe('encodeForCommit', () => {
   it('NoSpecialChars_ReturnsUnchanged', () => {
@@ -127,5 +132,48 @@ describe('encodedOffset', () => {
   it('clamps out-of-range offsets rather than going negative', () => {
     expect(encodedOffset('abc', -5)).toBe(0);
     expect(encodedOffset('abc', 99)).toBe(3);
+  });
+});
+
+/**
+ * The other direction (#53). A click parks the caret in a cell and computes its
+ * offset against the cell's *source*; the field the first keystroke opens holds
+ * the decoded form, so the offset has to be walked across the escapes.
+ */
+describe('decodedOffset', () => {
+  it('is the identity when nothing is escaped', () => {
+    expect(decodedOffset('hello', 0)).toBe(0);
+    expect(decodedOffset('hello', 3)).toBe(3);
+    expect(decodedOffset('hello', 5)).toBe(5);
+  });
+
+  it('counts a <br> as the one newline it decodes to', () => {
+    // 'a<br>b' -> 'a\nb'
+    expect(decodedOffset('a<br>b', 1)).toBe(1);
+    expect(decodedOffset('a<br>b', 5)).toBe(2);
+    expect(decodedOffset('a<br>b', 6)).toBe(3);
+  });
+
+  it('counts an escaped pipe as one character', () => {
+    expect(decodedOffset('a\\|b', 4)).toBe(3);
+  });
+
+  it('resolves an offset inside an escape to just after it', () => {
+    // There is no position between the '\\' and the '|' in the decoded text.
+    expect(decodedOffset('a\\|b', 2)).toBe(2);
+    expect(decodedOffset('a<br>b', 3)).toBe(2);
+  });
+
+  it('round-trips with encodedOffset on a decoded value', () => {
+    const source = 'a<br>b\\|c';
+    const decoded = decodeForEdit(source);
+    for (let i = 0; i <= decoded.length; i++) {
+      expect(decodedOffset(source, encodedOffset(decoded, i))).toBe(i);
+    }
+  });
+
+  it('clamps out-of-range offsets rather than going negative', () => {
+    expect(decodedOffset('abc', -5)).toBe(0);
+    expect(decodedOffset('abc', 99)).toBe(3);
   });
 });

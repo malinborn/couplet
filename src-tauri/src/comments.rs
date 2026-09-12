@@ -443,12 +443,29 @@ pub fn parse(text: &str) -> Vec<Thread> {
     threads
 }
 
-/// Atomic write: `.tmp` first, then `rename`. Two parties edit the file —
-/// md-mini and the agent — so there must never be a partially-written state.
-fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, text).map_err(|e| format!("failed to write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("failed to rename into {}: {e}", path.display()))
+/// Writes the comment sidecar, with the same hardening the document gets.
+///
+/// Two parties edit this file — md-mini and the agent — so there must never be
+/// a partially-written state; that is what the `rename` inside
+/// [`crate::atomic_write::save`] buys. What #54 added is everything the old
+/// `fs::write` + `rename` dropped on the way: the sidecar's mode, owner, ACL
+/// and extended attributes now survive a rewrite, the temp is never wider than
+/// the file it becomes, and both file and directory are `fsync`ed. The stakes
+/// are the document's and then some — since #23/#36 the sidecar holds the reply
+/// a human is still typing, and unlike the document there is no recovery
+/// snapshot anywhere that holds a second copy of it.
+///
+/// `NewFileMode::Like(doc)` is the single place this write differs from the
+/// document's: a sidecar that does not exist yet is born with the *document's*
+/// mode rather than the umask's, because it quotes the document's text back and
+/// must not end up more readable than the thing it quotes.
+///
+/// The sidecar path is appended to the error. `atomic_write`'s messages name no
+/// file — the document's toast already shows one — but a failing sidecar is
+/// reported to an agent or a log, where "which file" is the whole question.
+fn write_sidecar(doc: &Path, path: &Path, text: &str) -> Result<(), String> {
+    crate::atomic_write::save(path, text, crate::atomic_write::NewFileMode::Like(doc))
+        .map_err(|e| format!("{e} ({})", path.display()))
 }
 
 /// Read the document's threads. A missing file is an empty list, not an error.
@@ -631,7 +648,7 @@ fn append_thread_full(
     };
     out.push('\n');
     out.push_str(&render_thread(id, status, line, until, quote, context, author, at, text));
-    write_atomic(&path, &out)
+    write_sidecar(doc, &path, &out)
 }
 
 /// Find a thread's marker line by id. Returns the line index.
@@ -681,7 +698,7 @@ pub fn append_reply_at(doc: &Path, id: &str, author: &str, text: &str, at: &str)
         out.insert(insert_at + offset, line.to_string());
     }
 
-    write_atomic(&path, &format!("{}\n", out.join("\n")))
+    write_sidecar(doc, &path, &format!("{}\n", out.join("\n")))
 }
 
 /// The author md-mini writes for the person using it. A trailing reply by
@@ -773,7 +790,7 @@ pub fn set_last_reply_at(
         }
     }
 
-    write_atomic(&path, &format!("{}\n", out.join("\n")))
+    write_sidecar(doc, &path, &format!("{}\n", out.join("\n")))
 }
 
 /// Read the `status=` value from a marker line; `open` if the attribute is
@@ -851,7 +868,7 @@ pub fn set_status_until(
 
     let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
     out[index] = rewrite_marker(&out[index], status, until);
-    write_atomic(&path, &format!("{}\n", out.join("\n")))
+    write_sidecar(doc, &path, &format!("{}\n", out.join("\n")))
 }
 
 /// Current status of one thread, without parsing the whole file into threads.
@@ -916,7 +933,7 @@ pub fn commit_pauses(doc: &Path) -> Result<Vec<String>, String> {
     if committed.is_empty() {
         return Ok(committed);
     }
-    write_atomic(&path, &format!("{}\n", out.join("\n")))?;
+    write_sidecar(doc, &path, &format!("{}\n", out.join("\n")))?;
     Ok(committed)
 }
 
@@ -1628,5 +1645,393 @@ Nginx там был сломан.
         assert!(awaiting(&threads[0], now_epoch()));
         assert_eq!(threads[1].status, Status::Resolved);
         assert!(!awaiting(&threads[1], now_epoch()));
+    }
+}
+
+/// What a sidecar write must preserve (#54).
+///
+/// The battery mirrors `atomic_write`'s, but every case drives the *public*
+/// comment API — `append_thread`, `append_reply`, `set_status` — rather than
+/// the write helper. That is the point: the helper is shared and tested on its
+/// own, so what is left to prove here is that the sidecar's writes actually go
+/// through it, and keep going through it. A future edit that reintroduces a
+/// plain `fs::write` inside `comments.rs` fails these and passes the others.
+#[cfg(test)]
+mod sidecar_write_tests {
+    use super::*;
+    use crate::atomic_write::testing;
+    use crate::atomic_write::testkit::{
+        acl_of, content_of, get_xattr, mode_of, set_xattr, temp_leftovers, try_add_acl,
+    };
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    const QUESTION: &str = "Почему здесь так?";
+    const REPLY: &str = "Потому что иначе ломается вотчер.";
+
+    /// A directory holding a real document and its sidecar, with one thread
+    /// already in it. Named uniquely per process and per call so two `cargo
+    /// test` runs cannot share a directory.
+    fn doc_with_a_thread(tag: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "mdmini-sidecar-{}-{}-{}",
+            tag,
+            std::process::id(),
+            now_epoch()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = dir.join("spec.md");
+        std::fs::write(&doc, "# spec\n\nтекст документа\n").unwrap();
+        append_thread(&doc, "c-aaaaaa", 3, "текст", "Макс", QUESTION).unwrap();
+        let sidecar = sidecar_path(&doc).unwrap();
+        assert!(sidecar.exists(), "setup did not create the sidecar");
+        (doc, sidecar)
+    }
+
+    fn chmod(path: &Path, mode: u32) {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        assert_eq!(mode_of(path), mode, "setup could not apply the mode");
+    }
+
+    // --- what a sidecar rewrite must preserve --------------------------------
+
+    #[test]
+    fn the_sidecar_keeps_its_mode() {
+        // The exact defect #54 names: the old write recreated the file at 0644
+        // whatever it had been. A sidecar quotes the document, so a private
+        // document's comment file going world-readable is a real leak.
+        for mode in [0o600, 0o640, 0o644] {
+            let (doc, sidecar) = doc_with_a_thread(&format!("mode-{mode:o}"));
+            chmod(&sidecar, mode);
+
+            append_reply(&doc, "c-aaaaaa", "Клод", REPLY).unwrap();
+
+            assert_eq!(mode_of(&sidecar), mode, "mode {mode:o} was not preserved");
+            assert!(content_of(&sidecar).contains(REPLY), "the reply was lost");
+        }
+    }
+
+    #[test]
+    fn the_sidecar_keeps_its_owner_and_group() {
+        let (doc, sidecar) = doc_with_a_thread("owner");
+        let before = std::fs::metadata(&sidecar).unwrap();
+        let (uid, gid) = (before.uid(), before.gid());
+
+        append_reply(&doc, "c-aaaaaa", "Клод", REPLY).unwrap();
+
+        let after = std::fs::metadata(&sidecar).unwrap();
+        assert_eq!(after.uid(), uid, "owner changed");
+        assert_eq!(after.gid(), gid, "group changed");
+    }
+
+    #[test]
+    fn the_sidecar_keeps_a_custom_xattr() {
+        let (doc, sidecar) = doc_with_a_thread("xattr");
+        set_xattr(&sidecar, "com.mdmini.test", b"keepme");
+
+        set_status(&doc, "c-aaaaaa", Status::Resolved).unwrap();
+
+        assert_eq!(
+            get_xattr(&sidecar, "com.mdmini.test").as_deref(),
+            Some(&b"keepme"[..]),
+            "the xattr was lost by a status flip"
+        );
+    }
+
+    #[test]
+    fn the_sidecar_keeps_an_acl() {
+        let (doc, sidecar) = doc_with_a_thread("acl");
+        chmod(&sidecar, 0o600);
+        if !try_add_acl(&sidecar, "everyone allow read") {
+            eprintln!("skipping: this filesystem does not take ACLs");
+            return;
+        }
+        let before = acl_of(&sidecar);
+        assert!(before.contains("allow"), "setup left no ACL to preserve");
+
+        append_reply(&doc, "c-aaaaaa", "Клод", REPLY).unwrap();
+
+        assert_eq!(acl_of(&sidecar), before, "ACL was lost or altered");
+        assert_eq!(mode_of(&sidecar), 0o600, "restoring the ACL moved the mode");
+    }
+
+    #[test]
+    fn a_rewrite_advances_the_sidecars_mtime() {
+        // The COPYFILE_STAT guard, from the sidecar's side: `watcher.rs` watches
+        // the sidecar and emits `comments-changed` from it. An mtime copied off
+        // the old file is a reply the open window never learns about.
+        let (doc, sidecar) = doc_with_a_thread("mtime");
+        let before = std::fs::metadata(&sidecar).unwrap().modified().unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+
+        append_reply(&doc, "c-aaaaaa", "Клод", REPLY).unwrap();
+
+        let after = std::fs::metadata(&sidecar).unwrap().modified().unwrap();
+        assert!(after > before, "mtime did not advance: {after:?} vs {before:?}");
+    }
+
+    // --- a sidecar that does not exist yet -----------------------------------
+
+    #[test]
+    fn a_new_sidecar_is_no_more_readable_than_its_document() {
+        // `NewFileMode::Like`. A 0600 document must not sprout a 0644 file that
+        // quotes it — which is exactly what the umask would have produced.
+        for mode in [0o600, 0o640] {
+            let dir = std::env::temp_dir().join(format!(
+                "mdmini-sidecar-new-{mode:o}-{}-{}",
+                std::process::id(),
+                now_epoch()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let doc = dir.join("secret.md");
+            std::fs::write(&doc, "приватная заметка\n").unwrap();
+            chmod(&doc, mode);
+
+            append_thread(&doc, "c-bbbbbb", 1, "заметка", "Макс", QUESTION).unwrap();
+
+            let sidecar = sidecar_path(&doc).unwrap();
+            assert_eq!(
+                mode_of(&sidecar),
+                mode,
+                "a new sidecar for a {mode:o} document was born {:o}",
+                mode_of(&sidecar)
+            );
+        }
+    }
+
+    // --- links ---------------------------------------------------------------
+
+    #[test]
+    fn writing_a_sidecar_through_a_symlink_updates_the_target() {
+        // Someone who keeps the conversation in a repo and symlinks it in would
+        // otherwise have the link quietly replaced by a regular file, and every
+        // reply after that written somewhere nobody is reading.
+        let (doc, sidecar) = doc_with_a_thread("symlink");
+        let real = sidecar.with_file_name("threads-real.md");
+        std::fs::rename(&sidecar, &real).unwrap();
+        std::os::unix::fs::symlink(&real, &sidecar).unwrap();
+
+        append_reply(&doc, "c-aaaaaa", "Клод", REPLY).unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(&sidecar)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the symlink was replaced by a regular file"
+        );
+        assert!(
+            content_of(&real).contains(REPLY),
+            "the reply did not reach the link's target"
+        );
+    }
+
+    // --- the temp file -------------------------------------------------------
+
+    #[test]
+    fn the_sidecar_temp_is_never_wider_than_the_sidecar() {
+        // The quiet half of the same bug: the temp *becomes* the sidecar, so a
+        // temp at 0644 does not merely exist for an instant at 0644.
+        let (doc, sidecar) = doc_with_a_thread("temp-mode");
+        chmod(&sidecar, 0o600);
+        let seen = Arc::new(AtomicU32::new(0o7777));
+
+        let recorder = Arc::clone(&seen);
+        let guard = testing::before_rename(move |tmp: &Path| {
+            recorder.store(mode_of(tmp), Ordering::Relaxed);
+            Ok(())
+        });
+        append_reply(&doc, "c-aaaaaa", "Клод", REPLY).unwrap();
+        drop(guard);
+
+        let temp_mode = seen.load(Ordering::Relaxed);
+        assert_eq!(
+            temp_mode & 0o077,
+            0,
+            "temp was {temp_mode:o} while the sidecar is 0600"
+        );
+        assert_eq!(mode_of(&sidecar), 0o600);
+    }
+
+    #[test]
+    fn the_sidecar_temp_is_not_itself_mistaken_for_a_sidecar() {
+        // A real regression the rename fixed. The old temp name
+        // (`with_extension("tmp")`) was `.mdmini_comments_spec.tmp`, which still
+        // begins with `.mdmini_comments_` — so `is_sidecar` said yes, and both
+        // `collect_open` and `mdmini watch` could act on a half-written file.
+        // `watch.rs` documents the opposite; this is what makes that true.
+        let (doc, _) = doc_with_a_thread("temp-name");
+        let dir = doc.parent().unwrap().to_path_buf();
+        let seen = Arc::new(std::sync::Mutex::new(PathBuf::new()));
+
+        let recorder = Arc::clone(&seen);
+        let guard = testing::before_rename(move |tmp: &Path| {
+            *recorder.lock().unwrap() = tmp.to_path_buf();
+            // At this instant the temp exists and the rename has not happened.
+            // Nothing that scans the tree may treat it as a thread file.
+            assert!(
+                !is_sidecar(tmp),
+                "the temp {} is recognised as a sidecar",
+                tmp.display()
+            );
+            assert!(
+                collect_open(Path::new(tmp.parent().unwrap()))
+                    .iter()
+                    .all(|l| l.doc != tmp.to_path_buf()),
+                "collect_open picked the temp up as a document"
+            );
+            Ok(())
+        });
+        append_reply(&doc, "c-aaaaaa", "Клод", REPLY).unwrap();
+        drop(guard);
+
+        let tmp = seen.lock().unwrap().clone();
+        assert_eq!(tmp.parent(), Some(dir.as_path()), "temp is not a sibling");
+        assert!(
+            tmp.file_name().unwrap().to_string_lossy().starts_with('.'),
+            "the temp is visible in Finder"
+        );
+        assert!(temp_leftovers(&dir).is_empty(), "a temp was left behind");
+    }
+
+    // --- failure -------------------------------------------------------------
+
+    #[test]
+    fn a_sidecar_the_filesystem_refuses_to_replace_is_an_error() {
+        // `everyone deny delete` makes the `rename` EPERM. The write must say so
+        // — a sidecar holding a draft nobody sent cannot fail silently.
+        let (doc, sidecar) = doc_with_a_thread("denydelete");
+        chmod(&sidecar, 0o600);
+        if !try_add_acl(&sidecar, "everyone deny delete") {
+            eprintln!("skipping: this filesystem does not take ACLs");
+            return;
+        }
+        let before = std::fs::read(&sidecar).unwrap();
+
+        let result = append_reply(&doc, "c-aaaaaa", "Клод", REPLY);
+
+        assert!(result.is_err(), "a refused sidecar write reported success");
+        let err = result.unwrap_err();
+        assert!(err.contains("Failed to save"), "unexpected error: {err}");
+        assert!(
+            err.contains(".mdmini_comments_spec.md"),
+            "the error does not name the file that failed: {err}"
+        );
+        assert_eq!(std::fs::read(&sidecar).unwrap(), before, "sidecar damaged");
+        assert!(
+            temp_leftovers(doc.parent().unwrap()).is_empty(),
+            "the temp was left behind, and an ACL that denies delete would \
+             otherwise make one per retry"
+        );
+    }
+
+    #[test]
+    fn a_failure_between_the_write_and_the_rename_leaves_the_sidecar_untouched() {
+        // The seam version of a crash. Byte-identical, same inode, no temp.
+        let (doc, sidecar) = doc_with_a_thread("hookfail");
+        let before = std::fs::read(&sidecar).unwrap();
+        let ino = std::fs::metadata(&sidecar).unwrap().ino();
+
+        let guard = testing::before_rename(|_: &Path| Err("simulated crash".into()));
+        let err = append_reply(&doc, "c-aaaaaa", "Клод", REPLY).unwrap_err();
+        drop(guard);
+
+        assert!(err.contains("simulated crash"), "unexpected error: {err}");
+        assert_eq!(std::fs::read(&sidecar).unwrap(), before, "sidecar changed");
+        assert_eq!(std::fs::metadata(&sidecar).unwrap().ino(), ino);
+        assert!(temp_leftovers(doc.parent().unwrap()).is_empty());
+    }
+
+    // --- a real SIGKILL ------------------------------------------------------
+
+    /// The child half of [`a_real_sigkill_mid_sidecar_write_leaves_it_intact`].
+    /// `#[ignore]`d so an ordinary `cargo test` never runs it.
+    #[test]
+    #[ignore = "spawned and killed by a_real_sigkill_mid_sidecar_write_leaves_it_intact"]
+    fn sigkill_sidecar_victim() {
+        let Ok(doc) = std::env::var("MD_MINI_SIDECAR_SIGKILL_DOC") else {
+            return;
+        };
+        let ready = std::env::var("MD_MINI_SIDECAR_SIGKILL_READY").unwrap();
+
+        let _guard = testing::before_rename(move |_: &Path| {
+            std::fs::write(&ready, b"now").unwrap();
+            loop {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let _ = append_reply(Path::new(&doc), "c-aaaaaa", "Клод", REPLY);
+    }
+
+    #[test]
+    fn a_real_sigkill_mid_sidecar_write_leaves_it_intact() {
+        let (doc, sidecar) = doc_with_a_thread("sigkill");
+        chmod(&sidecar, 0o600);
+        set_xattr(&sidecar, "com.mdmini.test", b"keepme");
+        let before = std::fs::read(&sidecar).unwrap();
+        let ino = std::fs::metadata(&sidecar).unwrap().ino();
+        let dir = doc.parent().unwrap().to_path_buf();
+        let ready = dir.join("ready");
+
+        let exe = std::env::current_exe().expect("test binary path");
+        let mut child = Command::new(exe)
+            .args([
+                "comments::sidecar_write_tests::sigkill_sidecar_victim",
+                "--exact",
+                "--ignored",
+                "--test-threads",
+                "1",
+            ])
+            .env("MD_MINI_SIDECAR_SIGKILL_DOC", &doc)
+            .env("MD_MINI_SIDECAR_SIGKILL_READY", &ready)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("could not spawn the victim process");
+
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !ready.exists() {
+            if let Ok(Some(status)) = child.try_wait() {
+                panic!("the victim exited before reaching the hook: {status}");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the victim never reached the pre-rename hook"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        child.kill().expect("SIGKILL");
+        assert!(!child.wait().expect("wait").success(), "not killed");
+
+        // The conversation on disk is exactly what it was: the reply the dead
+        // process was writing is simply absent, rather than half-there.
+        assert_eq!(std::fs::read(&sidecar).unwrap(), before, "sidecar damaged");
+        assert_eq!(mode_of(&sidecar), 0o600, "the crash changed the mode");
+        assert_eq!(std::fs::metadata(&sidecar).unwrap().ino(), ino);
+        assert_eq!(
+            get_xattr(&sidecar, "com.mdmini.test").as_deref(),
+            Some(&b"keepme"[..])
+        );
+
+        // And the proof the kill landed where it was aimed rather than before
+        // the write: the orphaned temp holds the reply, which exists nowhere in
+        // the parent process. Without this the test passes even if the child
+        // died on startup.
+        let leftovers = temp_leftovers(&dir);
+        assert_eq!(leftovers.len(), 1, "expected exactly one orphaned temp");
+        assert!(
+            content_of(&leftovers[0]).contains(REPLY),
+            "the orphan does not hold the new text — the victim died too early"
+        );
+        assert!(
+            !is_sidecar(&leftovers[0]),
+            "the orphan would be read as a real sidecar by collect_open"
+        );
     }
 }

@@ -1,19 +1,38 @@
 import { Decoration, WidgetType } from '@codemirror/view';
 import type { EditorView } from '@codemirror/view';
+import type { Text } from '@codemirror/state';
+import { ensureSyntaxTree, syntaxTree } from '@codemirror/language';
 import type { SyntaxNode } from '@lezer/common';
 import type { DecoSink } from './utils';
 import { markdownTable } from 'markdown-table';
+import {
+  stepColumn,
+  nextNavigableRow,
+  clampColumn,
+  planTableExit,
+  newRowMarkdown,
+  rowInsertAfter,
+  type NavRow,
+} from './table-navigation';
+import { matchCellBinding } from './table-keys';
+import { createHotkeySheetButton, clearHotkeySheets } from './table-hotkey-sheet';
 import { toggleTableMode, getTableMode } from './table-state';
-import { encodeForCommit, decodeForEdit, encodedOffset } from './table-encoding';
+import {
+  encodeForCommit,
+  decodeForEdit,
+  encodedOffset,
+  decodedOffset,
+} from './table-encoding';
+import { docPosForCaretIn, placeCaretFromPoint, visibleOffsetIn } from './cell-caret';
 import {
   applyTextareaEdit,
   endCellEditSession,
   setCellEditSession,
 } from '../cell-edit-session';
 import { navigateToHeading } from '../heading-slugs';
-import { makeWidgetTextSelectable, eventInside } from '../widget-text-selection';
+import { makeWidgetTextSelectable } from '../widget-text-selection';
 import { parseInlineMarkdown } from './inline-tokens';
-import { visibleRangeForSource } from '../live-render/cell-anchor';
+import { visibleRangeForSource, sourceRangeForVisible } from '../live-render/cell-anchor';
 import {
   commentAnchorsIn,
   COMMENT_ANCHOR_ATTR,
@@ -94,11 +113,16 @@ function replaceTable(view: EditorView, ctx: TableContext, grid: string[][]): vo
 function addRow(view: EditorView, ctx: TableContext): void {
   // Insert directly after the last row — use visible placeholders so Lezer
   // includes the row in the Table node (whitespace-only cells get excluded).
+  // The row text comes from `table-navigation.ts` because Cmd+Shift+Enter (#68)
+  // builds the same thing, and two spellings of "an empty row" would diverge on
+  // the first change to the padding.
   const lastRow = ctx.rows[ctx.rows.length - 1];
-  const cells = ctx.colWidths.map(w => ' ' + '-'.padEnd(Math.max(w, 1)) + ' ');
-  const newRow = '|' + cells.join('|') + '|';
   view.dispatch({
-    changes: { from: lastRow.to, to: lastRow.to, insert: '\n' + newRow },
+    changes: {
+      from: lastRow.to,
+      to: lastRow.to,
+      insert: '\n' + newRowMarkdown(ctx.colWidths),
+    },
   });
 }
 
@@ -484,22 +508,43 @@ class TableWidget extends WidgetType {
   }
 
   /**
-   * `false` everywhere except inside a cell's text.
-   *
-   * The widget deliberately lets CM6 handle its events (that is what `false`
-   * means here — see `eventBelongsToEditor` in `@codemirror/view`), which is
-   * how a click on a table still moves the document selection.
-   *
-   * But cell text is a nested editing host (`makeWidgetTextSelectable`), and
-   * CM6's `MouseSelection` would immediately snap a drag started there out to
-   * the whole table range via `atomicRanges`, leaving the browser with an
-   * empty selection — measured, that is exactly what #31 reported. Handing
-   * those events back to the browser lets the native selection stand, and the
-   * same exemption makes `copy` copy the visible cell text instead of the
-   * table's markdown source.
+   * The hotkey cheatsheet lives in `document.body`, so it does not go away with
+   * the widget's own DOM. A structural edit rebuilds the table on every
+   * keystroke's worth of change, and a panel left behind would hover over a
+   * button that no longer exists.
    */
-  ignoreEvent(event: Event): boolean {
-    return eventInside(event, `.${CELL_TEXT_CLASS}`);
+  destroy(): void {
+    clearHotkeySheets();
+  }
+
+  /**
+   * `true` — CM6 keeps its hands off everything inside a table.
+   *
+   * The sense of this method is the opposite of what the name suggests:
+   * `eventBelongsToEditor` in `@codemirror/view` bails out of CM6's own
+   * handling when `ignoreEvent` returns `true`.
+   *
+   * It used to return `true` only inside a cell's text, which is a nested
+   * editing host (`makeWidgetTextSelectable`): without the exemption CM6's
+   * `MouseSelection` snapped a drag started there out to the whole table range
+   * and the browser was left with an empty selection (#31). Everywhere else the
+   * answer was `false`, described as "how a click on a table still moves the
+   * document selection" — and that turned out to be the whole of #53.
+   *
+   * A table has no document position under most of its pixels. The widget
+   * covers the header line and every other row is a real line hidden at
+   * `height: 0`, so `posAtCoords` inside the widget answers with the replaced
+   * range's `from` or its `to` — the table's first character, or the end of the
+   * header row, whichever half was clicked. Measured on `main`: a click on a
+   * cell's padding put the caret at one of those two places and the next
+   * keystroke wrote there, wrecking the row. There is no click on a table for
+   * which that answer is the right one, so nothing here wants CM6's handling.
+   *
+   * What replaces it is {@link parkCaretOnMouseDown}, which puts the caret in
+   * the cell that was clicked — see `cell-caret.ts`.
+   */
+  ignoreEvent(): boolean {
+    return true;
   }
 }
 
@@ -789,7 +834,185 @@ export function cellEditWidth(
  * Link в поле по-прежнему нет, но по другой причине (#57): инспектор
  * позиционируется по `coordsAtPos`, то есть по строке таблицы, а не по ячейке.
  */
-function showCellEditor(view: EditorView, cellEl: HTMLElement, cell: CellInfo): void {
+/**
+ * Where a cell sits in its table, in coordinates that survive a commit.
+ *
+ * `row` indexes `TableContext.rows` — including the delimiter, so it is also the
+ * cell's line offset from the table's first line, which is what makes it
+ * survive: a commit rewrites text inside one line and can move every position
+ * after it, but it never adds or removes a line (`encodeForCommit` turns
+ * newlines into `<br>`). So the pair (table's first line number, `row`) still
+ * names the same row afterwards, and the table can simply be re-read.
+ */
+interface CellPlace {
+  row: number;
+  col: number;
+}
+
+/** What a navigation key asks for once the cell being left has been committed. */
+type CellMove =
+  /** Enter — the next row, same column; or out of the table if there is none. */
+  | { kind: 'row' }
+  /** Tab / Shift+Tab — the next or previous column, wrapping inside the row. */
+  | { kind: 'col'; delta: 1 | -1 }
+  /** Cmd+Shift+Enter — a fresh row right below this one. */
+  | { kind: 'new-row' };
+
+function navRowsOf(ctx: TableContext): NavRow[] {
+  return ctx.rows.map((r) => ({
+    isDelimiter: r.isDelimiter,
+    cellCount: r.cells.length,
+  }));
+}
+
+/**
+ * Re-read the table that starts at `tableLine`, after the document has moved.
+ *
+ * Navigation is the one caller that needs a `TableContext` without being inside
+ * a decoration pass, so it has to find the `Table` node itself. `ensureSyntaxTree`
+ * rather than `syntaxTree`: the commit that just landed may not have been
+ * reparsed yet, and a stale tree would answer with the pre-commit table — most
+ * visibly after Cmd+Shift+Enter, where the row we are navigating into does not
+ * exist in it at all.
+ */
+function tableContextAtLine(view: EditorView, tableLine: number): TableContext | null {
+  const doc = view.state.doc;
+  if (tableLine < 1 || tableLine > doc.lines) return null;
+  const line = doc.line(tableLine);
+  const tree =
+    ensureSyntaxTree(view.state, Math.min(doc.length, line.to + 1), 200) ??
+    syntaxTree(view.state);
+  let node: SyntaxNode | null = tree.resolveInner(Math.min(line.from + 1, line.to), 1);
+  while (node && node.name !== 'Table') node = node.parent;
+  if (!node) return null;
+  return buildTableContext(doc, node.from, node.to);
+}
+
+/**
+ * Open the edit overlay on one cell of a freshly re-read table.
+ *
+ * The cell is found by the source range frozen onto its nested editing host by
+ * `makeWidgetTextSelectable`, which is exactly the cell's identity and is safe
+ * to trust for the reason the attribute exists at all: `TableWidget.eq()`
+ * compares every cell `from`, so a widget whose cells moved is rebuilt rather
+ * than reused.
+ *
+ * CM6 writes the DOM synchronously inside `dispatch`, so the element is normally
+ * there already; the one retried frame covers a rebuild deferred into a measure
+ * phase rather than leaving the user in an editor that did not open.
+ */
+function openCellEditorAt(
+  view: EditorView,
+  ctx: TableContext,
+  rowIndex: number,
+  colIndex: number
+): void {
+  const cell = ctx.rows[rowIndex]?.cells[colIndex];
+  if (!cell) return;
+
+  const open = (): boolean => {
+    const textEl = view.dom.querySelector<HTMLElement>(
+      `.${CELL_TEXT_CLASS}[data-source-from="${cell.from}"][data-source-to="${cell.to}"]`
+    );
+    const cellEl = textEl?.closest<HTMLElement>('.cm-md-table-cell') ?? null;
+    if (!cellEl) return false;
+    showCellEditor(view, cellEl, cell, undefined, { row: rowIndex, col: colIndex });
+    return true;
+  };
+
+  if (!open()) requestAnimationFrame(() => void open());
+}
+
+/**
+ * Enter on the last row: out of the table, onto one empty line beneath it.
+ *
+ * The arithmetic — and in particular the refusal to add a *second* blank line
+ * when one is already there — is `planTableExit`, which is unit-tested. This
+ * half only turns it into a transaction and gives the editor its focus back;
+ * the caret lands below the table, so `table-selection.ts` has nothing to snap
+ * out and stays quiet.
+ */
+function exitTableBelow(view: EditorView, ctx: TableContext): void {
+  const doc = view.state.doc;
+  const lastRow = ctx.rows[ctx.rows.length - 1];
+  if (!lastRow) return;
+  const lastLine = doc.lineAt(lastRow.from);
+  const next = lastLine.number < doc.lines ? doc.line(lastLine.number + 1) : null;
+  const plan = planTableExit(
+    lastLine.to,
+    next ? { from: next.from, to: next.to, text: next.text } : null
+  );
+  view.dispatch({
+    changes: plan.insert ? { from: plan.at, insert: plan.insert } : undefined,
+    selection: { anchor: plan.caret },
+    scrollIntoView: true,
+  });
+  view.focus();
+}
+
+/**
+ * Carry out a {@link CellMove}, on a table that has just been committed into.
+ *
+ * Everything here re-reads the document rather than trusting the context the
+ * widget was built from: the commit that preceded this call moved every position
+ * after the edited cell, and for `new-row` the table grew a line.
+ */
+function moveAfterCommit(
+  view: EditorView,
+  tableLine: number,
+  place: CellPlace,
+  move: CellMove
+): void {
+  const ctx = tableContextAtLine(view, tableLine);
+  if (!ctx) return;
+  const rows = navRowsOf(ctx);
+
+  if (move.kind === 'col') {
+    const cellCount = rows[place.row]?.cellCount ?? 0;
+    openCellEditorAt(view, ctx, place.row, stepColumn(place.col, cellCount, move.delta));
+    return;
+  }
+
+  if (move.kind === 'new-row') {
+    const after = rowInsertAfter(rows, place.row);
+    const anchor = ctx.rows[after];
+    if (!anchor) return;
+    view.dispatch({
+      changes: { from: anchor.to, insert: '\n' + newRowMarkdown(ctx.colWidths) },
+    });
+    const grown = tableContextAtLine(view, tableLine);
+    if (!grown) return;
+    const target = after + 1;
+    const cellCount = grown.rows[target]?.cells.length ?? 0;
+    openCellEditorAt(view, grown, target, clampColumn(place.col, cellCount));
+    return;
+  }
+
+  const next = nextNavigableRow(rows, place.row);
+  if (next === null) {
+    exitTableBelow(view, ctx);
+    return;
+  }
+  openCellEditorAt(view, ctx, next, clampColumn(place.col, rows[next].cellCount));
+}
+
+function showCellEditor(
+  view: EditorView,
+  cellEl: HTMLElement,
+  cell: CellInfo,
+  /**
+   * What to select in the field, in the cell's *source* offsets, when the
+   * overlay is opened from a caret parked in the cell rather than from a double
+   * click (#53). Omitted keeps the old select-everything behaviour.
+   */
+  selectSrc?: { from: number; to: number },
+  /**
+   * Where this cell sits in its table (#68). Omitted disables navigation and
+   * leaves every key doing what it did before — which is what an overlay opened
+   * by something that does not know the table's shape should do.
+   */
+  place?: CellPlace
+): void {
   document.querySelector('.cm-md-table-editor')?.remove();
 
   const rect = cellEl.getBoundingClientRect();
@@ -876,25 +1099,96 @@ function showCellEditor(view: EditorView, cellEl: HTMLElement, cell: CellInfo): 
     destroy();
   };
 
-  ta.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
+  /**
+   * Commit what is in the field, then move (#68).
+   *
+   * The order is the point: the text being left is committed into the cell it
+   * was typed in, never dropped, and the move is computed from the document the
+   * commit produced. Both line numbers are read *before* the commit — the commit
+   * can move positions inside the line but cannot add or remove lines, so they
+   * still name the same rows afterwards.
+   */
+  const commitAndMove = (move: CellMove): void => {
+    if (!place) {
       commit();
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      committed = true;
-      destroy();
-    } else if (e.key === 'Tab') {
-      e.preventDefault();
-      commit();
+      return;
     }
-    // Plain Enter -> textarea default newline behavior
+    const doc = view.state.doc;
+    if (cell.from > doc.length) {
+      commit();
+      return;
+    }
+    const tableLine = doc.lineAt(cell.from).number - place.row;
+    commit();
+    moveAfterCommit(view, tableLine, place, move);
+  };
+
+  /**
+   * The cell's keyboard map (#68).
+   *
+   * None of it is a CM6 keymap, and that is not an oversight: while this overlay
+   * is open the keyboard belongs to a `<textarea>` in `document.body`, so CM6
+   * never sees these keys at all. Which is what makes the two collisions in the
+   * brief impossible rather than merely handled — the two-Enter exit from a
+   * fenced code block (#52) and Tab/Shift+Tab indenting a list (#24) are keymap
+   * bindings on `contentDOM`, and an overlay outside it cannot shadow them. It
+   * is also why the `Prec.highest` rule for keys carrying an `inputType` does
+   * not apply here: there is no precedence to get wrong.
+   *
+   * `Cmd+Enter` deliberately still means exactly "commit", unchanged. The new
+   * row moved to `Cmd+Shift+Enter` instead — same gesture family, one more
+   * modifier, and the commit path the regression battery covers stays the path
+   * it always was.
+   */
+  ta.addEventListener('keydown', (e) => {
+    const binding = matchCellBinding(e);
+    if (!binding) return;
+    if (binding.action === 'break') {
+      // Shift+Enter — a paragraph break inside the cell. Left to the textarea's
+      // own newline; `encodeForCommit` turns it into `<br>`, which is the only
+      // way a GFM cell can hold one. Declared as a binding anyway so the
+      // cheatsheet can say so.
+      return;
+    }
+    e.preventDefault();
+    switch (binding.action) {
+      case 'commit':
+        commit();
+        break;
+      case 'cancel':
+        committed = true;
+        destroy();
+        break;
+      case 'row-next':
+        commitAndMove({ kind: 'row' });
+        break;
+      case 'col-next':
+        // Tab used to commit and stop. It commits and *moves* now; the wrap
+        // keeps it inside the row, so it never competes with Enter.
+        commitAndMove({ kind: 'col', delta: 1 });
+        break;
+      case 'col-prev':
+        commitAndMove({ kind: 'col', delta: -1 });
+        break;
+      case 'new-row':
+        commitAndMove({ kind: 'new-row' });
+        break;
+    }
   });
   ta.addEventListener('blur', () => setTimeout(commit, 50));
 
   document.body.appendChild(ta);
   ta.focus();
-  ta.select();
+  if (selectSrc === undefined) {
+    ta.select();
+  } else {
+    // The offsets are in the cell's source; the field holds the decoded form,
+    // so `<br>` and `\|` have to be walked before they mean anything here.
+    ta.setSelectionRange(
+      decodedOffset(cell.text, selectSrc.from),
+      decodedOffset(cell.text, selectSrc.to)
+    );
+  }
   reflow(); // initial size
 
   setCellEditSession({
@@ -920,6 +1214,162 @@ function showCellEditor(view: EditorView, cellEl: HTMLElement, cell: CellInfo): 
   });
 }
 
+// --- Caret in a cell (#53) ---
+
+/** Is a cell edit overlay open right now? It owns the keyboard while it is. */
+function cellEditorOpen(): boolean {
+  return document.querySelector('.cm-md-table-editor') !== null;
+}
+
+/**
+ * Move the document selection to wherever the caret is sitting in this cell.
+ *
+ * The DOM caret is the one the user sees; this is the other half — everything
+ * that asks the *state* where the user is (comments, AI edits, the session's
+ * saved caret) should get an answer inside the clicked cell instead of a stale
+ * one somewhere else in the file.
+ *
+ * A non-collapsed host selection is left alone: that is a text selection being
+ * made in the cell, and `live-render/selection-toolbar.ts` deliberately reads
+ * it from the DOM rather than from `state.selection`.
+ */
+function syncDocCaret(view: EditorView, textEl: HTMLElement, cell: CellInfo): void {
+  const pos = docPosForCaretIn(textEl, cell.text, cell.from);
+  if (pos === null) return;
+  const main = view.state.selection.main;
+  if (main.empty && main.head === pos) return;
+  view.dispatch({
+    selection: { anchor: pos },
+    // `table-selection.ts` snaps a caret off the zero-height data lines, which
+    // is exactly where a caret in a body cell belongs. The tag is how it knows
+    // this one was put there on purpose.
+    userEvent: 'select.cell',
+    scrollIntoView: false,
+  });
+}
+
+/**
+ * Park the caret in the clicked cell.
+ *
+ * Two routes, because the cell's glyphs are a nested editing host and its
+ * padding is not. On the glyphs the browser places the caret itself and must be
+ * left to do it — `preventDefault` here would kill drag-selection, which is
+ * what #31/#42 are built on. Off the glyphs nothing would place a caret at all,
+ * and CM6 would resolve the point to the widget's edge, which is the bug.
+ *
+ * Either way the document selection follows on `mouseup`, not now: a drag
+ * starting in a cell is a text selection, and collapsing the document caret
+ * into the cell mid-drag would fight it.
+ */
+function parkCaretOnMouseDown(
+  e: MouseEvent,
+  view: EditorView,
+  textEl: HTMLElement,
+  cell: CellInfo
+): void {
+  if (e.button !== 0 || e.defaultPrevented) return;
+  if (cellEditorOpen()) return;
+
+  const target = e.target;
+  const onGlyphs = target instanceof Node && textEl.contains(target);
+  if (!onGlyphs) {
+    e.preventDefault();
+    placeCaretFromPoint(textEl, e.clientX, e.clientY);
+  }
+
+  const sync = (): void => {
+    document.removeEventListener('mouseup', sync, true);
+    if (cellEditorOpen()) return;
+    syncDocCaret(view, textEl, cell);
+  };
+  document.addEventListener('mouseup', sync, true);
+}
+
+/**
+ * The input types a parked caret hands on to the cell edit overlay.
+ *
+ * Everything else stays refused, as it was before. `formatBold` is the case
+ * that makes the allow-list necessary rather than decorative: Chrome fires it
+ * at the host for Cmd+B on a cell selection, and opening an overlay there would
+ * pull the rug out from under the format toolbar (#55/#60), which formats the
+ * rendered text in place.
+ */
+const CELL_INPUT_TO_OVERLAY = new Set([
+  'insertText',
+  'insertFromPaste',
+  'insertParagraph',
+  'insertLineBreak',
+  'insertCompositionText',
+  'deleteContentBackward',
+  'deleteContentForward',
+]);
+
+/**
+ * Typing with the caret parked in a cell: open the overlay there and replay the
+ * keystroke into it.
+ *
+ * The overlay is the only thing in this file that owns a cell's text, so this
+ * is not "a second way to edit a cell" — it is the same commit path reached by
+ * a different gesture. Enter is a plain entry into edit mode, which is also the
+ * keyboard gesture #58 was looking for.
+ */
+function handleCellInput(
+  event: InputEvent,
+  view: EditorView,
+  cellEl: HTMLElement,
+  textEl: HTMLElement,
+  cell: CellInfo,
+  place: CellPlace
+): void {
+  if (!CELL_INPUT_TO_OVERLAY.has(event.inputType)) return;
+  if (cellEditorOpen()) return;
+
+  showCellEditor(view, cellEl, cell, hostSelectionAsSource(textEl, cell), place);
+
+  const ta = document.querySelector<HTMLTextAreaElement>('.cm-md-table-editor');
+  if (!ta) return;
+  // `execCommand`, not an assignment to `value`: it is what keeps the field's
+  // native undo stack intact, for the same reason `applyTextareaEdit` uses it.
+  if (event.inputType === 'deleteContentBackward') {
+    document.execCommand('delete');
+  } else if (event.inputType === 'deleteContentForward') {
+    document.execCommand('forwardDelete');
+  } else if (event.inputType === 'insertParagraph' || event.inputType === 'insertLineBreak') {
+    // Enter means "let me edit this cell", nothing more. A newline would be an
+    // odd thing to open a fresh edit with.
+  } else {
+    const text = event.data ?? event.dataTransfer?.getData('text/plain') ?? '';
+    if (text) document.execCommand('insertText', false, text);
+  }
+}
+
+/** The live host selection, mapped to the cell's source offsets. */
+function hostSelectionAsSource(
+  textEl: HTMLElement,
+  cell: CellInfo
+): { from: number; to: number } | undefined {
+  const caret = docPosForCaretIn(textEl, cell.text, cell.from);
+  if (caret !== null) {
+    const at = caret - cell.from;
+    return { from: at, to: at };
+  }
+  const range = hostSelectionRange(textEl, cell.text);
+  return range ?? undefined;
+}
+
+function hostSelectionRange(
+  textEl: HTMLElement,
+  cellText: string
+): { from: number; to: number } | null {
+  const sel = document.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
+  if (!sel.anchorNode || !textEl.contains(sel.anchorNode)) return null;
+  if (!sel.focusNode || !textEl.contains(sel.focusNode)) return null;
+  const a = visibleOffsetIn(textEl, sel.anchorNode, sel.anchorOffset);
+  const b = visibleOffsetIn(textEl, sel.focusNode, sel.focusOffset);
+  return sourceRangeForVisible(cellText, Math.min(a, b), Math.max(a, b));
+}
+
 // --- DOM builder helpers (used by TableWidget in Task 5) ---
 
 function buildCell(
@@ -928,6 +1378,8 @@ function buildCell(
   isHeader: boolean,
   ctx: TableContext,
   view: EditorView,
+  /** Index of this cell's row in `ctx.rows` — what keyboard navigation steps (#68). */
+  rowIndex: number,
   colCtrl?: ColCtrl,
   anchors: CommentAnchorSpan[] = []
 ): HTMLElement {
@@ -945,14 +1397,25 @@ function buildCell(
   // is the only way back from rendered characters to document positions — see
   // `live-render/cell-anchor.ts`. Safe to freeze into the DOM because the
   // widget's `eq()` compares every cell `from`, so any shift rebuilds it.
-  makeWidgetTextSelectable(textEl, { source: { from: cell.from, to: cell.to } });
+  makeWidgetTextSelectable(textEl, {
+    source: { from: cell.from, to: cell.to },
+    // A caret parked in a cell promises that typing edits that cell. The host
+    // cannot keep that promise itself, so the keystroke opens the edit overlay
+    // at the parked offset and is replayed into it (#53).
+    onRefusedInput: (event) =>
+      handleCellInput(event, view, cellEl, textEl, cell, { row: rowIndex, col: colIndex }),
+  });
   renderCellContent(textEl, cell.text, view, cellHighlights(cell, anchors));
   cellEl.appendChild(textEl);
+
+  cellEl.addEventListener('mousedown', (e) =>
+    parkCaretOnMouseDown(e, view, textEl, cell)
+  );
 
   cellEl.addEventListener('dblclick', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    showCellEditor(view, cellEl, cell);
+    showCellEditor(view, cellEl, cell, undefined, { row: rowIndex, col: colIndex });
   });
 
   if (isHeader && colCtrl) {
@@ -1074,6 +1537,12 @@ function buildHeaderCtrlCell(view: EditorView, ctx: TableContext): HTMLElement {
   toggleBtn.title = 'Toggle wrap / full width';
   cellEl.appendChild(toggleBtn);
 
+  // ⓘ — the cell-editing keys, rendered from the list the key handler resolves
+  // against (#69). It goes *inside* this cell rather than into the strip above
+  // the header line, which belongs to the column buttons (#48) and is the one
+  // place a table at the top of the document has no room to spare.
+  cellEl.appendChild(createHotkeySheetButton().el);
+
   return cellEl;
 }
 
@@ -1113,10 +1582,14 @@ function buildHeaderRow(
   const tr = document.createElement('span');
   tr.className = 'cm-md-table-row cm-md-table-row-header';
 
+  // The header is always `ctx.rows[0]` — `buildTableContext` walks the table's
+  // lines in order and the first one is the header by GFM's definition.
+  const rowIndex = 0;
+
   tr.appendChild(buildHeaderCtrlCell(view, ctx));
 
   row.cells.forEach((cell, i) => {
-    tr.appendChild(buildCell(cell, i, true, ctx, view, colCtrl, anchors));
+    tr.appendChild(buildCell(cell, i, true, ctx, view, rowIndex, colCtrl, anchors));
   });
 
   tr.addEventListener('mouseleave', colCtrl.scheduleHide);
@@ -1138,8 +1611,12 @@ function buildDataRow(
   const ctrlCell = buildDataCtrlCell(view, ctx, dataRowIndex, tr, dataCount);
   tr.appendChild(ctrlCell);
 
+  // Navigation steps `ctx.rows`, which still contains the delimiter this row
+  // list has filtered out, so the data index is not the one to hand on (#68).
+  const rowIndex = ctx.rows.indexOf(row);
+
   row.cells.forEach((cell, i) => {
-    tr.appendChild(buildCell(cell, i, false, ctx, view, undefined, anchors));
+    tr.appendChild(buildCell(cell, i, false, ctx, view, rowIndex, undefined, anchors));
   });
 
   return tr;
@@ -1147,21 +1624,28 @@ function buildDataRow(
 
 // --- Main decoration function ---
 
-export function decorateTable(
-  view: EditorView,
-  node: SyntaxNode,
-  builder: DecoSink
-): void {
-  // FLAVOUR: tables are pinned to 'never' under every shipped flavour — always
-  // rendered as a widget, never reverting to raw markdown on cursor. The widget
-  // absorbs its own events, so there is no `shouldReveal` call here by design,
-  // not by omission. See preview/CLAUDE.md, "Always Rendered".
-  const doc = view.state.doc;
-  const startLine = doc.lineAt(node.from);
-  const endLine = doc.lineAt(node.to);
+/**
+ * Read a table's shape out of the document.
+ *
+ * Split out of `decorateTable` for #68: keyboard navigation has to re-read the
+ * table *after* the commit it just made, and the only alternative to reusing
+ * this walk is a second parser that would drift from this one on the first
+ * ragged table. Delimiter detection stays position-based (second line) for the
+ * reason in `CLAUDE.md` — the regex form classifies a data row of dashes as the
+ * delimiter and hides it.
+ *
+ * @returns `null` for a table too large to be worth drawing
+ */
+export function buildTableContext(
+  doc: Text,
+  nodeFrom: number,
+  nodeTo: number
+): TableContext | null {
+  const startLine = doc.lineAt(nodeFrom);
+  const endLine = doc.lineAt(nodeTo);
 
   // Performance guard — bail before parsing pathological tables
-  if (endLine.number - startLine.number + 1 > 500) return;
+  if (endLine.number - startLine.number + 1 > 500) return null;
 
   const rows: RowData[] = [];
   const colWidths: number[] = [];
@@ -1190,13 +1674,27 @@ export function decorateTable(
     }
   }
 
-  const ctx: TableContext = {
+  return {
     rows,
     colWidths,
     colCount: colWidths.length,
-    nodeFrom: node.from,
-    nodeTo: node.to,
+    nodeFrom,
+    nodeTo,
   };
+}
+
+export function decorateTable(
+  view: EditorView,
+  node: SyntaxNode,
+  builder: DecoSink
+): void {
+  // FLAVOUR: tables are pinned to 'never' under every shipped flavour — always
+  // rendered as a widget, never reverting to raw markdown on cursor. The widget
+  // absorbs its own events, so there is no `shouldReveal` call here by design,
+  // not by omission. See preview/CLAUDE.md, "Always Rendered".
+  const ctx = buildTableContext(view.state.doc, node.from, node.to);
+  if (!ctx) return;
+  const rows = ctx.rows;
 
   const headerRow = rows.find((r) => r.isHeader);
   if (!headerRow) return;

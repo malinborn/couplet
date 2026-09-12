@@ -31,12 +31,53 @@ function findContainingTable(
  * table (moving down). Hidden lines are visually zero-height and would lose
  * the caret without this redirect.
  */
+/**
+ * The other end of the `select.cell` exemption.
+ *
+ * A caret parked in a body cell sits on that row's hidden line on purpose, and
+ * that is only honest while the caret the user sees is the DOM one inside the
+ * cell. The moment CM6 takes focus back, the same position is an invisible
+ * caret on a zero-height line — so repeat it as an ordinary, untagged selection
+ * and let the snap-out put it somewhere visible.
+ *
+ * It rides `focusChanged` on the same update listener rather than a `focus` DOM
+ * handler: measured in a browser, a `focus` handler registered through
+ * `EditorView.domEventHandlers` did not run for a programmatic `view.focus()`,
+ * which is exactly the case this has to cover — the cell edit overlay calls it
+ * from its own `destroy()`.
+ *
+ * Nothing happens for a selection outside a table, which is every other time
+ * the editor is focused.
+ */
+function refocusRedirect(update: ViewUpdate): number | null {
+  if (!update.focusChanged || !update.view.hasFocus) return null;
+  const state = update.state;
+  const head = state.selection.main.head;
+  const line = state.doc.lineAt(head);
+  const table = findContainingTable(state, line);
+  if (!table) return null;
+  if (line.from === state.doc.lineAt(table.from).from) return null;
+  return head;
+}
+
 export const tableSelectionSnapOut = EditorView.updateListener.of(
   (update: ViewUpdate) => {
+    const refocus = refocusRedirect(update);
+    if (refocus !== null) {
+      queueMicrotask(() => update.view.dispatch({ selection: { anchor: refocus } }));
+      return;
+    }
     if (!update.selectionSet) return;
-    // Guard against re-entry: our own dispatch carries this userEvent tag
+    // Guard against re-entry: our own dispatch carries this userEvent tag.
+    // `select.cell` is the other exemption — a click in a body cell parks the
+    // caret on that row's hidden line on purpose (#53), and snapping it to the
+    // header line would put it back at the table's first character, which is
+    // the bug being fixed. The DOM caret the user sees is in the cell either
+    // way; this is only the document half of it.
     if (
-      update.transactions.some((tr) => tr.isUserEvent('select.snapout'))
+      update.transactions.some(
+        (tr) => tr.isUserEvent('select.snapout') || tr.isUserEvent('select.cell')
+      )
     ) {
       return;
     }
