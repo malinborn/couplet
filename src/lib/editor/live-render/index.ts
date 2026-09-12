@@ -2,6 +2,7 @@ import type { Extension } from '@codemirror/state';
 import { liveRenderAtomic } from './atomic';
 import { blockFormatKeymap } from './block-format';
 import { markupRepairFilter } from './markup-repair';
+import { markupWhitespaceFilter } from './markup-whitespace';
 import { markupDeleteKeymap } from './markup-delete';
 import { headingSpaceInput } from './heading-input';
 import { inlineContinuation } from './inline-continuation';
@@ -42,6 +43,11 @@ export function liveRenderExtensions(options?: {
     // is repaired into well-formed markdown, and only then is the caret of the
     // repaired transaction normalised. The other order would normalise a caret
     // against a document that is about to change under it.
+    // Between the two for the same reverse-order reason: it must see the text
+    // *after* `markupRepairFilter` has written any torn marker back, and the
+    // caret must still be normalised after both. Run order is therefore
+    // repair → whitespace guard → caret normalise. See `markup-whitespace.ts`.
+    markupWhitespaceFilter,
     markupRepairFilter,
     blockFormatKeymap,
     // `Prec.highest`, and after `blockFormatKeymap` so that stripping a block's

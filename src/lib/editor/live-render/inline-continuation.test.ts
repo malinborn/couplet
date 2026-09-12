@@ -1,16 +1,19 @@
 import { describe, it, expect } from 'vitest';
-import { EditorSelection, EditorState } from '@codemirror/state';
+import { EditorSelection, EditorState, type TransactionSpec } from '@codemirror/state';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
 import { Strikethrough, Table } from '@lezer/markdown';
+import { markupModelField } from './atomic';
 import {
   findContinuationBoundary,
-  continuationRedirect,
+  planContinuationInsert,
   continuationEscapeSpec,
-  continuationFormatArmSpec,
+  continuationFormatKeySpec,
+  activeFormatsAt,
   isContinuationActive,
-  armedBoundaryField,
-  setArmedBoundary,
+  pendingFormatAt,
+  continuationField,
+  setPendingFormat,
   type ContinuableKind,
 } from './inline-continuation';
 
@@ -24,9 +27,21 @@ function makeState(doc: string, cursor: number): EditorState {
         codeLanguages: languages,
         extensions: [Strikethrough, Table],
       }),
-      armedBoundaryField,
+      markupModelField,
+      continuationField,
     ],
   });
+}
+
+/** Apply a spec and return the resulting state — the shape every assertion below wants. */
+function apply(state: EditorState, spec: TransactionSpec | null): EditorState {
+  expect(spec).not.toBeNull();
+  return state.update(spec!).state;
+}
+
+/** The state after a pending format has been recorded at `caret`, as a deflected space would. */
+function pending(doc: string, caret: number, spanEnd: number, kind: ContinuableKind): EditorState {
+  return makeState(doc, caret).update({ effects: setPendingFormat.of({ caret, spanEnd, kind }) }).state;
 }
 
 describe('findContinuationBoundary', () => {
@@ -39,231 +54,260 @@ describe('findContinuationBoundary', () => {
 
   for (const { label, doc, pos, kind } of cases) {
     it(`detects the closing boundary of ${label}`, () => {
-      const state = makeState(doc, pos);
-      const boundary = findContinuationBoundary(state, pos);
-      expect(boundary?.kind).toBe(kind);
+      expect(findContinuationBoundary(makeState(doc, pos), pos)?.kind).toBe(kind);
     });
   }
 
   it('returns null when the cursor is not at a closing boundary', () => {
-    const state = makeState('plain text here', 5);
-    expect(findContinuationBoundary(state, 5)).toBeNull();
+    expect(findContinuationBoundary(makeState('plain text here', 5), 5)).toBeNull();
   });
 
   it('returns null right after the opening marker, not just anywhere inside', () => {
-    // "**bold**": position 2 is right after the opening "**", not a closing boundary.
-    const state = makeState('**bold**', 2);
-    expect(findContinuationBoundary(state, 2)).toBeNull();
+    expect(findContinuationBoundary(makeState('**bold**', 2), 2)).toBeNull();
   });
 
-  it('adjacent spans: **a**_b_ resolves to the preceding (just-closed) span, not the one about to open', () => {
-    const doc = '**a**_b_';
-    // "**a**" is [0,5), "_b_" is [5,8) — position 5 is StrongEmphasis.to and Emphasis.from at once.
-    const state = makeState(doc, 5);
-    const boundary = findContinuationBoundary(state, 5);
-    expect(boundary?.kind).toBe('strong');
+  it('adjacent spans: **a**_b_ resolves to the preceding (just-closed) span', () => {
+    expect(findContinuationBoundary(makeState('**a**_b_', 5), 5)?.kind).toBe('strong');
   });
 
   it('an inline node flush against the end of the document is still detected', () => {
-    // No trailing character after the closing marker at all — the case that
-    // ruled out an arrow-key-based exit (no pixel to move the caret to).
     const state = makeState('**bold**', 8);
     const boundary = findContinuationBoundary(state, 8);
-    expect(boundary).not.toBeNull();
     expect(boundary?.node.to).toBe(state.doc.length);
   });
 });
 
-describe('continuationRedirect', () => {
-  /** Arm the boundary the way Cmd+B does, so the redirect has something to act on. */
-  function armed(doc: string, pos: number): EditorState {
-    return makeState(doc, pos).update({ effects: setArmedBoundary.of(pos) }).state;
+describe('planContinuationInsert — deflecting a space out of a span (#66)', () => {
+  // `ПРивет **как**`: content 9..12, closing marker 12..14.
+  const DOC = 'ПРивет **как**';
+
+  it('a space at the inner edge is written outside the closing marker, never inside it', () => {
+    const state = makeState(DOC, 12);
+    const next = apply(state, planContinuationInsert(state, 12, 12, ' '));
+    // `**как **` is what CommonMark rejects; this is the accepted alternative.
+    expect(next.doc.toString()).toBe('ПРивет **как** ');
+    expect(next.selection.main.head).toBe(15);
+  });
+
+  it('and records a pending format, so the caret is already bold before a character is typed', () => {
+    const state = makeState(DOC, 12);
+    const next = apply(state, planContinuationInsert(state, 12, 12, ' '));
+    expect(pendingFormatAt(next, 15)?.kind).toBe('strong');
+    expect(activeFormatsAt(next)).toEqual(['strong']);
+  });
+
+  it('the next character rejoins the span: `**как** ` + `д` -> `**как д**`', () => {
+    const state = pending('ПРивет **как** ', 15, 14, 'strong');
+    const next = apply(state, planContinuationInsert(state, 15, 15, 'д'));
+    expect(next.doc.toString()).toBe('ПРивет **как д**');
+    // Caret back at the inner edge (14, just before the closing `**`), ready to
+    // continue with no state at all — the marker moved right past it.
+    expect(next.selection.main.head).toBe(14);
+    expect(pendingFormatAt(next, 14)).toBeNull();
+    expect(activeFormatsAt(next)).toEqual(['strong']);
+  });
+
+  it('a letter at the inner edge needs no help — it is already inside and already valid', () => {
+    const state = makeState(DOC, 12);
+    expect(planContinuationInsert(state, 12, 12, 'x')).toBeNull();
+  });
+
+  it('a second space at a pending boundary is inserted plainly and does NOT end the format', () => {
+    const state = pending('ПРивет **как** ', 15, 14, 'strong');
+    // Falls through to the default insertion...
+    expect(planContinuationInsert(state, 15, 15, ' ')).toBeNull();
+    // ...and the pending format survives the transaction, so the word after it is still bold.
+    const typed = state.update({
+      changes: { from: 15, to: 15, insert: ' ' },
+      selection: EditorSelection.cursor(16),
+    }).state;
+    expect(pendingFormatAt(typed, 16)?.kind).toBe('strong');
+    const next = apply(typed, planContinuationInsert(typed, 16, 16, 'д'));
+    expect(next.doc.toString()).toBe('ПРивет **как  д**');
+  });
+
+  for (const [label, doc, inner] of [
+    ['italic', 'ПРивет *как*', 11],
+    ['strikethrough', 'ПРивет ~~как~~', 12],
+  ] as const) {
+    it(`deflects for ${label} too`, () => {
+      const state = makeState(doc, inner);
+      const next = apply(state, planContinuationInsert(state, inner, inner, ' '));
+      expect(next.doc.toString()).toBe(`${doc} `);
+    });
   }
 
-  it('continues bold once armed: typed text lands inside, before the closing **', () => {
-    const state = armed('**bold**', 8);
-    const spec = continuationRedirect(state, 8, 8, '!');
-    expect(spec).not.toBeNull();
-    expect(state.update(spec!).state.doc.toString()).toBe('**bold!**');
+  it('inline code is left alone — a trailing space there is valid content, not broken markup', () => {
+    const state = makeState('ПРивет `как`', 11);
+    expect(planContinuationInsert(state, 11, 11, ' ')).toBeNull();
   });
 
-  it('continues italic once armed', () => {
-    const state = armed('*ital*', 6);
-    expect(state.update(continuationRedirect(state, 6, 6, '!')!).state.doc.toString()).toBe('*ital!*');
+  it('nested spans deflect past the outermost closing marker', () => {
+    // `*a **b***`: the inner `**b**` and the outer `*…*` both end their content at 8.
+    const state = makeState('*a **b***', 8);
+    const next = apply(state, planContinuationInsert(state, 8, 8, ' '));
+    expect(next.doc.toString()).toBe('*a **b*** ');
   });
 
-  it('continues strikethrough once armed', () => {
-    const state = armed('~~gone~~', 8);
-    expect(state.update(continuationRedirect(state, 8, 8, '!')!).state.doc.toString()).toBe('~~gone!~~');
+  it('does nothing at the outer edge with nothing pending — a click landed there (#32)', () => {
+    const state = makeState('ПРивет **как** и', 14);
+    expect(planContinuationInsert(state, 14, 14, 'x')).toBeNull();
+    expect(planContinuationInsert(state, 14, 14, ' ')).toBeNull();
   });
 
-  it('continues inline code once armed', () => {
-    const state = armed('`code`', 6);
-    expect(state.update(continuationRedirect(state, 6, 6, '!')!).state.doc.toString()).toBe('`code!`');
-  });
-
-  it('DECLINES at an unarmed boundary — the default is to type outside the span', () => {
-    // Product decision #1 for issue #32, and the case the user actually hit:
-    // click in the space after a bold word, type, and get bold. The caret is at
-    // 8, outside the span; nothing redirects it back in any more.
-    const state = makeState('**bold**', 8);
-    expect(continuationRedirect(state, 8, 8, '!')).toBeNull();
-    const typed = state.update({ changes: { from: 8, to: 8, insert: '!' } }).state;
-    expect(typed.doc.toString()).toBe('**bold**!');
-  });
-
-  it('arming one boundary does not arm a different one', () => {
-    const state = makeState('**a** **b**', 5).update({ effects: setArmedBoundary.of(5) }).state;
-    expect(continuationRedirect(state, 11, 11, '!')).toBeNull();
-  });
-
-  it('leaves typing elsewhere untouched', () => {
-    const state = makeState('plain text here', 5);
-    expect(continuationRedirect(state, 5, 5, 'x')).toBeNull();
-  });
-
-  it('leaves a range replacement (from !== to) untouched', () => {
-    const state = armed('**bold** and more', 8);
-    expect(continuationRedirect(state, 6, 8, 'xx')).toBeNull();
+  it('ignores range replacements — those are not continuation decisions', () => {
+    const state = pending('ПРивет **как** ', 15, 14, 'strong');
+    expect(planContinuationInsert(state, 13, 15, 'xx')).toBeNull();
   });
 });
 
-describe('Escape disarms continuation', () => {
-  it('clears arming, and a subsequent type lands outside again', () => {
-    const state = makeState('**bold**', 8).update({ effects: setArmedBoundary.of(8) }).state;
-    expect(continuationRedirect(state, 8, 8, 'x')).not.toBeNull();
-
-    const escSpec = continuationEscapeSpec(state);
-    expect(escSpec).not.toBeNull();
-    const afterEscape = state.update(escSpec!).state;
-    expect(afterEscape.field(armedBoundaryField)).toBeNull();
-
-    expect(continuationRedirect(afterEscape, 8, 8, 'x')).toBeNull();
-    const typed = afterEscape.update({ changes: { from: 8, to: 8, insert: 'x' } }).state;
-    expect(typed.doc.toString()).toBe('**bold**x');
+describe('continuationField — validated, never remembered', () => {
+  it('drops the pending format as soon as the caret moves away', () => {
+    const state = pending('ПРивет **как** ', 15, 14, 'strong');
+    expect(state.field(continuationField)).not.toBeNull();
+    const moved = state.update({ selection: EditorSelection.cursor(3) }).state;
+    expect(moved.field(continuationField)).toBeNull();
   });
 
-  it('declines when nothing is armed, leaving other Escape handlers free to run', () => {
-    // Escape also clears AI highlights and closes panels. With continuation now
-    // opt-in, "not armed" is the common state at a boundary, so this handler
-    // must not swallow the key there.
-    const state = makeState('**bold**', 8);
-    expect(continuationEscapeSpec(state)).toBeNull();
+  it('and does not bring it back when the caret returns', () => {
+    const state = pending('ПРивет **как** ', 15, 14, 'strong');
+    const away = state.update({ selection: EditorSelection.cursor(3) }).state;
+    const back = away.update({ selection: EditorSelection.cursor(15) }).state;
+    expect(back.field(continuationField)).toBeNull();
+    expect(planContinuationInsert(back, 15, 15, 'д')).toBeNull();
   });
 
-  it('does nothing away from a boundary', () => {
-    expect(continuationEscapeSpec(makeState('plain text', 5))).toBeNull();
-  });
-
-  it('does nothing when the selection is not empty', () => {
-    const state = makeState('**bold** more', 8).update({
-      selection: EditorSelection.range(6, 8),
+  it('drops it when the gap to the span stops being whitespace', () => {
+    const state = pending('ПРивет **как** ', 15, 14, 'strong');
+    const edited = state.update({
+      changes: { from: 14, to: 15, insert: 'z' },
+      selection: EditorSelection.cursor(15),
     }).state;
-    expect(continuationEscapeSpec(state)).toBeNull();
+    expect(edited.field(continuationField)).toBeNull();
+  });
+
+  it('maps through an edit earlier in the document', () => {
+    const state = pending('ПРивет **как** ', 15, 14, 'strong');
+    const edited = state.update({
+      changes: { from: 0, to: 0, insert: 'XX' },
+      selection: EditorSelection.cursor(17),
+    }).state;
+    expect(edited.field(continuationField)).toEqual({ caret: 17, spanEnd: 16, kind: 'strong' });
   });
 });
 
-describe('arming lifecycle', () => {
-  it('clears when the caret moves away, and does not come back with it', () => {
-    const state = makeState('**bold**', 8).update({ effects: setArmedBoundary.of(8) }).state;
-    expect(state.field(armedBoundaryField)).toBe(8);
-
-    const movedAway = state.update({ selection: EditorSelection.cursor(2) }).state;
-    expect(movedAway.field(armedBoundaryField)).toBeNull();
-
-    const movedBack = movedAway.update({ selection: EditorSelection.cursor(8) }).state;
-    expect(movedBack.field(armedBoundaryField)).toBeNull();
-    // Arming is a one-shot, not a mode: returning to the boundary types outside
-    // again, exactly as arriving there for the first time would.
-    expect(continuationRedirect(movedBack, 8, 8, '!')).toBeNull();
+describe('the two off switches — neither of which edits the document', () => {
+  it('Escape ends a pending format', () => {
+    const state = pending('ПРивет **как** ', 15, 14, 'strong');
+    const next = apply(state, continuationEscapeSpec(state));
+    expect(next.doc.toString()).toBe('ПРивет **как** ');
+    expect(next.field(continuationField)).toBeNull();
+    expect(activeFormatsAt(next)).toEqual([]);
   });
 
-  it('maps the armed position through an edit earlier in the document', () => {
-    const state = makeState('abc **bold**', 12).update({ effects: setArmedBoundary.of(12) }).state;
-    expect(state.field(armedBoundaryField)).toBe(12);
-
-    const edited = state.update({ changes: { from: 0, to: 0, insert: 'XY' } }).state;
-    expect(edited.selection.main.head).toBe(14);
-    expect(edited.field(armedBoundaryField)).toBe(14);
+  it('Escape at the inner edge steps the caret out of the span instead', () => {
+    const state = makeState('ПРивет **как**', 12);
+    expect(activeFormatsAt(state)).toEqual(['strong']);
+    const next = apply(state, continuationEscapeSpec(state));
+    expect(next.doc.toString()).toBe('ПРивет **как**');
+    expect(next.selection.main.head).toBe(14);
+    expect(activeFormatsAt(next)).toEqual([]);
   });
 
-  it('an explicit null effect clears arming directly', () => {
-    const state = makeState('**bold**', 8).update({ effects: setArmedBoundary.of(8) }).state;
-    expect(state.update({ effects: setArmedBoundary.of(null) }).state.field(armedBoundaryField)).toBeNull();
-  });
-});
-
-describe('continuationFormatArmSpec (Cmd+B-family arm contract)', () => {
-  it('arms when the kind matches the boundary', () => {
-    const state = makeState('**bold**', 8);
-    const spec = continuationFormatArmSpec(state, 'strong');
-    expect(spec).not.toBeNull();
-    const result = state.update(spec!).state;
-    expect(result.field(armedBoundaryField)).toBe(8);
-    // And the next character then joins the bold, which is the point.
-    expect(result.update(continuationRedirect(result, 8, 8, '!')!).state.doc.toString()).toBe('**bold!**');
+  it('Escape falls through where no inline format is active, so it keeps its other meanings', () => {
+    expect(continuationEscapeSpec(makeState('plain text', 5))).toBeNull();
+    expect(continuationEscapeSpec(makeState('ПРивет **как** и', 14))).toBeNull();
   });
 
-  it('pressing the key again at the same boundary disarms — it reads as a toggle', () => {
-    const state = makeState('**bold**', 8);
-    const on = state.update(continuationFormatArmSpec(state, 'strong')!).state;
-    const off = on.update(continuationFormatArmSpec(on, 'strong')!).state;
-    expect(off.field(armedBoundaryField)).toBeNull();
+  it('the matching format key ends a pending format', () => {
+    const state = pending('ПРивет **как** ', 15, 14, 'strong');
+    const next = apply(state, continuationFormatKeySpec(state, 'strong'));
+    expect(next.doc.toString()).toBe('ПРивет **как** ');
+    expect(next.field(continuationField)).toBeNull();
   });
 
-  it('does not arm when the kind does not match the boundary', () => {
-    const state = makeState('**bold**', 8);
-    expect(continuationFormatArmSpec(state, 'emphasis')).toBeNull();
-    expect(continuationFormatArmSpec(state, 'strikethrough')).toBeNull();
+  it('a non-matching format key does not end it, and does not fall through to the toggle either', () => {
+    const state = pending('ПРивет **как** ', 15, 14, 'strong');
+    expect(continuationFormatKeySpec(state, 'emphasis')).toBeNull();
+    expect(state.field(continuationField)).not.toBeNull();
   });
 
-  it('does nothing away from any boundary, so Cmd+B still wraps normally', () => {
-    expect(continuationFormatArmSpec(makeState('plain text', 5), 'strong')).toBeNull();
+  it('the matching format key at the inner edge steps out, without unwrapping the span', () => {
+    const state = makeState('ПРивет **как**', 12);
+    const next = apply(state, continuationFormatKeySpec(state, 'strong'));
+    expect(next.doc.toString()).toBe('ПРивет **как**');
+    expect(next.selection.main.head).toBe(14);
   });
 
-  it('does nothing when the field is absent, so live-preview keeps Cmd+B', () => {
-    // keybindings.ts is shared with live-preview, where the live-render bundle
-    // — and therefore this field — is not installed. Returning a spec here
-    // would swallow Cmd+B at the end of a bold span in the existing mode.
+  it('the format key at the outer edge starts a pending format — #32 opt-in, unchanged', () => {
+    const state = makeState('ПРивет **как** и', 14);
+    const next = apply(state, continuationFormatKeySpec(state, 'strong'));
+    expect(next.doc.toString()).toBe('ПРивет **как** и');
+    expect(pendingFormatAt(next, 14)?.kind).toBe('strong');
+    const typed = apply(next, planContinuationInsert(next, 14, 14, 'x'));
+    expect(typed.doc.toString()).toBe('ПРивет **какx** и');
+  });
+
+  it('pressing it twice at the outer edge is a toggle, not a latch', () => {
+    const state = makeState('ПРивет **как** и', 14);
+    const on = apply(state, continuationFormatKeySpec(state, 'strong'));
+    const off = apply(on, continuationFormatKeySpec(on, 'strong'));
+    expect(off.field(continuationField)).toBeNull();
+  });
+
+  it('returns null away from any span, so the key stays the ordinary toggle', () => {
+    expect(continuationFormatKeySpec(makeState('plain text', 5), 'strong')).toBeNull();
+  });
+
+  it('returns null when the live-render bundle is not installed', () => {
     const withoutField = EditorState.create({
       doc: '**bold**',
       selection: EditorSelection.cursor(8),
-      extensions: [
-        markdown({
-          base: markdownLanguage,
-          codeLanguages: languages,
-          extensions: [Strikethrough, Table],
-        }),
-      ],
+      extensions: [markdown({ base: markdownLanguage, extensions: [Strikethrough, Table] })],
     });
-    expect(findContinuationBoundary(withoutField, 8)?.kind).toBe('strong');
-    expect(continuationFormatArmSpec(withoutField, 'strong')).toBeNull();
+    expect(continuationFormatKeySpec(withoutField, 'strong')).toBeNull();
   });
 });
 
-describe('isContinuationActive (caret affordance)', () => {
-  it('is null at a fresh boundary — nothing to advertise when typing goes outside', () => {
-    expect(isContinuationActive(makeState('**bold**', 8))).toBeNull();
+describe('activeFormatsAt — the data behind the format-aware caret (#67)', () => {
+  it('is empty in plain prose and in an empty document', () => {
+    expect(activeFormatsAt(makeState('plain text', 5))).toEqual([]);
+    expect(activeFormatsAt(makeState('', 0))).toEqual([]);
   });
 
-  it('is active once armed', () => {
-    const state = makeState('**bold**', 8).update({ effects: setArmedBoundary.of(8) }).state;
+  it('reports the format the caret is inside', () => {
+    expect(activeFormatsAt(makeState('ПРивет **как**', 10))).toEqual(['strong']);
+    expect(activeFormatsAt(makeState('ПРивет *как*', 10))).toEqual(['emphasis']);
+    expect(activeFormatsAt(makeState('ПРивет ~~как~~', 10))).toEqual(['strikethrough']);
+    expect(activeFormatsAt(makeState('ПРивет `как`', 10))).toEqual(['inlineCode']);
+  });
+
+  it('paints the #32 offset distinction: bold at the inner edge, plain at the outer one', () => {
+    const doc = 'ПРивет **как** и';
+    expect(activeFormatsAt(makeState(doc, 12))).toEqual(['strong']); // arrows / typing land here
+    expect(activeFormatsAt(makeState(doc, 14))).toEqual([]); //          a click lands here
+  });
+
+  it('reports every applicable format for a combined span rather than picking a winner', () => {
+    expect(activeFormatsAt(makeState('***оба***', 4)).sort()).toEqual(['emphasis', 'strong']);
+  });
+
+  it('reports the pending format before the first character exists', () => {
+    const state = pending('ПРивет **как** ', 15, 14, 'strong');
+    expect(activeFormatsAt(state)).toEqual(['strong']);
     expect(isContinuationActive(state)).toBe('strong');
   });
 
-  it('is null again after Escape', () => {
-    const on = makeState('**bold**', 8).update({ effects: setArmedBoundary.of(8) }).state;
-    expect(isContinuationActive(on.update(continuationEscapeSpec(on)!).state)).toBeNull();
-  });
-
-  it('is null when not at a boundary', () => {
-    expect(isContinuationActive(makeState('plain text', 5))).toBeNull();
-  });
-
-  it('is null with a non-empty selection', () => {
-    const state = makeState('**bold** more', 8).update({
-      selection: EditorSelection.range(6, 8),
-    }).state;
-    expect(isContinuationActive(state)).toBeNull();
+  it('is empty for a range selection — there is no single next character', () => {
+    const state = EditorState.create({
+      doc: 'ПРивет **как**',
+      selection: EditorSelection.range(9, 12),
+      extensions: [
+        markdown({ base: markdownLanguage, extensions: [Strikethrough, Table] }),
+        markupModelField,
+        continuationField,
+      ],
+    });
+    expect(activeFormatsAt(state)).toEqual([]);
   });
 });
