@@ -722,20 +722,29 @@
     startCommentFromSelection();
   }
 
-  /** The actual work, with no focus guard — see `createCommentFromSelection`. */
-  function startCommentFromSelection(): void {
+  /**
+   * The actual work, with no focus guard — see `createCommentFromSelection`.
+   *
+   * `target` overrides the document selection. The live-render toolbar passes
+   * one for text selected inside a table cell: that selection lives in the
+   * widget's nested editing host, so `state.selection` knows nothing about it
+   * and the range has been resolved back to the source by `cell-anchor.ts`
+   * (#42).
+   */
+  function startCommentFromSelection(target?: { from: number; to: number }): void {
     const view = editorHandle?.view;
     if (!view || !fileState.filePath) return;
-    const range = view.state.selection.main;
+    const range = target ?? view.state.selection.main;
+    const empty = range.from === range.to;
     const line = view.state.doc.lineAt(range.from);
-    const raw = range.empty ? line.text : view.state.sliceDoc(range.from, range.to);
+    const raw = empty ? line.text : view.state.sliceDoc(range.from, range.to);
     const quote = raw.trim();
     if (!quote) return;
 
     // Exact document range of the quote. The quote is trimmed, so the range
     // has to skip the same leading whitespace — otherwise the highlight and
     // the stored context would both be off by the indentation of the line.
-    const quoteFrom = (range.empty ? line.from : range.from) + (raw.length - raw.trimStart().length);
+    const quoteFrom = (empty ? line.from : range.from) + (raw.length - raw.trimStart().length);
     const quoteTo = quoteFrom + quote.length;
     // Recorded now, while the exact position is known: after this the only way
     // back to it is a search, and a search needs something to disambiguate on.
@@ -1346,7 +1355,7 @@
         // item, minus the focus guard: a click in this window's own toolbar is
         // unambiguous about which document is meant.
         ...(liveRender
-          ? liveRenderExtensions({ onComment: () => startCommentFromSelection() })
+          ? liveRenderExtensions({ onComment: (range) => startCommentFromSelection(range) })
           : []),
       ]),
     });

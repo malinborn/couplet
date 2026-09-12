@@ -732,7 +732,12 @@ function buildCell(
   // ancestor would swallow the mousedown that starts a column drag.
   const textEl = document.createElement('span');
   textEl.className = CELL_TEXT_CLASS;
-  makeWidgetTextSelectable(textEl);
+  // The cell's source range travels on the element: a selection made inside it
+  // is invisible to `state.selection` (the widget claims the events), so this
+  // is the only way back from rendered characters to document positions — see
+  // `live-render/cell-anchor.ts`. Safe to freeze into the DOM because the
+  // widget's `eq()` compares every cell `from`, so any shift rebuilds it.
+  makeWidgetTextSelectable(textEl, { source: { from: cell.from, to: cell.to } });
   renderCellContent(textEl, cell.text, view);
   cellEl.appendChild(textEl);
 
