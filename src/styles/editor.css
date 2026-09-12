@@ -393,6 +393,8 @@
    * «выехать за край»: у таблицы в самом верху документа наружу выезжать некуда,
    * там её обрезал бы `overflow: hidden` на `.cm-content`. */
   --table-col-gutter: 24px;
+  /* Полоса справа от таблицы под «+ колонка» / «+ строка». */
+  --table-side-gutter: 32px;
   font-family: var(--font-code);
   font-size: 0.9em;
   contain: inline-size;
@@ -418,8 +420,14 @@
 
 /* Widget wrapper for single-widget table */
 .cm-md-table-wrap {
-  flex: 1 1 auto;
+  /* `flex: 0 1 auto`, а не `1 1 auto`: обёртка обжимает таблицу вместо того,
+   * чтобы тянуться во всю ширину строки. Кнопки позиционируются абсолютно от
+   * неё, поэтому раньше они улетали к правому краю окна. */
+  flex: 0 1 auto;
   min-width: 0;
+  /* Оставляем справа место под кнопки — иначе широкая таблица выдавливает их
+   * за `.cm-content` и они обрезаются / дают горизонтальную прокрутку. */
+  max-width: calc(100% - var(--table-side-gutter));
   position: relative;
 }
 
@@ -694,12 +702,12 @@
   border-radius: 11px;
 }
 
+/* «+ строка» — в той же правой полосе, что и «+ колонка» (прежние -68px были
+ * зазором под давно не отрисовываемую `.cm-md-table-btn-del-row`). */
 .cm-md-table-btn-add-row {
   position: absolute;
-  right: -68px;
+  right: -28px;
   bottom: 0.3em;
-  width: 30px;
-  border-radius: 11px;
   z-index: 1;
 }
 
@@ -776,7 +784,9 @@
   opacity: 1;
 }
 
-/* Add column button (right of header) */
+/* Кнопка «+ колонка» — справа от самой правой колонки. Отсчёт идёт от
+ * `.cm-md-table-wrap`, которая теперь обжимает таблицу, поэтому кнопка следует
+ * за её фактической шириной. `top` учитывает полосу над таблицей. */
 .cm-md-table-btn-add-col {
   position: absolute;
   right: -28px;
