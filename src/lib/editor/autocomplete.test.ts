@@ -3,6 +3,8 @@ import { EditorState } from '@codemirror/state';
 import {
   computeOrderedListRenumberChanges,
   computeListIndentChanges,
+  indentStepFor,
+  outdentStepFor,
   selectedLineNumbers,
 } from './autocomplete.js';
 
@@ -189,11 +191,76 @@ describe('computeListIndentChanges', () => {
     expect(apply(doc, { from: at, to: at }, true)).toBe(['- alpha', '  - bravo'].join('\n'));
   });
 
-  it('works on ordered lists too', () => {
+  // #44: two spaces do not reach an ordered item's content column, so the
+  // sub-item parsed as a sibling and rendered at its parent's indent.
+  it('indents an ordered item to its parent\'s content column', () => {
     const doc = ['1. one', '2. two', '3. three'].join('\n');
     expect(apply(doc, spanLines(doc, 2, 3), true)).toBe(
-      ['1. one', '  2. two', '  3. three'].join('\n')
+      ['1. one', '   2. two', '   3. three'].join('\n')
     );
+  });
+
+  it('reaches past a two-digit parent marker', () => {
+    const doc = ['9. nine', '10. ten', '11. eleven'].join('\n');
+    expect(apply(doc, spanLines(doc, 3, 3), true)).toBe(
+      ['9. nine', '10. ten', '    11. eleven'].join('\n')
+    );
+  });
+
+  it('moves a whole nested block by one step, keeping its shape', () => {
+    const doc = ['1. one', '2. two', '   1. inner'].join('\n');
+    expect(apply(doc, spanLines(doc, 2, 3), true)).toBe(
+      ['1. one', '   2. two', '      1. inner'].join('\n')
+    );
+  });
+
+  it('outdents an ordered item back onto its parent column', () => {
+    const doc = ['1. one', '   1. inner', '   2. inner two'].join('\n');
+    expect(apply(doc, spanLines(doc, 2, 3), false)).toBe(
+      ['1. one', '1. inner', '2. inner two'].join('\n')
+    );
+  });
+
+  it('indents under a bullet parent by two, as before', () => {
+    const doc = ['- alpha', '- bravo'].join('\n');
+    expect(apply(doc, spanLines(doc, 2, 2), true)).toBe(
+      ['- alpha', '  - bravo'].join('\n')
+    );
+  });
+
+  it('indents a mixed nesting to whichever parent it sits under', () => {
+    const doc = ['1. one', '   - bullet', '   - bullet two'].join('\n');
+    expect(apply(doc, spanLines(doc, 3, 3), true)).toBe(
+      ['1. one', '   - bullet', '     - bullet two'].join('\n')
+    );
+  });
+});
+
+describe('indentStepFor / outdentStepFor', () => {
+  const at = (lines: string[], ln: number) => {
+    const { doc } = EditorState.create({ doc: lines.join('\n') });
+    return { indent: indentStepFor(doc, ln), outdent: outdentStepFor(doc, ln) };
+  };
+
+  it('falls back to two spaces for the first item of a list', () => {
+    expect(at(['1. one', '2. two'], 1).indent).toBe(2);
+  });
+
+  it('ignores a wrapped paragraph line when looking for the parent', () => {
+    const doc = ['1. one', '   continued here', '2. two'];
+    expect(at(doc, 3).indent).toBe(3);
+  });
+
+  it('stops at a blank line rather than nesting into the list above', () => {
+    expect(at(['1. one', '', '- fresh list'], 3).indent).toBe(2);
+  });
+
+  it('reports no room to outdent a top-level item', () => {
+    expect(at(['- alpha', '- bravo'], 2).outdent).toBe(0);
+  });
+
+  it('outdents to the parent column, not by a fixed unit', () => {
+    expect(at(['10. ten', '    1. inner'], 2).outdent).toBe(4);
   });
 });
 
