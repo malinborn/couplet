@@ -2287,6 +2287,7 @@ version = "1.0.0"
 dependencies = [
  "cocoa",
  "dirs",
+ "libc",
  "notify",
  "serde",
  "serde_json",

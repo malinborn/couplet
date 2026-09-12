@@ -50,8 +50,19 @@
 {#if store.toasts.length > 0}
   <div class="md-toast-stack">
     {#each store.toasts as toast (toast.id)}
-      <div class="md-toast">
-        {#if toast.payload.kind === 'update'}
+      <div class="md-toast" class:md-toast-alarm={toast.payload.kind === 'save-error'}>
+        {#if toast.payload.kind === 'save-error'}
+          <!-- Names the file and quotes the OS, because the two questions this
+               toast has to answer are "which document" and "why" — and the
+               reason is usually actionable (permissions, a full disk, a volume
+               that went away). It carries no action of its own: the next
+               successful save withdraws it. -->
+          <span class="md-toast-text">
+            <strong>Could not save {toast.payload.fileName}</strong>
+          </span>
+          <span class="md-toast-highlight">{toast.payload.message}</span>
+          <span class="md-toast-dim">Your edits are still here — fix the cause, then press <kbd>⌘S</kbd></span>
+        {:else if toast.payload.kind === 'update'}
           <span class="md-toast-text">
             <strong>mdmini {toast.payload.latest}</strong> available
             <span class="md-toast-dim">(you have v{toast.payload.current})</span>

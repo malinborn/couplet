@@ -7,6 +7,15 @@
  */
 
 export type ToastPayload =
+  /**
+   * A save did not reach the disk (#18). The only toast here that reports lost
+   * work rather than an opportunity: without it a refused write — a file whose
+   * ACL denies replacement, a full or read-only volume — reached nothing but
+   * `console.error`, and the user kept typing into a document that had stopped
+   * being saved. It carries the OS's own message because "could not save" on
+   * its own gives no one anything to act on.
+   */
+  | { kind: 'save-error'; fileName: string; message: string }
   | { kind: 'update'; latest: string; current: string; highlight?: string }
   | { kind: 'session'; count: number }
   /** Startup nudge for someone who has never connected an agent. */
@@ -44,21 +53,24 @@ export interface ToastEntry {
 
 /** Lower sorts higher in the stack. */
 const ORDER: Record<ToastKind, number> = {
-  update: 0,
-  session: 1,
+  // Top of the stack, above everything: it is the only notice that means work
+  // is being lost right now, and it stays up until the next save succeeds.
+  'save-error': 0,
+  update: 1,
+  session: 2,
   // Both AI notices sort last: neither is time-sensitive the way an update or a
   // restorable session is. They never coexist — one requires having never
   // connected, the other requires having just connected.
-  'ai-nudge': 2,
-  'ai-first-use': 2,
+  'ai-nudge': 3,
+  'ai-first-use': 3,
   // Sorts last of all: it is a direct response to something the user just
   // clicked, so it belongs nearest their attention rather than above notices
   // they have not acted on.
-  'ai-watch-copied': 3,
-  'ai-bind-copied': 3,
+  'ai-watch-copied': 4,
+  'ai-bind-copied': 4,
   // Sorts below everything: it is the only toast that is still waiting on a
   // decision, so it belongs closest to the pointer that has to make it.
-  'json-offer': 4,
+  'json-offer': 5,
 };
 
 export function createToastStore() {

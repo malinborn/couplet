@@ -190,10 +190,22 @@
       await writeFile(fileState.filePath, content);
       fileState.isDirty = false;
       fileState.lastSavedAt = Date.now();
+      // A previous failure is over the moment a save lands.
+      toasts.dismissKind('save-error');
       // Clean up recovery file on successful save
       await invoke('delete_recovery', { path: fileState.filePath }).catch(() => {});
     } catch (err) {
+      // `isDirty` deliberately stays true: the document is still unsaved, so
+      // the next keystroke reschedules a save and the recovery snapshot keeps
+      // being written. Until #18 this branch was a `console.error` and nothing
+      // else — a file the filesystem refused to replace went on looking saved
+      // while the user kept typing into it.
       console.error('Auto-save failed:', err);
+      toasts.push({
+        kind: 'save-error',
+        fileName: fileState.filePath.split('/').pop() ?? fileState.filePath,
+        message: err instanceof Error ? err.message : String(err),
+      });
     } finally {
       // Keep isSaving true briefly to suppress FSEvent from our own atomic write
       setTimeout(() => { isSaving = false; }, 600);

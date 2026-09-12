@@ -150,6 +150,17 @@ body {
   animation: md-toast-slide-in 0.3s ease-out;
 }
 
+/* The one toast that reports damage rather than an opportunity. Marked with a
+   red edge instead of a red card: it can sit on screen for a long time — it
+   only leaves when a save finally succeeds — so it has to be noticeable
+   without being punishing to look at. No theme token for it, because none of
+   the four palettes defines an error colour; a translucent red reads correctly
+   on all of them. */
+.md-toast-alarm {
+  border-color: rgba(235, 111, 146, 0.55);
+  border-left-width: 3px;
+}
+
 @keyframes md-toast-slide-in {
   from { transform: translateY(20px); opacity: 0; }
   to { transform: translateY(0); opacity: 1; }

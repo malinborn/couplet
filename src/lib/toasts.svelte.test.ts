@@ -85,6 +85,43 @@ describe('createToastStore', () => {
     expect(store.toasts).toHaveLength(2);
   });
 
+  it('SaveErrorSortsAboveEverything', () => {
+    // It is the only toast that means work is being lost right now, so no
+    // notice about an update or a restorable session may sit above it.
+    const store = createToastStore();
+    store.push({ kind: 'ai-nudge' });
+    store.push({ kind: 'session', count: 2 });
+    store.push({ kind: 'save-error', fileName: 'notes.md', message: 'Permission denied' });
+    store.push({ kind: 'update', latest: 'v1.0.0', current: '0.9.0' });
+    expect(store.toasts.map((t) => t.payload.kind)).toEqual([
+      'save-error',
+      'update',
+      'session',
+      'ai-nudge',
+    ]);
+  });
+
+  it('SaveError_RepeatedFailures_DoNotStack', () => {
+    // Autosave retries every 300ms, so a file the filesystem keeps refusing
+    // would otherwise bury the window in identical cards. The latest message
+    // wins — it is the one describing the current state of the disk.
+    const store = createToastStore();
+    store.push({ kind: 'save-error', fileName: 'notes.md', message: 'Permission denied' });
+    store.push({ kind: 'save-error', fileName: 'notes.md', message: 'No space left on device' });
+    expect(store.toasts).toHaveLength(1);
+    const payload = store.toasts[0].payload;
+    expect(payload.kind === 'save-error' && payload.message).toBe('No space left on device');
+  });
+
+  it('SaveError_WithdrawnWhenASaveFinallyLands', () => {
+    // `performSave` calls `dismissKind` on success: the warning has to leave on
+    // its own, because a stale "could not save" is as misleading as no warning.
+    const store = createToastStore();
+    store.push({ kind: 'save-error', fileName: 'notes.md', message: 'Permission denied' });
+    store.dismissKind('save-error');
+    expect(store.toasts).toEqual([]);
+  });
+
   it('OnlyOneToastPerKind', () => {
     // The update checker runs hourly and must not stack duplicates.
     const store = createToastStore();
