@@ -17,7 +17,7 @@ End-to-end release of mdmini. There is **no CI** — the `.dmg` is built locally
 | dmg artifact | `md-mini_<version>_universal.dmg` |
 | Bundle output dir | `$CARGO_TARGET_DIR/universal-apple-darwin/release/bundle/` — **note `CARGO_TARGET_DIR` is set to `~/.cargo/shared-target`, so this is NOT under `src-tauri/target/`**. Resolve it with `cargo metadata --format-version 1 --no-deps --manifest-path src-tauri/Cargo.toml --jq '.target_directory'` rather than hardcoding. |
 | Version lives in | `package.json`, `package-lock.json`, `src-tauri/tauri.conf.json` (NOT `Cargo.toml` — stays `0.1.0`) |
-| Changelog / site | `docs/index.html` (GitHub Pages) |
+| Changelog / site | **source** `site/index.html`, **built** into `docs/` by `npm run build:site` |
 | Tag format | `v<version>` |
 
 ## Steps
@@ -41,16 +41,28 @@ npm version <version> --no-git-tag-version    # updates package.json + package-l
 ```
 Then edit `src-tauri/tauri.conf.json` -> `"version": "<version>"`. All three must match.
 
-### 4. Update the site (`docs/index.html`)
+### 4. Update the site — edit `site/index.html`, then build into `docs/`
+
+**`docs/` is build output. Never edit `docs/index.html` directly.** `vite.config.site.ts` has `root: site/` and `outDir: docs/`, so the next `npm run build:site` silently overwrites anything hand-written there. Read `site/CLAUDE.md` before touching this step.
+
+Edit **`site/index.html`**:
 - `"softwareVersion": "<version>"` (JSON-LD near the top).
-- Add a `.changelog-entry` block at the **TOP** of `.changelog-list` (use the template already in the file). Tag is `feature` / `fix` / `perf` / `initial`. Mirror the playful `<h3>` title + `<strong>lead-in</strong> — description` bullets, and use `&mdash;`, not a literal em dash.
+- Add a `.changelog-entry` block at the **TOP** of `.changelog-list` (use the template already in the file) and move the `open` attribute onto it, off the previous newest entry. Tag is `feature` / `fix` / `perf` / `initial`. Mirror the playful title + `<strong>lead-in</strong> — description` bullets, and use `&mdash;`, not a literal em dash. Match the existing entries' voice: name the actual cause ("the culprit was a single arch-dependent type…"), no marketing adjectives.
 - **Only if the release adds a headline feature**, also touch the hero/feature blocks higher in the page. A pure bugfix -> changelog entry only.
+
+Then build:
+```bash
+rm -rf docs/assets && npm run build:site
+```
+`rm -rf docs/assets` first because `emptyOutDir: false` — Vite never cleans `docs/`, since it also holds hand-maintained files the build must not eat (`screenshot.png`, `robots.txt`, `sitemap.xml`, `llms.txt`, the favicons, `sample.md`, `releases/`, the internal `*.md` docs). Without the `rm`, content-hashed chunks from every previous release pile up forever, orphans included.
+
+Optionally write the English release notes to `docs/releases/<version>.md` — that file is hand-maintained, not generated, and doubles as the GitHub release body in step 7.
 
 ### 5. Commit (two commits, matching repo history)
 ```bash
 git add package.json package-lock.json src-tauri/tauri.conf.json
 git commit -m "chore: release <version> — <summary>"
-git add docs/index.html
+git add site/index.html docs/index.html docs/assets
 git commit -m "docs: update site for <version> — <summary>"
 git push origin HEAD:main      # or <branch>:main from a worktree
 ```
@@ -131,7 +143,8 @@ User upgrades with `brew update && brew upgrade --cask mdmini` — **suggest it,
 
 - **Universal since 1.0.1.** One dmg, both arches, one sha256 in the cask — no `Hardware::CPU.arm?` branch. Size, measured on 1.0.1: arm64-only was 7 MB, universal is 15 MB. `lipo` merges only the executable, but here the executable is nearly all the weight, so expect slightly over 2x — not the "well under 2x" you might reason your way to.
 - **The cask goes last.** It is the switch that actually moves users onto the new version; everything before it is staging. Publish the release, verify the served sha256, *then* bump the cask.
-- **Pushing `main` also deploys the site.** `deploy-site.yml` runs on push to `main`, so the changelog entry from step 4 only goes live then — a release published from a branch leaves md-mini.com showing the previous version until `main` lands.
+- **Pushing `main` also deploys the site.** `deploy-site.yml` runs on push to `main` touching `docs/**`, so the changelog entry from step 4 only goes live then — a release published from a branch leaves md-mini.com showing the previous version until `main` lands. Note the path filter: a changelog edited in `site/` but never built into `docs/` does not deploy at all.
+- **`docs/` is generated; `site/` is the source.** This bit the runbook itself — step 4 used to say the changelog "lives in `docs/index.html`", which is true of the served file and false of the one to edit. `vite.config.site.ts`: `root: site/`, `outDir: docs/`, `emptyOutDir: false`. A hand-edit to `docs/index.html` survives right up until the next `npm run build:site` erases it, which is the kind of trap that reads authoritative and costs an hour.
 - **Never pass a `bool` literal to an Objective-C API.** `objc`'s `BOOL` is `bool` on aarch64 but `i8` elsewhere, so `foo_(true)` compiles on Apple Silicon and breaks the x86_64 half of the universal build. Use `cocoa::base::YES`/`NO`. `npm run check:x86` catches this in seconds; it is the reason Intel was broken through 1.0.
 - **`CARGO_TARGET_DIR` is redirected** to `~/.cargo/shared-target`, so bundle paths are *not* under `src-tauri/target/`. Resolve the dir, don't hardcode it.
 - **dmg filename uses `md-mini`** (`md-mini_X.Y.Z_universal.dmg`), but the cask/CLI name is `mdmini`.
