@@ -4,7 +4,12 @@ import type { SyntaxNode } from '@lezer/common';
 import type { DecoSink } from './utils';
 import { markdownTable } from 'markdown-table';
 import { toggleTableMode, getTableMode } from './table-state';
-import { encodeForCommit, decodeForEdit } from './table-encoding';
+import { encodeForCommit, decodeForEdit, encodedOffset } from './table-encoding';
+import {
+  applyTextareaEdit,
+  endCellEditSession,
+  setCellEditSession,
+} from '../cell-edit-session';
 import { navigateToHeading } from '../heading-slugs';
 import { makeWidgetTextSelectable, eventInside } from '../widget-text-selection';
 
@@ -684,23 +689,26 @@ export function cellEditWidth(
 }
 
 /**
- * Поле правки ячейки — и почему над ним НЕТ тулбара форматирования (#55).
+ * Поле правки ячейки — и как над ним работает тулбар форматирования (#60).
  *
- * Тулбар живёт в live-render и существует ради одного: там маркеры скрыты
- * навсегда, и набрать `**` руками уже нельзя. В этом поле всё наоборот — в нём
- * лежит исходник ячейки, `**жирный**` виден буквально и правится руками.
+ * Сначала тулбара тут не было (#55): в поле лежит исходник, `**жирный**` виден
+ * буквально, и смысл «маркеры скрыты» тут не работает. Владелец это отвёл —
+ * двойной клик это ещё и универсальный жест «выделить слово», провалиться в
+ * правку легко, и человек не обязан знать, в каком он режиме.
  *
- * Технически повесить тулбар сюда можно, но из шести кнопок работали бы не все
- * и по-разному. B/I/S/`</>` пришлось бы делать второй раз — строковой обёрткой
- * по `ta.value` вместо `toggleInlineFormat`, который смотрит в дерево разбора;
- * две реализации одного «жирного» разойдутся на первом же вложенном случае.
- * 💬 привязывает комментарий к диапазону ДОКУМЕНТА, а пока поле открыто, текст
- * ячейки в документе устаревший — якорь встал бы на текст, которого в файле
- * нет. Link открывает инспектор, который позиционируется по `coordsAtPos`, то
- * есть по строке таблицы, а не по ячейке.
+ * Два возражения из #55 остались настоящими, и сняты они так:
  *
- * Поэтому выделение форматируется там, где оно и рисуется: в отрендеренной
- * ячейке, без двойного клика — `selection-toolbar.ts`, ветка `widget`.
+ * 1. Второй реализации «жирного» нет. Поле не умеет форматировать само: оно
+ *    публикует себя через `cell-edit-session.ts`, а тулбар гоняет его текст
+ *    через `toggleInlineFormatInText` — тот же `formatSpec` по дереву разбора,
+ *    что и для обычного выделения, просто на временном состоянии.
+ * 2. 💬 сначала коммитит ячейку и только потом ставит якорь
+ *    (`commitAndMap`). Пока поле открыто, текст ячейки в документе устаревший,
+ *    и якорь указал бы на то, чего в файле нет; коммит — ровно то же, что
+ *    произошло бы при клике мимо поля.
+ *
+ * Link в поле по-прежнему нет, но по другой причине (#57): инспектор
+ * позиционируется по `coordsAtPos`, то есть по строке таблицы, а не по ячейке.
  */
 function showCellEditor(view: EditorView, cellEl: HTMLElement, cell: CellInfo): void {
   document.querySelector('.cm-md-table-editor')?.remove();
@@ -768,6 +776,7 @@ function showCellEditor(view: EditorView, cellEl: HTMLElement, cell: CellInfo): 
 
   const destroy = (): void => {
     ta.removeEventListener('input', reflow);
+    endCellEditSession(ta);
     ta.remove();
     cellEl.classList.remove('cm-md-table-cell-editing');
     cellEl.style.boxSizing = '';
@@ -808,6 +817,28 @@ function showCellEditor(view: EditorView, cellEl: HTMLElement, cell: CellInfo): 
   ta.focus();
   ta.select();
   reflow(); // initial size
+
+  setCellEditSession({
+    textarea: ta,
+    replace: (text, from, to) => {
+      applyTextareaEdit(ta, text, from, to);
+      // Формат мог удлинить текст — поле и ячейка должны за этим успеть.
+      // `applyTextareaEdit` не всегда проходит через `input` (fallback —
+      // прямое присваивание), поэтому reflow зовём явно.
+      reflow();
+    },
+    commitAndMap: (from, to) => {
+      // Снимок до коммита: `commit()` разрушает поле, а `ta.value` после
+      // `remove()` читать уже нечестно.
+      const value = ta.value;
+      const base = cell.from;
+      commit();
+      return {
+        from: base + encodedOffset(value, from),
+        to: base + encodedOffset(value, to),
+      };
+    },
+  });
 }
 
 // --- DOM builder helpers (used by TableWidget in Task 5) ---

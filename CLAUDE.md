@@ -56,6 +56,9 @@ src/                    # Frontend (Svelte + TypeScript)
     slash-commands.ts   # "/" block insertion
     hover-menu.ts       # Gutter "+" menu
     block-templates.ts  # Shared block insertion templates (headings, lists, table, etc.)
+    markdown-language.ts # The markdown() config, shared by setup.ts and the scratch states
+    cell-edit-session.ts # The open table-cell edit overlay, published for UI outside tables.ts
+    native-menu-accelerators.ts # Mirror of menu.rs accelerators, kept honest by a test
     folding.ts          # Heading fold/collapse (foldService + mousedown click handler)
     preview/            # Live-preview decorations
       plugin.ts         # Main ViewPlugin (builds DecorationSet)
@@ -101,6 +104,7 @@ src/                    # Frontend (Svelte + TypeScript)
 - `src/lib/editor/preview/CLAUDE.md` — Table implementation deep dive (decorations, operations, gotchas), plus the per-element reveal policy
 - `src/lib/editor/live-render/CLAUDE.md` — **Read before touching the live-render beta.** Why atomicity needs two mechanisms, why Backspace needs `Prec.highest` while Escape does not, the two-offsets-one-pixel caret boundary, and the three traps that make this mode's bugs invisible to unit tests
 - `src/lib/editor/block-templates.ts` — Single source of truth for block insertion templates (hover menu + slash commands)
+- `src/lib/editor/native-menu-accelerators.ts` — TypeScript mirror of the accelerators in `menu.rs`, so UI buttons can print a key declared in Rust. `native-menu-accelerators.test.ts` parses `menu.rs` and fails on any divergence
 - `src/lib/editor/folding.ts` — Heading fold service + click handler
 - `site/CLAUDE.md` — **Read before touching the md-mini.com landing.** How it builds and deploys, why its demos are real editor instances, and the layout/field/theme traps found while building it
 
@@ -247,6 +251,9 @@ CARGO_TARGET_DIR=~/.cargo/<slug>-target npm run tauri dev -- --features mcp-brid
 - **Reveal policy is per element, not per mode** (`preview/flavour.ts`). Decorators call `shouldReveal(view, kind, from, to, blockLevel?)`, never `cursorInRange` directly; `cursorInRange` stays pure and is called from inside it. `live-preview` is `{default: 'on-cursor'}` — today's behaviour comes out of the same code path instead of being preserved by discipline. Adding a flavour means adding a `Flavour` literal, not a branch.
 - **`- [x] done` is `Task > TaskMarker`, never `Link`.** `markdownLanguage` already bundles GFM, so task lists parse natively and there is no checkbox/link collision to guard against. The real lookalike is `- [x](url) text`: `TaskList.parseBlock` requires whitespace after the bracket, so that parses as a plain inline `Link`, while `lists.ts`'s text-only regex still draws a checkbox over it. Also note that regex is case-**sensitive** — `[X]` renders no checkbox at all.
 - **Hiding markers permanently does not remove reflow, it moves it.** A marker is only hidden once Lezer has a completed node, so while typing `**bol` you see raw text and the four characters vanish at once when the closing `*` lands. The jump is sharper than the one it replaces, just at a different moment.
+- **Two declaration sites for hotkeys, and only one is TypeScript.** Inline-format keys live in `INLINE_FORMAT_BINDINGS` (`keybindings.ts`); `ai_comment`'s `CmdOrCtrl+Shift+M` lives in the native menu (`src-tauri/src/menu.rs`). A UI caption built from the first will silently render key-less for an action whose key is in the second. `native-menu-accelerators.ts` mirrors the Rust and its test parses `menu.rs` for set equality — a mirror without that test drifts back within a month, and nothing in a running app compares a tooltip to a menu.
+- **A freshly created `EditorState` may have no syntax tree yet.** `syntaxTree(state)` returns whatever the initial budgeted parse produced, which for a state built on the spot can be `Tree.empty`. Tree-aware commands then find nothing and take their "add" path every time — bold switches on and never off. Use `ensureSyntaxTree(state, len, timeout)` when the state was not built by the view.
+- **Never assign `textarea.value` to apply an edit you want undoable.** It wipes the element's native undo stack, taking the user's own typing with it. Narrow the rewrite to the changed span and put it through `execCommand('insertText')` — deprecated, implemented in both engines this app runs in, and the only way onto that stack. See `cell-edit-session.ts`.
 - **Search in `live-render` runs against the source, not the screen.** `boldtext` inside `**bold**text` is unfindable, and searching `**` yields hits that are not rendered. A visual-text search index is the only real fix; until then it is a documented limitation of the mode.
 
 ## Workflow

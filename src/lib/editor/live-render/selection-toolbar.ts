@@ -5,15 +5,28 @@ import type { Extension } from '@codemirror/state';
 import {
   toggleInlineFormat,
   toggleInlineFormatAt,
+  toggleInlineFormatInText,
   toggleLink,
   isInlineFormatActive,
+  isInlineFormatActiveInText,
   isLinkActive,
   type InlineFormatKind,
 } from './format-commands';
 import { WIDGET_TEXT_HOST_SELECTOR } from '../widget-text-selection';
 import { sourceRangeForVisible } from './cell-anchor';
 import { INLINE_FORMAT_BINDINGS } from '../keybindings';
-import { ariaKeyShortcuts, hotkeyLabel } from '../hotkey-label';
+import {
+  acceleratorAriaKeyShortcuts,
+  acceleratorLabel,
+  ariaKeyShortcuts,
+  hotkeyLabel,
+} from '../hotkey-label';
+import { nativeAccelerator } from '../native-menu-accelerators';
+import {
+  activeCellEditSession,
+  onCellEditChange,
+  type CellEditSession,
+} from '../cell-edit-session';
 import { attachHotkeyTooltips, type TooltipHost } from './toolbar-tooltip';
 import '../../../styles/live-render.css';
 
@@ -33,21 +46,30 @@ import '../../../styles/live-render.css';
  * `widget` is a selection inside a nested editing host — today, table cell text
  * (#31, #42). Its `from`/`to` are still document positions, resolved back
  * through `cell-anchor.ts`, but the text on screen is drawn by a widget rather
- * than by CM6, so the rect has to come from the DOM selection and the format
- * buttons have nothing to act on. Comment-only.
+ * than by CM6, so the rect has to come from the DOM selection.
+ *
+ * `cell-edit` is a selection inside a table cell's edit overlay (#60). Its
+ * `from`/`to` are offsets into the overlay's own text, which the document does
+ * not hold yet — so every button here goes through `session`, not through the
+ * document. Reached by double-clicking a cell, which is also the universal
+ * select-a-word gesture, so it is not a mode the user has chosen to be in.
  */
+type ToolbarKind = 'doc' | 'widget' | 'cell-edit';
+
 interface ToolbarTarget {
-  kind: 'doc' | 'widget';
+  kind: ToolbarKind;
   from: number;
   to: number;
-  /** DOM rect of the selection — `widget` targets only. */
-  rect?: DOMRect;
+  /** Live reference rect — every kind CM6's `coordsAtPos` cannot answer for. */
+  rect?: () => DOMRect;
+  /** The open cell edit overlay — `cell-edit` targets only. */
+  session?: CellEditSession;
 }
 
 let activePopup: HTMLElement | null = null;
 let activeButtons: HTMLButtonElement[] = [];
 let activeEditorDom: HTMLElement | null = null;
-let activeKind: ToolbarTarget['kind'] | null = null;
+let activeKind: ToolbarKind | null = null;
 let activeTarget: ToolbarTarget | null = null;
 let activeTooltips: TooltipHost | null = null;
 
@@ -78,6 +100,11 @@ function onOutsideClick(e: MouseEvent): void {
   // the trailing click arrives, and the toolbar flashed and vanished while the
   // selection was still there.
   if (activeEditorDom?.contains(target)) return;
+  // The cell edit overlay hangs off `document.body`, not off the editor, so
+  // the check above does not cover it. Clicking inside the overlay is how a
+  // selection is made there; treating it as an outside click closed the
+  // toolbar on the very click that opened it.
+  if (activeCellEditSession()?.textarea.contains(target)) return;
   hidePopup();
 }
 
@@ -152,17 +179,58 @@ function widgetTarget(view: EditorView): ToolbarTarget | null {
   const mapped = sourceRangeForVisible(cellText, offsets.from, offsets.to);
   if (!mapped) return null;
 
+  // Snapshotted rather than re-read on demand: any change rebuilds the row's
+  // widget and takes this DOM selection with it, so a live getter would answer
+  // for a range that no longer exists.
   const rect = sel.getRangeAt(0).getBoundingClientRect();
   return {
     kind: 'widget',
     from: cellFrom + mapped.from,
     to: cellFrom + mapped.to,
-    rect,
+    rect: () => rect,
+  };
+}
+
+/**
+ * A selection inside the open table-cell edit overlay.
+ *
+ * The overlay is a `<textarea>`, so its selection is invisible to both
+ * `state.selection` and `document.getSelection()` — `selectionStart`/`End` are
+ * the only place it exists. It is also outside `view.dom` entirely, which is
+ * why the focus test here asks about the element rather than about the editor.
+ */
+function cellEditTarget(view: EditorView): ToolbarTarget | null {
+  const session = activeCellEditSession();
+  if (!session) return null;
+
+  const ta = session.textarea;
+  const doc = ta.ownerDocument;
+  if (!doc.hasFocus() || doc.activeElement !== ta) return null;
+
+  const from = ta.selectionStart;
+  const to = ta.selectionEnd;
+  if (to <= from) return null;
+
+  return {
+    kind: 'cell-edit',
+    from,
+    to,
+    session,
+    // Anchored to the whole overlay, not to the selected words: a textarea
+    // exposes no geometry for a range, and the mirror-div trick that would
+    // fake one has to re-derive wrapping from CSS to be right. The overlay is
+    // cell-sized, so the toolbar still lands on the text it acts on.
+    rect: () => ta.getBoundingClientRect(),
   };
 }
 
 /** The selection the toolbar should be acting on right now, if any. */
 function currentTarget(view: EditorView): ToolbarTarget | null {
+  // Order matters: while the overlay is open it holds both the focus and the
+  // authoritative text, and the document selection underneath it is stale.
+  const cellEdit = cellEditTarget(view);
+  if (cellEdit) return cellEdit;
+
   const widget = widgetTarget(view);
   if (widget) return widget;
 
@@ -211,8 +279,30 @@ const FORMAT_BUTTONS: FormatButtonSpec[] = [
  * that ever says what they are; withholding it precisely there would answer
  * the easy questions and none of the hard ones.
  */
-function tooltipText(actionName: string, key?: string): string {
-  return key ? `${actionName} ${hotkeyLabel(key)}` : actionName;
+function tooltipText(actionName: string, shortcut?: Shortcut): string {
+  return shortcut ? `${actionName} ${shortcut.label}` : actionName;
+}
+
+/**
+ * One rendered hotkey: what the tooltip prints and what `aria-keyshortcuts`
+ * carries. Both notations in this app — the CM6 keymap's and the native menu's
+ * — collapse to this before a button ever sees them, so two keys shown on the
+ * same row cannot be rendered by two different rules.
+ */
+interface Shortcut {
+  label: string;
+  aria: string;
+}
+
+function fromKeymap(key: string | undefined): Shortcut | undefined {
+  return key ? { label: hotkeyLabel(key), aria: ariaKeyShortcuts(key) } : undefined;
+}
+
+function fromNativeMenu(id: string): Shortcut | undefined {
+  const accelerator = nativeAccelerator(id);
+  return accelerator
+    ? { label: acceleratorLabel(accelerator), aria: acceleratorAriaKeyShortcuts(accelerator) }
+    : undefined;
 }
 
 function makeButton(
@@ -220,7 +310,7 @@ function makeButton(
   ariaLabel: string,
   cssClass: string,
   kind: string,
-  key?: string
+  shortcut?: Shortcut
 ): HTMLButtonElement {
   const btn = document.createElement('button');
   btn.type = 'button';
@@ -229,17 +319,41 @@ function makeButton(
   btn.setAttribute('aria-label', ariaLabel);
   btn.setAttribute('aria-pressed', 'false');
   btn.dataset.kind = kind;
-  btn.dataset.tooltip = tooltipText(ariaLabel, key);
+  btn.dataset.tooltip = tooltipText(ariaLabel, shortcut);
   // The tooltip is a pointer affordance; this is the same fact for a screen
   // reader, which never hovers anything.
-  if (key) btn.setAttribute('aria-keyshortcuts', ariaKeyShortcuts(key));
+  if (shortcut) btn.setAttribute('aria-keyshortcuts', shortcut.aria);
   return btn;
 }
 
-function buildPopup(view: EditorView, kind: ToolbarTarget['kind']): HTMLElement {
+/**
+ * Apply a format inside the cell edit overlay.
+ *
+ * The overlay's text is not in the document, so there is nothing for
+ * `changeByRange` to act on — and writing a string-wrapping toggle here would
+ * be a second "bold", diverging from the document's one on the first nested
+ * case (#55's real objection). `toggleInlineFormatInText` instead runs the very
+ * same `formatSpec` over a throwaway state built from this text.
+ *
+ * The toolbar deliberately stays open afterwards: unlike the widget path,
+ * nothing was rebuilt, the same words are still selected, and the next click
+ * should be able to put italic on top of the bold just applied.
+ */
+function applyFormatInOverlay(
+  session: CellEditSession,
+  kind: InlineFormatKind,
+  from: number,
+  to: number
+): void {
+  const result = toggleInlineFormatInText(session.textarea.value, kind, from, to);
+  if (!result) return;
+  session.replace(result.text, result.from, result.to);
+}
+
+function buildPopup(view: EditorView, kind: ToolbarKind): HTMLElement {
   const popup = document.createElement('div');
   popup.className = 'cm-selection-toolbar-popup';
-  if (kind === 'widget') popup.classList.add('cm-selection-toolbar-popup-widget');
+  if (kind !== 'doc') popup.classList.add('cm-selection-toolbar-popup-widget');
   popup.setAttribute('role', 'toolbar');
   popup.setAttribute('aria-label', 'Text formatting');
   activeButtons = [];
@@ -255,13 +369,19 @@ function buildPopup(view: EditorView, kind: ToolbarTarget['kind']): HTMLElement 
       spec.ariaLabel,
       spec.cssClass,
       spec.kind,
-      KEY_FOR_FORMAT.get(spec.kind)
+      fromKeymap(KEY_FOR_FORMAT.get(spec.kind))
     );
     btn.addEventListener('mousedown', (e) => {
-      // preventDefault keeps focus (and the selection) in the editor —
-      // same trick hover-menu.ts uses for its gutter buttons.
+      // preventDefault keeps focus (and the selection) where it is — in the
+      // editor, or in the cell edit overlay. Same trick hover-menu.ts uses for
+      // its gutter buttons. It is also what stops the overlay's blur handler
+      // from committing the cell out from under the click.
       e.preventDefault();
       const target = activeTarget;
+      if (target?.kind === 'cell-edit' && target.session) {
+        applyFormatInOverlay(target.session, spec.kind, target.from, target.to);
+        return;
+      }
       if (target?.kind === 'widget') {
         toggleInlineFormatAt(view, spec.kind, target.from, target.to);
         // The change rebuilds the row's widget, which takes the DOM selection
@@ -296,24 +416,40 @@ function buildPopup(view: EditorView, kind: ToolbarTarget['kind']): HTMLElement 
     commentBtn.className = 'cm-selection-toolbar-btn cm-selection-toolbar-btn-comment';
     commentBtn.textContent = '💬';
     commentBtn.setAttribute('aria-label', 'Comment on selection');
-    commentBtn.dataset.tooltip = tooltipText('Comment');
+    // The one key on this row declared in the native menu rather than in the
+    // keymap, which is why the tooltip read "Comment" with no key at all while
+    // ⌘⇧M worked (#59).
+    const commentShortcut = fromNativeMenu('ai_comment');
+    commentBtn.dataset.tooltip = tooltipText('Comment', commentShortcut);
+    if (commentShortcut) commentBtn.setAttribute('aria-keyshortcuts', commentShortcut.aria);
     commentBtn.addEventListener('mousedown', (e) => {
       // Same preventDefault reason as the format buttons: the selection must
       // survive the click, since it is what the comment anchors to.
       e.preventDefault();
+      const target = activeTarget;
+      // A comment anchors to a range in the *document*. While a cell edit
+      // overlay is open the document still holds the cell's previous text, so
+      // the overlay is committed first and the selection carried across the
+      // encoding — otherwise the anchor names characters that are not in the
+      // file, and the re-anchor search on the next open finds nothing. The
+      // commit is exactly what a click anywhere else would have done anyway,
+      // which is why this is not a surprise rather than a disabled button.
+      if (target?.kind === 'cell-edit' && target.session) {
+        const range = target.session.commitAndMap(target.from, target.to);
+        hidePopup();
+        onCommentRef?.(range);
+        return;
+      }
       // A widget selection is invisible to `view.state.selection`, so the
       // resolved document range travels with the call. `undefined` keeps the
       // document path reading the live selection, as it always has.
-      const range =
-        activeTarget?.kind === 'widget'
-          ? { from: activeTarget.from, to: activeTarget.to }
-          : undefined;
+      const range = target?.kind === 'widget' ? { from: target.from, to: target.to } : undefined;
       onCommentRef?.(range);
       hidePopup();
     });
     popup.appendChild(commentBtn);
 
-    if (kind !== 'widget') {
+    if (kind === 'doc') {
       const commentDivider = document.createElement('div');
       commentDivider.className = 'cm-selection-toolbar-divider';
       popup.appendChild(commentDivider);
@@ -328,7 +464,7 @@ function buildPopup(view: EditorView, kind: ToolbarTarget['kind']): HTMLElement 
   // correctly and its editor would open somewhere else entirely. Giving the
   // inspector a rect-based reference, the way `positionPopup` already has one,
   // is the fix; it is a change to the inspector, not to this button.
-  if (kind !== 'widget') {
+  if (kind === 'doc') {
     const linkBtn = makeButton('Link', 'Link', 'cm-selection-toolbar-btn-link', 'link');
     linkBtn.addEventListener('mousedown', (e) => {
       e.preventDefault();
@@ -342,14 +478,21 @@ function buildPopup(view: EditorView, kind: ToolbarTarget['kind']): HTMLElement 
   return popup;
 }
 
-function updateButtonStates(view: EditorView, from: number, to: number): void {
+function updateButtonStates(view: EditorView, target: ToolbarTarget): void {
+  const { from, to } = target;
+  const overlayText =
+    target.kind === 'cell-edit' ? (target.session?.textarea.value ?? null) : null;
+
   for (const btn of activeButtons) {
     const kind = btn.dataset.kind;
     if (!kind) continue;
     const active =
       kind === 'link'
         ? isLinkActive(view.state, from, to)
-        : isInlineFormatActive(view.state, kind as InlineFormatKind, from, to);
+        : overlayText !== null
+          ? // The same question, asked of the text the user is looking at.
+            isInlineFormatActiveInText(overlayText, kind as InlineFormatKind, from, to)
+          : isInlineFormatActive(view.state, kind as InlineFormatKind, from, to);
     btn.setAttribute('aria-pressed', String(active));
   }
 }
@@ -392,21 +535,20 @@ function selectionReference(
  */
 function rectReference(
   view: EditorView,
-  rect: DOMRect
+  rect: () => DOMRect
 ): { getBoundingClientRect(): DOMRect; contextElement: Element } {
   return {
     contextElement: view.dom,
-    getBoundingClientRect: () => rect,
+    getBoundingClientRect: rect,
   };
 }
 
 function positionPopup(view: EditorView, target: ToolbarTarget): void {
   if (!activePopup) return;
   const popup = activePopup;
-  const reference =
-    target.kind === 'widget' && target.rect
-      ? rectReference(view, target.rect)
-      : selectionReference(view, target.from, target.to);
+  const reference = target.rect
+    ? rectReference(view, target.rect)
+    : selectionReference(view, target.from, target.to);
 
   computePosition(reference, popup, {
     placement: 'top',
@@ -438,13 +580,19 @@ function showToolbar(view: EditorView, target: ToolbarTarget): void {
     document.addEventListener('keydown', onKeydown, true);
   }
   activeTarget = target;
-  updateButtonStates(view, target.from, target.to);
+  updateButtonStates(view, target);
   positionPopup(view, target);
 }
 
 class SelectionToolbarPlugin {
   private readonly view: EditorView;
-  private readonly onBlur = (): void => hidePopup();
+  /**
+   * Focus leaving the editor normally means the toolbar has nothing left to
+   * sit over — but opening a cell edit overlay moves focus out of `view.dom`
+   * by design, and that is precisely when the toolbar must stay available. So
+   * this re-resolves the target instead of hiding unconditionally.
+   */
+  private readonly onBlur = (): void => this.sync();
   /**
    * A selection inside a nested editing host produces **no** `ViewUpdate`:
    * the widget returns `true` from `ignoreEvent`, so CM6 never processes the
@@ -459,12 +607,20 @@ class SelectionToolbarPlugin {
    * exactly what the focus condition exists to prevent.
    */
   private readonly onWindowBlur = (): void => this.sync();
+  /**
+   * A cell edit overlay is a `<textarea>` outside `view.dom` entirely, so
+   * neither `update()` nor `selectionchange` on the document reliably sees its
+   * selection move. `cell-edit-session.ts` watches the element itself and
+   * reports here — including when the overlay opens and when it closes.
+   */
+  private readonly unsubscribeCellEdit: () => void;
 
   constructor(view: EditorView) {
     this.view = view;
     view.dom.addEventListener('blur', this.onBlur);
     view.dom.ownerDocument.addEventListener('selectionchange', this.onSelectionChange);
     view.dom.ownerDocument.defaultView?.addEventListener('blur', this.onWindowBlur);
+    this.unsubscribeCellEdit = onCellEditChange(() => this.sync());
   }
 
   private sync(): void {
@@ -489,6 +645,7 @@ class SelectionToolbarPlugin {
     this.view.dom.removeEventListener('blur', this.onBlur);
     this.view.dom.ownerDocument.removeEventListener('selectionchange', this.onSelectionChange);
     this.view.dom.ownerDocument.defaultView?.removeEventListener('blur', this.onWindowBlur);
+    this.unsubscribeCellEdit();
     hidePopup();
   }
 }

@@ -43,7 +43,8 @@ Tables are the most complex decoration. Key design decisions and hard-won lesson
 
 Unlike other elements, tables do **NOT** use `cursorInRange` to toggle between preview and raw mode. Tables are always rendered as widgets. Reasons:
 - Clicking a table would cause a jarring visual shift (rendered → raw markdown)
-- Cell editing is done via double-click → floating `<textarea>` overlay
+- Cell editing is done via double-click → floating `<textarea>` overlay,
+  published to the rest of the app through `../cell-edit-session.ts`
 - Use `Cmd+E` to switch to raw mode for structural editing
 
 ### Delimiter Detection: Position, Not Regex
@@ -419,30 +420,70 @@ easy to get wrong:
   so the inner `_x_` of `**_x_**` is never hidden — marking it atomic would
   trap the caret in text the user can see.
 
-## Two selections in a table cell, and only one of them gets a toolbar
+## Two selections in a table cell, and both get a toolbar
 
-A cell has two quite different editing surfaces, and #55 was reported from the
-second one:
+A cell has two quite different editing surfaces. Both raise the format toolbar;
+what differs is what the buttons act on.
 
 1. **The rendered cell.** Drag across the text without double-clicking. The
    drag lands in the nested editing host (`makeWidgetTextSelectable`), produces
    no document selection at all, and `cell-anchor.ts` maps it back to a source
-   range. This is where the format toolbar appears — B / I / S / `</>` / 💬. The
-   buttons go through `toggleInlineFormatAt`, a range-taking sibling of
-   `toggleInlineFormat`, so a cell and a paragraph agree on what bold means.
-   Link is absent on purpose: `toggleLink` opens the inspector, which positions
-   with `coordsAtPos` and would therefore draw the URL editor at the table's
-   top-left instead of at the cell.
+   range. The buttons go through `toggleInlineFormatAt`, a range-taking sibling
+   of `toggleInlineFormat`.
 2. **The edit overlay.** Double-click opens a `<textarea>` over the cell,
-   holding the cell's *source*. It gets no toolbar, deliberately — the reasoning
-   lives on `showCellEditor` in `tables.ts`. Short version: markers are visible
-   and typeable there, so the toolbar's whole reason to exist is absent, while
-   💬 would anchor a comment to document text the overlay has already diverged
-   from.
+   holding the cell's *source*. The buttons go through
+   `toggleInlineFormatInText`, which runs the same `formatSpec` over a
+   throwaway state built from the overlay's text.
+
+Both carry B / I / S / `</>` / 💬 and no Link: `toggleLink` opens the
+inspector, which positions with `coordsAtPos` and would draw the URL editor at
+the table's top-left instead of at the cell (#57).
 
 Worth knowing when reading a bug report: the overlay draws a coloured border
 around the cell (`--color-checkbox`), so "the cell had a green outline" means
 case 2, not case 1.
+
+### The overlay toolbar: what #55 decided, and why #60 overrode it
+
+#55 shipped case 1 only, on three arguments. The first — "markers are visible
+and typeable in the overlay, so the toolbar's reason to exist is absent" — the
+owner overruled: double-click is also the universal select-a-word gesture, so
+users land in the overlay without meaning to, and formatting cannot depend on
+knowing which surface you are on.
+
+The other two were real, and are answered in code rather than dropped:
+
+- **No second "bold".** Wrapping strings over `ta.value` would have been two
+  implementations, diverging on the first nested case — with `hello` selected
+  inside `**hello**`, a text heuristic reads one asterisk on each side as
+  "already wrapped" and turns bold into italic. So the overlay does not format
+  itself at all: it publishes itself through `cell-edit-session.ts`, and the
+  toolbar drives it through `toggleInlineFormatInText`. Measured in a browser:
+  bold then italic on overlay text yields `***alpha***`, the same as on prose.
+- **💬 commits first.** A comment anchors to a *document* range, and while the
+  overlay is open the document holds the cell's previous text. The button
+  commits the cell, then maps the overlay offsets across the encoding
+  (`encodedOffset`) — `|` costs two characters and a newline four, so the
+  offsets do not survive on their own. Committing is what clicking anywhere
+  else would have done, which is why it is not a disabled button with a
+  tooltip explaining itself.
+
+Three details that are easy to get wrong here:
+
+- **The overlay lives in `document.body`**, not in `view.dom`. So the toolbar's
+  "click outside" test does not cover it (clicking into the overlay would close
+  the toolbar on the click that opened it), and `view.dom`'s `blur` cannot mean
+  "hide" any more — opening the overlay blurs the editor by design.
+- **A textarea's selection is invisible to `document.getSelection()`**, and
+  `selectionchange` on it is fired at the element and only in recent engines.
+  `cell-edit-session.ts` therefore listens to the element for the whole set of
+  events that can move a selection, and publishes one notification.
+- **Never assign `textarea.value` to apply a format.** It wipes the element's
+  native undo stack, so Cmd+Z in the overlay stops undoing the user's own
+  typing too. `applyTextareaEdit` narrows the rewrite to the changed span
+  (`minimalEdit`) and puts it through `execCommand('insertText')`, which the
+  browser records as one undoable edit. Measured: two Cmd+Z steps back through
+  italic and then bold, landing on the original text.
 
 ## Dependencies
 

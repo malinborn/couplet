@@ -1,8 +1,9 @@
-import { EditorSelection } from '@codemirror/state';
-import type { EditorState, SelectionRange } from '@codemirror/state';
+import { EditorSelection, EditorState } from '@codemirror/state';
+import type { SelectionRange, TransactionSpec } from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
-import { syntaxTree } from '@codemirror/language';
+import { ensureSyntaxTree, syntaxTree } from '@codemirror/language';
 import type { SyntaxNode, Tree } from '@lezer/common';
+import { markdownExtension } from '../markdown-language';
 import { openInspectorFor } from './effects';
 
 /**
@@ -164,25 +165,100 @@ function removeFormat(node: SyntaxNode, markName: string, range: SelectionRange)
 }
 
 /**
+ * The toggle itself, as a transaction spec over whatever state it is handed.
+ *
+ * This is the single implementation every caller below funnels through — the
+ * live view, the explicit-range widget path, and the throwaway state used for
+ * a table cell's edit overlay (#60). The overlay is the reason this got its own
+ * function: its text is not in the document yet, so a second string-wrapping
+ * "bold" was the obvious shortcut, and two bolds would disagree the first time
+ * one was asked about nested markup.
+ */
+function formatSpec(state: EditorState, kind: InlineFormatKind, tree: Tree): TransactionSpec {
+  const targetName = NODE_NAME[kind];
+  const markName = MARK_NAME[kind];
+  const marker = MARKER_TEXT[kind];
+
+  return state.changeByRange((range) => {
+    const enclosing = findEnclosingNode(tree, targetName, range.from, range.to);
+    return enclosing ? removeFormat(enclosing, markName, range) : addFormat(state, marker, range);
+  });
+}
+
+/**
  * Toggle bold / italic / strikethrough / inline code on the current
  * selection(s), consulting the syntax tree rather than sniffing the raw
  * string. Multi-range selections are handled range-by-range, same as
  * `toggleWrap`.
  */
 export function toggleInlineFormat(view: EditorView, kind: InlineFormatKind): boolean {
-  const { state } = view;
-  const tree = syntaxTree(state);
-  const targetName = NODE_NAME[kind];
-  const markName = MARK_NAME[kind];
-  const marker = MARKER_TEXT[kind];
-
-  const tr = state.changeByRange((range) => {
-    const enclosing = findEnclosingNode(tree, targetName, range.from, range.to);
-    return enclosing ? removeFormat(enclosing, markName, range) : addFormat(state, marker, range);
-  });
-
-  view.dispatch(tr);
+  view.dispatch(formatSpec(view.state, kind, syntaxTree(view.state)));
   return true;
+}
+
+/**
+ * A state holding `text` with `[from, to]` selected, parsed as markdown exactly
+ * the way the editor parses it (`markdownExtension`, shared with `setup.ts`).
+ *
+ * `ensureSyntaxTree` rather than `syntaxTree`: a freshly created state has only
+ * whatever the initial budgeted parse managed, and reading the lazy tree of an
+ * unparsed state answers `Tree.empty` — on which `findEnclosingNode` finds
+ * nothing and every toggle would take the "add" path, so bold could be turned
+ * on and never off. Cell text is a few dozen characters, so the parse is
+ * immediate; the fallback exists only so a pathological input degrades to
+ * "wraps instead of unwraps" rather than throwing.
+ */
+function scratchState(text: string, from: number, to: number): EditorState {
+  return EditorState.create({
+    doc: text,
+    selection: EditorSelection.single(from, to),
+    extensions: [markdownExtension()],
+  });
+}
+
+function scratchTree(state: EditorState): Tree {
+  return ensureSyntaxTree(state, state.doc.length, 5000) ?? syntaxTree(state);
+}
+
+/** Result of a toggle applied to loose text: the new text and the same words, reselected. */
+export interface TextFormatResult {
+  text: string;
+  from: number;
+  to: number;
+}
+
+/**
+ * Toggle a format over `[from, to]` of a plain string, returning the new string
+ * and where the selection lands in it.
+ *
+ * The carrier for the table cell edit overlay, whose `value` is cell *source*
+ * that the document does not hold yet. Nothing here re-decides what bold means:
+ * it builds a state, runs `formatSpec`, and reads the result back out.
+ */
+export function toggleInlineFormatInText(
+  text: string,
+  kind: InlineFormatKind,
+  from: number,
+  to: number
+): TextFormatResult | null {
+  if (to <= from) return null;
+  const state = scratchState(text, from, to);
+  const next = state.update(formatSpec(state, kind, scratchTree(state))).state;
+  if (next.doc.toString() === text) return null;
+  const range = next.selection.main;
+  return { text: next.doc.toString(), from: range.from, to: range.to };
+}
+
+/** `isInlineFormatActive` for text that is not in the document — see above. */
+export function isInlineFormatActiveInText(
+  text: string,
+  kind: InlineFormatKind,
+  from: number,
+  to: number
+): boolean {
+  if (to <= from) return false;
+  const state = scratchState(text, from, to);
+  return findEnclosingNode(scratchTree(state), NODE_NAME[kind], from, to) !== null;
 }
 
 /**

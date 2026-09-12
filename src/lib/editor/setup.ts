@@ -1,7 +1,5 @@
 import { keymap, drawSelection, highlightActiveLine, ViewPlugin } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
-import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
-import { languages } from '@codemirror/language-data';
 import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { searchKeymap } from '@codemirror/search';
 import { Compartment, EditorState, type Extension } from '@codemirror/state';
@@ -9,8 +7,8 @@ import { EditorView } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import { codeFolding, foldKeymap, syntaxHighlighting } from '@codemirror/language';
 import { classHighlighter } from '@lezer/highlight';
-import { Strikethrough, Table } from '@lezer/markdown';
 import { editorTheme } from '../theme/editor-theme';
+import { markdownExtension } from './markdown-language';
 import { markdownKeybindings } from './keybindings';
 import { listContinuation } from './autocomplete';
 import { codeBlockExitKeymap } from './code-block-exit';
@@ -70,13 +68,7 @@ export function createExtensions(): Extension[] {
     markdownKeybindings(),
     history(),
     closeBrackets(),
-    languageCompartment.of(
-      markdown({
-        base: markdownLanguage,
-        codeLanguages: languages,
-        extensions: [Strikethrough, Table],
-      })
-    ),
+    languageCompartment.of(markdownExtension()),
     keymap.of([
       ...foldKeymap,
       ...defaultKeymap,

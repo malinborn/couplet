@@ -7,8 +7,10 @@ import { Strikethrough, Table } from '@lezer/markdown';
 import {
   toggleInlineFormat,
   toggleInlineFormatAt,
+  toggleInlineFormatInText,
   toggleLink,
   isInlineFormatActive,
+  isInlineFormatActiveInText,
   isLinkActive,
   type InlineFormatKind,
 } from './format-commands';
@@ -354,5 +356,109 @@ describe('isLinkActive', () => {
   it('SelectionOutsideAnyLink_ReturnsFalse', () => {
     const { view } = makeMockView('plain text', 0, 5);
     expect(isLinkActive(view.state, 0, 5)).toBe(false);
+  });
+});
+
+/**
+ * The cell edit overlay's carrier (#60).
+ *
+ * The point of these is not that a string gets asterisks — it is that they get
+ * the *same* asterisks the document path gets, from the same `formatSpec`. So
+ * every case below is also run through `toggleInlineFormat` on a real state and
+ * the two results compared: that comparison is what would fail if someone ever
+ * reintroduced a string-wrapping second implementation here.
+ */
+describe('toggleInlineFormatInText', () => {
+  /** What the document path produces for the same text and range. */
+  function viaDocument(
+    text: string,
+    kind: InlineFormatKind,
+    from: number,
+    to: number
+  ): { text: string; from: number; to: number } {
+    const { view, dispatch } = makeMockView(text, from, to);
+    toggleInlineFormat(view, kind);
+    const next = view.state.update(dispatch.mock.calls[0][0]).state;
+    return {
+      text: next.doc.toString(),
+      from: next.selection.main.from,
+      to: next.selection.main.to,
+    };
+  }
+
+  const cases: [string, InlineFormatKind, number, number][] = [
+    ['hello world', 'strong', 0, 5],
+    ['hello world', 'emphasis', 6, 11],
+    ['hello world', 'strikethrough', 0, 5],
+    ['hello world', 'inlineCode', 0, 5],
+    ['**hello** world', 'strong', 2, 7],
+    ['*a* b', 'emphasis', 1, 2],
+    ['~~gone~~', 'strikethrough', 2, 6],
+    ['trailing space ', 'strong', 9, 15],
+    ['a | b', 'strong', 4, 5],
+  ];
+
+  it('produces exactly what the document path produces', () => {
+    for (const [text, kind, from, to] of cases) {
+      expect(toggleInlineFormatInText(text, kind, from, to)).toEqual(viaDocument(text, kind, from, to));
+    }
+  });
+
+  it('wraps a word', () => {
+    expect(toggleInlineFormatInText('hello world', 'strong', 0, 5)).toEqual({
+      text: '**hello** world',
+      from: 2,
+      to: 7,
+    });
+  });
+
+  it('unwraps text already inside the node, markers and all', () => {
+    expect(toggleInlineFormatInText('**hello** world', 'strong', 2, 7)).toEqual({
+      text: 'hello world',
+      from: 0,
+      to: 5,
+    });
+  });
+
+  it('adds italic inside bold rather than eating one of its asterisks', () => {
+    // The nested case the text heuristic gets wrong: with `hello` selected
+    // inside `**hello**` it sees one asterisk on each side and strips them,
+    // turning bold into italic. This is the divergence a second
+    // implementation would reintroduce.
+    expect(toggleInlineFormatInText('**hello**', 'emphasis', 2, 7)?.text).toBe('***hello***');
+  });
+
+  it('reports nothing when there is no selection to act on', () => {
+    expect(toggleInlineFormatInText('hello', 'strong', 3, 3)).toBeNull();
+    expect(toggleInlineFormatInText('hello', 'strong', 4, 2)).toBeNull();
+  });
+
+  it('parses GFM — strikethrough is a node, not just two tildes', () => {
+    // Without the Strikethrough extension in the scratch state there would be
+    // no node to find, and the toggle could only ever add markers.
+    expect(toggleInlineFormatInText('~~gone~~', 'strikethrough', 2, 6)?.text).toBe('gone');
+  });
+});
+
+describe('isInlineFormatActiveInText', () => {
+  it('agrees with the document-state answer', () => {
+    const probes: [string, InlineFormatKind, number, number][] = [
+      ['**bold**', 'strong', 2, 6],
+      ['**bold**', 'emphasis', 2, 6],
+      ['*it*', 'emphasis', 1, 3],
+      ['~~s~~', 'strikethrough', 2, 3],
+      ['`code`', 'inlineCode', 1, 5],
+      ['plain', 'strong', 0, 5],
+    ];
+    for (const [text, kind, from, to] of probes) {
+      const { view } = makeMockView(text, from, to);
+      expect(isInlineFormatActiveInText(text, kind, from, to)).toBe(
+        isInlineFormatActive(view.state, kind, from, to)
+      );
+    }
+  });
+
+  it('is false for an empty range', () => {
+    expect(isInlineFormatActiveInText('**bold**', 'strong', 3, 3)).toBe(false);
   });
 });

@@ -28,6 +28,7 @@ The flavour facet decides whether markup is *revealed*; this bundle decides how
 | `format-commands.ts` | Tree-aware inline toggles used by both the toolbar and the shortcuts |
 | `selection-toolbar.ts` | Floating inline-format toolbar; also the only place that can see a selection inside a widget |
 | `cell-anchor.ts` | Rendered table-cell offsets → source offsets, for commenting on cell text |
+| `../cell-edit-session.ts` | The open cell edit overlay, published as neutral ground between `preview/tables.ts` and this toolbar |
 | `inspector.ts` / `inspector-model.ts` | Link URL and fenced-code language |
 | `effects.ts` | `openInspectorFor`, the toolbar → inspector handoff |
 
@@ -242,6 +243,30 @@ permanently would require a full nested editor in the inspector, which is out
 of scope, so `LIVE_RENDER` pins mermaid to `'on-cursor'` and the inspector
 skips mermaid fences rather than offering a redundant language picker.
 
+### A third target: the cell edit overlay
+
+`currentTarget` resolves three surfaces, and the order is load-bearing. A cell
+edit overlay outranks everything: while it is open it holds both the focus and
+the authoritative text, and the document selection under it is stale.
+
+What makes it different from the other two is that its text **is not in the
+document**. So the format buttons cannot dispatch anything — they call
+`toggleInlineFormatInText`, which builds a throwaway `EditorState` from the
+overlay's text (`markdownExtension`, shared with `../setup.ts`) and runs the
+same `formatSpec` the document path runs. The alternative, wrapping strings
+over `ta.value`, is a second "bold"; see `../preview/CLAUDE.md` for why that
+diverges on the first nested case.
+
+One trap inside that: a freshly created `EditorState` has only whatever the
+initial budgeted parse produced, and reading `syntaxTree` on an unparsed state
+answers `Tree.empty`. Every toggle would then take the "add" path — bold could
+be switched on and never off. Use `ensureSyntaxTree`.
+
+The toolbar deliberately stays **open** after a format is applied here, unlike
+the widget path where the change rebuilds the row and takes the DOM selection
+with it. Nothing is rebuilt, the same words are still selected, and the next
+click should be able to put italic on top of the bold just applied.
+
 ### The toolbar's hotkey captions come out of the keymap
 
 `INLINE_FORMAT_BINDINGS` in `../keybindings.ts` is the one list: the `keymap`
@@ -256,9 +281,29 @@ PC and captions every button `Ctrl+B`. The legacy `navigator.platform` beside it
 says `MacIntel`, which is what keeps the mistake invisible anywhere the new API
 is missing.
 
-Buttons with no binding (`</>`, 💬) still get a tooltip carrying just the
-action name — they are the two least legible things in the row, and the tooltip
-is the only place that ever says what they are.
+`</>` has no binding at all and gets a tooltip carrying just the action name —
+it is the least legible thing in the row, and the tooltip is the only place
+that ever says what it is.
+
+💬 looked like the same case and was not: its key is real, and is declared in
+the **native menu, in Rust** (`src-tauri/src/menu.rs`, item `ai_comment` →
+`CmdOrCtrl+Shift+M`). Actions whose keys come from there never enter
+`INLINE_FORMAT_BINDINGS`, so the caption honestly rendered without a key while
+the key worked (#59). There are two notations and two declaration sites, and
+they had already drifted.
+
+`../native-menu-accelerators.ts` mirrors the Rust, and
+`native-menu-accelerators.test.ts` parses `menu.rs` and asserts set equality —
+it fails on an accelerator added in Rust and not mirrored, on a stale entry,
+and on a changed key. The mirror is the cheap half; the test is the half that
+makes it stay true. Both notations collapse to a `Shortcut { label, aria }`
+before a button sees them, so one row cannot print its keys two ways.
+
+Today `ai_comment` is the only native menu item with a UI affordance — the
+others with accelerators (`new`, `open`, `save`, `save_as`, `close`,
+`reopen_session`, `select_all`, `find`, `format_json`, `toggle_mode`, the three
+zoom items) are menu-only. They are mirrored anyway, so the next button that
+needs one already has it.
 
 ## Known limitations
 
