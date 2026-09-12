@@ -1,15 +1,135 @@
-/* Live-render — caret affordance for inline-format continuation (Phase 5).
-   Under the permanent-hide reveal policy, the position right after a
-   hidden closing marker (e.g. `**bold**`) paints at the same pixel as the
-   position right after it — there is no visual difference between "about
-   to continue the bold" and "about to type plain text". `inline-continuation.ts`
-   toggles `.cm-continuation-active` on the editor root while the caret sits
-   in a continuing position; this file is the entire visual side of that
-   signal. Deliberately subtle — it's a hint, not an alarm — so it only adds
-   a soft glow on top of the caret gradient `editor-theme.ts` already draws,
-   using the same `--color-glow` token as the active-line highlight. */
+/* Live-render — the caret carries the active inline format (#67).
 
-.cm-continuation-active .cm-cursor-primary {
+   In this mode the markdown markers are hidden permanently, so "which format
+   am I typing in" is information the screen no longer shows anywhere. An
+   ordinary markdown editor conveys it with the asterisks themselves. We hide
+   them, so the signal has to come back somewhere, and the caret is the one
+   place the eye is already looking.
+
+   `inline-continuation.ts` puts one `cm-fmt-*` class per active format on the
+   editor root (`activeFormatsAt`), including the pending-format state from #66
+   — which is what makes the caret bold *before* the first character exists.
+
+   ## Why these selectors, and not `caret-color`
+
+   `drawSelection()` ships `.cm-line { caret-color: transparent !important }`
+   app-wide and paints the caret as a `.cm-cursor` div instead, tinted by a
+   `border-image` gradient between `--color-caret-top` and
+   `--color-caret-bottom` (`theme/editor-theme.ts`). Styling `caret-color`
+   here would do exactly nothing. Established in #45.
+
+   Everything below is static geometry. Blinking, positioning and
+   `prefers-reduced-motion` are CM6's, on the `.cm-cursorLayer` above this
+   element, and nothing here touches them.
+
+   ## Specificity
+
+   The theme's own rule compiles to `.ͼ1 .cm-cursor` — two classes. So does the
+   obvious `.cm-fmt-strong .cm-cursor-primary`, and a tie is resolved by
+   stylesheet order, which for a CM6 theme is decided at mount time rather than
+   by this file. Hence `.cm-cursor.cm-cursor-primary` everywhere: three classes,
+   and it wins outright. Same reasoning as the `.cm-line.cm-md-table-line` note
+   in the root CLAUDE.md.
+
+   ## Combining
+
+   A span can be bold *and* italic (`***оба***`), and a caret that showed only
+   one of them would be saying something false, so the cues combine: the rules
+   below target different properties and stack by themselves. The single
+   exception is stem width, which bold and strikethrough both want — the
+   four-class rule settles it explicitly rather than by accident.
+
+   ## Underline
+
+   #67 asked for a serif shape for underline. md-mini has no underline: no
+   hotkey, no toolbar button, no markdown syntax, and nothing that parses `<u>`.
+   A rule for it would be unreachable CSS. The shape is given to **inline
+   code** instead — a format that exists, that the user can be standing inside,
+   and that otherwise has no caret signal at all. If underline ever lands, this
+   is the rule to copy. */
+
+/* --- bold: a thicker stem ------------------------------------------------ */
+.cm-fmt-strong .cm-cursor.cm-cursor-primary {
+  border-left-width: 4px;
+}
+
+/* --- italic: slanted, pivoting on the baseline so the caret stays anchored
+       to the character position it reports ---------------------------------- */
+.cm-fmt-emphasis .cm-cursor.cm-cursor-primary {
+  transform: skewX(-13deg);
+  transform-origin: bottom;
+}
+
+/* --- strikethrough: a narrow stem, crossed ------------------------------- */
+.cm-fmt-strikethrough .cm-cursor.cm-cursor-primary {
+  border-left-width: 1px;
+}
+
+.cm-fmt-strikethrough .cm-cursor.cm-cursor-primary::after {
+  content: '';
+  position: absolute;
+  /* An absolutely positioned child is laid out against its containing block's
+     *padding* box, and `.cm-cursor` is all border and no content — so `left: 0`
+     is the far side of the stem, not its near side, and the obvious small
+     negative offset leaves the bar hanging to the right (measured). -4px is
+     what actually centres it on the stem. */
+  left: -4px;
+  top: 50%;
+  width: 7px;
+  height: 2px;
+  transform: translateY(-50%);
+  /* The stem's colour is a vertical gradient it gets from `border-image`,
+     which a pseudo-element cannot inherit. Painting the same two tokens
+     horizontally keeps the crossbar the same caret in all four themes. */
+  background: linear-gradient(
+    90deg,
+    var(--color-caret-top, var(--color-cursor)),
+    var(--color-caret-bottom, var(--color-cursor))
+  );
+}
+
+/* Bold *and* struck: both want the stem width. Split the difference so the
+   crossbar still reads as a crossbar rather than a nub on a slab. */
+.cm-fmt-strong.cm-fmt-strikethrough .cm-cursor.cm-cursor-primary {
+  border-left-width: 3px;
+}
+
+/* A wider stem moves the padding-box origin with it, so the crossbar needs the
+   matching offset or it sits 1px right of centre (measured). */
+.cm-fmt-strong.cm-fmt-strikethrough .cm-cursor.cm-cursor-primary::after {
+  left: -5px;
+}
+
+/* --- inline code: serifs top and bottom ---------------------------------- */
+.cm-fmt-code .cm-cursor.cm-cursor-primary::before,
+.cm-fmt-code .cm-cursor.cm-cursor-primary::after {
+  content: '';
+  position: absolute;
+  left: -4px; /* padding-box origin — see the strikethrough note above */
+  width: 6px;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    var(--color-caret-top, var(--color-cursor)),
+    var(--color-caret-bottom, var(--color-cursor))
+  );
+}
+
+.cm-fmt-code .cm-cursor.cm-cursor-primary::before {
+  top: 0;
+}
+
+.cm-fmt-code .cm-cursor.cm-cursor-primary::after {
+  bottom: 0;
+}
+
+/* --- the pending-format hint (#66) ---------------------------------------
+   The shape above already says *which* format the next character carries. This
+   glow says the format is being **continued** across a space the user already
+   typed — i.e. the caret is standing outside the span and will step back in.
+   Deliberately subtle: it is a hint, not an alarm, and it reuses the
+   `--color-glow` token the active-line highlight uses. */
+.cm-continuation-active .cm-cursor.cm-cursor-primary {
   box-shadow: 0 0 3px 1px rgba(var(--color-glow, 124, 58, 237), 0.55);
   border-radius: 1px;
 }
