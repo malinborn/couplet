@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { hotkeyLabel, ariaKeyShortcuts, isMacPlatform } from './hotkey-label';
+import {
+  hotkeyLabel,
+  ariaKeyShortcuts,
+  acceleratorLabel,
+  acceleratorAriaKeyShortcuts,
+  isMacPlatform,
+} from './hotkey-label';
 import { INLINE_FORMAT_BINDINGS } from './keybindings';
 
 /**
@@ -80,5 +86,45 @@ describe('INLINE_FORMAT_BINDINGS', () => {
     for (const b of INLINE_FORMAT_BINDINGS) {
       expect(hotkeyLabel(b.key, true)).toMatch(/^[⌘⌃⇧⌥]+\S+$/);
     }
+  });
+});
+
+/**
+ * #59: the 💬 button's key lives in the native menu (`menu.rs`), not in the
+ * keymap, so it arrives in Tauri's accelerator notation instead of CM6's. Both
+ * notations have to come out looking like the menu bar, or one row of buttons
+ * would print its keys two ways.
+ */
+describe('acceleratorLabel', () => {
+  it('renders the comment accelerator the way the menu bar draws it', () => {
+    expect(acceleratorLabel('CmdOrCtrl+Shift+M', true)).toBe('\u2318\u21e7M');
+  });
+
+  it('agrees with the CM6 notation for the same chord', () => {
+    expect(acceleratorLabel('CmdOrCtrl+Shift+X', true)).toBe(hotkeyLabel('Mod-Shift-x', true));
+  });
+
+  it('spells out the two word-named keys Tauri uses', () => {
+    expect(acceleratorLabel('CmdOrCtrl+Plus', true)).toBe('\u2318+');
+    expect(acceleratorLabel('CmdOrCtrl+Minus', true)).toBe('\u2318-');
+  });
+
+  it('keeps a digit as a digit', () => {
+    expect(acceleratorLabel('CmdOrCtrl+0', true)).toBe('\u23180');
+  });
+
+  it('falls back to words joined by + off macOS', () => {
+    expect(acceleratorLabel('CmdOrCtrl+Shift+M', false)).toBe('Ctrl+Shift+M');
+  });
+});
+
+describe('acceleratorAriaKeyShortcuts', () => {
+  it('uses modifier names and Meta for the command key', () => {
+    expect(acceleratorAriaKeyShortcuts('CmdOrCtrl+Shift+M', true)).toBe('Meta+Shift+M');
+    expect(acceleratorAriaKeyShortcuts('CmdOrCtrl+Shift+M', false)).toBe('Control+Shift+M');
+  });
+
+  it('matches what the CM6 notation produces for the same chord', () => {
+    expect(acceleratorAriaKeyShortcuts('CmdOrCtrl+B', true)).toBe(ariaKeyShortcuts('Mod-b', true));
   });
 });
