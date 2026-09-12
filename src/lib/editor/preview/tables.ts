@@ -14,6 +14,8 @@ import {
   rowInsertAfter,
   type NavRow,
 } from './table-navigation';
+import { matchCellBinding } from './table-keys';
+import { createHotkeySheetButton, clearHotkeySheets } from './table-hotkey-sheet';
 import { toggleTableMode, getTableMode } from './table-state';
 import {
   encodeForCommit,
@@ -503,6 +505,16 @@ class TableWidget extends WidgetType {
         )
       );
     });
+  }
+
+  /**
+   * The hotkey cheatsheet lives in `document.body`, so it does not go away with
+   * the widget's own DOM. A structural edit rebuilds the table on every
+   * keystroke's worth of change, and a panel left behind would hover over a
+   * button that no longer exists.
+   */
+  destroy(): void {
+    clearHotkeySheets();
   }
 
   /**
@@ -1129,38 +1141,38 @@ function showCellEditor(
    * it always was.
    */
   ta.addEventListener('keydown', (e) => {
-    const mod = e.metaKey || e.ctrlKey;
-
-    if (e.key === 'Enter') {
-      if (mod && e.shiftKey) {
-        e.preventDefault();
-        commitAndMove({ kind: 'new-row' });
-      } else if (mod) {
-        e.preventDefault();
+    const binding = matchCellBinding(e);
+    if (!binding) return;
+    if (binding.action === 'break') {
+      // Shift+Enter — a paragraph break inside the cell. Left to the textarea's
+      // own newline; `encodeForCommit` turns it into `<br>`, which is the only
+      // way a GFM cell can hold one. Declared as a binding anyway so the
+      // cheatsheet can say so.
+      return;
+    }
+    e.preventDefault();
+    switch (binding.action) {
+      case 'commit':
         commit();
-      } else if (e.shiftKey) {
-        // Shift+Enter — a paragraph break inside the cell. Left to the
-        // textarea's own newline; `encodeForCommit` turns it into `<br>`,
-        // which is the only way a GFM cell can hold one.
-      } else {
-        e.preventDefault();
+        break;
+      case 'cancel':
+        committed = true;
+        destroy();
+        break;
+      case 'row-next':
         commitAndMove({ kind: 'row' });
-      }
-      return;
-    }
-
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      committed = true;
-      destroy();
-      return;
-    }
-
-    if (e.key === 'Tab') {
-      // Tab used to commit and stop. It commits and *moves* now; the wrap keeps
-      // it inside the row, so it never competes with Enter for "next row".
-      e.preventDefault();
-      commitAndMove({ kind: 'col', delta: e.shiftKey ? -1 : 1 });
+        break;
+      case 'col-next':
+        // Tab used to commit and stop. It commits and *moves* now; the wrap
+        // keeps it inside the row, so it never competes with Enter.
+        commitAndMove({ kind: 'col', delta: 1 });
+        break;
+      case 'col-prev':
+        commitAndMove({ kind: 'col', delta: -1 });
+        break;
+      case 'new-row':
+        commitAndMove({ kind: 'new-row' });
+        break;
     }
   });
   ta.addEventListener('blur', () => setTimeout(commit, 50));
@@ -1524,6 +1536,12 @@ function buildHeaderCtrlCell(view: EditorView, ctx: TableContext): HTMLElement {
   });
   toggleBtn.title = 'Toggle wrap / full width';
   cellEl.appendChild(toggleBtn);
+
+  // ⓘ — the cell-editing keys, rendered from the list the key handler resolves
+  // against (#69). It goes *inside* this cell rather than into the strip above
+  // the header line, which belongs to the column buttons (#48) and is the one
+  // place a table at the top of the document has no room to spare.
+  cellEl.appendChild(createHotkeySheetButton().el);
 
   return cellEl;
 }
