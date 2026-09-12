@@ -43,8 +43,9 @@ Tables are the most complex decoration. Key design decisions and hard-won lesson
 
 Unlike other elements, tables do **NOT** use `cursorInRange` to toggle between preview and raw mode. Tables are always rendered as widgets. Reasons:
 - Clicking a table would cause a jarring visual shift (rendered → raw markdown)
-- Cell editing is done via double-click → floating `<textarea>` overlay,
-  published to the rest of the app through `../cell-edit-session.ts`
+- Cell editing is done through a floating `<textarea>` overlay, published to
+  the rest of the app through `../cell-edit-session.ts`. Double-click opens it;
+  so does typing with the caret parked in a cell (#53, below)
 - Use `Cmd+E` to switch to raw mode for structural editing
 
 ### Delimiter Detection: Position, Not Regex
@@ -132,7 +133,8 @@ cells.push({ text: '', from: midpoint, to: midpoint });
 
 ### Cell Editing Overlay
 
-Double-click on a cell shows a `position: fixed` `<textarea>` over the cell:
+A `position: fixed` `<textarea>` over the cell, opened by a double-click or by
+the first keystroke after a click parked the caret there (#53):
 
 - The rendered cell text is hidden via the `cm-md-table-cell-editing` class
 - The textarea copies the cell's font, line-height and padding, so the glyphs
@@ -179,45 +181,113 @@ line and dispatches a redirect to either the header line (moved up) or the
 line after the table (moved down). The redirect is deferred via
 `queueMicrotask` to avoid recursing inside the updateListener.
 
-### `ignoreEvent()` — `false` Everywhere Except Cell Text
+Two transactions are exempt: its own (`select.snapout`, the re-entry guard) and
+`select.cell`, which is a caret parked in a body cell on purpose (#53) — snapping
+that one out would put it back at the table's first character, which *is* the
+bug. The exemption is only honest while the caret the user sees is the DOM one
+inside the cell, so the same listener watches `focusChanged`: when CM6 takes
+focus back it repeats the position as an ordinary untagged selection and lets the
+snap-out above make it visible. That rides the update listener rather than a
+`focus` DOM handler because, measured in a browser, a handler registered through
+`EditorView.domEventHandlers` does not run for a programmatic `view.focus()` —
+which is exactly the case to cover, since the cell edit overlay calls it from its
+own `destroy()`.
+
+### `ignoreEvent()` — `true` Everywhere (#53)
 
 The sense of this method is the opposite of what the name suggests to most
-readers, and this file used to state it backwards. `eventBelongsToEditor` in
-`@codemirror/view` bails out of CM6's own handling when `ignoreEvent(event)`
-returns **`true`**. So returning `false`, as `TableWidget` does, means CM6
-**does** process the widget's events — which is how a click on a table still
-moves the document selection.
+readers. `eventBelongsToEditor` in `@codemirror/view` bails out of CM6's own
+handling when `ignoreEvent(event)` returns **`true`**.
 
-The one exemption is a cell's text. It is wrapped in a
-`.cm-md-table-celltext` span that is its own nested editing host
+It used to return `true` only for a cell's text and `false` everywhere else,
+described as "how a click on a table still moves the document selection". That
+sentence was the whole of #53. **A table has no document position under most of
+its pixels**: the widget is one `Decoration.replace` covering the header line,
+and every other row is a real line hidden at `height: 0`. So `posAtCoords`
+inside the widget answers with the replaced range's `from` or its `to` —
+measured on `main`, a click on a cell's padding put
+`state.selection.main.head` at the table's first character (left half) or at the
+end of the header row (right half), and the next keystroke wrote there:
+
+```
+| слива | вишня | что-то |     click the left padding of "вишня", type Ω
+Ω| Колонка A | Колонка B |     …and it lands at the top of the header row
+```
+
+There is no click on a table for which CM6's answer is the right one, so the
+widget now keeps it out of the whole thing.
+
+The cell-text exemption is still the reason the method exists at all. That text
+is wrapped in a `.cm-md-table-celltext` span that is its own nested editing host
 (`makeWidgetTextSelectable`, `../widget-text-selection.ts`), because a
-`contenteditable="false"` widget island is atomic to Chrome and a drag inside
-it selects nothing at all (#31; `user-select: text`,
-`-webkit-user-modify: read-only`, `contenteditable="plaintext-only"` and
-`user-select: all` were all measured and none of them help).
+`contenteditable="false"` widget island is atomic to Chrome and a drag inside it
+selects nothing at all (#31; `user-select: text`, `-webkit-user-modify:
+read-only`, `contenteditable="plaintext-only"` and `user-select: all` were all
+measured and none of them help). Handing those events back to the browser lets
+the native selection stand, and the same exemption makes `copy` copy the visible
+cell text rather than the table's markdown source.
 
-For that subtree `ignoreEvent` returns `true`, so:
-
-- the browser's own selection stands instead of `MouseSelection` snapping it
-  out to the whole table through `atomicRanges`;
-- `copy` copies the visible cell text rather than the table's markdown source.
-
-The host refuses every input route (`beforeinput`, `dragstart`) — CM6 does not
-own that DOM, so an edit made there would go nowhere and vanish on the next
-rebuild — and hides its caret in CSS, since editing still happens through the
-double-click overlay. The hover controls stay **outside** the host: a
-`contenteditable` ancestor would swallow the mousedown that starts a column
-drag.
-
-Consequence worth knowing: while a cell selection is live, DOM focus is on the
-cell and `view.hasFocus` is `false`, and `state.selection` never learns the
-selection exists at all — CM6 does not process the drag, so it keeps whatever it
-held before. Anything asking "is the user working in this editor" must therefore
-ask about the hosts too, and anything wanting the selected text must map it back
-through `live-render/cell-anchor.ts` (#42). The cell's source range rides on the
-host as `data-source-from` / `data-source-to`, put there by
+Consequence worth knowing: while a cell **range** selection is live, DOM focus
+is on the cell and `view.hasFocus` is `false`, and `state.selection` never
+learns the selection exists — CM6 does not process the drag, so it keeps
+whatever it held before. Anything asking "is the user working in this editor"
+must therefore ask about the hosts too, and anything wanting the selected text
+must map it back through `live-render/cell-anchor.ts` (#42). The cell's source
+range rides on the host as `data-source-from` / `data-source-to`, put there by
 `makeWidgetTextSelectable`; it is safe to freeze into the DOM only because the
 widget's `eq()` compares every cell `from`.
+
+The hover controls stay **outside** the host: a `contenteditable` ancestor would
+swallow the mousedown that starts a column drag.
+
+### Where a Click Puts the Caret (`cell-caret.ts`, #53)
+
+With CM6 out of the way, something has to put the caret somewhere, and a cell
+has two selections, so it is two halves:
+
+- **The DOM caret** — what the user sees blinking. On the cell's glyphs the
+  browser places it and must be left alone: `preventDefault` on that mousedown
+  would kill the drag-selection everything above rests on. Off the glyphs — the
+  padding, the gap between two cells, an empty cell — nothing would place a
+  caret at all, so `placeCaretFromPoint` does, using
+  `caretRangeFromPoint` and falling back to the near end of the host when the
+  pixel belongs to some other element.
+- **The document selection** follows on `mouseup`, tagged `select.cell`, to the
+  matching offset in the cell's markdown source. On `mousedown` it would fight
+  a drag; a drag leaves it alone entirely, because `docPosForCaretIn` answers
+  `null` for a range selection.
+
+Two mappings make that offset honest, and both are pure and unit-tested:
+
+- `sourceOffsetForVisibleCaret` (`live-render/cell-anchor.ts`) — rendered
+  offset → source offset. Deliberately **not** the collapsed case of
+  `sourceRangeForVisible`: that takes a formatted token whole, which is right
+  for a comment quote and wrong for a caret. A click between the "н" and the "ы"
+  of a bold `**жирный**` has to land between them in the source.
+- `decodedOffset` (`table-encoding.ts`) — source offset → offset in the field
+  the overlay opens, since `<br>` costs four characters there and `\|` two.
+
+### Typing in a Parked Cell Goes Through the Overlay
+
+A caret parked in a cell promises that typing edits that cell, and the host
+cannot keep that promise: CM6 does not own its DOM. So `beforeinput` — which
+already covered typing, paste and delete in one place — now calls back into
+`tables.ts` after refusing, and the keystroke opens the cell edit overlay at the
+parked offset and is replayed into it with `execCommand` (an assignment to
+`value` would wipe the field's native undo stack).
+
+This is not a second way to edit a cell: it is the same commit path reached by a
+different gesture. Enter is a plain entry into edit mode, which is also the
+keyboard gesture #58 was looking for.
+
+The replayed set is an allow-list (`CELL_INPUT_TO_OVERLAY`), and that is
+load-bearing rather than tidy: Chrome fires `beforeinput` with `formatBold` at
+the host for Cmd+B on a cell selection, and opening an overlay there would pull
+the rug out from under the format toolbar (#55/#60), which formats the rendered
+text in place.
+
+The caret is no longer hidden in CSS. It was hidden because it would have been a
+lie; now it is not one.
 
 ### Hover Controls (±)
 

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   cellSpans,
+  sourceOffsetForVisibleCaret,
   sourceRangeForVisible,
   visibleLength,
   visibleRangeForSource,
@@ -34,27 +35,34 @@ function renderedText(source: string): string {
 describe('cellSpans', () => {
   it('tiles plain text as one span', () => {
     expect(cellSpans('soft yellow fruit')).toEqual([
-      { visFrom: 0, visTo: 17, srcFrom: 0, srcTo: 17, atomic: false },
+      { visFrom: 0, visTo: 17, srcFrom: 0, srcTextFrom: 0, srcTo: 17, atomic: false },
     ]);
   });
 
   it('accounts for bold markers in the source but not on screen', () => {
     expect(cellSpans('crisp **and** sweet')).toEqual([
-      { visFrom: 0, visTo: 6, srcFrom: 0, srcTo: 6, atomic: false },
-      { visFrom: 6, visTo: 9, srcFrom: 6, srcTo: 13, atomic: true },
-      { visFrom: 9, visTo: 15, srcFrom: 13, srcTo: 19, atomic: false },
+      { visFrom: 0, visTo: 6, srcFrom: 0, srcTextFrom: 0, srcTo: 6, atomic: false },
+      { visFrom: 6, visTo: 9, srcFrom: 6, srcTextFrom: 8, srcTo: 13, atomic: true },
+      { visFrom: 9, visTo: 15, srcFrom: 13, srcTextFrom: 13, srcTo: 19, atomic: false },
     ]);
   });
 
   it('measures a code span by the fence it opened with', () => {
     const spans = cellSpans('use ``a|b`` here');
     expect(spans).not.toBeNull();
-    expect(spans?.[1]).toEqual({ visFrom: 4, visTo: 7, srcFrom: 4, srcTo: 11, atomic: true });
+    expect(spans?.[1]).toEqual({
+      visFrom: 4,
+      visTo: 7,
+      srcFrom: 4,
+      srcTextFrom: 6,
+      srcTo: 11,
+      atomic: true,
+    });
   });
 
   it('counts a link URL as markers', () => {
     expect(cellSpans('[docs](https://x.test)')).toEqual([
-      { visFrom: 0, visTo: 4, srcFrom: 0, srcTo: 22, atomic: true },
+      { visFrom: 0, visTo: 4, srcFrom: 0, srcTextFrom: 1, srcTo: 22, atomic: true },
     ]);
   });
 
@@ -170,5 +178,53 @@ describe('visibleRangeForSource', () => {
   it('returns null for an empty or reversed range', () => {
     expect(visibleRangeForSource('abc', 2, 2)).toBeNull();
     expect(visibleRangeForSource('abc', 2, 1)).toBeNull();
+  });
+});
+
+/**
+ * The caret mapping (#53). Deliberately not the collapsed case of
+ * `sourceRangeForVisible`: that one takes a formatted token whole, which is
+ * right for a comment quote and wrong for a caret — a click between two letters
+ * of a bold word has to land between them in the source too.
+ */
+describe('sourceOffsetForVisibleCaret', () => {
+  it('is the identity on plain text', () => {
+    expect(sourceOffsetForVisibleCaret('soft fruit', 0)).toBe(0);
+    expect(sourceOffsetForVisibleCaret('soft fruit', 4)).toBe(4);
+  });
+
+  it('lands inside a bold word rather than in front of its markers', () => {
+    // 'crisp **and** sweet' — visible 'crisp and sweet'
+    expect(sourceOffsetForVisibleCaret('crisp **and** sweet', 7)).toBe(9);
+  });
+
+  it('resolves a token boundary to the later token', () => {
+    // Visible offset 9 is both the end of 'and' and the start of ' sweet'.
+    // The later token wins, so the caret is outside the closing '**'.
+    expect(sourceOffsetForVisibleCaret('crisp **and** sweet', 9)).toBe(13);
+  });
+
+  it('counts a code fence by the backticks it opened with', () => {
+    expect(sourceOffsetForVisibleCaret('use ``a|b`` here', 5)).toBe(7);
+  });
+
+  it('maps into a link label, not into its URL', () => {
+    expect(sourceOffsetForVisibleCaret('[docs](https://x.test)', 2)).toBe(3);
+  });
+
+  it('clamps past the end to the end of the source', () => {
+    expect(sourceOffsetForVisibleCaret('crisp **and** sweet', 99)).toBe(19);
+    expect(sourceOffsetForVisibleCaret('crisp **and** sweet', -3)).toBe(0);
+  });
+
+  it('answers 0 for an empty cell', () => {
+    expect(sourceOffsetForVisibleCaret('', 0)).toBe(0);
+  });
+
+  it('appends rather than guessing when the text does not reconstruct', () => {
+    // An unclosed marker: `cellSpans` gives up, and the caret has to go
+    // somewhere — the end is the harmless answer.
+    const broken = 'a **b';
+    expect(sourceOffsetForVisibleCaret(broken, 1)).toBeLessThanOrEqual(broken.length);
   });
 });

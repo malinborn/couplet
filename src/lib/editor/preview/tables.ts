@@ -4,16 +4,22 @@ import type { SyntaxNode } from '@lezer/common';
 import type { DecoSink } from './utils';
 import { markdownTable } from 'markdown-table';
 import { toggleTableMode, getTableMode } from './table-state';
-import { encodeForCommit, decodeForEdit, encodedOffset } from './table-encoding';
+import {
+  encodeForCommit,
+  decodeForEdit,
+  encodedOffset,
+  decodedOffset,
+} from './table-encoding';
+import { docPosForCaretIn, placeCaretFromPoint, visibleOffsetIn } from './cell-caret';
 import {
   applyTextareaEdit,
   endCellEditSession,
   setCellEditSession,
 } from '../cell-edit-session';
 import { navigateToHeading } from '../heading-slugs';
-import { makeWidgetTextSelectable, eventInside } from '../widget-text-selection';
+import { makeWidgetTextSelectable } from '../widget-text-selection';
 import { parseInlineMarkdown } from './inline-tokens';
-import { visibleRangeForSource } from '../live-render/cell-anchor';
+import { visibleRangeForSource, sourceRangeForVisible } from '../live-render/cell-anchor';
 import {
   commentAnchorsIn,
   COMMENT_ANCHOR_ATTR,
@@ -484,22 +490,33 @@ class TableWidget extends WidgetType {
   }
 
   /**
-   * `false` everywhere except inside a cell's text.
+   * `true` — CM6 keeps its hands off everything inside a table.
    *
-   * The widget deliberately lets CM6 handle its events (that is what `false`
-   * means here — see `eventBelongsToEditor` in `@codemirror/view`), which is
-   * how a click on a table still moves the document selection.
+   * The sense of this method is the opposite of what the name suggests:
+   * `eventBelongsToEditor` in `@codemirror/view` bails out of CM6's own
+   * handling when `ignoreEvent` returns `true`.
    *
-   * But cell text is a nested editing host (`makeWidgetTextSelectable`), and
-   * CM6's `MouseSelection` would immediately snap a drag started there out to
-   * the whole table range via `atomicRanges`, leaving the browser with an
-   * empty selection — measured, that is exactly what #31 reported. Handing
-   * those events back to the browser lets the native selection stand, and the
-   * same exemption makes `copy` copy the visible cell text instead of the
-   * table's markdown source.
+   * It used to return `true` only inside a cell's text, which is a nested
+   * editing host (`makeWidgetTextSelectable`): without the exemption CM6's
+   * `MouseSelection` snapped a drag started there out to the whole table range
+   * and the browser was left with an empty selection (#31). Everywhere else the
+   * answer was `false`, described as "how a click on a table still moves the
+   * document selection" — and that turned out to be the whole of #53.
+   *
+   * A table has no document position under most of its pixels. The widget
+   * covers the header line and every other row is a real line hidden at
+   * `height: 0`, so `posAtCoords` inside the widget answers with the replaced
+   * range's `from` or its `to` — the table's first character, or the end of the
+   * header row, whichever half was clicked. Measured on `main`: a click on a
+   * cell's padding put the caret at one of those two places and the next
+   * keystroke wrote there, wrecking the row. There is no click on a table for
+   * which that answer is the right one, so nothing here wants CM6's handling.
+   *
+   * What replaces it is {@link parkCaretOnMouseDown}, which puts the caret in
+   * the cell that was clicked — see `cell-caret.ts`.
    */
-  ignoreEvent(event: Event): boolean {
-    return eventInside(event, `.${CELL_TEXT_CLASS}`);
+  ignoreEvent(): boolean {
+    return true;
   }
 }
 
@@ -789,7 +806,17 @@ export function cellEditWidth(
  * Link в поле по-прежнему нет, но по другой причине (#57): инспектор
  * позиционируется по `coordsAtPos`, то есть по строке таблицы, а не по ячейке.
  */
-function showCellEditor(view: EditorView, cellEl: HTMLElement, cell: CellInfo): void {
+function showCellEditor(
+  view: EditorView,
+  cellEl: HTMLElement,
+  cell: CellInfo,
+  /**
+   * What to select in the field, in the cell's *source* offsets, when the
+   * overlay is opened from a caret parked in the cell rather than from a double
+   * click (#53). Omitted keeps the old select-everything behaviour.
+   */
+  selectSrc?: { from: number; to: number }
+): void {
   document.querySelector('.cm-md-table-editor')?.remove();
 
   const rect = cellEl.getBoundingClientRect();
@@ -894,7 +921,16 @@ function showCellEditor(view: EditorView, cellEl: HTMLElement, cell: CellInfo): 
 
   document.body.appendChild(ta);
   ta.focus();
-  ta.select();
+  if (selectSrc === undefined) {
+    ta.select();
+  } else {
+    // The offsets are in the cell's source; the field holds the decoded form,
+    // so `<br>` and `\|` have to be walked before they mean anything here.
+    ta.setSelectionRange(
+      decodedOffset(cell.text, selectSrc.from),
+      decodedOffset(cell.text, selectSrc.to)
+    );
+  }
   reflow(); // initial size
 
   setCellEditSession({
@@ -918,6 +954,161 @@ function showCellEditor(view: EditorView, cellEl: HTMLElement, cell: CellInfo): 
       };
     },
   });
+}
+
+// --- Caret in a cell (#53) ---
+
+/** Is a cell edit overlay open right now? It owns the keyboard while it is. */
+function cellEditorOpen(): boolean {
+  return document.querySelector('.cm-md-table-editor') !== null;
+}
+
+/**
+ * Move the document selection to wherever the caret is sitting in this cell.
+ *
+ * The DOM caret is the one the user sees; this is the other half — everything
+ * that asks the *state* where the user is (comments, AI edits, the session's
+ * saved caret) should get an answer inside the clicked cell instead of a stale
+ * one somewhere else in the file.
+ *
+ * A non-collapsed host selection is left alone: that is a text selection being
+ * made in the cell, and `live-render/selection-toolbar.ts` deliberately reads
+ * it from the DOM rather than from `state.selection`.
+ */
+function syncDocCaret(view: EditorView, textEl: HTMLElement, cell: CellInfo): void {
+  const pos = docPosForCaretIn(textEl, cell.text, cell.from);
+  if (pos === null) return;
+  const main = view.state.selection.main;
+  if (main.empty && main.head === pos) return;
+  view.dispatch({
+    selection: { anchor: pos },
+    // `table-selection.ts` snaps a caret off the zero-height data lines, which
+    // is exactly where a caret in a body cell belongs. The tag is how it knows
+    // this one was put there on purpose.
+    userEvent: 'select.cell',
+    scrollIntoView: false,
+  });
+}
+
+/**
+ * Park the caret in the clicked cell.
+ *
+ * Two routes, because the cell's glyphs are a nested editing host and its
+ * padding is not. On the glyphs the browser places the caret itself and must be
+ * left to do it — `preventDefault` here would kill drag-selection, which is
+ * what #31/#42 are built on. Off the glyphs nothing would place a caret at all,
+ * and CM6 would resolve the point to the widget's edge, which is the bug.
+ *
+ * Either way the document selection follows on `mouseup`, not now: a drag
+ * starting in a cell is a text selection, and collapsing the document caret
+ * into the cell mid-drag would fight it.
+ */
+function parkCaretOnMouseDown(
+  e: MouseEvent,
+  view: EditorView,
+  textEl: HTMLElement,
+  cell: CellInfo
+): void {
+  if (e.button !== 0 || e.defaultPrevented) return;
+  if (cellEditorOpen()) return;
+
+  const target = e.target;
+  const onGlyphs = target instanceof Node && textEl.contains(target);
+  if (!onGlyphs) {
+    e.preventDefault();
+    placeCaretFromPoint(textEl, e.clientX, e.clientY);
+  }
+
+  const sync = (): void => {
+    document.removeEventListener('mouseup', sync, true);
+    if (cellEditorOpen()) return;
+    syncDocCaret(view, textEl, cell);
+  };
+  document.addEventListener('mouseup', sync, true);
+}
+
+/**
+ * The input types a parked caret hands on to the cell edit overlay.
+ *
+ * Everything else stays refused, as it was before. `formatBold` is the case
+ * that makes the allow-list necessary rather than decorative: Chrome fires it
+ * at the host for Cmd+B on a cell selection, and opening an overlay there would
+ * pull the rug out from under the format toolbar (#55/#60), which formats the
+ * rendered text in place.
+ */
+const CELL_INPUT_TO_OVERLAY = new Set([
+  'insertText',
+  'insertFromPaste',
+  'insertParagraph',
+  'insertLineBreak',
+  'insertCompositionText',
+  'deleteContentBackward',
+  'deleteContentForward',
+]);
+
+/**
+ * Typing with the caret parked in a cell: open the overlay there and replay the
+ * keystroke into it.
+ *
+ * The overlay is the only thing in this file that owns a cell's text, so this
+ * is not "a second way to edit a cell" — it is the same commit path reached by
+ * a different gesture. Enter is a plain entry into edit mode, which is also the
+ * keyboard gesture #58 was looking for.
+ */
+function handleCellInput(
+  event: InputEvent,
+  view: EditorView,
+  cellEl: HTMLElement,
+  textEl: HTMLElement,
+  cell: CellInfo
+): void {
+  if (!CELL_INPUT_TO_OVERLAY.has(event.inputType)) return;
+  if (cellEditorOpen()) return;
+
+  showCellEditor(view, cellEl, cell, hostSelectionAsSource(textEl, cell));
+
+  const ta = document.querySelector<HTMLTextAreaElement>('.cm-md-table-editor');
+  if (!ta) return;
+  // `execCommand`, not an assignment to `value`: it is what keeps the field's
+  // native undo stack intact, for the same reason `applyTextareaEdit` uses it.
+  if (event.inputType === 'deleteContentBackward') {
+    document.execCommand('delete');
+  } else if (event.inputType === 'deleteContentForward') {
+    document.execCommand('forwardDelete');
+  } else if (event.inputType === 'insertParagraph' || event.inputType === 'insertLineBreak') {
+    // Enter means "let me edit this cell", nothing more. A newline would be an
+    // odd thing to open a fresh edit with.
+  } else {
+    const text = event.data ?? event.dataTransfer?.getData('text/plain') ?? '';
+    if (text) document.execCommand('insertText', false, text);
+  }
+}
+
+/** The live host selection, mapped to the cell's source offsets. */
+function hostSelectionAsSource(
+  textEl: HTMLElement,
+  cell: CellInfo
+): { from: number; to: number } | undefined {
+  const caret = docPosForCaretIn(textEl, cell.text, cell.from);
+  if (caret !== null) {
+    const at = caret - cell.from;
+    return { from: at, to: at };
+  }
+  const range = hostSelectionRange(textEl, cell.text);
+  return range ?? undefined;
+}
+
+function hostSelectionRange(
+  textEl: HTMLElement,
+  cellText: string
+): { from: number; to: number } | null {
+  const sel = document.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
+  if (!sel.anchorNode || !textEl.contains(sel.anchorNode)) return null;
+  if (!sel.focusNode || !textEl.contains(sel.focusNode)) return null;
+  const a = visibleOffsetIn(textEl, sel.anchorNode, sel.anchorOffset);
+  const b = visibleOffsetIn(textEl, sel.focusNode, sel.focusOffset);
+  return sourceRangeForVisible(cellText, Math.min(a, b), Math.max(a, b));
 }
 
 // --- DOM builder helpers (used by TableWidget in Task 5) ---
@@ -945,9 +1136,19 @@ function buildCell(
   // is the only way back from rendered characters to document positions — see
   // `live-render/cell-anchor.ts`. Safe to freeze into the DOM because the
   // widget's `eq()` compares every cell `from`, so any shift rebuilds it.
-  makeWidgetTextSelectable(textEl, { source: { from: cell.from, to: cell.to } });
+  makeWidgetTextSelectable(textEl, {
+    source: { from: cell.from, to: cell.to },
+    // A caret parked in a cell promises that typing edits that cell. The host
+    // cannot keep that promise itself, so the keystroke opens the edit overlay
+    // at the parked offset and is replayed into it (#53).
+    onRefusedInput: (event) => handleCellInput(event, view, cellEl, textEl, cell),
+  });
   renderCellContent(textEl, cell.text, view, cellHighlights(cell, anchors));
   cellEl.appendChild(textEl);
+
+  cellEl.addEventListener('mousedown', (e) =>
+    parkCaretOnMouseDown(e, view, textEl, cell)
+  );
 
   cellEl.addEventListener('dblclick', (e) => {
     e.preventDefault();
