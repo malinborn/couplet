@@ -21,7 +21,9 @@ The flavour facet decides whether markup is *revealed*; this bundle decides how
 | File | Concern |
 |------|---------|
 | `index.ts` | The bundle, and the only place precedence is documented for callers |
-| `atomic.ts` | Hidden marker ranges, `EditorView.atomicRanges`, the caret transaction filter |
+| `atomic.ts` | Hidden marker ranges, the marker **pairs**, `EditorView.atomicRanges`, the caret transaction filter |
+| `markup-repair.ts` | The transaction filter that keeps a torn marker pair from reaching the file |
+| `markup-delete.ts` | Backspace / Delete at a span edge, expressed as "the character next to the caret on screen" |
 | `block-format.ts` | Backspace at block start strips heading / list / quote formatting |
 | `inline-continuation.ts` | Typing at a span boundary continues the format; `isLiveRenderActive` |
 | `heading-input.ts` | Supplies the space that makes a `#` run a heading |
@@ -52,6 +54,88 @@ The filter consults the same `RangeSet` as the atomic provider rather than
 resolving the node at a point. `decorateLink` hides `](url)` as one span wider
 than any `LinkMark`, so a caret inside the URL text resolves to a `URL` node
 that no list of marker names would catch.
+
+### Atomicity protects the caret; it does not protect the edit
+
+This is the whole of #32, and it is worth stating as a separate fact because for
+a long time the mode looked finished without it: `atomic.ts` normalises
+**positions**, and nothing in it ever looked at `tr.changes`. So the caret was
+always in a legal place, and an edit made *from* that legal place still tore
+markup in half — silently, because the markers are hidden, so the user only
+found out when bare `**` appeared in a document they believed was prose.
+
+Worse, the tearing was caused by the caret protection working correctly:
+`skipAtomic` widens a Backspace at offset 18 to cover the whole closing `**`,
+which is exactly right as caret policy and exactly what produced
+`Абзац с **жирным словом.`
+
+Editing therefore takes **two more** mechanisms, and they answer different
+questions:
+
+| | question | where |
+|---|---|---|
+| `markup-delete.ts` | what did the user *mean*? | keymap, `Prec.highest` |
+| `markup-repair.ts` | is the result still valid markdown? | `transactionFilter` |
+
+Neither can do the other's job, and the reason is concrete. By the time a
+transaction exists, a Backspace at 18 reads as "delete `**`", and the only
+well-formed repair of that is to put the `**` back — a Backspace that does
+nothing. Intent survives only at the key. Conversely, edits arrive from
+`applyDOMChange`, paste, drag-and-drop, `replaceSelection` in app code and
+`@codemirror/commands`, so a keymap alone cannot hold an invariant.
+
+#### The discriminator
+
+§5.1 of the spec names the trap: a naive "markers may not be deleted" rule
+blocks deleting a bold word. What distinguishes the two cases is **the shape of
+the change**, per pair — not the user event, not the key:
+
+- the change touches **both** markers → the span is being removed as a unit
+  (select-and-delete, select-and-replace, a whole-document rewrite). Leave it.
+- the change touches **exactly one** → the pair was torn. Repair it.
+
+And a torn pair is repaired by what *survives*, never by what was intended: if
+content remains on the surviving side the missing marker is written back next to
+it, and if nothing remains the surviving marker goes too. That is why it works
+identically for a paste the layer has never seen before.
+
+Because it keys off shape and not intent, it also catches the case the delete
+keymap structurally cannot: erasing a bold word one character at a time ends
+with an ordinary deletion of the last content character, with no marker anywhere
+near the caret — and an empty `****` is literal visible text.
+
+#### Three things about the filter that are not negotiable
+
+- **Undo and redo are exempt** (`tr.isUserEvent('undo')`). History replays the
+  *repaired* change's own inverse, which restores a well-formed document by
+  construction — but that inverse deletes marker text, which the filter reads as
+  a pair being torn and writes the markers straight back, so undo stops undoing.
+  Measured: undo of a repaired Enter-inside-bold produced `**жир****ным**`.
+- **It must run before `caretNormalizeFilter`.** CM6 applies transaction filters
+  in **reverse** facet order, so it is registered *after* it (in `index.ts`, not
+  in `atomic.ts` — the repair layer imports `markupModelField`, and registering
+  it next to the field would be a cycle).
+- **It returns a plain spec, never a `Transaction`.** `filterTransaction` re-runs
+  a returned `Transaction` through the whole chain; a spec is resolved with
+  filtering off, so it cannot loop. Same reason `caretNormalizeFilter` does it.
+
+#### Pairs come from the same walk as the hidden spans
+
+`collectMarkupModel` emits hidden spans **and** `MarkupPair[]` in one traversal,
+cached together in `markupModelField`. A second walk would be a third thing to
+keep in step with `preview/plugin.ts`, and the seam is silent in both directions
+(see the next section). A link's pair also has to carry `](url)` whole as its
+`closeText`, matching what `decorateLink` hides — re-inserting anything less
+turns a repaired link into plain text.
+
+### Enter inside a span, and why it is a split
+
+A marker pair cannot straddle a line break: `**жир\nным**` is not bold, it is
+two lines of literal asterisks. So any insertion carrying a newline into a span
+closes it before the break and reopens it after (`**жир**` ⏎ `**ным**`), and at
+the *edge* of the content moves outside the span instead — closing and reopening
+there would only produce an empty `****`. A link splits by repeating its target,
+which is verbose but keeps both halves links.
 
 ### `hiddenMarkRanges` and `plugin.ts` must agree, exactly
 
@@ -97,15 +181,48 @@ For `**bold**`, offset 6 (before the closing marker) and offset 8 (after it)
 render at the same screen position, because the markers are zero-width and
 absent from the DOM. Typing at 6 lands inside the bold, at 8 outside.
 
-This is why the mode has **one canonical caret position** — the filter
-normalises outward — and why an `inputHandler` redirects insertion back inside.
-It is also why **the arrow keys are not an exit**: at that boundary an arrow
-press moves the caret two offsets and zero pixels, which is indistinguishable
-from a dead key. At end of line there is nowhere for it to go at all.
+What is *not* obvious, and what #32 turned on, is that **the two offsets are not
+reached by the same gestures**. Measured in a browser, on
+`Абзац с **жирным** словом.` (content 10..16, closing marker 16..18):
 
-Exit is Escape or the Cmd+B family, and a state field remembers the suppressed
-boundary so a second keystroke still lands outside. If you add another exit
-gesture, it goes through that field.
+| how the caret gets there | offset | so typing goes |
+|---|---|---|
+| typing the last content character | 16 | inside |
+| ArrowRight from inside the word | 16 | inside |
+| clicking the space after the word | 18 | outside |
+| ArrowRight once more, from 16 | 18 | outside |
+
+`skipAtomicRanges` only moves a caret that is **strictly** inside a marker, so
+arrow motion and the mapped position after an insertion both stop at the inner
+edge; a click resolves the tie toward `to` and lands outside. The offset
+therefore already carries the user's intent, and the mode's job is to not throw
+it away.
+
+It used to throw it away. An `inputHandler` redirected every insertion at 18
+back to 16, which is where "click in the space after a bold word, type, get
+bold" came from — the single most reported thing about this mode. Continuation
+is now **opt-in**: the default is to insert where the caret is, and a
+Cmd+B-family key at the boundary arms `armedBoundaryField` so the next character
+joins the span instead. Escape disarms, and the caret affordance
+(`cm-continuation-active`) now means something the user chose rather than a
+default they never saw.
+
+Two things follow that are easy to get wrong:
+
+- **The arrow keys are still not an exit.** At this boundary an arrow press
+  moves the caret two offsets and zero pixels, which reads as a dead key; at end
+  of line there is nowhere for it to go at all. Nothing about flipping the
+  default changes that.
+- **The opening edge is deliberately not symmetric.** A click just before a bold
+  word lands at 10 — *inside* the content — because the glyph under the pointer
+  is the first content character, and typing there produces bold. That is the
+  same rule ("format comes from the character you clicked on"), not an
+  oversight: at the closing edge the glyph under the pointer is the space, which
+  is outside. Measured, not assumed.
+
+Cmd+B at the boundary is also what stops the key from being destructive there.
+Letting the normal toggle run would resolve the enclosing node and **unwrap**
+the span the user was trying to extend.
 
 ### Leaving a fenced code block (`../code-block-exit.ts`)
 
@@ -147,7 +264,7 @@ use. Anything mode-specific there must be gated on
 field only this bundle installs.
 
 Swallowing a key unconditionally, or picking a different command, changes
-live-preview. `keybindings.ts:70` is the gate; `continuationFormatExitSpec`
+live-preview. `keybindings.ts:70` is the gate; `continuationFormatArmSpec`
 has the same guard for the same reason.
 
 ### Emphasis is `*`, never `_`
@@ -314,6 +431,29 @@ others with accelerators (`new`, `open`, `save`, `save_as`, `close`,
 zoom items) are menu-only. They are mirrored anyway, so the next button that
 needs one already has it.
 
+### A plain click on a link places the caret; ⌘/Ctrl-click opens it
+
+`setup.ts`'s `mousedown` handler used to open the URL on **any** left click,
+with `preventDefault` + `stopPropagation` before CM6 saw the event. The caret
+could therefore not be put into a link's text with the mouse in *any* engine —
+`#32`'s "нельзя поправить текст" included that, and it was the one place in the
+document where "click a word to fix a typo" silently did nothing.
+
+This is gated on `event.metaKey || event.ctrlKey` now, and the change is
+deliberately **engine-wide**. A split where one engine opens on click and the
+other places a caret would make the same gesture mean two things in the same
+app. It is safe in live-preview for a specific reason: that mode reveals
+`[text](url)` under the caret, so a plain click shows the user exactly what they
+clicked into.
+
+The gesture is only discoverable if something says so, so `decorateLink` puts it
+in a `title` on the rendered link. That tooltip is the only place the app ever
+mentions it.
+
+Note the button test above it: on macOS Ctrl-click *is* a right click, which
+`event.button !== 0` has already rejected, so accepting `ctrlKey` costs nothing
+there and is what makes the gesture work on Windows and Linux.
+
 ## Known limitations
 
 These are honest properties of the approach, not open bugs. Do not "fix" them
@@ -327,6 +467,11 @@ by re-introducing cursor-based reveal — that would undo the mode.
   text, and four characters vanish at once when the closing `*` lands.
 - **Splitting an ordered list does not renumber.** The second list restarts at
   its own number.
+- **A click just before a span types inside it.** Landing at the content's start
+  is what the browser answers for a pointer over the first content character, and
+  the format then comes from that character. The closing edge behaves the other
+  way for the same reason — see the two-offsets-one-pixel section. Consistent,
+  but it is a real asymmetry and someone will report it.
 - **IME is unverified.** There is a known CM6 Safari bug on exactly this
   configuration — a `Decoration.mark` containing several `Decoration.replace`,
   which is literally `../preview/inline.ts` — and Tauri on macOS is WKWebView.
@@ -341,7 +486,8 @@ by re-introducing cursor-based reveal — that would undo the mode.
   a real `EditorView`. So every module here splits pure logic from the DOM or
   view layer, and the tests exercise the pure half: `computeBlockFormatRemoval`,
   `continuationRedirect`, `headingSpaceRedirect`, `detectInspectorTarget`,
-  `hiddenMarkRanges`. Keep that split when adding behaviour.
+  `hiddenMarkRanges`, `repairChange`, `visibleDeleteRange`. Keep that split when
+  adding behaviour.
 - **Anything routed through a keymap or an inputHandler cannot be unit-tested
   here.** Both the `Prec` bug and the flavour-switch bug had green suites. Drive
   the real app.
