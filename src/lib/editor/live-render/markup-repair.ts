@@ -1,5 +1,28 @@
-import { EditorState, Transaction, type ChangeSet, type ChangeSpec } from '@codemirror/state';
+import {
+  Annotation,
+  EditorState,
+  Transaction,
+  type ChangeSet,
+  type ChangeSpec,
+} from '@codemirror/state';
 import { markupModelField, type MarkupPair } from './atomic';
+
+/**
+ * "The emitter has already proved this well-formed — do not second-guess it."
+ *
+ * Exactly one caller needs it: continuing a format across a deflected space
+ * (`inline-continuation.ts`) has to **move** a closing marker, and a move is
+ * indistinguishable, by shape, from a pair being torn — the change deletes one
+ * marker and no other. This filter's discriminator would dutifully write the
+ * marker straight back and turn `**как** ` + `д` into `**как** д**`.
+ *
+ * The contract is narrow on purpose. An annotated transaction must produce
+ * well-formed markdown *by construction*, because nothing downstream checks it
+ * again: the marker text is carried over verbatim and re-inserted, rather than
+ * being re-derived. Do not reach for this to silence a repair you find
+ * inconvenient — if the shape looks torn to this filter, it very likely is.
+ */
+export const wellFormedMarkup = Annotation.define<boolean>();
 
 /**
  * Live-render's markup-repair layer.
@@ -269,6 +292,7 @@ export function repairChangeSet(
 export const markupRepairFilter = EditorState.transactionFilter.of((tr) => {
   if (!tr.docChanged) return tr;
   if (tr.isUserEvent('undo') || tr.isUserEvent('redo')) return tr;
+  if (tr.annotation(wellFormedMarkup)) return tr;
 
   const { pairs } = tr.startState.field(markupModelField);
   if (pairs.length === 0) return tr;
