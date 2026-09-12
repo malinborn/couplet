@@ -343,7 +343,23 @@
 .tok-attributeValue { color: #f6c177; }
 .tok-function { color: #eb6f92; }
 .cm-md-code-line .tok-heading { color: #c4a7e7; font-weight: bold; }
-.tok-link { color: #9ccfd8; text-decoration: underline; }
+/* `.tok-link` is scoped to code for the same reason `.tok-heading` is.
+ *
+ * These token colours exist for syntax highlighting inside code, but the
+ * markdown parser tags its own `Link` nodes `link` as well, so an unscoped
+ * rule reaches straight into the prose. And it painted things that are not
+ * links at all: `@lezer/markdown` emits a `Link` node for every `[` ... `]`
+ * pair, so `see [1] here`, `array[0]` and every bracket in a pretty-printed
+ * JSON array came out blue and underlined (#51).
+ *
+ * Removing the decoration was not enough on its own — the decoration and the
+ * highlighter are two separate painters over the same characters. Document
+ * links are styled by `.cm-md-link`, which `decorateLink` adds only for a link
+ * that actually resolves. */
+:is(.cm-md-code-line, .cm-code-file-mode) .tok-link {
+  color: #9ccfd8;
+  text-decoration: underline;
+}
 
 /* Syntax token colors — light theme */
 :root[data-theme$='light'] .tok-keyword { color: #7c3aed; }
@@ -364,7 +380,10 @@
 :root[data-theme$='light'] .tok-meta { color: #78716c; }
 :root[data-theme$='light'] .tok-function { color: #be123c; }
 :root[data-theme$='light'] .cm-md-code-line .tok-heading { color: #7c3aed; font-weight: bold; }
-:root[data-theme$='light'] .tok-link { color: #2563eb; text-decoration: underline; }
+:root[data-theme$='light'] :is(.cm-md-code-line, .cm-code-file-mode) .tok-link {
+  color: #2563eb;
+  text-decoration: underline;
+}
 
 /* Tables — line decorations */
 /* Gutter width = del circle (16px) + gap (2px) + drag (26px) + gap (4px) = 48px */

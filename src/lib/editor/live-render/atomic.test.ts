@@ -72,6 +72,31 @@ describe('hiddenMarkRanges — one marker type at a time', () => {
     ]);
   });
 
+  it('a bracket pair that is not a link hides nothing (#51)', () => {
+    // `@lezer/markdown` emits a Link node for every `[` ... `]`. Nothing of
+    // an unresolved shortcut reference is hidden, so nothing may be atomic —
+    // atomic ranges over visible characters trap the caret in plain text.
+    expect(spans('see [1] here\n')).toEqual([]);
+    expect(spans('dict["k"]\n')).toEqual([]);
+  });
+
+  it('a shortcut reference WITH a definition is hidden as a link again', () => {
+    // "[foo]" resolved by the definition below: `[` alone, then `]`.
+    expect(spans('[foo]\n\n[foo]: /x\n')).toEqual([
+      [0, 1],
+      [4, 5],
+    ]);
+  });
+
+  it('descends into a non-link bracket pair, so inner markers stay atomic', () => {
+    // plugin.ts renders the bold inside `[**a** b]`; the atomic set has to
+    // agree, or the caret could sit inside markers that are not on screen.
+    expect(spans('[**a** b]\n')).toEqual([
+      [1, 3],
+      [4, 6],
+    ]);
+  });
+
   it('listBullet: the ListMark alone', () => {
     expect(spans('- a\n')).toEqual([[0, 1]]);
   });

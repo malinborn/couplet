@@ -21,6 +21,7 @@ import { decorateTable } from './tables';
 import { decorateMermaidBlock, mermaidRendered } from './mermaid';
 import { toggleTableMode } from './table-state';
 import { flavourFacet } from './flavour';
+import { isRenderedLink } from './link-refs';
 import type { DecoSink } from './utils';
 
 /**
@@ -83,6 +84,11 @@ function buildDecorations(view: EditorView): DecorationSet {
           decorateInlineCode(view, node.node, builder);
           return false;
         case 'Link':
+          // Not every `Link` node is a link (#51) — see `isRenderedLink`. When
+          // it is not one, add nothing and descend, so inline formatting the
+          // user wrote inside the brackets still renders: `[**bold** text]`
+          // keeps its brackets AND its bold.
+          if (!isRenderedLink(view.state.doc, node.node)) break;
           decorateLink(view, node.node, builder);
           return false;
         case 'FencedCode': {
