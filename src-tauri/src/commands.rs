@@ -681,6 +681,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_file_watcher_still_sees_the_save() {
+        // The save's shape on disk changed — the temp is hidden and differently
+        // named, the mode is set before the rename — and `watcher.rs` watches
+        // the document *path* non-recursively. This asserts the change did not
+        // make a save invisible to FSEvents, which would silently break
+        // external-change detection for anyone editing the same file elsewhere.
+        //
+        // Deliberately a different question from `updates_mtime_...`: an
+        // advancing mtime says a poller would notice, this says the event
+        // stream does. `watch_file` itself needs an `AppHandle`, so the test
+        // drives the same `notify` watcher it builds, with the same
+        // `RecursiveMode::NonRecursive` on the same path.
+        use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+        use std::sync::mpsc;
+
+        let dir = scratch("watcher");
+        let doc = doc_with_mode(&dir, "note.md", 0o600);
+
+        let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
+        let mut watcher = RecommendedWatcher::new(tx, notify::Config::default())
+            .expect("could not build the watcher");
+        watcher
+            .watch(&doc, RecursiveMode::NonRecursive)
+            .expect("could not watch the document");
+        // FSEvents delivers nothing for writes that happened before the stream
+        // started, so let it come up first.
+        std::thread::sleep(Duration::from_millis(300));
+
+        save(&doc, NEW).unwrap();
+
+        let event = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("no filesystem event for a save the watcher is supposed to see")
+            .expect("the watcher reported an error");
+        assert!(
+            matches!(
+                event.kind,
+                notify::EventKind::Modify(_) | notify::EventKind::Create(_)
+            ),
+            "the save arrived as {:?}, which watcher.rs ignores",
+            event.kind
+        );
+        assert_eq!(content_of(&doc), NEW);
+    }
+
     // --- links ---------------------------------------------------------------
 
     #[test]
