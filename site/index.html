@@ -51,7 +51,7 @@
     "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
     "url": "https://md-mini.com/",
     "downloadUrl": "https://github.com/malinborn/mdmini/releases",
-    "softwareVersion": "1.1.0",
+    "softwareVersion": "1.2.0",
     "license": "https://opensource.org/licenses/GPL-3.0"
   }
   </script>
@@ -456,6 +456,27 @@
       <div class="changelog-list">
 
         <details class="changelog-entry" open>
+          <summary class="changelog-summary">
+            <span class="changelog-version">v1.2.0</span>
+            <span class="changelog-date">2026-09-12</span>
+            <span class="changelog-tag feature">feature</span>
+            <span class="changelog-title">Type in Live Render without breaking it, and edit tables like a grid</span>
+          </summary>
+          <ul class="changelog-body-list">
+            <li><strong>Live Render survives being typed in</strong> &mdash; the mode hides the markers, which meant every edit that touched one silently damaged the file. Backspace past a bold word turned <code>**bold word**</code> into <code>**bold word.</code>; Enter inside it left two unpaired <code>**</code> on separate lines; a space after it produced <code>**bold **</code>, which CommonMark refuses to close, so the asterisks stopped being markup and became four literal characters on screen. A repair layer now sits in front of the document and tells &ldquo;the user is deleting this whole span&rdquo; from &ldquo;the pair just got torn&rdquo; by the shape of the change, and writes the marker back before it ever reaches disk</li>
+            <li><strong>Typing continues the format</strong> &mdash; the character after a bold word is bold, the way it is in every editor where you can see what you are doing. <code>Esc</code> or the format shortcut ends it. Option+arrows and Option+Backspace step over the hidden markers instead of stopping on them, so a &ldquo;word&rdquo; is a word you can see</li>
+            <li><strong>The caret tells you the format</strong> &mdash; thicker for bold, slanted for italic, a narrow stem with a crossbar for strikethrough, serifs top and bottom for inline code, and they combine. With the asterisks hidden, the screen had nowhere left to say which format the next character carries, so the signal went to the one place the eye is already looking. It is right <em>before</em> the first character exists, too</li>
+            <li><strong>Tables are editable, not just renderable</strong> &mdash; a click parks the caret in the cell it landed in. It used to jump to the table's first character, so the next keystroke landed in the wrong cell and wrecked the row. Cell text now selects, copies, takes bold/italic/code from the toolbar, and takes comments; the cell expands while you type instead of sliding under its neighbour</li>
+            <li><strong>And navigable from the keyboard</strong> &mdash; <code>Tab</code> / <code>&#8679;Tab</code> across columns, wrapping within the row; <code>&#8629;</code> to the next row, and on the last row it leaves the table rather than dead-ending; <code>&#8679;&#8629;</code> breaks a line inside the cell; <code>&#8984;&#8629;</code> commits; <code>&#8984;&#8679;&#8629;</code> adds a row. The <code>&#9432;</code> beside the wrap toggle has the whole map, because a keyboard grid nobody is told about is a keyboard grid nobody uses</li>
+            <li><strong>A comment you never have to send</strong> &mdash; the reply area is always editable and saves itself as you type, so a half-written thought survives a crash, a reload and the agent answering in the middle of it: the incoming answer freezes the previous turn without swallowing the sentence you are still writing. And the agent is no longer woken mid-phrase &mdash; 20 seconds of quiet first, with the countdown running inside the send button so you can cut it short</li>
+            <li><strong>A comment lands where it was written</strong> &mdash; anchoring was <code>indexOf(quote)</code>, the first occurrence from the top of the file, so a one-word quote or a heading that also appears in a table of contents put the card on a duplicate, usually far above, and reported a confident match while doing it. Threads are now anchored by the text around them. Measured over 20,962 cases generated from this repo's own markdown and then edited the way an agent edits a file: first occurrence 61.5%, context anchoring 100%</li>
+            <li><strong>Saving stopped damaging the file</strong> &mdash; an atomic write is a temp file plus a <code>rename</code>, and <code>rename</code> keeps the directory entry while dropping everything that lives on the inode. Mode, owner, group, ACLs and extended attributes &mdash; quarantine included &mdash; are now copied onto the temp before it moves into place; editing through a symlink writes to what the link points at instead of replacing the link; and a save the filesystem refuses raises a toast rather than failing in silence. The atomicity itself is still there and now proven rather than asserted: a test really does <code>SIGKILL</code> the process mid-write and checks the file came back whole. Comment sidecars go through the same path, since they sit in the same protected, cloud-synced folders</li>
+            <li><strong>JSON formatting stopped corrupting numbers</strong> &mdash; <code>JSON.stringify(JSON.parse(s))</code> is not a formatter, it is a re-serializer: every literal was destroyed and rebuilt from a JavaScript double. <code>12345678901234567890</code> came back as <code>12345678901234567000</code>, <code>1e5</code> as <code>100000</code>, <code>3.0</code> as <code>3</code>. It now re-indents the text it was given, so number literals, string escapes, key order and duplicate keys survive byte for byte &mdash; and the result lands in a <code>```json</code> fence when the file is markdown</li>
+            <li><strong>Easier to read, in small places</strong> &mdash; six heading levels you can tell apart, each theme fading its own gradient down the scale. One indent step per list level whatever the marker: the parser was the culprit, not the CSS &mdash; <code>Tab</code> always inserted two spaces, and CommonMark nests a sub-item only once its marker reaches the parent's content column, which is 3 for <code>1.</code> and 4 for <code>10.</code>, so an ordered sub-list never nested at all. <code>Tab</code> now indents every selected item, not just the first; folded sections stop hiding text in Raw mode; an AI edit highlights the regions that changed rather than everything between them; toolbar buttons name their shortcut; and <code>[1]</code> in prose keeps its brackets instead of being read as a link reference</li>
+          </ul>
+        </details>
+
+        <details class="changelog-entry">
           <summary class="changelog-summary">
             <span class="changelog-version">v1.1.0</span>
             <span class="changelog-date">2026-08-24</span>
