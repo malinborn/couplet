@@ -4,6 +4,7 @@ import { blockFormatKeymap } from './block-format';
 import { markupRepairFilter } from './markup-repair';
 import { markupWhitespaceFilter } from './markup-whitespace';
 import { markupDeleteKeymap } from './markup-delete';
+import { markupWordKeymap } from './markup-word';
 import { headingSpaceInput } from './heading-input';
 import { inlineContinuation } from './inline-continuation';
 import { selectionToolbar } from './selection-toolbar';
@@ -53,6 +54,10 @@ export function liveRenderExtensions(options?: {
     // `Prec.highest`, and after `blockFormatKeymap` so that stripping a block's
     // formatting at its start still wins — see `markupDeleteKeymap`.
     markupDeleteKeymap,
+    // Word-wise motion/selection/deletion over the *visible* text (#73). Binds
+    // only the Option-modified keys, so it cannot collide with the two above,
+    // and hands every marker-free jump back to `defaultKeymap`.
+    markupWordKeymap,
     // Arrow-key exit from a fenced code block. Only here, never in
     // live-preview, where the fence lines are visible under the caret and must
     // stay reachable — see the comment on `codeBlockArrowExit`. The Enter exit

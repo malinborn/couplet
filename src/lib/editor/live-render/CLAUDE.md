@@ -25,6 +25,7 @@ The flavour facet decides whether markup is *revealed*; this bundle decides how
 | `markup-repair.ts` | The transaction filter that keeps a torn marker pair from reaching the file |
 | `markup-whitespace.ts` | The filter that keeps whitespace off the inside of a delimiter run (#66) |
 | `markup-delete.ts` | Backspace / Delete at a span edge, expressed as "the character next to the caret on screen" |
+| `markup-word.ts` | Option+arrows / Option+Backspace over the *visible* text, so a marker is never a word (#73) |
 | `block-format.ts` | Backspace at block start strips heading / list / quote formatting |
 | `inline-continuation.ts` | Pending format across a deflected space, the two off switches, `activeFormatsAt`, `isLiveRenderActive` |
 | `heading-input.ts` | Supplies the space that makes a `#` run a heading |
@@ -308,6 +309,94 @@ Cmd+B at the boundary is also what stops the key from being destructive there.
 Letting the normal toggle run would resolve the enclosing node and **unwrap**
 the span the user was trying to extend.
 
+### Word-wise commands need their own layer; `atomicRanges` cannot reach them
+
+`EditorView.atomicRanges` looks like the place a word jump should be fixed, and
+it is not. Every consumer of it routes through `skipAtomicRanges`, which moves a
+position only when it is **strictly inside** a range (`pos > from && pos < to`).
+Group commands stop *exactly at* a marker boundary, never inside one, so the
+atomic layer sees a legal position and has nothing to say. It normalises the
+caret; it has never had an opinion about how far a jump should go.
+
+The breakage is a level up, in CM6's group predicate, which takes its category
+from the first character moved over:
+
+```js
+function byGroup(view, pos, start) {
+  let cat = categorize(start)
+  return next => { …; return cat == categorize(next) }
+}
+```
+
+From the **outer** offset the first character is `*` — punctuation — so the
+"group" is the two asterisks and the run ends where the letters begin. Measured
+on `Абзац с **жирным** словом.` (content 10..16, closing marker 16..18) before
+`markup-word.ts` existed:
+
+| caret | key | selection after | document |
+|---|---|---|---|
+| 18 | Option+Left | 16 | unchanged |
+| 18 | Option+Backspace | 18 | **unchanged** |
+| 18 | Shift+Option+Left | 16–18 | unchanged — an invisible selection |
+| 16 | Option+Delete | 16 | **unchanged** |
+| 8 | Option+Right | 10 | unchanged |
+
+Option+Backspace was a *complete* no-op for a reason worth keeping in mind
+whenever a delete appears to do nothing here: `deleteByGroup` deleted exactly the
+closing `**`, and `markup-repair.ts` then correctly wrote it straight back.
+Two layers each behaving properly, composing into nothing happening.
+
+`markup-word.ts` runs the same scan over the text the user can **see** —
+`skipHidden` before each character is read — so markers are never a group of
+their own and never terminate somebody else's. Three things about it:
+
+- **It consults the whole hidden `RangeSet`, not just pairs.** A link's
+  `](url)`, a list bullet and a blockquote `>` are equally invisible and equally
+  wrong to treat as words.
+- **It hands the command back to CM6 whenever no hidden range is in the path.**
+  That is not an optimisation. CM6's motion is *visual* (`moveVisually`), while
+  this scan — like CM6's own `deleteByGroup` — is in document order; the two
+  agree on a single-direction line and can disagree inside a bidi run. Returning
+  `false` confines the divergence to the lines that had the bug.
+- **Deletion deliberately spans the markers it crosses** instead of carving
+  around them, and lets `markup-repair.ts` decide what a half-emptied span
+  becomes. Re-deriving that judgement here would be a second copy of it.
+
+A selection also has to be **shrunk off** the markers at its own edges.
+Extending backward from the outer offset otherwise yields a range that looks
+exactly like the word on screen but structurally carries the closing marker, and
+typing over it deletes that marker, so the repair layer correctly concludes the
+pair has nothing left to wrap and the bold vanishes. Measured: the same gesture
+one offset apart gave `Абзац с X словом.` and `Абзац с **X** словом.` Only the
+endpoints move, and only inward, so interior markers are untouched and the
+shrink is idempotent.
+
+**The irony is worth recording.** This bug predates the format-aware caret
+(#67) and was undiagnosable until it shipped. While the two offsets painted
+identically, "Option+Backspace sometimes doesn't work" had no observable cause
+and read as flakiness; once the caret changed shape between them, the owner
+could see which offset they were on and diagnosed it correctly from the symptom
+alone. A feature whose whole purpose is to make an invisible distinction visible
+will surface the bugs that were hiding in it — expect more of them, and treat
+them as the feature working.
+
+**Cmd+←/→ is deliberately not in this keymap, and it is not symmetric.** On a
+line that begins with a span, Cmd+← lands on the content start (offset 2 of
+`**жирное** слово`) rather than the line start, because 0 and 2 are one pixel
+and `posAtCoords` resolves to the first visible character. In live-preview the
+same press lands on 0, since the markers are visible there and genuinely occupy
+width. This is the documented click rule ("format comes from the character you
+clicked on") applied to a line boundary, it is pre-existing, and it was left
+alone — changing line-boundary semantics is a different decision from fixing
+word motion.
+
+**Live-preview gets none of this**, and must not. There the markers are visible
+text under the caret, so a word jump that crossed them would be skipping
+characters the user can plainly see. Measured there: Option+Left from 18 lands on
+16, Option+Backspace deletes the visible `**`, and typing over a selection
+produces `**жирнымX словом.` — in every case exactly the characters the user was
+looking at.
+
 ### Leaving a fenced code block (`../code-block-exit.ts`)
 
 A code block has no visible edge in this mode — the fences are hidden by a
@@ -571,7 +660,8 @@ by re-introducing cursor-based reveal — that would undo the mode.
   view layer, and the tests exercise the pure half: `computeBlockFormatRemoval`,
   `planContinuationInsert`, `headingSpaceRedirect`, `detectInspectorTarget`,
   `hiddenMarkRanges`, `repairChange`, `whitespaceCorrections`,
-  `visibleDeleteRange`. Keep that split when adding behaviour.
+  `visibleDeleteRange`, `visibleGroupTarget`, `hiddenInRange`. Keep that split
+  when adding behaviour.
 - **Anything routed through a keymap or an inputHandler cannot be unit-tested
   here.** Both the `Prec` bug and the flavour-switch bug had green suites. Drive
   the real app.
