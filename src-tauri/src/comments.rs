@@ -88,6 +88,14 @@ pub fn awaiting(thread: &Thread, now: u64) -> bool {
 /// Before that point — a thread being written, one still paused, one the agent
 /// has already answered — editing starts or continues a turn nobody has been
 /// told about yet, so it pauses.
+///
+/// **This one match is the whole decision, and it is deliberately the only
+/// place that makes it.** Where the point of no return belongs is not settled:
+/// `open` is the moment the thread becomes *available* to an agent, which is
+/// the earliest defensible answer and the only one md-mini can observe on its
+/// own. A later one — a thread claimed by the agent that is actually going to
+/// answer it — would need that agent to say so, and nothing in the file says
+/// it today. Moving the line means editing this arm, not unpicking a mechanism.
 pub fn status_after_edit(current: Status) -> Status {
     match current {
         Status::Open => Status::Open,
