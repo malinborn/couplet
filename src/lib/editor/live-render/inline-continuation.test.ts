@@ -7,10 +7,10 @@ import {
   findContinuationBoundary,
   continuationRedirect,
   continuationEscapeSpec,
-  continuationFormatExitSpec,
+  continuationFormatArmSpec,
   isContinuationActive,
-  suppressedBoundaryField,
-  setSuppressedBoundary,
+  armedBoundaryField,
+  setArmedBoundary,
   type ContinuableKind,
 } from './inline-continuation';
 
@@ -24,7 +24,7 @@ function makeState(doc: string, cursor: number): EditorState {
         codeLanguages: languages,
         extensions: [Strikethrough, Table],
       }),
-      suppressedBoundaryField,
+      armedBoundaryField,
     ],
   });
 }
@@ -75,33 +75,46 @@ describe('findContinuationBoundary', () => {
 });
 
 describe('continuationRedirect', () => {
-  it('continues bold: typed text lands inside, before the closing **', () => {
-    const state = makeState('**bold**', 8);
+  /** Arm the boundary the way Cmd+B does, so the redirect has something to act on. */
+  function armed(doc: string, pos: number): EditorState {
+    return makeState(doc, pos).update({ effects: setArmedBoundary.of(pos) }).state;
+  }
+
+  it('continues bold once armed: typed text lands inside, before the closing **', () => {
+    const state = armed('**bold**', 8);
     const spec = continuationRedirect(state, 8, 8, '!');
     expect(spec).not.toBeNull();
-    const result = state.update(spec!).state;
-    expect(result.doc.toString()).toBe('**bold!**');
+    expect(state.update(spec!).state.doc.toString()).toBe('**bold!**');
   });
 
-  it('continues italic', () => {
-    const state = makeState('*ital*', 6);
-    const spec = continuationRedirect(state, 6, 6, '!');
-    const result = state.update(spec!).state;
-    expect(result.doc.toString()).toBe('*ital!*');
+  it('continues italic once armed', () => {
+    const state = armed('*ital*', 6);
+    expect(state.update(continuationRedirect(state, 6, 6, '!')!).state.doc.toString()).toBe('*ital!*');
   });
 
-  it('continues strikethrough', () => {
-    const state = makeState('~~gone~~', 8);
-    const spec = continuationRedirect(state, 8, 8, '!');
-    const result = state.update(spec!).state;
-    expect(result.doc.toString()).toBe('~~gone!~~');
+  it('continues strikethrough once armed', () => {
+    const state = armed('~~gone~~', 8);
+    expect(state.update(continuationRedirect(state, 8, 8, '!')!).state.doc.toString()).toBe('~~gone!~~');
   });
 
-  it('continues inline code', () => {
-    const state = makeState('`code`', 6);
-    const spec = continuationRedirect(state, 6, 6, '!');
-    const result = state.update(spec!).state;
-    expect(result.doc.toString()).toBe('`code!`');
+  it('continues inline code once armed', () => {
+    const state = armed('`code`', 6);
+    expect(state.update(continuationRedirect(state, 6, 6, '!')!).state.doc.toString()).toBe('`code!`');
+  });
+
+  it('DECLINES at an unarmed boundary — the default is to type outside the span', () => {
+    // Product decision #1 for issue #32, and the case the user actually hit:
+    // click in the space after a bold word, type, and get bold. The caret is at
+    // 8, outside the span; nothing redirects it back in any more.
+    const state = makeState('**bold**', 8);
+    expect(continuationRedirect(state, 8, 8, '!')).toBeNull();
+    const typed = state.update({ changes: { from: 8, to: 8, insert: '!' } }).state;
+    expect(typed.doc.toString()).toBe('**bold**!');
+  });
+
+  it('arming one boundary does not arm a different one', () => {
+    const state = makeState('**a** **b**', 5).update({ effects: setArmedBoundary.of(5) }).state;
+    expect(continuationRedirect(state, 11, 11, '!')).toBeNull();
   });
 
   it('leaves typing elsewhere untouched', () => {
@@ -110,31 +123,36 @@ describe('continuationRedirect', () => {
   });
 
   it('leaves a range replacement (from !== to) untouched', () => {
-    const state = makeState('**bold** and more', 8);
+    const state = armed('**bold** and more', 8);
     expect(continuationRedirect(state, 6, 8, 'xx')).toBeNull();
   });
 });
 
-describe('Escape exits continuation', () => {
-  it('sets suppression at the boundary, and a subsequent type lands outside', () => {
-    const state = makeState('**bold**', 8);
+describe('Escape disarms continuation', () => {
+  it('clears arming, and a subsequent type lands outside again', () => {
+    const state = makeState('**bold**', 8).update({ effects: setArmedBoundary.of(8) }).state;
+    expect(continuationRedirect(state, 8, 8, 'x')).not.toBeNull();
+
     const escSpec = continuationEscapeSpec(state);
     expect(escSpec).not.toBeNull();
-
     const afterEscape = state.update(escSpec!).state;
-    expect(afterEscape.field(suppressedBoundaryField)).toBe(8);
+    expect(afterEscape.field(armedBoundaryField)).toBeNull();
 
-    // With suppression active, continuationRedirect must decline — the
-    // input handler then falls through to default insertion at `from`,
-    // i.e. outside the format.
     expect(continuationRedirect(afterEscape, 8, 8, 'x')).toBeNull();
     const typed = afterEscape.update({ changes: { from: 8, to: 8, insert: 'x' } }).state;
     expect(typed.doc.toString()).toBe('**bold**x');
   });
 
-  it('does nothing away from a boundary, leaving other Escape handlers free to run', () => {
-    const state = makeState('plain text', 5);
+  it('declines when nothing is armed, leaving other Escape handlers free to run', () => {
+    // Escape also clears AI highlights and closes panels. With continuation now
+    // opt-in, "not armed" is the common state at a boundary, so this handler
+    // must not swallow the key there.
+    const state = makeState('**bold**', 8);
     expect(continuationEscapeSpec(state)).toBeNull();
+  });
+
+  it('does nothing away from a boundary', () => {
+    expect(continuationEscapeSpec(makeState('plain text', 5))).toBeNull();
   });
 
   it('does nothing when the selection is not empty', () => {
@@ -145,63 +163,62 @@ describe('Escape exits continuation', () => {
   });
 });
 
-describe('suppression lifecycle', () => {
-  it('clears when the caret moves away, and continuation resumes when it comes back', () => {
-    const state = makeState('**bold**', 8);
-    const afterEscape = state.update(continuationEscapeSpec(state)!).state;
-    expect(afterEscape.field(suppressedBoundaryField)).toBe(8);
+describe('arming lifecycle', () => {
+  it('clears when the caret moves away, and does not come back with it', () => {
+    const state = makeState('**bold**', 8).update({ effects: setArmedBoundary.of(8) }).state;
+    expect(state.field(armedBoundaryField)).toBe(8);
 
-    const movedAway = afterEscape.update({ selection: EditorSelection.cursor(2) }).state;
-    expect(movedAway.field(suppressedBoundaryField)).toBeNull();
+    const movedAway = state.update({ selection: EditorSelection.cursor(2) }).state;
+    expect(movedAway.field(armedBoundaryField)).toBeNull();
 
     const movedBack = movedAway.update({ selection: EditorSelection.cursor(8) }).state;
-    expect(movedBack.field(suppressedBoundaryField)).toBeNull();
-    // Continuation resumed — not sticky across a round trip.
-    expect(continuationRedirect(movedBack, 8, 8, '!')).not.toBeNull();
+    expect(movedBack.field(armedBoundaryField)).toBeNull();
+    // Arming is a one-shot, not a mode: returning to the boundary types outside
+    // again, exactly as arriving there for the first time would.
+    expect(continuationRedirect(movedBack, 8, 8, '!')).toBeNull();
   });
 
-  it('maps the suppressed position through an edit earlier in the document', () => {
-    const doc = 'abc **bold**';
-    // "**bold**" is [4,12); position 12 is the closing boundary (== doc.length).
-    const state = makeState(doc, 12);
-    const afterEscape = state.update(continuationEscapeSpec(state)!).state;
-    expect(afterEscape.field(suppressedBoundaryField)).toBe(12);
+  it('maps the armed position through an edit earlier in the document', () => {
+    const state = makeState('abc **bold**', 12).update({ effects: setArmedBoundary.of(12) }).state;
+    expect(state.field(armedBoundaryField)).toBe(12);
 
-    // Insert two characters at the very start, before the suppressed
-    // boundary. No selection is specified, so CM6's default selection
-    // mapping moves the (still-empty, still-at-the-boundary) cursor to 14 —
-    // the suppression must track it there too, not stay pinned at 12.
-    const edited = afterEscape.update({ changes: { from: 0, to: 0, insert: 'XY' } }).state;
+    const edited = state.update({ changes: { from: 0, to: 0, insert: 'XY' } }).state;
     expect(edited.selection.main.head).toBe(14);
-    expect(edited.field(suppressedBoundaryField)).toBe(14);
+    expect(edited.field(armedBoundaryField)).toBe(14);
   });
 
-  it('an explicit null effect clears suppression directly', () => {
-    const state = makeState('**bold**', 8);
-    const afterEscape = state.update(continuationEscapeSpec(state)!).state;
-    const cleared = afterEscape.update({ effects: setSuppressedBoundary.of(null) }).state;
-    expect(cleared.field(suppressedBoundaryField)).toBeNull();
+  it('an explicit null effect clears arming directly', () => {
+    const state = makeState('**bold**', 8).update({ effects: setArmedBoundary.of(8) }).state;
+    expect(state.update({ effects: setArmedBoundary.of(null) }).state.field(armedBoundaryField)).toBeNull();
   });
 });
 
-describe('continuationFormatExitSpec (Cmd+B-family exit contract)', () => {
-  it('exits when the kind matches the boundary', () => {
+describe('continuationFormatArmSpec (Cmd+B-family arm contract)', () => {
+  it('arms when the kind matches the boundary', () => {
     const state = makeState('**bold**', 8);
-    const spec = continuationFormatExitSpec(state, 'strong');
+    const spec = continuationFormatArmSpec(state, 'strong');
     expect(spec).not.toBeNull();
     const result = state.update(spec!).state;
-    expect(result.field(suppressedBoundaryField)).toBe(8);
+    expect(result.field(armedBoundaryField)).toBe(8);
+    // And the next character then joins the bold, which is the point.
+    expect(result.update(continuationRedirect(result, 8, 8, '!')!).state.doc.toString()).toBe('**bold!**');
   });
 
-  it('does not exit when the kind does not match the boundary', () => {
+  it('pressing the key again at the same boundary disarms — it reads as a toggle', () => {
     const state = makeState('**bold**', 8);
-    expect(continuationFormatExitSpec(state, 'emphasis')).toBeNull();
-    expect(continuationFormatExitSpec(state, 'strikethrough')).toBeNull();
+    const on = state.update(continuationFormatArmSpec(state, 'strong')!).state;
+    const off = on.update(continuationFormatArmSpec(on, 'strong')!).state;
+    expect(off.field(armedBoundaryField)).toBeNull();
   });
 
-  it('does nothing away from any boundary', () => {
-    const state = makeState('plain text', 5);
-    expect(continuationFormatExitSpec(state, 'strong')).toBeNull();
+  it('does not arm when the kind does not match the boundary', () => {
+    const state = makeState('**bold**', 8);
+    expect(continuationFormatArmSpec(state, 'emphasis')).toBeNull();
+    expect(continuationFormatArmSpec(state, 'strikethrough')).toBeNull();
+  });
+
+  it('does nothing away from any boundary, so Cmd+B still wraps normally', () => {
+    expect(continuationFormatArmSpec(makeState('plain text', 5), 'strong')).toBeNull();
   });
 
   it('does nothing when the field is absent, so live-preview keeps Cmd+B', () => {
@@ -220,25 +237,27 @@ describe('continuationFormatExitSpec (Cmd+B-family exit contract)', () => {
       ],
     });
     expect(findContinuationBoundary(withoutField, 8)?.kind).toBe('strong');
-    expect(continuationFormatExitSpec(withoutField, 'strong')).toBeNull();
+    expect(continuationFormatArmSpec(withoutField, 'strong')).toBeNull();
   });
 });
 
 describe('isContinuationActive (caret affordance)', () => {
-  it('is active at a fresh boundary', () => {
-    const state = makeState('**bold**', 8);
+  it('is null at a fresh boundary — nothing to advertise when typing goes outside', () => {
+    expect(isContinuationActive(makeState('**bold**', 8))).toBeNull();
+  });
+
+  it('is active once armed', () => {
+    const state = makeState('**bold**', 8).update({ effects: setArmedBoundary.of(8) }).state;
     expect(isContinuationActive(state)).toBe('strong');
   });
 
-  it('is null once suppressed', () => {
-    const state = makeState('**bold**', 8);
-    const afterEscape = state.update(continuationEscapeSpec(state)!).state;
-    expect(isContinuationActive(afterEscape)).toBeNull();
+  it('is null again after Escape', () => {
+    const on = makeState('**bold**', 8).update({ effects: setArmedBoundary.of(8) }).state;
+    expect(isContinuationActive(on.update(continuationEscapeSpec(on)!).state)).toBeNull();
   });
 
   it('is null when not at a boundary', () => {
-    const state = makeState('plain text', 5);
-    expect(isContinuationActive(state)).toBeNull();
+    expect(isContinuationActive(makeState('plain text', 5))).toBeNull();
   });
 
   it('is null with a non-empty selection', () => {
