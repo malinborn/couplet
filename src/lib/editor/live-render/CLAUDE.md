@@ -23,9 +23,10 @@ The flavour facet decides whether markup is *revealed*; this bundle decides how
 | `index.ts` | The bundle, and the only place precedence is documented for callers |
 | `atomic.ts` | Hidden marker ranges, the marker **pairs**, `EditorView.atomicRanges`, the caret transaction filter |
 | `markup-repair.ts` | The transaction filter that keeps a torn marker pair from reaching the file |
+| `markup-whitespace.ts` | The filter that keeps whitespace off the inside of a delimiter run (#66) |
 | `markup-delete.ts` | Backspace / Delete at a span edge, expressed as "the character next to the caret on screen" |
 | `block-format.ts` | Backspace at block start strips heading / list / quote formatting |
-| `inline-continuation.ts` | Typing at a span boundary continues the format; `isLiveRenderActive` |
+| `inline-continuation.ts` | Pending format across a deflected space, the two off switches, `activeFormatsAt`, `isLiveRenderActive` |
 | `heading-input.ts` | Supplies the space that makes a `#` run a heading |
 | `format-commands.ts` | Tree-aware inline toggles used by both the toolbar and the shortcuts |
 | `selection-toolbar.ts` | Floating inline-format toolbar; also the only place that can see a selection inside a widget |
@@ -200,12 +201,95 @@ it away.
 
 It used to throw it away. An `inputHandler` redirected every insertion at 18
 back to 16, which is where "click in the space after a bold word, type, get
-bold" came from — the single most reported thing about this mode. Continuation
-is now **opt-in**: the default is to insert where the caret is, and a
-Cmd+B-family key at the boundary arms `armedBoundaryField` so the next character
-joins the span instead. Escape disarms, and the caret affordance
-(`cm-continuation-active`) now means something the user chose rather than a
-default they never saw.
+bold" came from — the single most reported thing about this mode. That redirect
+is gone and stays gone: **a click still lands at 18 and still types plain
+text.**
+
+#32 also concluded that continuation should therefore be opt-in everywhere, and
+that was one conclusion too many — see the next section, which is #66.
+
+### Continuation is the default, and the offset is still what decides
+
+There was a third thing happening at offset 16 that nobody had looked at:
+typing a **space** there produced `**как **`, which CommonMark refuses to parse,
+because a closing delimiter run may not follow whitespace. Lezer dropped the
+`StrongEmphasis`, the markers stopped being hidden, and raw asterisks appeared
+mid-sentence (#66). So "typing at 16 continues the format" was never actually
+true — it was true for letters and broken for the character that ends every
+word.
+
+The fix is in two layers, and the split is the same one the repair layer already
+uses:
+
+| | question | where |
+|---|---|---|
+| `markup-whitespace.ts` | is the result still markdown? | `transactionFilter` |
+| `inline-continuation.ts` | has the user finished the phrase? | `inputHandler` |
+
+The filter moves whitespace that lands against the inside of a marker to the
+outside of it (`**как **` → `**как** `), so the document is well-formed at every
+keystroke. The input handler records a **pending format** when it deflects a
+space, so the next character steps back inside: `**как** ` + `д` → `**как д**`.
+
+The two facts coexist without either being weakened:
+
+- **Continuation-by-default lives entirely at offset 16.** Typing there
+  continues the format — for letters as before, and now for spaces too.
+- **Pending format is only ever set from inside**, by deflecting a space out, or
+  by an explicit Cmd+B. A click sets nothing. The offset still carries the
+  intent; it simply no longer has a hole in it.
+
+`continuationField` is validated on every transaction rather than remembered:
+caret still there, gap still blank, span still present, **same line**. That last
+one is not a refinement — `\s` matches `\n`, and without it Enter left the
+format pending and the next character absorbed the closing marker across the
+break (`**как  \nдальше**`, measured), destroying a two-space hard break on the
+way.
+
+Two off switches, and **neither touches the document**, so no whitespace-
+sensitive markdown can be damaged by ending a format:
+
+- **Escape** — at a pending boundary clears it; at the inner edge steps the
+  caret out to the far side of the closing marker. Returns `false` everywhere
+  else, so clearing AI highlights and closing panels are unaffected.
+- **The matching format key** — Cmd+B answers only for `strong`, Cmd+I only for
+  `emphasis`, Cmd+Shift+X only for `strikethrough`. Pressed where that format is
+  not active it is the ordinary toggle, in both engines.
+
+Double space was considered and **rejected by the owner** after being briefly
+specified. Do not re-add it: two trailing spaces are a markdown hard break, and
+a gesture that silently ends a format on a common typing habit is exactly the
+kind of invisible surprise this mode is already prone to.
+
+**Live-preview does not get any of this**, and the reason is statable: there the
+markers are revealed under the caret, so a space typed at the boundary shows the
+user exactly the characters they typed, where they typed them. Nothing appears
+from nowhere, so nothing needs moving. Measured: live-preview still produces
+`**как **` and still *shows* `**как **`.
+
+### The caret carries the active format (#67)
+
+`activeFormatsAt` answers "what will the next character be", and
+`live-render-caret.css` turns it into a shape: bold is thicker, italic is
+slanted, strikethrough is a narrowed cross, inline code gets serifs. It reports
+**every** applicable format rather than a winner, because `***x***` is both and
+a caret showing one of them would be lying; the cues combine in CSS.
+
+Two things make it worth more than decoration:
+
+- it shows the pending format **before the first character exists**, which is
+  the only way that state was ever observable;
+- it paints the 16-vs-18 distinction above. The rule is `contentFrom <= pos <=
+  contentTo`, inclusive at both ends, so the caret is bold at the inner edge and
+  plain at the outer one — the same pixel, two shapes.
+
+`caret-color` is not the lever: `drawSelection()` forces it transparent app-wide
+and paints a `.cm-cursor` div instead (#45). And the theme's own rule compiles
+to two classes, so these need three (`.cm-cursor.cm-cursor-primary`) to win a
+tie that stylesheet order would otherwise decide.
+
+Underline has no producer in md-mini — no key, no button, no syntax — so #67's
+serif shape went to inline code instead of becoming unreachable CSS.
 
 Two things follow that are easy to get wrong:
 
@@ -264,7 +348,7 @@ use. Anything mode-specific there must be gated on
 field only this bundle installs.
 
 Swallowing a key unconditionally, or picking a different command, changes
-live-preview. `keybindings.ts:70` is the gate; `continuationFormatArmSpec`
+live-preview. `keybindings.ts:70` is the gate; `continuationFormatKeySpec`
 has the same guard for the same reason.
 
 ### Emphasis is `*`, never `_`
@@ -485,9 +569,9 @@ by re-introducing cursor-based reveal — that would undo the mode.
 - There is no jsdom in this project's vitest setup and no existing test builds
   a real `EditorView`. So every module here splits pure logic from the DOM or
   view layer, and the tests exercise the pure half: `computeBlockFormatRemoval`,
-  `continuationRedirect`, `headingSpaceRedirect`, `detectInspectorTarget`,
-  `hiddenMarkRanges`, `repairChange`, `visibleDeleteRange`. Keep that split when
-  adding behaviour.
+  `planContinuationInsert`, `headingSpaceRedirect`, `detectInspectorTarget`,
+  `hiddenMarkRanges`, `repairChange`, `whitespaceCorrections`,
+  `visibleDeleteRange`. Keep that split when adding behaviour.
 - **Anything routed through a keymap or an inputHandler cannot be unit-tested
   here.** Both the `Prec` bug and the flavour-switch bug had green suites. Drive
   the real app.
