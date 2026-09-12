@@ -12,6 +12,7 @@ import {
 } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import type { SyntaxNode } from '@lezer/common';
+import { isRenderedLink } from '../preview/link-refs';
 
 /**
  * Lezer node names whose ranges are hidden under the live-render flavour
@@ -171,6 +172,10 @@ function collectHiddenSpans(state: EditorState): RawSpan[] {
           return false;
         }
         case 'Link': {
+          // A `Link` node that is not a link decorates nothing (#51), so
+          // nothing of it is hidden and none of it may be atomic. plugin.ts
+          // descends in that case; so does this, which is what `break` does.
+          if (!isRenderedLink(doc, node.node)) break;
           // Mirror inline.ts decorateLink exactly: the opening `[` is
           // hidden alone; everything from the closing `]` through the end
           // of the node (`](url)`) is hidden as ONE combined span — not

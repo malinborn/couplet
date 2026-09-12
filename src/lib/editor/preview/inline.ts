@@ -3,6 +3,7 @@ import type { EditorView } from '@codemirror/view';
 import type { RangeSetBuilder } from '@codemirror/state';
 import type { SyntaxNode } from '@lezer/common';
 import { shouldReveal } from './flavour';
+import { isRenderedLink } from './link-refs';
 import type { DecoSink } from './utils';
 
 /**
@@ -105,6 +106,10 @@ export function decorateLink(
   node: SyntaxNode,
   builder: DecoSink
 ): void {
+  // A `Link` node is not necessarily a link (#51). `@lezer/markdown` produces
+  // one for every bracket pair, so `see [1] here` and `dict["k"]` arrive as
+  // Link nodes; hiding their brackets removes characters the user typed.
+  if (!isRenderedLink(view.state.doc, node)) return;
   if (shouldReveal(view, 'link', node.from, node.to)) return;
 
   const url = node.getChild('URL');
