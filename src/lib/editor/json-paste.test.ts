@@ -1,8 +1,12 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest';
-import { EditorState } from '@codemirror/state';
+import { EditorState, type Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { history, undo } from '@codemirror/commands';
+import { ensureSyntaxTree } from '@codemirror/language';
+import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
+import { languages } from '@codemirror/language-data';
+import { Strikethrough, Table } from '@lezer/markdown';
 import {
   jsonOfferField,
   jsonPasteNotifier,
@@ -17,21 +21,52 @@ import {
 
 const MINIFIED = '{"a":1,"b":[2,3]}';
 const EXPANDED = '{\n  "a": 1,\n  "b": [\n    2,\n    3\n  ]\n}';
+/** What lands in a markdown document — see the fence decision in json-fence.ts. */
+const FENCED = '```json\n' + EXPANDED + '\n```';
+
+/**
+ * The editor's real configuration: markdown is the language, so the fence
+ * decision is live. Every expectation below is what the user actually gets.
+ */
+const markdownExtension = (): Extension =>
+  markdown({ base: markdownLanguage, codeLanguages: languages, extensions: [Strikethrough, Table] });
 
 function makeView(
   doc: string,
-  callbacks?: { onOffer: () => void; onWithdraw: () => void }
+  callbacks?: { onOffer: () => void; onWithdraw: () => void },
+  language: Extension = markdownExtension()
 ): EditorView {
-  return new EditorView({
+  const view = new EditorView({
     state: EditorState.create({
       doc,
       extensions: [
+        language,
         history(),
         jsonOfferField,
         ...(callbacks ? [jsonPasteNotifier(callbacks)] : []),
       ],
     }),
   });
+  // The fence decision reads the syntax tree; in a headless view nothing has
+  // asked for a parse yet, so ask explicitly rather than measure a half-tree.
+  ensureSyntaxTree(view.state, view.state.doc.length, 5000);
+  return view;
+}
+
+/**
+ * A view with no language at all — md-mini's env mode, and the branch a
+ * `.json` file opened in code-file mode takes too (there the language is JSON;
+ * either way markdown is not active, which is the only thing the fence
+ * decision asks).
+ */
+function makeCodeView(doc: string, callbacks?: { onOffer: () => void; onWithdraw: () => void }) {
+  return makeView(doc, callbacks, []);
+}
+
+/** Re-parse after an edit, for assertions that depend on the tree. */
+function parsed(view: EditorView): EditorView {
+  ensureSyntaxTree(view.state, view.state.doc.length, 5000);
+  return view;
 }
 
 /** Simulate what CodeMirror itself dispatches for a paste. */
@@ -92,13 +127,22 @@ describe('jsonOfferField', () => {
 });
 
 describe('applyJsonOffer', () => {
-  it('expands the offered range and clears the offer', () => {
+  it('expands the offered range, fences it, and clears the offer', () => {
     const view = makeView(MINIFIED);
     view.dispatch({ effects: setJsonOffer.of({ from: 0, to: MINIFIED.length }) });
 
     expect(applyJsonOffer(view)).toBe(true);
-    expect(view.state.doc.toString()).toBe(EXPANDED);
+    expect(view.state.doc.toString()).toBe(FENCED);
     expect(view.state.field(jsonOfferField)).toBeNull();
+    view.destroy();
+  });
+
+  it('expands WITHOUT a fence when the document is not markdown', () => {
+    const view = makeCodeView(MINIFIED);
+    view.dispatch({ effects: setJsonOffer.of({ from: 0, to: MINIFIED.length }) });
+
+    expect(applyJsonOffer(view)).toBe(true);
+    expect(view.state.doc.toString()).toBe(EXPANDED);
     view.destroy();
   });
 
@@ -109,7 +153,7 @@ describe('applyJsonOffer', () => {
     view.dispatch({ effects: setJsonOffer.of({ from, to: from + MINIFIED.length }) });
     applyJsonOffer(view);
 
-    expect(view.state.doc.toString()).toBe(`# Notes\n\n${EXPANDED}\n\ntrailing text\n`);
+    expect(view.state.doc.toString()).toBe(`# Notes\n\n${FENCED}\n\ntrailing text\n`);
     view.destroy();
   });
 
@@ -121,7 +165,7 @@ describe('applyJsonOffer', () => {
     view.dispatch({ effects: setJsonOffer.of({ from: 0, to: MINIFIED.length + 1 }) });
     applyJsonOffer(view);
 
-    expect(view.state.doc.toString()).toBe(`${EXPANDED}\nnext line`);
+    expect(view.state.doc.toString()).toBe(`${FENCED}\nnext line`);
     view.destroy();
   });
 
@@ -130,7 +174,7 @@ describe('applyJsonOffer', () => {
     const view = makeView(MINIFIED);
     view.dispatch({ effects: setJsonOffer.of({ from: 0, to: MINIFIED.length }) });
     applyJsonOffer(view);
-    expect(view.state.doc.toString()).toBe(EXPANDED);
+    expect(view.state.doc.toString()).toBe(FENCED);
 
     undo(view);
     expect(view.state.doc.toString()).toBe(MINIFIED);
@@ -185,18 +229,27 @@ describe('formatJsonCommand — the hotkey and menu path', () => {
     // The originating scenario: a .json file that is one long line on disk.
     const view = makeView(MINIFIED);
     expect(formatJsonCommand(view)).toBe(true);
+    expect(view.state.doc.toString()).toBe(FENCED);
+    view.destroy();
+  });
+
+  it('formats the whole document with no fence in code-file mode', () => {
+    const view = makeCodeView(MINIFIED);
+    expect(formatJsonCommand(view)).toBe(true);
     expect(view.state.doc.toString()).toBe(EXPANDED);
     view.destroy();
   });
 
-  it('formats only the selection when there is one', () => {
+  it('formats only the selection when there is one, on its own lines', () => {
+    // Mid-paragraph: the prose on either side keeps every character it had,
+    // but the fence has to own whole lines, so newlines are inserted.
     const doc = `note: ${MINIFIED} end`;
     const view = makeView(doc);
     const from = doc.indexOf('{');
     view.dispatch({ selection: { anchor: from, head: from + MINIFIED.length } });
 
     expect(formatJsonCommand(view)).toBe(true);
-    expect(view.state.doc.toString()).toBe(`note: ${EXPANDED} end`);
+    expect(view.state.doc.toString()).toBe(`note: \n${FENCED}\n end`);
     view.destroy();
   });
 
@@ -205,7 +258,7 @@ describe('formatJsonCommand — the hotkey and menu path', () => {
     const view = makeView(doc);
     view.dispatch({ selection: { anchor: 0, head: doc.length } });
     formatJsonCommand(view);
-    expect(view.state.doc.toString()).toBe(`${EXPANDED}\n`);
+    expect(view.state.doc.toString()).toBe(`${FENCED}\n`);
     view.destroy();
   });
 
@@ -216,15 +269,40 @@ describe('formatJsonCommand — the hotkey and menu path', () => {
     view.destroy();
   });
 
-  it('is a no-op on already-expanded JSON', () => {
-    const view = makeView(EXPANDED);
+  it('is a no-op on already-expanded JSON in code-file mode', () => {
+    const view = makeCodeView(EXPANDED);
     expect(formatJsonCommand(view)).toBe(false);
+    view.destroy();
+  });
+
+  it('still has work to do on already-expanded JSON lying bare in markdown', () => {
+    // #47: the indentation is fine, but markdown renders those lines as an
+    // indented code block and reads the bracket pairs as links. The fence is
+    // the change, and it is the whole change.
+    const view = makeView(EXPANDED);
+    expect(formatJsonCommand(view)).toBe(true);
+    expect(view.state.doc.toString()).toBe(FENCED);
+    view.destroy();
+  });
+
+  it('is a no-op once the JSON is expanded AND fenced', () => {
+    const view = makeView(FENCED);
+    expect(formatJsonCommand(view)).toBe(false);
+    view.destroy();
+  });
+
+  it('re-indents in place, without nesting a second fence, inside a fence', () => {
+    const view = makeView('```json\n' + MINIFIED + '\n```\n');
+    view.dispatch({ selection: { anchor: 8, head: 8 + MINIFIED.length } });
+    expect(formatJsonCommand(view)).toBe(true);
+    expect(view.state.doc.toString()).toBe('```json\n' + EXPANDED + '\n```\n');
     view.destroy();
   });
 
   it('is undone by a single undo', () => {
     const view = makeView(MINIFIED);
     formatJsonCommand(view);
+    expect(view.state.doc.toString()).toBe(FENCED);
     undo(view);
     expect(view.state.doc.toString()).toBe(MINIFIED);
     view.destroy();
@@ -274,7 +352,7 @@ describe('jsonPasteNotifier', () => {
     view.destroy();
   });
 
-  it('offers even inside a fenced code block — the known, accepted false positive', async () => {
+  it('offers inside a fenced code block too — there it re-indents in place', async () => {
     const onOffer = vi.fn();
     const doc = '```json\n\n```\n';
     const view = makeView(doc, { onOffer, onWithdraw: vi.fn() });
@@ -283,6 +361,8 @@ describe('jsonPasteNotifier', () => {
     await flush();
 
     expect(onOffer).toHaveBeenCalledTimes(1);
+    expect(applyJsonOffer(parsed(view))).toBe(true);
+    expect(view.state.doc.toString()).toBe('```json\n' + EXPANDED + '\n```\n');
     view.destroy();
   });
 
@@ -298,13 +378,37 @@ describe('jsonPasteNotifier', () => {
     view.destroy();
   });
 
-  it('stays silent on a paste of already-expanded JSON', async () => {
+  it('stays silent on a paste of already-expanded JSON in code-file mode', async () => {
+    const onOffer = vi.fn();
+    const view = makeCodeView('', { onOffer, onWithdraw: vi.fn() });
+
+    paste(view, EXPANDED);
+    await flush();
+
+    expect(onOffer).not.toHaveBeenCalled();
+    view.destroy();
+  });
+
+  it('DOES offer for already-expanded JSON pasted bare into markdown', async () => {
+    // Changed by #47a: the indentation needs nothing, the fence does.
     const onOffer = vi.fn();
     const view = makeView('', { onOffer, onWithdraw: vi.fn() });
 
     paste(view, EXPANDED);
     await flush();
 
+    expect(onOffer).toHaveBeenCalledTimes(1);
+    view.destroy();
+  });
+
+  it('stays silent on a paste that is already expanded AND fenced', async () => {
+    const onOffer = vi.fn();
+    const view = makeView('', { onOffer, onWithdraw: vi.fn() });
+
+    paste(view, FENCED);
+    await flush();
+
+    // The fence is not JSON end to end, so it is not even a candidate.
     expect(onOffer).not.toHaveBeenCalled();
     view.destroy();
   });
@@ -360,8 +464,8 @@ describe('jsonPasteNotifier', () => {
 
     paste(view, MINIFIED);
     await flush();
-    expect(applyJsonOffer(view)).toBe(true);
-    expect(view.state.doc.toString()).toBe(`# Doc\n\n${EXPANDED}`);
+    expect(applyJsonOffer(parsed(view))).toBe(true);
+    expect(view.state.doc.toString()).toBe(`# Doc\n\n${FENCED}`);
 
     undo(view);
     expect(view.state.doc.toString()).toBe(`# Doc\n\n${MINIFIED}`);
