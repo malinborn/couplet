@@ -13,6 +13,7 @@ import { Strikethrough, Table } from '@lezer/markdown';
 import { editorTheme } from '../theme/editor-theme';
 import { markdownKeybindings } from './keybindings';
 import { listContinuation } from './autocomplete';
+import { codeBlockExitKeymap } from './code-block-exit';
 import { slashCommands } from './slash-commands';
 import { livePreviewPlugin } from './preview/plugin';
 import { tableModeField } from './preview/table-state';
@@ -60,6 +61,9 @@ export function createExtensions(): Extension[] {
     jsonFormatKeymap,
     lineGlowCompartment.of([]),
     drawSelection(),
+    // Prec.highest, and it has to sit outside previewCompartment: the two-Enter
+    // exit from a fenced code block applies to every engine (#52).
+    codeBlockExitKeymap,
     listContinuation(),
     slashCommands(),
     autocompletion(),

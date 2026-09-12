@@ -106,6 +106,38 @@ Exit is Escape or the Cmd+B family, and a state field remembers the suppressed
 boundary so a second keystroke still lands outside. If you add another exit
 gesture, it goes through that field.
 
+### Leaving a fenced code block (`../code-block-exit.ts`)
+
+A code block has no visible edge in this mode — the fences are hidden by a
+zero-height *line* decoration — so Enter only ever added lines inside it (#52).
+
+Two Enters at the end of the block leave it: Enter on a blank *last content
+line* that has at least one content line above it deletes that line and puts the
+caret below the closing fence. Mid-block Enter never exits, so a blank line
+between two functions stays typable. Shift+Enter always inserts and is
+deliberately **not** bound — `standardKeymap` already carries
+`{key: "Enter", …, shift: insertNewlineAndIndent}`, and a binding without a
+`shift` property is never consulted for Shift+Enter.
+
+Two things about it are worth knowing before changing it:
+
+- **The "only at the end" qualifier does not save the double-Enter reflex while
+  you are writing.** Top-down authoring happens at the end of the block by
+  definition, so `a` Enter Enter `b` ejects and puts `b` in a paragraph. It is
+  visible immediately and one Cmd+Z undoes it, and no Enter-count rule fixes it
+  (an exit after N blanks breaks whoever wanted N). Measured by typing, not
+  reasoned about.
+- **The arrow exit is live-render only.** ArrowDown on the last content line and
+  ArrowUp on the first one skip the hidden fence line, because here the default
+  motion parks the caret on a zero-height line where it is invisible. In
+  live-preview `fencedCode` is `'on-cursor'`, so those lines are visible text
+  under the caret and must stay reachable — hence the divergence. The Enter exit
+  itself is engine-wide and registered in `../setup.ts`.
+
+Escape was considered as the secondary hatch and rejected: it already means
+"leave the inline format span" here, and elsewhere it clears AI highlights and
+closes panels.
+
 ### `keybindings.ts` is shared with live-preview
 
 `Mod-b` / `Mod-i` / `Mod-Shift-x` live in `../keybindings.ts`, which both modes

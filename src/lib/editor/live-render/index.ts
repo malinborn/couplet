@@ -5,6 +5,7 @@ import { headingSpaceInput } from './heading-input';
 import { inlineContinuation } from './inline-continuation';
 import { selectionToolbar } from './selection-toolbar';
 import { elementInspector } from './inspector';
+import { codeBlockArrowExit } from '../code-block-exit';
 
 /**
  * Everything the live-render flavour adds on top of the shared decoration
@@ -34,6 +35,11 @@ export function liveRenderExtensions(options?: {
   return [
     ...liveRenderAtomic,
     blockFormatKeymap,
+    // Arrow-key exit from a fenced code block. Only here, never in
+    // live-preview, where the fence lines are visible under the caret and must
+    // stay reachable — see the comment on `codeBlockArrowExit`. The Enter exit
+    // itself is engine-wide and lives in `../setup.ts`.
+    codeBlockArrowExit(),
     headingSpaceInput(),
     inlineContinuation(),
     selectionToolbar({ onComment: options?.onComment }),
