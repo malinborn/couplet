@@ -6,6 +6,7 @@ import { languages } from '@codemirror/language-data';
 import { Strikethrough, Table } from '@lezer/markdown';
 import {
   toggleInlineFormat,
+  toggleInlineFormatAt,
   toggleLink,
   isInlineFormatActive,
   isLinkActive,
@@ -285,6 +286,62 @@ describe('toggleLink', () => {
     const inspectorEffect = effects.find((e) => e.is(openInspectorFor));
     expect(inspectorEffect).toBeDefined();
     expect(inspectorEffect?.value).toEqual({ pos: 0 });
+  });
+});
+
+/**
+ * The table-cell path (#55). The selection lives in a widget's DOM, so the
+ * range arrives as an argument instead of through `state.selection`, and the
+ * transaction must carry no selection of its own.
+ */
+describe('toggleInlineFormatAt', () => {
+  const TABLE = ['| a | b |', '| --- | --- |', '| apple | pear |'].join('\n');
+  const cellFrom = TABLE.indexOf('apple');
+  const cellTo = cellFrom + 'apple'.length;
+
+  it('CellText_WrapsInSourceWithoutMovingSelection', () => {
+    const { view, dispatch } = makeMockView(TABLE, 0, 0);
+    expect(toggleInlineFormatAt(view, 'strong', cellFrom, cellTo)).toBe(true);
+    const spec = dispatch.mock.calls[0][0];
+    expect(spec.selection).toBeUndefined();
+    const result = view.state.update(spec).state;
+    expect(result.doc.toString()).toContain('| **apple** | pear |');
+    // The caret was at 0 and stays there: a document caret dropped inside a
+    // rendered table row is a caret nobody can see.
+    expect(result.selection.main.from).toBe(0);
+  });
+
+  it('AlreadyBoldCell_RemovesTheMarkers', () => {
+    const doc = TABLE.replace('apple', '**apple**');
+    const from = doc.indexOf('**apple**');
+    const to = from + '**apple**'.length;
+    const { view, dispatch } = makeMockView(doc, 0, 0);
+    expect(toggleInlineFormatAt(view, 'strong', from, to)).toBe(true);
+    const result = view.state.update(dispatch.mock.calls[0][0]).state;
+    expect(result.doc.toString()).toContain('| apple | pear |');
+  });
+
+  it('Lezer_ParsesInlineFormattingInsideTableCells', () => {
+    // The whole approach rests on this: if cell contents were opaque to the
+    // parser, `isInlineFormatActive` could never light the B button up and
+    // the unwrap path above would have nothing to find.
+    const doc = TABLE.replace('apple', '**apple**');
+    const from = doc.indexOf('**apple**');
+    const { view } = makeMockView(doc, 0, 0);
+    expect(isInlineFormatActive(view.state, 'strong', from, from + 9)).toBe(true);
+  });
+
+  it('Strikethrough_And_InlineCode_UseTheirOwnMarkers', () => {
+    for (const [kind, expected] of [
+      ['strikethrough', '| ~~apple~~ | pear |'],
+      ['inlineCode', '| `apple` | pear |'],
+      ['emphasis', '| *apple* | pear |'],
+    ] as const) {
+      const { view, dispatch } = makeMockView(TABLE, 0, 0);
+      toggleInlineFormatAt(view, kind, cellFrom, cellTo);
+      const result = view.state.update(dispatch.mock.calls[0][0]).state;
+      expect(result.doc.toString()).toContain(expected);
+    }
   });
 });
 

@@ -4,6 +4,7 @@ import type { EditorView, ViewUpdate } from '@codemirror/view';
 import type { Extension } from '@codemirror/state';
 import {
   toggleInlineFormat,
+  toggleInlineFormatAt,
   toggleLink,
   isInlineFormatActive,
   isLinkActive,
@@ -11,6 +12,9 @@ import {
 } from './format-commands';
 import { WIDGET_TEXT_HOST_SELECTOR } from '../widget-text-selection';
 import { sourceRangeForVisible } from './cell-anchor';
+import { INLINE_FORMAT_BINDINGS } from '../keybindings';
+import { ariaKeyShortcuts, hotkeyLabel } from '../hotkey-label';
+import { attachHotkeyTooltips, type TooltipHost } from './toolbar-tooltip';
 import '../../../styles/live-render.css';
 
 /**
@@ -45,8 +49,11 @@ let activeButtons: HTMLButtonElement[] = [];
 let activeEditorDom: HTMLElement | null = null;
 let activeKind: ToolbarTarget['kind'] | null = null;
 let activeTarget: ToolbarTarget | null = null;
+let activeTooltips: TooltipHost | null = null;
 
 function hidePopup(): void {
+  activeTooltips?.destroy();
+  activeTooltips = null;
   if (activePopup) {
     activePopup.remove();
     activePopup = null;
@@ -171,6 +178,14 @@ interface FormatButtonSpec {
   cssClass: string;
 }
 
+/**
+ * Key spec per format, read straight out of the keymap's own table so the
+ * tooltip cannot name a key the editor no longer listens for (#56).
+ * `inlineCode` is absent on purpose — it has no binding, and inventing one
+ * here would be exactly the drift this lookup exists to prevent.
+ */
+const KEY_FOR_FORMAT = new Map(INLINE_FORMAT_BINDINGS.map((b) => [b.kind as string, b.key]));
+
 const FORMAT_BUTTONS: FormatButtonSpec[] = [
   { kind: 'strong', label: 'B', ariaLabel: 'Bold', cssClass: 'cm-selection-toolbar-btn-bold' },
   { kind: 'emphasis', label: 'I', ariaLabel: 'Italic', cssClass: 'cm-selection-toolbar-btn-italic' },
@@ -188,7 +203,25 @@ const FORMAT_BUTTONS: FormatButtonSpec[] = [
   },
 ];
 
-function makeButton(label: string, ariaLabel: string, cssClass: string, kind: string): HTMLButtonElement {
+/**
+ * Caption for the hover tooltip.
+ *
+ * Buttons with no hotkey still get one. Two of them — `</>` and `💬` — are the
+ * least self-explanatory things in the row, and the tooltip is the only place
+ * that ever says what they are; withholding it precisely there would answer
+ * the easy questions and none of the hard ones.
+ */
+function tooltipText(actionName: string, key?: string): string {
+  return key ? `${actionName} ${hotkeyLabel(key)}` : actionName;
+}
+
+function makeButton(
+  label: string,
+  ariaLabel: string,
+  cssClass: string,
+  kind: string,
+  key?: string
+): HTMLButtonElement {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = `cm-selection-toolbar-btn ${cssClass}`;
@@ -196,6 +229,10 @@ function makeButton(label: string, ariaLabel: string, cssClass: string, kind: st
   btn.setAttribute('aria-label', ariaLabel);
   btn.setAttribute('aria-pressed', 'false');
   btn.dataset.kind = kind;
+  btn.dataset.tooltip = tooltipText(ariaLabel, key);
+  // The tooltip is a pointer affordance; this is the same fact for a screen
+  // reader, which never hovers anything.
+  if (key) btn.setAttribute('aria-keyshortcuts', ariaKeyShortcuts(key));
   return btn;
 }
 
@@ -207,17 +244,34 @@ function buildPopup(view: EditorView, kind: ToolbarTarget['kind']): HTMLElement 
   popup.setAttribute('aria-label', 'Text formatting');
   activeButtons = [];
 
-  // Widget text is drawn by a widget, not by CM6: the format commands edit the
-  // document through the selection, and there is no document selection here to
-  // edit. Rewriting a table cell's source from a mapped range is a separate
-  // feature, not a side effect of showing this toolbar — so a selection in a
-  // cell gets the comment button and nothing else.
-  for (const spec of kind === 'widget' ? [] : FORMAT_BUTTONS) {
-    const btn = makeButton(spec.label, spec.ariaLabel, spec.cssClass, spec.kind);
+  // Both kinds get the format buttons. A widget selection has no document
+  // selection for `changeByRange` to act on — that is why it once got the
+  // comment button and nothing else (#42) — but `cell-anchor.ts` has already
+  // resolved it to a document range, and `toggleInlineFormatAt` applies the
+  // same add/remove decision to an explicit range (#55).
+  for (const spec of FORMAT_BUTTONS) {
+    const btn = makeButton(
+      spec.label,
+      spec.ariaLabel,
+      spec.cssClass,
+      spec.kind,
+      KEY_FOR_FORMAT.get(spec.kind)
+    );
     btn.addEventListener('mousedown', (e) => {
       // preventDefault keeps focus (and the selection) in the editor —
       // same trick hover-menu.ts uses for its gutter buttons.
       e.preventDefault();
+      const target = activeTarget;
+      if (target?.kind === 'widget') {
+        toggleInlineFormatAt(view, spec.kind, target.from, target.to);
+        // The change rebuilds the row's widget, which takes the DOM selection
+        // with it: the rect this popup is pinned to no longer describes
+        // anything on screen. Closing is honest; `sync()` would close it a
+        // moment later anyway, having flashed it over the wrong words first.
+        hidePopup();
+        view.focus();
+        return;
+      }
       toggleInlineFormat(view, spec.kind);
       view.focus();
     });
@@ -225,7 +279,7 @@ function buildPopup(view: EditorView, kind: ToolbarTarget['kind']): HTMLElement 
     activeButtons.push(btn);
   }
 
-  if (kind !== 'widget') {
+  {
     const divider = document.createElement('div');
     divider.className = 'cm-selection-toolbar-divider';
     popup.appendChild(divider);
@@ -242,6 +296,7 @@ function buildPopup(view: EditorView, kind: ToolbarTarget['kind']): HTMLElement 
     commentBtn.className = 'cm-selection-toolbar-btn cm-selection-toolbar-btn-comment';
     commentBtn.textContent = '💬';
     commentBtn.setAttribute('aria-label', 'Comment on selection');
+    commentBtn.dataset.tooltip = tooltipText('Comment');
     commentBtn.addEventListener('mousedown', (e) => {
       // Same preventDefault reason as the format buttons: the selection must
       // survive the click, since it is what the comment anchors to.
@@ -265,6 +320,14 @@ function buildPopup(view: EditorView, kind: ToolbarTarget['kind']): HTMLElement 
     }
   }
 
+  // Link stays out of the widget toolbar, and not for want of a range to wrap.
+  // `toggleLink` fires `openInspectorFor`, and the inspector pins its URL panel
+  // with `view.coordsAtPos` — which for text drawn by a table-row widget
+  // answers for the widget's own document position, i.e. the top-left of the
+  // whole table, not the cell under the pointer. The link would be created
+  // correctly and its editor would open somewhere else entirely. Giving the
+  // inspector a rect-based reference, the way `positionPopup` already has one,
+  // is the fix; it is a change to the inspector, not to this button.
   if (kind !== 'widget') {
     const linkBtn = makeButton('Link', 'Link', 'cm-selection-toolbar-btn-link', 'link');
     linkBtn.addEventListener('mousedown', (e) => {
@@ -348,10 +411,14 @@ function positionPopup(view: EditorView, target: ToolbarTarget): void {
   computePosition(reference, popup, {
     placement: 'top',
     middleware: [offset(8), flip(), shift({ padding: 8 })],
-  }).then(({ x, y }) => {
+  }).then(({ x, y, placement }) => {
     // Popup may have been dismissed while computePosition was pending.
     if (activePopup !== popup) return;
     Object.assign(popup.style, { left: `${x}px`, top: `${y}px` });
+    // Tooltips follow the toolbar away from the text: when `flip()` has put
+    // the toolbar below the selection, a tooltip above it would sit right on
+    // the words the toolbar is there to format.
+    activeTooltips?.setPlacement(placement.startsWith('bottom') ? 'bottom' : 'top');
   });
 }
 
@@ -364,6 +431,7 @@ function showToolbar(view: EditorView, target: ToolbarTarget): void {
     activeKind = target.kind;
     activeEditorDom = view.dom;
     document.body.appendChild(activePopup);
+    activeTooltips = attachHotkeyTooltips(activePopup);
     // Registered synchronously: onOutsideClick now ignores clicks inside the
     // editor, so there is no self-inflicted close to defer around.
     document.addEventListener('click', onOutsideClick, true);

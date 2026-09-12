@@ -419,6 +419,31 @@ easy to get wrong:
   so the inner `_x_` of `**_x_**` is never hidden — marking it atomic would
   trap the caret in text the user can see.
 
+## Two selections in a table cell, and only one of them gets a toolbar
+
+A cell has two quite different editing surfaces, and #55 was reported from the
+second one:
+
+1. **The rendered cell.** Drag across the text without double-clicking. The
+   drag lands in the nested editing host (`makeWidgetTextSelectable`), produces
+   no document selection at all, and `cell-anchor.ts` maps it back to a source
+   range. This is where the format toolbar appears — B / I / S / `</>` / 💬. The
+   buttons go through `toggleInlineFormatAt`, a range-taking sibling of
+   `toggleInlineFormat`, so a cell and a paragraph agree on what bold means.
+   Link is absent on purpose: `toggleLink` opens the inspector, which positions
+   with `coordsAtPos` and would therefore draw the URL editor at the table's
+   top-left instead of at the cell.
+2. **The edit overlay.** Double-click opens a `<textarea>` over the cell,
+   holding the cell's *source*. It gets no toolbar, deliberately — the reasoning
+   lives on `showCellEditor` in `tables.ts`. Short version: markers are visible
+   and typeable there, so the toolbar's whole reason to exist is absent, while
+   💬 would anchor a comment to document text the overlay has already diverged
+   from.
+
+Worth knowing when reading a bug report: the overlay draws a coloured border
+around the cell (`--color-checkbox`), so "the cell had a green outline" means
+case 2, not case 1.
+
 ## Dependencies
 
 - `markdown-table` — serializes 2D array → GFM markdown table string
