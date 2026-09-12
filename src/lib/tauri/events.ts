@@ -25,7 +25,8 @@ export type MenuAction =
   | 'theme_system'
   | 'recent_files'
   | 'ai_comment'
-  | 'ai_watch_command';
+  | 'ai_watch_command'
+  | 'format_json';
 
 export function onMenuEvent(handler: (action: MenuAction) => void): Promise<() => void> {
   return listen<string>('menu-event', (event) => {

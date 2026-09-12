@@ -21,6 +21,7 @@
   import RecentFilesPanel from './lib/RecentFilesPanel.svelte';
   import ToastStack from './lib/ToastStack.svelte';
   import AiHintBadge from './lib/AiHintBadge.svelte';
+  import AiBindButton from './lib/AiBindButton.svelte';
   import { createToastStore } from './lib/toasts.svelte';
   import { shouldShowHint, nextCheckDelay } from './lib/ai-hint';
   import { previewCompartment, lineGlowCompartment } from './lib/editor/setup';
@@ -62,6 +63,8 @@
     splitThread,
     type AnchorContext,
   } from './lib/comment-format';
+  import { buildBindPrompt } from './lib/ai-bind';
+  import { applyJsonOffer, formatJsonCommand } from './lib/editor/json-paste';
   import './lib/theme/dark.css';
   import './lib/theme/light.css';
   import './lib/theme/aurora-dark.css';
@@ -652,6 +655,40 @@
    * reaches every window, and only the focused one should answer for its own
    * document. The toast is the whole point — a clipboard write is invisible.
    */
+  /**
+   * Put the "here is the document I'm looking at" prompt on the clipboard —
+   * the top-left button's whole job (#29).
+   *
+   * No focus guard, unlike `copyWatchCommand` below: this is a click inside
+   * this window's own chrome, so which document is meant is never in question.
+   */
+  function copyBindPrompt(): void {
+    const path = fileState.filePath;
+    if (!path) {
+      toasts.push({ kind: 'ai-bind-copied', saved: false });
+      return;
+    }
+    void navigator.clipboard
+      .writeText(buildBindPrompt(path))
+      .then(() => toasts.push({ kind: 'ai-bind-copied', saved: true }))
+      .catch(() => toasts.push({ kind: 'ai-bind-copied', saved: false }));
+  }
+
+  /**
+   * Expand the JSON the offer toast is pointing at, or — when invoked from the
+   * hotkey or the menu with no offer pending — the selection, falling back to
+   * the whole document.
+   *
+   * One ordinary transaction either way, so Cmd+Z undoes it in one press. The
+   * document is never reformatted without one of these three explicit acts.
+   */
+  function formatJson(fromOffer: boolean): void {
+    const view = editorHandle?.view;
+    if (!view) return;
+    if (fromOffer && applyJsonOffer(view)) return;
+    formatJsonCommand(view);
+  }
+
   function copyWatchCommand(): void {
     if (!document.hasFocus()) return;
     const path = fileState.filePath;
@@ -1064,6 +1101,12 @@
         case 'ai_watch_command':
           copyWatchCommand();
           break;
+        case 'format_json':
+          // The native accelerator wins over the webview, so in the app this
+          // is the path that actually runs for Cmd+Shift+J; the CM6 binding in
+          // json-paste.ts covers the browser build of the same editor.
+          if (document.hasFocus()) formatJson(false);
+          break;
       }
 
       // macOS/muda toggles the clicked CheckMenuItem natively before this
@@ -1323,10 +1366,14 @@
     bind:handle={editorHandle}
     onchange={handleChange}
     onAiHighlightVisibilityChange={handleAiHighlightVisibilityChange}
+    onJsonOffer={() => toasts.push({ kind: 'json-offer' })}
+    onJsonOfferWithdrawn={() => toasts.dismissKind('json-offer')}
   />
 </main>
 
 <AiHintBadge visible={showAiHint} />
+
+<AiBindButton onclick={copyBindPrompt} />
 
 {#if showRecentFiles}
   <RecentFilesPanel
@@ -1338,6 +1385,7 @@
 
 <ToastStack
   store={toasts}
+  onFormatJson={() => formatJson(true)}
   onDismiss={(entry) => {
     // Closing the update notice closes it everywhere, not just here.
     if (entry.payload.kind === 'update') {

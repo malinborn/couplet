@@ -118,6 +118,18 @@ pub fn build_menu(
                 .accelerator("CmdOrCtrl+F")
                 .build(app)?,
         )
+        .separator()
+        // The third way into JSON expansion, after the paste offer and the
+        // accelerator. Same PR #11 lesson as "Comment on Selection": a feature
+        // reachable only by a chord is a feature only its author uses.
+        //
+        // No handling needed in lib.rs — an unclaimed id falls through to the
+        // generic `menu-event` emit and the frontend switches on it.
+        .item(
+            &MenuItemBuilder::with_id("format_json", "Format JSON")
+                .accelerator("CmdOrCtrl+Shift+J")
+                .build(app)?,
+        )
         .build()?;
 
     let engine_raw = CheckMenuItemBuilder::with_id("engine_raw", "Raw").build(app)?;
