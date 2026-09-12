@@ -17,9 +17,15 @@
  * `beforeinput` covers typing, paste, cut and delete in one place — it fires
  * before the DOM is touched, so nothing has to be undone afterwards.
  *
- * The caret is hidden in CSS (`caret-color: transparent`) rather than here: a
- * blinking caret in text that cannot be typed into would be a lie, while the
- * selection highlight is exactly what we are after.
+ * Refused is not the same as dropped. A host whose text *does* have an owner
+ * elsewhere passes the event on through {@link SelectableOptions.onRefusedInput}
+ * — a table cell hands it to the cell edit overlay, which owns its text and
+ * commits it properly (#53). A host with nowhere to send it, like a comment
+ * card's quote, leaves the option out and stays silently read-only.
+ *
+ * Whether the caret is visible is therefore a decision for the caller's CSS,
+ * not for this module: a blinking caret in text that nothing will ever accept
+ * would be a lie, while one in a table cell is a promise that is kept.
  *
  * The widget must additionally return `true` from `ignoreEvent()` for events
  * originating in this subtree, or CM6's own mouse handling claims the drag
@@ -63,6 +69,18 @@ export interface SelectableOptions {
    * has to run (#31).
    */
   swallowKeys?: boolean;
+  /**
+   * Called after an input attempt has been refused, with the event that was
+   * prevented.
+   *
+   * Refusing is not the same as ignoring. A caret parked in a table cell is a
+   * promise that typing there edits that cell, and the host cannot keep it
+   * itself — CM6 does not own this DOM. So the table hands the keystroke on to
+   * the cell edit overlay, which does own its text and commits it properly
+   * (#53). Hosts with nothing to hand it to (a comment card's quote) leave this
+   * out and stay silently read-only, as before.
+   */
+  onRefusedInput?: (event: InputEvent) => void;
 }
 
 export function makeWidgetTextSelectable(
@@ -77,7 +95,10 @@ export function makeWidgetTextSelectable(
     el.dataset.sourceTo = String(options.source.to);
   }
   // Read-only in every respect but selection.
-  el.addEventListener('beforeinput', (event) => event.preventDefault());
+  el.addEventListener('beforeinput', (event) => {
+    event.preventDefault();
+    options.onRefusedInput?.(event as InputEvent);
+  });
   el.addEventListener('dragstart', (event) => event.preventDefault());
   if (options.swallowKeys) {
     el.addEventListener('keydown', (event) => event.stopPropagation());
