@@ -71,10 +71,35 @@ function toggleOrExit(view: EditorView, marker: string, kind: ExitableFormatKind
   return toggleWrap(view, marker);
 }
 
+/** One inline-format key: which format it toggles, and the marker it writes. */
+export interface InlineFormatBinding {
+  kind: ExitableFormatKind;
+  /** CM6 key spec — see `hotkey-label.ts` for turning it into a caption. */
+  key: string;
+  marker: string;
+}
+
+/**
+ * The inline-format keys, as data rather than as three literals inside the
+ * `keymap` call.
+ *
+ * Two consumers read this: the keymap right below, and the selection toolbar,
+ * which shows the hotkey in a tooltip when the pointer rests on a button (#56).
+ * The toolbar deliberately has no key table of its own — one that had to be
+ * kept in step by hand would be wrong the first time a binding moved, and
+ * wrong silently, since nothing checks a tooltip against a keymap.
+ */
+export const INLINE_FORMAT_BINDINGS: readonly InlineFormatBinding[] = [
+  { kind: 'strong', key: 'Mod-b', marker: '**' },
+  { kind: 'emphasis', key: 'Mod-i', marker: '*' },
+  { kind: 'strikethrough', key: 'Mod-Shift-x', marker: '~~' },
+];
+
 export function markdownKeybindings(): Extension {
-  return keymap.of([
-    { key: 'Mod-b', run: (view) => toggleOrExit(view, '**', 'strong') },
-    { key: 'Mod-i', run: (view) => toggleOrExit(view, '*', 'emphasis') },
-    { key: 'Mod-Shift-x', run: (view) => toggleOrExit(view, '~~', 'strikethrough') },
-  ]);
+  return keymap.of(
+    INLINE_FORMAT_BINDINGS.map(({ kind, key, marker }) => ({
+      key,
+      run: (view: EditorView) => toggleOrExit(view, marker, kind),
+    }))
+  );
 }

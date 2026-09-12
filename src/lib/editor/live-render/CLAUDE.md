@@ -242,6 +242,24 @@ permanently would require a full nested editor in the inspector, which is out
 of scope, so `LIVE_RENDER` pins mermaid to `'on-cursor'` and the inspector
 skips mermaid fences rather than offering a redundant language picker.
 
+### The toolbar's hotkey captions come out of the keymap
+
+`INLINE_FORMAT_BINDINGS` in `../keybindings.ts` is the one list: the `keymap`
+is built from it, and the tooltips (#56) render their key half from it through
+`../hotkey-label.ts`. A second, hand-kept caption table is exactly the kind of
+duplication that stays wrong silently — nothing in the app ever compares a
+tooltip against a keymap.
+
+One measured trap lives in that helper: `navigator.userAgentData.platform`
+answers `"macOS"`, lowercase `m`, so the obvious `/Mac/` test reads a Mac as a
+PC and captions every button `Ctrl+B`. The legacy `navigator.platform` beside it
+says `MacIntel`, which is what keeps the mistake invisible anywhere the new API
+is missing.
+
+Buttons with no binding (`</>`, 💬) still get a tooltip carrying just the
+action name — they are the two least legible things in the row, and the tooltip
+is the only place that ever says what they are.
+
 ## Known limitations
 
 These are honest properties of the approach, not open bugs. Do not "fix" them
