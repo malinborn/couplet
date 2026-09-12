@@ -3,7 +3,7 @@
   import Editor from './lib/editor/Editor.svelte';
   import type { EditorHandle } from './lib/editor/Editor.svelte';
   import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createFileState, createRecentFilesStore } from './lib/stores.svelte';
-  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncBetaInCycleMenu, commentThreads, commentCreate, commentReply, commentResolve, type PendingOpen } from './lib/tauri/commands';
+  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncBetaInCycleMenu, commentThreads, commentCreate, commentResolve, commentSetReply, type PendingOpen } from './lib/tauri/commands';
   import {
     onMenuEvent,
     onOpenFile,
@@ -50,7 +50,14 @@
     CommentWidget,
     type CommentActions,
   } from './lib/editor/ai-comment';
-  import { anchorPosition, buildHandoffPrompt, buildWatchPrompt } from './lib/comment-format';
+  import {
+    anchorContextAt,
+    anchorPosition,
+    buildHandoffPrompt,
+    buildWatchPrompt,
+    splitThread,
+    type AnchorContext,
+  } from './lib/comment-format';
   import './lib/theme/dark.css';
   import './lib/theme/light.css';
   import './lib/theme/aurora-dark.css';
@@ -354,8 +361,134 @@
    * Keyed by the synthetic id the draft widget carries; `commentActions.reply`
    * uses the presence of a key here to decide "create" versus "append".
    */
-  let commentDrafts = new Map<string, { line: number; quote: string }>();
+  let commentDrafts = new Map<
+    string,
+    { line: number; quote: string; context: AnchorContext }
+  >();
   let commentDraftSeq = 0;
+
+  /**
+   * How long after the last keystroke the comment box is written to the
+   * sidecar. Long enough that a sentence is one write and not thirty, short
+   * enough that clicking away or closing the window right after typing cannot
+   * realistically beat it — and both of those flush immediately anyway.
+   */
+  const COMMENT_AUTOSAVE_MS = 700;
+
+  /**
+   * Text in a thread's box that has not been written yet.
+   *
+   * `saved` is what the last successful write put in the file, and the pair is
+   * what decides whether an in-flight edit survives a rebuild: still different
+   * means the user has typed since, so the box keeps showing it; equal means
+   * the file already has it, so the box goes back to following the file. That
+   * second case is what makes the freeze correct — when an agent answers, the
+   * user's last turn moves into the frozen part and the new box below it comes
+   * up empty instead of repeating the text that is now above it.
+   *
+   * `path` is captured per entry rather than read at write time: a flush can
+   * fire while the window is already showing a different document, and it must
+   * write to the file the text was typed in.
+   */
+  interface CommentPending {
+    path: string;
+    text: string;
+    saved: string;
+    timer: ReturnType<typeof setTimeout> | null;
+  }
+  let commentPending = new Map<string, CommentPending>();
+
+  /** What the file currently says is in each thread's box. */
+  let commentEditable = new Map<string, string>();
+
+  /** Thread whose box should take the caret on the next rebuild, and where. */
+  let commentFocus: { id: string; at: number } | null = null;
+
+  /** The comment box that currently has focus, if any. */
+  function focusedCommentBox(): { id: string; at: number } | null {
+    const el = document.activeElement as HTMLTextAreaElement | null;
+    const id = el?.getAttribute?.('data-comment-input');
+    if (!id) return null;
+    return { id, at: el?.selectionStart ?? el?.value.length ?? 0 };
+  }
+
+  /**
+   * Say that a write landed. Autosave is invisible, and that invisibility is
+   * exactly what made people think nothing had been saved — so it is written
+   * into the card rather than left to be inferred.
+   */
+  function markCommentSaved(id: string): void {
+    const view = editorHandle?.view;
+    const card = view?.dom.querySelector(`[data-comment-thread="${CSS.escape(id)}"]`);
+    const label = card?.querySelector('.cm-ai-comment-saved');
+    if (!label) return;
+    label.textContent = 'saved';
+    setTimeout(() => {
+      if (label.textContent === 'saved') label.textContent = '';
+    }, 2500);
+  }
+
+  /** Write a thread's pending text now. Creating the thread if this is its
+   * first text — that is what turns a draft card into a real one. */
+  async function writeComment(id: string): Promise<void> {
+    const entry = commentPending.get(id);
+    if (!entry) return;
+    if (entry.timer !== null) {
+      clearTimeout(entry.timer);
+      entry.timer = null;
+    }
+    const text = entry.text;
+    // An empty box writes nothing. Clearing it is not how a comment is
+    // deleted — resolve is — and an empty thread would reach an agent as an
+    // empty question.
+    if (!text.trim() || text === entry.saved) return;
+
+    const draft = commentDrafts.get(id);
+    if (draft) {
+      commentDrafts.delete(id);
+      const caret = focusedCommentBox();
+      try {
+        const realId = await commentCreate(entry.path, draft.line, draft.quote, text, draft.context);
+        commentPending.delete(id);
+        commentPending.set(realId, { path: entry.path, text, saved: text, timer: null });
+        commentEditable.set(realId, text);
+        // The card is about to be rebuilt under the id the file gave it; the
+        // caret has to come along, or the first save silently ejects the user
+        // from the box they are writing in.
+        commentFocus = { id: realId, at: caret?.id === id ? caret.at : text.length };
+        // The sidecar has only just come into existence, so the watcher armed
+        // when this document was opened isn't watching it yet. Re-registering
+        // the file rebuilds the watcher over both paths — otherwise the very
+        // first agent reply would arrive with nothing listening for it.
+        await invoke('register_open_file', { path: entry.path }).catch(() => {});
+        await reloadComments();
+        markCommentSaved(realId);
+      } catch (err) {
+        // Put the draft back, or the card would keep collecting text that has
+        // nowhere to go.
+        commentDrafts.set(id, draft);
+        console.error('Comment create failed:', err);
+      }
+      return;
+    }
+
+    try {
+      await commentSetReply(entry.path, id, text);
+      entry.saved = text;
+      commentEditable.set(id, text);
+      markCommentSaved(id);
+    } catch (err) {
+      console.error('Comment save failed:', err);
+    }
+  }
+
+  /** Drop everything pending for a thread — used when it is resolved, so a
+   * queued write cannot bring it back from the dead. */
+  function forgetCommentPending(id: string): void {
+    const entry = commentPending.get(id);
+    if (entry?.timer !== null && entry?.timer !== undefined) clearTimeout(entry.timer);
+    commentPending.delete(id);
+  }
 
   /**
    * Rebuild every comment widget from the sidecar.
@@ -375,16 +508,35 @@
     }
     const threads = await commentThreads(path).catch(() => []);
     const doc = view.state.doc.toString();
+    // Whoever is in a box right now goes back into it afterwards. Without
+    // this, an agent answering — or the user's own autosave flipping the
+    // status back to open — would throw the caret out of the box mid-word.
+    const focus = commentFocus ?? focusedCommentBox();
+    commentFocus = null;
     const effects: StateEffect<unknown>[] = [clearAiComments.of(null)];
     for (const thread of threads) {
       if (thread.status === 'resolved') continue;
-      const { pos, to, orphaned } = anchorPosition(doc, thread.quote, thread.line);
-      effects.push(addAiComment.of({ thread, pos, to, orphaned, actions: commentActions }));
+      const { pos, to, orphaned } = anchorPosition(doc, thread.quote, thread.line, {
+        prefix: thread.prefix,
+        suffix: thread.suffix,
+      });
+      commentEditable.set(thread.id, splitThread(thread).editable);
+      effects.push(
+        addAiComment.of({
+          thread,
+          pos,
+          to,
+          orphaned,
+          actions: commentActions,
+          draft: pendingTextFor(thread.id),
+          focusAt: focus?.id === thread.id ? focus.at : undefined,
+        })
+      );
     }
     // Drafts are not in the file, so a reload would otherwise silently discard
     // half-typed comments — re-add them on top.
     for (const [id, draft] of commentDrafts) {
-      const { pos, to, orphaned } = anchorPosition(doc, draft.quote, draft.line);
+      const { pos, to, orphaned } = anchorPosition(doc, draft.quote, draft.line, draft.context);
       effects.push(
         addAiComment.of({
           thread: { id, status: 'open', line: draft.line, quote: draft.quote, replies: [] },
@@ -392,10 +544,30 @@
           to,
           orphaned,
           actions: commentActions,
+          draft: pendingTextFor(id),
+          focusAt: focus?.id === id ? focus.at : undefined,
         })
       );
     }
     view.dispatch({ effects });
+  }
+
+  /**
+   * Text to put in a thread's box, or `undefined` to let the file decide.
+   *
+   * An entry whose text matches what was written is no longer an edit in
+   * flight — it is the file, and it is dropped so the box follows the file
+   * again. That is what lets a turn freeze: once the agent answers, the same
+   * text is above the box and the box itself must come up empty.
+   */
+  function pendingTextFor(id: string): string | undefined {
+    const entry = commentPending.get(id);
+    if (!entry) return undefined;
+    if (entry.text === entry.saved && entry.timer === null) {
+      commentPending.delete(id);
+      return undefined;
+    }
+    return entry.text;
   }
 
   /** Document offset a comment widget currently sits at, or null if it's gone. */
@@ -413,28 +585,31 @@
   }
 
   const commentActions: CommentActions = {
-    reply: (id, text) => {
+    save: (id, text) => {
       const path = fileState.filePath;
       if (!path) return;
-      const draft = commentDrafts.get(id);
-      if (draft) {
-        // First text on a draft is what creates the thread in the file.
-        commentDrafts.delete(id);
-        void commentCreate(path, draft.line, draft.quote, text).then(async () => {
-          // The sidecar has only just come into existence, so the watcher armed
-          // when this document was opened isn't watching it yet. Re-registering
-          // the file rebuilds the watcher over both paths — otherwise the very
-          // first agent reply would arrive with nothing listening for it.
-          await invoke('register_open_file', { path }).catch(() => {});
-          await reloadComments();
-        });
-        return;
-      }
-      void commentReply(path, id, text).then(reloadComments);
+      const entry = commentPending.get(id) ?? {
+        path,
+        text,
+        saved: commentEditable.get(id) ?? '',
+        timer: null,
+      };
+      entry.path = path;
+      entry.text = text;
+      if (entry.timer !== null) clearTimeout(entry.timer);
+      entry.timer = setTimeout(() => {
+        entry.timer = null;
+        void writeComment(id);
+      }, COMMENT_AUTOSAVE_MS);
+      commentPending.set(id, entry);
+    },
+    flush: (id) => {
+      void writeComment(id);
     },
     resolve: (id) => {
       const path = fileState.filePath;
       if (!path) return;
+      forgetCommentPending(id);
       if (commentDrafts.delete(id)) {
         // Nothing was ever written; just drop the card.
         void reloadComments();
@@ -512,23 +687,42 @@
     if (!view || !fileState.filePath) return;
     const range = view.state.selection.main;
     const line = view.state.doc.lineAt(range.from);
-    const quote = range.empty
-      ? line.text.trim()
-      : view.state.sliceDoc(range.from, range.to).trim();
+    const raw = range.empty ? line.text : view.state.sliceDoc(range.from, range.to);
+    const quote = raw.trim();
     if (!quote) return;
+
+    // Exact document range of the quote. The quote is trimmed, so the range
+    // has to skip the same leading whitespace — otherwise the highlight and
+    // the stored context would both be off by the indentation of the line.
+    const quoteFrom = (range.empty ? line.from : range.from) + (raw.length - raw.trimStart().length);
+    const quoteTo = quoteFrom + quote.length;
+    // Recorded now, while the exact position is known: after this the only way
+    // back to it is a search, and a search needs something to disambiguate on.
+    const context = anchorContextAt(view.state.doc.toString(), quoteFrom, quoteTo);
 
     commentDraftSeq += 1;
     const id = `draft:${commentDraftSeq}`;
-    commentDrafts.set(id, { line: line.number, quote });
+    commentDrafts.set(id, { line: line.number, quote, context });
     view.dispatch({
       effects: addAiComment.of({
-        thread: { id, status: 'open', line: line.number, quote, replies: [] },
-        pos: range.from,
+        thread: {
+          id,
+          status: 'open',
+          line: line.number,
+          quote,
+          prefix: context.prefix,
+          suffix: context.suffix,
+          replies: [],
+        },
+        pos: quoteFrom,
         // A draft already knows its exact range — no quote search needed, and
         // the fragment gets highlighted from the moment the card appears.
-        to: range.empty ? line.to : range.to,
+        to: quoteTo,
         orphaned: false,
         actions: commentActions,
+        // The point of the hotkey is to start writing. Leaving the caret in
+        // the document means every comment costs an extra click (#22).
+        focusAt: 0,
       }),
     });
   }

@@ -82,6 +82,7 @@ pub fn run() {
             commands::comment_threads,
             commands::comment_create,
             commands::comment_reply,
+            commands::comment_set_reply,
             commands::comment_resolve,
             window::open_file_window_cmd,
             window::register_open_file,

@@ -23,7 +23,8 @@ function thread(overrides: Partial<CommentThread> = {}): CommentThread {
 
 function makeActions(overrides: Partial<CommentActions> = {}): CommentActions {
   return {
-    reply: vi.fn(),
+    save: vi.fn(),
+    flush: vi.fn(),
     resolve: vi.fn(),
     handoff: vi.fn(),
     insertIntoText: vi.fn(),
@@ -161,6 +162,50 @@ describe('CommentWidget.eq', () => {
     expect(a.eq(b)).toBe(false);
   });
 
+  it('ignores the user\'s own unanswered turn — autosave must not rebuild the card', () => {
+    // The box rewrites this reply in the file on every debounce. If it counted
+    // towards equality, each save would replace the textarea being typed into.
+    const actions = makeActions();
+    const a = new CommentWidget({
+      thread: thread({ replies: [{ author: 'You', at: '14:02', text: 'поче' }] }),
+      orphaned: false,
+      actions,
+    });
+    const b = new CommentWidget({
+      thread: thread({ replies: [{ author: 'You', at: '14:03', text: 'почему не nginx' }] }),
+      orphaned: false,
+      actions,
+    });
+    expect(a.eq(b)).toBe(true);
+  });
+
+  it('differs once an agent answers, which is what freezes the turn above it', () => {
+    const actions = makeActions();
+    const a = new CommentWidget({
+      thread: thread({ replies: [{ author: 'You', at: '14:02', text: 'почему' }] }),
+      orphaned: false,
+      actions,
+    });
+    const b = new CommentWidget({
+      thread: thread({
+        replies: [
+          { author: 'You', at: '14:02', text: 'почему' },
+          { author: 'agent', at: '14:05', text: 'потому' },
+        ],
+      }),
+      orphaned: false,
+      actions,
+    });
+    expect(a.eq(b)).toBe(false);
+  });
+
+  it('ignores the in-flight text — including it would rebuild on every keystroke', () => {
+    const actions = makeActions();
+    const a = new CommentWidget({ thread: thread(), orphaned: false, actions, draft: 'по' });
+    const b = new CommentWidget({ thread: thread(), orphaned: false, actions, draft: 'почему' });
+    expect(a.eq(b)).toBe(true);
+  });
+
   it('differs when a reply is added', () => {
     const withReply = thread({
       replies: [
@@ -204,6 +249,8 @@ interface FakeEvent {
   preventDefault(): void;
   stopPropagation(): void;
   key?: string;
+  metaKey?: boolean;
+  ctrlKey?: boolean;
 }
 
 interface FakeElement {
@@ -248,7 +295,7 @@ function createFakeElement(tagName: string): FakeElement {
 function fire(
   el: FakeElement,
   type: string,
-  extra: Partial<Pick<FakeEvent, 'key'>> = {}
+  extra: Partial<Pick<FakeEvent, 'key' | 'metaKey' | 'ctrlKey'>> = {}
 ): { preventDefault: ReturnType<typeof vi.fn>; stopPropagation: ReturnType<typeof vi.fn> } {
   const preventDefault = vi.fn();
   const stopPropagation = vi.fn();
@@ -412,49 +459,207 @@ describe('CommentWidget.toDOM action buttons', () => {
   });
 });
 
-describe('CommentWidget.toDOM reply input', () => {
+describe('CommentWidget.toDOM selectable text (#28)', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it('Enter with non-empty trimmed text calls actions.reply(id, text)', () => {
+  function answered() {
+    return thread({
+      status: 'answered',
+      replies: [
+        { author: 'You', at: '14:02', text: 'Почему не nginx?' },
+        { author: 'agent', at: '14:05', text: 'Он был сломан.' },
+      ],
+    });
+  }
+
+  it('makes the reply text its own editing host — the only thing Chrome will select inside a widget', () => {
+    vi.stubGlobal('document', { createElement: createFakeElement });
+    const widget = new CommentWidget({ thread: answered(), orphaned: false, actions: makeActions() });
+
+    const dom = widget.toDOM() as unknown as FakeElement;
+    for (const el of findByClass(dom, 'cm-ai-comment-text')) {
+      expect(el.attributes['contenteditable']).toBe('true');
+    }
+  });
+
+  it('refuses every edit to it, so an answer cannot be typed over', () => {
+    vi.stubGlobal('document', { createElement: createFakeElement });
+    const widget = new CommentWidget({ thread: answered(), orphaned: false, actions: makeActions() });
+
+    const dom = widget.toDOM() as unknown as FakeElement;
+    const [text] = findByClass(dom, 'cm-ai-comment-text');
+    expect(fire(text, 'beforeinput').preventDefault).toHaveBeenCalled();
+    expect(fire(text, 'dragstart').preventDefault).toHaveBeenCalled();
+  });
+
+  it('keeps its keys away from CM6 keymaps, Escape included', () => {
+    vi.stubGlobal('document', { createElement: createFakeElement });
+    const widget = new CommentWidget({ thread: answered(), orphaned: false, actions: makeActions() });
+
+    const dom = widget.toDOM() as unknown as FakeElement;
+    const [text] = findByClass(dom, 'cm-ai-comment-text');
+    expect(fire(text, 'keydown', { key: 'Escape' }).stopPropagation).toHaveBeenCalled();
+    expect(fire(text, 'keyup').stopPropagation).toHaveBeenCalled();
+  });
+
+  it('covers the author line and the header too — a quote is worth copying as well', () => {
+    vi.stubGlobal('document', { createElement: createFakeElement });
+    const widget = new CommentWidget({ thread: answered(), orphaned: false, actions: makeActions() });
+
+    const dom = widget.toDOM() as unknown as FakeElement;
+    expect(findByClass(dom, 'cm-ai-comment-author')[0].attributes['contenteditable']).toBe('true');
+    expect(findByClass(dom, 'cm-ai-comment-head')[0].attributes['contenteditable']).toBe('true');
+  });
+});
+
+describe('CommentWidget.toDOM comment box', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('is a textarea: a comment is prose, and Enter has to make a new line', () => {
+    vi.stubGlobal('document', { createElement: createFakeElement });
+    const widget = new CommentWidget({ thread: thread(), orphaned: false, actions: makeActions() });
+
+    const dom = widget.toDOM() as unknown as FakeElement;
+    const [box] = findByClass(dom, 'cm-ai-comment-input');
+    expect(box.tagName).toBe('textarea');
+  });
+
+  it('reports every keystroke through save — there is no send action', () => {
     vi.stubGlobal('document', { createElement: createFakeElement });
     const actions = makeActions();
     const widget = new CommentWidget({ thread: thread({ id: 'c-aaaaaa' }), orphaned: false, actions });
 
     const dom = widget.toDOM() as unknown as FakeElement;
-    const [input] = findByClass(dom, 'cm-ai-comment-input');
-    input.value = '  потому  ';
-    fire(input, 'keydown', { key: 'Enter' });
+    const [box] = findByClass(dom, 'cm-ai-comment-input');
+    box.value = 'поче';
+    fire(box, 'input');
+    box.value = 'почему';
+    fire(box, 'input');
 
-    expect(actions.reply).toHaveBeenCalledTimes(1);
-    expect(actions.reply).toHaveBeenCalledWith('c-aaaaaa', 'потому');
+    expect(actions.save).toHaveBeenNthCalledWith(1, 'c-aaaaaa', 'поче');
+    expect(actions.save).toHaveBeenNthCalledWith(2, 'c-aaaaaa', 'почему');
   });
 
-  it('Enter with only whitespace is a no-op', () => {
+  it('writes on blur, because clicking away is what used to lose the text', () => {
+    vi.stubGlobal('document', { createElement: createFakeElement });
+    const actions = makeActions();
+    const widget = new CommentWidget({ thread: thread({ id: 'c-aaaaaa' }), orphaned: false, actions });
+
+    const dom = widget.toDOM() as unknown as FakeElement;
+    const [box] = findByClass(dom, 'cm-ai-comment-input');
+    fire(box, 'blur');
+
+    expect(actions.flush).toHaveBeenCalledWith('c-aaaaaa');
+  });
+
+  it('plain Enter does not write — it is a newline, not a send', () => {
     vi.stubGlobal('document', { createElement: createFakeElement });
     const actions = makeActions();
     const widget = new CommentWidget({ thread: thread(), orphaned: false, actions });
 
     const dom = widget.toDOM() as unknown as FakeElement;
-    const [input] = findByClass(dom, 'cm-ai-comment-input');
-    input.value = '   ';
-    fire(input, 'keydown', { key: 'Enter' });
+    const [box] = findByClass(dom, 'cm-ai-comment-input');
+    const { preventDefault } = fire(box, 'keydown', { key: 'Enter' });
 
-    expect(actions.reply).not.toHaveBeenCalled();
+    expect(actions.flush).not.toHaveBeenCalled();
+    expect(preventDefault).not.toHaveBeenCalled();
   });
 
-  it('a non-Enter keydown never calls actions.reply', () => {
+  it('Cmd+Enter writes immediately, for "I am done" without waiting for the debounce', () => {
+    vi.stubGlobal('document', { createElement: createFakeElement });
+    const actions = makeActions();
+    const widget = new CommentWidget({ thread: thread({ id: 'c-aaaaaa' }), orphaned: false, actions });
+
+    const dom = widget.toDOM() as unknown as FakeElement;
+    const [box] = findByClass(dom, 'cm-ai-comment-input');
+    const { preventDefault } = fire(box, 'keydown', { key: 'Enter', metaKey: true });
+
+    expect(actions.flush).toHaveBeenCalledWith('c-aaaaaa');
+    expect(preventDefault).toHaveBeenCalled();
+  });
+
+  it('shows the user\'s unanswered turn in the box, not as a finished block', () => {
+    vi.stubGlobal('document', { createElement: createFakeElement });
+    const widget = new CommentWidget({
+      thread: thread({ replies: [{ author: 'You', at: '14:02', text: 'Почему не nginx?' }] }),
+      orphaned: false,
+      actions: makeActions(),
+    });
+
+    const dom = widget.toDOM() as unknown as FakeElement;
+    const [box] = findByClass(dom, 'cm-ai-comment-input');
+    expect(box.value).toBe('Почему не nginx?');
+    // …and nothing is rendered as a finished reply above it.
+    expect(findByClass(dom, 'cm-ai-comment-reply')).toHaveLength(0);
+  });
+
+  it('freezes that turn and comes up empty once an agent has answered', () => {
+    vi.stubGlobal('document', { createElement: createFakeElement });
+    const widget = new CommentWidget({
+      thread: thread({
+        status: 'answered',
+        replies: [
+          { author: 'You', at: '14:02', text: 'Почему не nginx?' },
+          { author: 'agent', at: '14:05', text: 'Он был сломан.' },
+        ],
+      }),
+      orphaned: false,
+      actions: makeActions(),
+    });
+
+    const dom = widget.toDOM() as unknown as FakeElement;
+    expect(findByClass(dom, 'cm-ai-comment-reply')).toHaveLength(2);
+    const [box] = findByClass(dom, 'cm-ai-comment-input');
+    expect(box.value).toBe('');
+  });
+
+  it('prefers in-flight text over what the file says, so a rebuild swallows nothing', () => {
+    vi.stubGlobal('document', { createElement: createFakeElement });
+    const widget = new CommentWidget({
+      thread: thread({ replies: [{ author: 'You', at: '14:02', text: 'сохранённое' }] }),
+      orphaned: false,
+      actions: makeActions(),
+      draft: 'сохранённое и ещё не сохранённое',
+    });
+
+    const dom = widget.toDOM() as unknown as FakeElement;
+    const [box] = findByClass(dom, 'cm-ai-comment-input');
+    expect(box.value).toBe('сохранённое и ещё не сохранённое');
+  });
+
+  it('writes what is in the box when its DOM goes away', () => {
+    vi.stubGlobal('document', { createElement: createFakeElement });
+    const actions = makeActions();
+    const widget = new CommentWidget({ thread: thread({ id: 'c-aaaaaa' }), orphaned: false, actions });
+
+    widget.destroy();
+
+    expect(actions.flush).toHaveBeenCalledWith('c-aaaaaa');
+  });
+
+  it('carries the thread id on the box, so the app can find it after a rebuild', () => {
+    vi.stubGlobal('document', { createElement: createFakeElement });
+    const widget = new CommentWidget({ thread: thread({ id: 'c-aaaaaa' }), orphaned: false, actions: makeActions() });
+
+    const dom = widget.toDOM() as unknown as FakeElement;
+    const [box] = findByClass(dom, 'cm-ai-comment-input');
+    expect(box.attributes['data-comment-input']).toBe('c-aaaaaa');
+  });
+
+  it('Escape leaves the box alone rather than writing', () => {
     vi.stubGlobal('document', { createElement: createFakeElement });
     const actions = makeActions();
     const widget = new CommentWidget({ thread: thread(), orphaned: false, actions });
 
     const dom = widget.toDOM() as unknown as FakeElement;
-    const [input] = findByClass(dom, 'cm-ai-comment-input');
-    input.value = 'потому';
-    fire(input, 'keydown', { key: 'a' });
+    const [box] = findByClass(dom, 'cm-ai-comment-input');
+    fire(box, 'keydown', { key: 'Escape' });
 
-    expect(actions.reply).not.toHaveBeenCalled();
+    expect(actions.save).not.toHaveBeenCalled();
   });
 
   it('keydown, keypress, and keyup on the input stop propagation, so CM6 keymaps never see them', () => {

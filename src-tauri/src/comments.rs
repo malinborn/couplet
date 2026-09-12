@@ -143,27 +143,125 @@ pub struct Thread {
     /// Anchoring is done by searching for `quote`, not by this number.
     pub line: usize,
     pub quote: String,
+    /// Document text immediately before the quote, as of the moment the
+    /// thread was created. `None` on threads written before this existed and
+    /// on ones typed by hand — anchoring degrades to the line hint, it does
+    /// not break. See `anchorPosition` in `src/lib/comment-format.ts`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    /// Document text immediately after the quote. See [`Thread::prefix`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suffix: Option<String>,
     pub replies: Vec<Reply>,
+}
+
+/// Text kept on each side of the quote, in characters. Mirrors
+/// `ANCHOR_CONTEXT` in `src/lib/comment-format.ts`; the number was measured,
+/// see the doc comment on `anchorPosition` there.
+pub const ANCHOR_CONTEXT: usize = 32;
+
+/// Surrounding text stored with a thread so a repeated quote can still be
+/// told apart from its duplicates.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Context<'a> {
+    pub prefix: &'a str,
+    pub suffix: &'a str,
 }
 
 const THREAD_MARKER: &str = "<!-- mdmini:c ";
 
+/// Percent-escape a marker attribute value.
+///
+/// Attributes are `k=v` pairs split on whitespace, so a value containing a
+/// space would be read as two attributes with the tail silently dropped. `>`
+/// is escaped too, so no value can spell `-->` and cut the comment short.
+/// Everything else — Cyrillic included — stays literal: humans read this file.
+///
+/// Mirrored by `escapeAttr` in `src/lib/comment-format.ts`; the shared
+/// fixture test is what keeps the two honest.
+pub fn escape_attr(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_whitespace() || ch == '%' || ch == '>' {
+            let mut buf = [0u8; 4];
+            for byte in ch.encode_utf8(&mut buf).as_bytes() {
+                out.push_str(&format!("%{byte:02X}"));
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// Inverse of [`escape_attr`]. Malformed input is kept as written rather than
+/// rejected — a hand-edited file must not lose a thread over a stray `%`.
+pub fn unescape_attr(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(byte) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The first `ANCHOR_CONTEXT` characters of `text`, counted in chars so a
+/// multi-byte boundary is never cut.
+pub fn context_head(text: &str) -> String {
+    text.chars().take(ANCHOR_CONTEXT).collect()
+}
+
+/// The last `ANCHOR_CONTEXT` characters of `text`.
+pub fn context_tail(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    chars[chars.len().saturating_sub(ANCHOR_CONTEXT)..].iter().collect()
+}
+
+/// What a thread marker line declares.
+struct Marker {
+    id: String,
+    status: Status,
+    line: usize,
+    prefix: Option<String>,
+    suffix: Option<String>,
+}
+
 /// Parse `k=v` attributes from a thread marker line.
-fn parse_marker(line: &str) -> Option<(String, Status, usize)> {
+fn parse_marker(line: &str) -> Option<Marker> {
     let inner = line.trim().strip_prefix(THREAD_MARKER)?.strip_suffix("-->")?;
     let mut id = None;
     let mut status = None;
     let mut num = None;
+    let mut prefix = None;
+    let mut suffix = None;
     for pair in inner.split_whitespace() {
         let (key, value) = pair.split_once('=')?;
         match key {
             "id" => id = Some(value.to_string()),
             "status" => status = Status::parse(value),
             "line" => num = value.parse::<usize>().ok(),
+            "pre" => prefix = Some(unescape_attr(value)),
+            "suf" => suffix = Some(unescape_attr(value)),
             _ => {} // unknown attributes are ignored intentionally
         }
     }
-    Some((id?, status?, num.unwrap_or(1)))
+    Some(Marker {
+        id: id?,
+        status: status?,
+        line: num.unwrap_or(1),
+        prefix,
+        suffix,
+    })
 }
 
 /// Parse a reply header `**author** · at`.
@@ -195,13 +293,15 @@ pub fn parse(text: &str) -> Vec<Thread> {
             }
             reply = None;
             match parse_marker(line) {
-                Some((id, status, num)) => {
+                Some(marker) => {
                     skipping = false;
                     current = Some(Thread {
-                        id,
-                        status,
-                        line: num,
+                        id: marker.id,
+                        status: marker.status,
+                        line: marker.line,
                         quote: String::new(),
+                        prefix: marker.prefix,
+                        suffix: marker.suffix,
                         replies: Vec::new(),
                     });
                 }
@@ -293,10 +393,31 @@ fn guard_not_sidecar(doc: &Path) -> Result<(), String> {
 }
 
 /// Render a single thread block — the one place where the format is assembled.
-fn render_thread(id: &str, status: Status, line: usize, quote: &str, author: &str, at: &str, text: &str) -> String {
+///
+/// `pre=`/`suf=` are written only when there is context to write. An empty
+/// attribute would carry no information and would still have to be read back,
+/// and leaving it out keeps the marker of a hand-written thread identical to
+/// what a person would type.
+fn render_thread(
+    id: &str,
+    status: Status,
+    line: usize,
+    quote: &str,
+    context: Context<'_>,
+    author: &str,
+    at: &str,
+    text: &str,
+) -> String {
     let quoted: String = quote.lines().map(|l| format!("> {l}\n")).collect();
+    let mut attrs = String::new();
+    if !context.prefix.is_empty() {
+        attrs.push_str(&format!(" pre={}", escape_attr(context.prefix)));
+    }
+    if !context.suffix.is_empty() {
+        attrs.push_str(&format!(" suf={}", escape_attr(context.suffix)));
+    }
     format!(
-        "<!-- mdmini:c id={id} status={status} line={line} -->\n{quoted}\n**{author}** · {at}\n{text}\n",
+        "<!-- mdmini:c id={id} status={status} line={line}{attrs} -->\n{quoted}\n**{author}** · {at}\n{text}\n",
         status = status.as_str()
     )
 }
@@ -310,7 +431,21 @@ pub fn append_thread(
     author: &str,
     text: &str,
 ) -> Result<(), String> {
-    append_thread_at(doc, id, line, quote, author, text, &fmt_utc(now_epoch()))
+    append_thread_ctx(doc, id, line, quote, Context::default(), author, text)
+}
+
+/// Like [`append_thread`], but records the text surrounding the quote so the
+/// thread can be re-found after the document moves. See `anchorPosition`.
+pub fn append_thread_ctx(
+    doc: &Path,
+    id: &str,
+    line: usize,
+    quote: &str,
+    context: Context<'_>,
+    author: &str,
+    text: &str,
+) -> Result<(), String> {
+    append_thread_ctx_at(doc, id, line, quote, context, author, text, &fmt_utc(now_epoch()))
 }
 
 /// Like [`append_thread`], but the reply's timestamp is given explicitly
@@ -322,6 +457,22 @@ pub fn append_thread_at(
     id: &str,
     line: usize,
     quote: &str,
+    author: &str,
+    text: &str,
+    at: &str,
+) -> Result<(), String> {
+    append_thread_ctx_at(doc, id, line, quote, Context::default(), author, text, at)
+}
+
+/// The one that does the work: [`append_thread`] with both the context and
+/// the timestamp given explicitly.
+#[allow(clippy::too_many_arguments)]
+pub fn append_thread_ctx_at(
+    doc: &Path,
+    id: &str,
+    line: usize,
+    quote: &str,
+    context: Context<'_>,
     author: &str,
     text: &str,
     at: &str,
@@ -344,7 +495,7 @@ pub fn append_thread_at(
         e
     };
     out.push('\n');
-    out.push_str(&render_thread(id, Status::Open, line, quote, author, at, text));
+    out.push_str(&render_thread(id, Status::Open, line, quote, context, author, at, text));
     write_atomic(&path, &out)
 }
 
@@ -393,6 +544,98 @@ pub fn append_reply_at(doc: &Path, id: &str, author: &str, text: &str, at: &str)
     }
     for (offset, line) in block.lines().enumerate() {
         out.insert(insert_at + offset, line.to_string());
+    }
+
+    write_atomic(&path, &format!("{}\n", out.join("\n")))
+}
+
+/// The author md-mini writes for the person using it. A trailing reply by
+/// this author is the one the comment box edits in place — see
+/// [`set_last_reply`].
+pub const SELF_AUTHOR: &str = "You";
+
+/// Bounds of the thread block with the given id: the marker line index, and
+/// the index one past its last line.
+fn thread_bounds(lines: &[&str], id: &str) -> Option<(usize, usize)> {
+    let start = marker_line_index(lines, id)?;
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find(|(_, line)| line.trim_start().starts_with(THREAD_MARKER))
+        .map(|(i, _)| i)
+        .unwrap_or(lines.len());
+    Some((start, end))
+}
+
+/// Write `text` as `author`'s reply, replacing their own trailing reply if
+/// they already have one.
+///
+/// This is what makes the comment box an always-editable area rather than a
+/// field with a send button (#23): every keystroke run ends up here, and the
+/// thread carries one reply per turn instead of one per pause in typing. The
+/// in-place branch is also how editing an existing comment works — as long as
+/// nobody has answered yet, the last reply is still the author's own.
+///
+/// An empty `text` is rejected rather than deleting the reply: removing the
+/// only reply would leave a thread that `mdmini question` reports as an empty
+/// question, and "delete this comment" already has a name — resolve.
+pub fn set_last_reply(doc: &Path, id: &str, author: &str, text: &str) -> Result<(), String> {
+    set_last_reply_at(doc, id, author, text, &fmt_utc(now_epoch()))
+}
+
+/// Like [`set_last_reply`], but the timestamp is given explicitly — see
+/// [`append_thread_at`].
+pub fn set_last_reply_at(
+    doc: &Path,
+    id: &str,
+    author: &str,
+    text: &str,
+    at: &str,
+) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("refusing to write an empty comment".to_string());
+    }
+    let path = sidecar_path(doc).ok_or_else(|| "bad document path".to_string())?;
+    let existing = std::fs::read_to_string(&path)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let lines: Vec<&str> = existing.lines().collect();
+    let (start, end) = thread_bounds(&lines, id).ok_or_else(|| format!("unknown comment id: {id}"))?;
+
+    // The author's own trailing reply, if the last reply in the block is
+    // theirs. A reply by anyone else in between (the agent answered) means
+    // this turn is a new one and must not overwrite the answer.
+    let last_header = (start + 1..end)
+        .rev()
+        .find(|&i| parse_reply_header(lines[i]).is_some());
+    let own_trailing = last_header.filter(|&i| {
+        parse_reply_header(lines[i]).is_some_and(|(who, _)| who == author)
+    });
+
+    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    match own_trailing {
+        Some(header) => {
+            // Replace the header (the timestamp is the time of this edit) and
+            // everything under it up to the end of the block, minus the blank
+            // lines separating it from the next thread.
+            let mut body_end = end;
+            while body_end > header + 1 && out[body_end - 1].trim().is_empty() {
+                body_end -= 1;
+            }
+            let mut block: Vec<String> = vec![format!("**{author}** · {at}")];
+            block.extend(text.lines().map(|l| l.to_string()));
+            out.splice(header..body_end, block);
+        }
+        None => {
+            let block = format!("\n**{author}** · {at}\n{text}");
+            let mut insert_at = end;
+            while insert_at > start + 1 && out[insert_at - 1].trim().is_empty() {
+                insert_at -= 1;
+            }
+            for (offset, line) in block.lines().enumerate() {
+                out.insert(insert_at + offset, line.to_string());
+            }
+        }
     }
 
     write_atomic(&path, &format!("{}\n", out.join("\n")))
@@ -718,6 +961,133 @@ Nginx там был сломан.
         assert_eq!(found[0].doc, doc);
     }
 
+    #[test]
+    fn escaping_survives_the_characters_that_would_break_a_marker() {
+        // A space would split the value into two attributes, and `>` could
+        // spell `-->` and end the comment early. Cyrillic must stay readable.
+        let raw = "в таблице: 100% > всего\nи перенос";
+        let escaped = escape_attr(raw);
+        assert!(!escaped.contains(' '));
+        assert!(!escaped.contains('>'));
+        assert!(!escaped.contains('\n'));
+        assert!(escaped.contains("таблице"), "Cyrillic must not be encoded: {escaped}");
+        assert_eq!(unescape_attr(&escaped), raw);
+    }
+
+    #[test]
+    fn unescaping_leaves_a_hand_written_stray_percent_alone() {
+        assert_eq!(unescape_attr("100%"), "100%");
+        assert_eq!(unescape_attr("%zz"), "%zz");
+    }
+
+    #[test]
+    fn context_round_trips_through_the_file() {
+        let doc = temp_doc("spec.md");
+        append_thread_ctx(
+            &doc,
+            "c-aaaaaa",
+            12,
+            "Табы",
+            Context {
+                prefix: "в таблице: ",
+                suffix: " и отступы",
+            },
+            "Макс",
+            "Вопрос?",
+        )
+        .unwrap();
+        let threads = load(&doc).unwrap();
+        assert_eq!(threads[0].prefix.as_deref(), Some("в таблице: "));
+        assert_eq!(threads[0].suffix.as_deref(), Some(" и отступы"));
+    }
+
+    #[test]
+    fn a_thread_without_context_reads_back_as_none_not_as_empty() {
+        // The distinction matters to the frontend: `None` means "resolve by
+        // the line hint", not "the fragment sits at the start of the file".
+        let doc = temp_doc("spec.md");
+        append_thread(&doc, "c-aaaaaa", 12, "цитата", "Макс", "Вопрос?").unwrap();
+        let threads = load(&doc).unwrap();
+        assert_eq!(threads[0].prefix, None);
+        assert_eq!(threads[0].suffix, None);
+        let raw = std::fs::read_to_string(sidecar_path(&doc).unwrap()).unwrap();
+        assert!(!raw.contains("pre="), "no empty attribute should be written: {raw}");
+    }
+
+    #[test]
+    fn context_head_and_tail_never_split_a_multibyte_character() {
+        let long = "я".repeat(100);
+        assert_eq!(context_head(&long).chars().count(), ANCHOR_CONTEXT);
+        assert_eq!(context_tail(&long).chars().count(), ANCHOR_CONTEXT);
+        assert_eq!(context_head("аб"), "аб");
+        assert_eq!(context_tail("аб"), "аб");
+    }
+
+    #[test]
+    fn set_last_reply_rewrites_the_authors_own_trailing_reply_in_place() {
+        let doc = temp_doc("spec.md");
+        append_thread(&doc, "c-aaaaaa", 1, "цитата", SELF_AUTHOR, "Поч").unwrap();
+        set_last_reply(&doc, "c-aaaaaa", SELF_AUTHOR, "Почему не nginx?").unwrap();
+        let threads = load(&doc).unwrap();
+        // One reply, not two: typing is not a sequence of separate comments.
+        assert_eq!(threads[0].replies.len(), 1);
+        assert_eq!(threads[0].replies[0].text, "Почему не nginx?");
+    }
+
+    #[test]
+    fn set_last_reply_starts_a_new_turn_under_an_agent_answer() {
+        let doc = temp_doc("spec.md");
+        append_thread(&doc, "c-aaaaaa", 1, "цитата", SELF_AUTHOR, "Почему не nginx?").unwrap();
+        append_reply(&doc, "c-aaaaaa", "agent", "Он был сломан.").unwrap();
+        set_last_reply(&doc, "c-aaaaaa", SELF_AUTHOR, "А теперь?").unwrap();
+        let threads = load(&doc).unwrap();
+        // The answer must survive: an agent reply between the turns is exactly
+        // what makes the previous one finished.
+        assert_eq!(threads[0].replies.len(), 3);
+        assert_eq!(threads[0].replies[1].text, "Он был сломан.");
+        assert_eq!(threads[0].replies[2].author, SELF_AUTHOR);
+        assert_eq!(threads[0].replies[2].text, "А теперь?");
+    }
+
+    #[test]
+    fn set_last_reply_keeps_a_multi_line_body_whole() {
+        let doc = temp_doc("spec.md");
+        append_thread(&doc, "c-aaaaaa", 1, "цитата", SELF_AUTHOR, "первая").unwrap();
+        set_last_reply(&doc, "c-aaaaaa", SELF_AUTHOR, "первая\nвторая\nтретья").unwrap();
+        let threads = load(&doc).unwrap();
+        assert_eq!(threads[0].replies[0].text, "первая\nвторая\nтретья");
+    }
+
+    #[test]
+    fn set_last_reply_does_not_touch_a_neighbouring_thread() {
+        let doc = temp_doc("spec.md");
+        append_thread(&doc, "c-aaaaaa", 1, "q1", SELF_AUTHOR, "первый").unwrap();
+        append_thread(&doc, "c-bbbbbb", 2, "q2", SELF_AUTHOR, "второй").unwrap();
+        set_last_reply(&doc, "c-aaaaaa", SELF_AUTHOR, "первый, переписанный").unwrap();
+        let threads = load(&doc).unwrap();
+        assert_eq!(threads.len(), 2);
+        assert_eq!(threads[0].replies[0].text, "первый, переписанный");
+        assert_eq!(threads[1].replies[0].text, "второй");
+        assert_eq!(threads[1].quote, "q2");
+    }
+
+    #[test]
+    fn set_last_reply_refuses_to_write_an_empty_comment() {
+        let doc = temp_doc("spec.md");
+        append_thread(&doc, "c-aaaaaa", 1, "цитата", SELF_AUTHOR, "текст").unwrap();
+        assert!(set_last_reply(&doc, "c-aaaaaa", SELF_AUTHOR, "   ").is_err());
+        // The previously saved text is still there — clearing the box is not
+        // a way to delete a comment, resolving is.
+        assert_eq!(load(&doc).unwrap()[0].replies[0].text, "текст");
+    }
+
+    #[test]
+    fn set_last_reply_on_an_unknown_id_is_an_error_not_a_silent_no_op() {
+        let doc = temp_doc("spec.md");
+        append_thread(&doc, "c-aaaaaa", 1, "цитата", SELF_AUTHOR, "текст").unwrap();
+        assert!(set_last_reply(&doc, "c-nope00", SELF_AUTHOR, "мимо").is_err());
+    }
+
     /// Cross-language contract for the format: this test must generate
     /// exactly `src/lib/__fixtures__/comments-contract.md`, byte for byte.
     /// The mirror test on the TypeScript side (`comment-contract.test.ts`)
@@ -749,6 +1119,20 @@ Nginx там был сломан.
             "Вы",
             "Тут точно нужен отдельный раздел?",
             "2026-08-24 15:10:00 UTC",
+        )
+        .unwrap();
+        append_thread_ctx_at(
+            &doc,
+            "c-cccccc",
+            157,
+            "Табы",
+            Context {
+                prefix: "в таблице горячих клавиш: ",
+                suffix: " и отступы в списках",
+            },
+            "Вы",
+            "Тут про клавишу или про отступ?",
+            "2026-08-24 16:00:00 UTC",
         )
         .unwrap();
         append_reply_at(

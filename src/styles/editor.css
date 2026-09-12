@@ -1498,15 +1498,38 @@
   background-color: var(--bg-base);
   background-image: linear-gradient(var(--ai-ask-bg), var(--ai-ask-bg));
   font-size: 0.9em;
-  /* Протяжённое выделение по документу не должно закрашивать карточку. */
+  /* Хром карточки — рамка, отступы, ряд кнопок — из выделения выключен:
+   * протяжённое выделение по документу не должно закрашивать карточку целиком.
+   * А вот текст внутри выделяться обязан. */
   -webkit-user-select: none;
   user-select: none;
 }
 
-/* Поле ввода — единственное место в карточке, где выделение текста нужно. */
-.cm-ai-comment-input:focus {
+/* Содержательный текст карточки: ответ агента, свой вопрос, автор и время,
+ * цитата в шапке. Формулировку регулярно нужно перенести в задачу, в чат, в
+ * коммит — а `user-select: none` на карточке не давал её даже выделить (#28).
+ *
+ * Именно эти элементы, а не карточка целиком: кнопки и рамка остаются вне
+ * выделения, поэтому протяжённое выделение по документу по-прежнему не
+ * закрашивает карточку как блок. */
+.cm-ai-comment-text,
+.cm-ai-comment-author,
+.cm-ai-comment-head,
+.cm-ai-comment-excerpt,
+.cm-ai-comment-input {
   -webkit-user-select: text;
   user-select: text;
+  cursor: text;
+}
+
+/* Эти блоки — вложенные editing hosts (иначе Chrome не даёт выделить в них
+ * текст, см. `makeSelectable`), но редактировать их нельзя, поэтому мигающая
+ * каретка в них врала бы. Выделение при этом красится как обычно. */
+.cm-ai-comment-text,
+.cm-ai-comment-author,
+.cm-ai-comment-head {
+  caret-color: transparent;
+  outline: none;
 }
 
 .cm-ai-comment-orphaned {
@@ -1519,8 +1542,25 @@
   margin-bottom: 0.4rem;
 }
 
+/* Завершённый ход — свой или ответ агента. Пока агент не ответил, реплика
+ * пользователя живёт не здесь, а в поле ввода (см. `splitThread`), поэтому
+ * «очерченный блок» здесь и означает ровно одно: это уже нельзя править.
+ *
+ * Отличается от активного поля сразу тремя вещами, а не оттенком: сплошная
+ * полоса слева, заливка и отсутствие рамки ввода. Разница должна читаться
+ * боковым зрением, без сравнения двух блоков рядом. */
 .cm-ai-comment-reply {
   margin-bottom: 0.4rem;
+  padding: 0.35rem 0.5rem;
+  border-left: 3px solid var(--ai-ask-border);
+  border-radius: 0 4px 4px 0;
+  background: var(--ai-ask-chip-bg);
+}
+
+/* Ответ агента — тот самый, ради которого всё и затевалось. Полоса акцентная,
+ * чтобы в треде из нескольких ходов глаз сразу находил ответ. */
+.cm-ai-comment-reply:last-of-type {
+  border-left-color: var(--ai-ask-accent);
 }
 
 .cm-ai-comment-author {
@@ -1532,15 +1572,45 @@
   white-space: pre-wrap;
 }
 
+/* Активная область. Всегда редактируема, отправлять ничего не надо — поэтому
+ * выглядит как место для письма, а не как поле формы: без заливки, высота по
+ * тексту, рамка тоньше и светлее, чем полоса у зафиксированного блока.
+ *
+ * `resize: none` и `overflow: hidden` — потому что высоту задаёт `grow()` в
+ * `ai-comment.ts`: блочный виджет, выросший мимо CM6, оставляет карту высот
+ * неверной, и ручной ресайз сделал бы ровно это. */
 .cm-ai-comment-input {
+  display: block;
+  box-sizing: border-box;
   width: 100%;
   margin: 0.3rem 0;
-  padding: 0.3rem 0.4rem;
-  border: 1px solid var(--ai-ask-border);
+  padding: 0.35rem 0.45rem;
+  border: 1px dashed var(--ai-ask-border);
   border-radius: 4px;
-  background: var(--ai-ask-chip-bg);
+  background: transparent;
   color: inherit;
   font: inherit;
+  line-height: 1.45;
+  min-height: 1.6em;
+  resize: none;
+  overflow: hidden;
+}
+
+/* В фокусе рамка становится сплошной и акцентной: «сюда сейчас пишут». */
+.cm-ai-comment-input:focus {
+  outline: none;
+  border-style: solid;
+  border-color: var(--ai-ask-accent);
+}
+
+/* Автосохранение невидимо, и именно эта невидимость порождала вопрос «а
+ * сохранилось ли». Подпись появляется после записи и через пару секунд
+ * уходит — постоянная надпись превратилась бы в шум. */
+.cm-ai-comment-saved {
+  margin-left: auto;
+  align-self: center;
+  opacity: 0.6;
+  font-size: 0.85em;
 }
 
 .cm-ai-comment-actions {

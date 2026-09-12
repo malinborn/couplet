@@ -77,9 +77,20 @@ export async function commentCreate(
   path: string,
   line: number,
   quote: string,
-  text: string
+  text: string,
+  context: { prefix?: string; suffix?: string } = {}
 ): Promise<string> {
-  return invoke<string>('comment_create', { path, line, quote, text });
+  // `prefix`/`suffix` are the document text on either side of the fragment.
+  // They are what lets a repeated quote be told apart from its duplicates when
+  // the thread is resolved again later — see `anchorPosition` (#20).
+  return invoke<string>('comment_create', {
+    path,
+    line,
+    quote,
+    text,
+    prefix: context.prefix ?? null,
+    suffix: context.suffix ?? null,
+  });
 }
 
 /**
@@ -91,6 +102,18 @@ export async function commentCreate(
  */
 export async function commentReply(path: string, id: string, text: string): Promise<void> {
   return invoke('comment_reply', { path, id, text });
+}
+
+/**
+ * Writes what is currently in a thread's comment box.
+ *
+ * Replaces the user's own trailing reply rather than appending one, so a pause
+ * in typing is not a separate comment; once an agent has answered, the next
+ * write starts a new reply under the answer. This is the autosave behind the
+ * always-editable comment area — there is no send action (#23).
+ */
+export async function commentSetReply(path: string, id: string, text: string): Promise<void> {
+  return invoke('comment_set_reply', { path, id, text });
 }
 
 /** Marks a thread `resolved`. It stays in the file as history, never deleted. */

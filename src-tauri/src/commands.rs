@@ -90,12 +90,21 @@ pub async fn comment_threads(path: String) -> Result<Vec<crate::comments::Thread
 ///
 /// The id is generated against the ids already in the file, so a hand-edited
 /// file that happens to contain a colliding id cannot produce a duplicate.
+///
+/// `prefix`/`suffix` are the document text on either side of the fragment at
+/// the moment of writing. They are what lets a repeated quote — a single word,
+/// a list item, a heading that appears in a table of contents too — be told
+/// apart from its duplicates later; without them the card lands on whichever
+/// copy comes first in the file (#20). Optional, because a thread can also be
+/// written by hand or by an older version.
 #[command]
 pub async fn comment_create(
     path: String,
     line: usize,
     quote: String,
     text: String,
+    prefix: Option<String>,
+    suffix: Option<String>,
 ) -> Result<String, String> {
     let doc = std::path::Path::new(&path);
     let taken: Vec<String> = crate::comments::load(doc)?
@@ -103,7 +112,21 @@ pub async fn comment_create(
         .map(|thread| thread.id)
         .collect();
     let id = crate::comments::new_id_avoiding(doc, crate::comments::now_epoch(), &taken);
-    crate::comments::append_thread(doc, &id, line, &quote, "You", &text)?;
+    let prefix = prefix.unwrap_or_default();
+    let suffix = suffix.unwrap_or_default();
+    let context = crate::comments::Context {
+        prefix: &prefix,
+        suffix: &suffix,
+    };
+    crate::comments::append_thread_ctx(
+        doc,
+        &id,
+        line,
+        &quote,
+        context,
+        crate::comments::SELF_AUTHOR,
+        &text,
+    )?;
     Ok(id)
 }
 
@@ -116,7 +139,26 @@ pub async fn comment_create(
 #[command]
 pub async fn comment_reply(path: String, id: String, text: String) -> Result<(), String> {
     let doc = std::path::Path::new(&path);
-    crate::comments::append_reply(doc, &id, "You", &text)?;
+    crate::comments::append_reply(doc, &id, crate::comments::SELF_AUTHOR, &text)?;
+    crate::comments::set_status(doc, &id, crate::comments::Status::Open)
+}
+
+/// Writes what is currently in the comment box, replacing the user's own
+/// trailing reply instead of appending a new one.
+///
+/// This is the autosave behind the always-editable comment area (#23): the
+/// frontend calls it on a debounce while typing, so a pause of a few hundred
+/// milliseconds is not a separate reply. Once an agent has answered, the
+/// user's next keystrokes start a new reply under the answer rather than
+/// rewriting it.
+///
+/// The status goes back to `open` for the same reason as [`comment_reply`]:
+/// the user writing again means they are waiting again, and `open` is what
+/// `mdmini watch` wakes an agent on.
+#[command]
+pub async fn comment_set_reply(path: String, id: String, text: String) -> Result<(), String> {
+    let doc = std::path::Path::new(&path);
+    crate::comments::set_last_reply(doc, &id, crate::comments::SELF_AUTHOR, &text)?;
     crate::comments::set_status(doc, &id, crate::comments::Status::Open)
 }
 
