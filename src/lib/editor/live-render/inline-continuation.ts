@@ -188,10 +188,23 @@ export interface PendingFormat {
 /** Effect carrying a pending format, or `null` to clear it. Values are in post-change coordinates. */
 export const setPendingFormat = StateEffect.define<PendingFormat | null>();
 
+/**
+ * Is the text between the span and the caret nothing but blanks *on one line*?
+ *
+ * The line test is not a refinement, it is the difference between working and
+ * producing garbage. `\s` matches `\n`, so without it a pending format survived
+ * an Enter and the next character absorbed the closing marker **across the line
+ * break**: measured, `**как**  ` ⏎ `дальше` became `**как  \nдальше**`, which is
+ * not bold at all but two lines of literal asterisks — and it destroyed a
+ * two-space hard break on the way. A marker pair cannot straddle a newline
+ * (`live-render/CLAUDE.md`, "Enter inside a span"), so a format cannot be
+ * pending across one either.
+ */
 function gapIsBlank(state: EditorState, from: number, to: number): boolean {
   if (to < from) return false;
   if (to === from) return true;
-  return /^\s+$/.test(state.sliceDoc(from, to));
+  if (state.doc.lineAt(from).number !== state.doc.lineAt(to).number) return false;
+  return /^[^\S\n]+$/.test(state.sliceDoc(from, to));
 }
 
 /**

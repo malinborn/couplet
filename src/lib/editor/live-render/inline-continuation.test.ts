@@ -186,6 +186,20 @@ describe('continuationField — validated, never remembered', () => {
     expect(edited.field(continuationField)).toBeNull();
   });
 
+  it('does not survive a newline — a marker pair cannot straddle one', () => {
+    // Measured in a browser before the line test existed: `**как** ` ⏎ `дальше`
+    // absorbed the closing marker across the break and produced
+    // `**как \nдальше**` — two lines of literal asterisks, and a destroyed
+    // two-space hard break. `\s` matches `\n`; that was the whole bug.
+    const state = pending('ПРивет **как** ', 15, 14, 'strong');
+    const entered = state.update({
+      changes: { from: 15, to: 15, insert: '\n' },
+      selection: EditorSelection.cursor(16),
+    }).state;
+    expect(entered.field(continuationField)).toBeNull();
+    expect(planContinuationInsert(entered, 16, 16, 'д')).toBeNull();
+  });
+
   it('maps through an edit earlier in the document', () => {
     const state = pending('ПРивет **как** ', 15, 14, 'strong');
     const edited = state.update({
