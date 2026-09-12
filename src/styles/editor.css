@@ -389,6 +389,10 @@
 /* Gutter width = del circle (16px) + gap (2px) + drag (26px) + gap (4px) = 48px */
 .cm-line.cm-md-table-line {
   --table-row-gutter: 48px;
+  /* Полоса над таблицей, в которой живут кнопки колонок. Место реальное, а не
+   * «выехать за край»: у таблицы в самом верху документа наружу выезжать некуда,
+   * там её обрезал бы `overflow: hidden` на `.cm-content`. */
+  --table-col-gutter: 24px;
   font-family: var(--font-code);
   font-size: 0.9em;
   contain: inline-size;
@@ -419,6 +423,18 @@
   position: relative;
 }
 
+/* Полоса под кнопки колонок — padding строки-хоста, а НЕ виджета.
+ *
+ * Если положить её на `.cm-md-table-wrap`, бокс виджета станет выше таблицы, а
+ * `drawSelection` рисует прямоугольник выделения ровно по боксу виджета: над
+ * таблицей появлялась серая плашка `--color-selection` каждый раз, когда
+ * таблица выделена (например, после двойного клика по ячейке). На строке
+ * padding безопасен — это обычный CSS `.cm-line`, как у заголовков, и CM6
+ * честно учитывает его в height map. */
+.cm-line.cm-md-table-header {
+  padding-top: var(--table-col-gutter);
+}
+
 .cm-md-table-wrap[data-mode="wrap"] .cm-md-table {
   max-width: 100%;
 }
@@ -437,6 +453,11 @@
   font-family: var(--font-code);
   font-size: 0.9em;
   line-height: 1.6;
+  /* Скруглённые углы = клип по padding-box. Он же режет всё, что выезжает за
+   * верхнюю грань таблицы, поэтому кнопки колонок живут СНАРУЖИ этого бокса —
+   * в `.cm-md-table-wrap`. Перенести скругление на строки нельзя: border-radius
+   * на `display: table-row` Chrome игнорирует (проверено на радиусе 20px —
+   * углы остаются прямыми). */
   border-radius: 4px;
   overflow: hidden;
 }
@@ -582,7 +603,7 @@
 
 /* Delete button (−) — muted rose */
 .cm-md-table-row:hover .cm-md-table-btn-del,
-.cm-md-table-cell-has-ctrl:hover .cm-md-table-col-ctrl .cm-md-table-btn-del {
+.cm-md-table-col-ctrl .cm-md-table-btn-del {
   color: #c4657a;
   opacity: 0.5;
 }
@@ -608,7 +629,7 @@
 
 /* Drag handle (⠿) — neutral */
 .cm-md-table-row:hover .cm-md-table-btn-drag-row,
-.cm-md-table-cell-has-ctrl:hover .cm-md-table-col-ctrl .cm-md-table-btn-drag {
+.cm-md-table-col-ctrl .cm-md-table-btn-drag {
   color: #6e6a86;
   opacity: 0.5;
   cursor: grab;
@@ -634,7 +655,7 @@
 }
 
 :root[data-theme$='light'] .cm-md-table-row:hover .cm-md-table-btn-del,
-:root[data-theme$='light'] .cm-md-table-cell-has-ctrl:hover .cm-md-table-col-ctrl .cm-md-table-btn-del {
+:root[data-theme$='light'] .cm-md-table-col-ctrl .cm-md-table-btn-del {
   color: #c0415a;
 }
 
@@ -654,7 +675,7 @@
 }
 
 :root[data-theme$='light'] .cm-md-table-row:hover .cm-md-table-btn-drag-row,
-:root[data-theme$='light'] .cm-md-table-cell-has-ctrl:hover .cm-md-table-col-ctrl .cm-md-table-btn-drag {
+:root[data-theme$='light'] .cm-md-table-col-ctrl .cm-md-table-btn-drag {
   color: #a8a4c0;
 }
 
@@ -713,39 +734,42 @@
   border-radius: 11px;
 }
 
-/* Show column controls above header cell — only the hovered cell */
-.cm-md-table-cell-has-ctrl {
-  /* Extend hover zone upward so mouse can reach the controls */
-  padding-top: 24px;
-  margin-top: -24px;
-}
-
+/* Кнопки колонки выезжают в полосу НАД строкой заголовка (`--table-col-gutter`
+ * на `.cm-md-table-wrap`), а не поверх неё: текст заголовка не закрыт, контрол
+ * виден целиком. Панель одна на таблицу и лежит в `.cm-md-table-wrap` — снаружи
+ * `overflow: hidden` таблицы, который раньше срезал её верхнюю половину. По
+ * какой колонке она стоит, решает `left`, который ставит JS на наведение
+ * (`createColCtrl` в tables.ts). */
 .cm-md-table-col-ctrl {
   position: absolute;
-  top: -8px;
-  left: 50%;
-  transform: translateX(-50%);
+  /* Выезжает в padding строки-хоста — он снаружи бокса виджета, поэтому отсчёт
+   * отрицательный. Ничего не режет: клип `.cm-md-table` остался внутри, а до
+   * `.cm-content` полоса принадлежит строке, даже если таблица в самом верху. */
+  top: calc(-1 * var(--table-col-gutter));
   display: flex;
   gap: 3px;
+  padding-bottom: 2px;
   pointer-events: none;
   opacity: 0;
-  transition: opacity 0.15s 0s;
+  transform: translateX(-50%) translateY(3px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
 }
 
-.cm-md-table-cell-has-ctrl:hover > .cm-md-table-col-ctrl {
+.cm-md-table-col-ctrl[data-visible='true'] {
   pointer-events: auto;
   opacity: 1;
-  transition-delay: 0s;
+  transform: translateX(-50%) translateY(0);
 }
 
-/* Keep controls visible briefly when mouse moves between cell and controls */
-.cm-md-table-col-ctrl:hover {
-  pointer-events: auto;
-  opacity: 1;
+/* Ручка колонки — 22px, ровно под высоту полосы (26px ручки строк сюда не
+ * влезают и потребовали бы более толстого отступа над каждой таблицей). */
+.cm-md-table-col-ctrl .cm-md-table-btn-drag {
+  width: 22px;
+  height: 22px;
 }
 
 .cm-md-table-col-ctrl .cm-md-table-btn {
-  opacity: 0.7;
+  opacity: 0.85;
 }
 
 .cm-md-table-col-ctrl .cm-md-table-btn:hover {

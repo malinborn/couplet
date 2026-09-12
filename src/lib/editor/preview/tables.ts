@@ -394,9 +394,11 @@ class TableWidget extends WidgetType {
     const table = document.createElement('span');
     table.className = 'cm-md-table';
 
+    const colCtrl = createColCtrl(view, this.ctx, wrap);
+
     const headerRow = this.ctx.rows.find((r) => r.isHeader);
     if (headerRow) {
-      table.appendChild(buildHeaderRow(headerRow, this.ctx, view));
+      table.appendChild(buildHeaderRow(headerRow, this.ctx, view, colCtrl));
     }
 
     const dataRows = this.ctx.rows.filter((r) => !r.isDelimiter && !r.isHeader);
@@ -406,6 +408,9 @@ class TableWidget extends WidgetType {
     });
 
     wrap.appendChild(table);
+    // Снаружи `.cm-md-table` — её `overflow: hidden` срезал бы верхнюю часть
+    // панели, которая выезжает над строкой заголовка.
+    wrap.appendChild(colCtrl.el);
 
     // "+ add column" — absolutely positioned at right of the header row
     const addCol = mkBtn('+', 'cm-md-table-btn-add cm-md-table-btn-add-col', () =>
@@ -721,7 +726,8 @@ function buildCell(
   colIndex: number,
   isHeader: boolean,
   ctx: TableContext,
-  view: EditorView
+  view: EditorView,
+  colCtrl?: ColCtrl
 ): HTMLElement {
   const cellEl = document.createElement('span');
   cellEl.className = 'cm-md-table-cell';
@@ -747,26 +753,81 @@ function buildCell(
     showCellEditor(view, cellEl, cell);
   });
 
-  if (isHeader) {
-    const ctrl = document.createElement('span');
-    ctrl.className = 'cm-md-table-col-ctrl';
-
-    const colDrag = mkBtn('⠿', 'cm-md-table-btn-drag cm-md-table-btn-drag-col', () => {});
-    colDrag.addEventListener('mousedown', (e) => {
-      startColDrag(e, view, ctx, colIndex, cellEl);
-    });
-    ctrl.appendChild(colDrag);
-
-    if (ctx.colCount > 1) {
-      const del = mkBtn('−', 'cm-md-table-btn-del', () => deleteColumn(view, ctx, colIndex));
-      ctrl.appendChild(del);
-    }
-
-    cellEl.appendChild(ctrl);
+  if (isHeader && colCtrl) {
     cellEl.classList.add('cm-md-table-cell-has-ctrl');
+    // Панель кнопок одна на таблицу и живёт снаружи неё — сюда она только
+    // переезжает по наведению. См. `createColCtrl`.
+    cellEl.addEventListener('mouseenter', () => colCtrl.attach(cellEl, colIndex));
   }
 
   return cellEl;
+}
+
+/**
+ * Панель кнопок колонки — одна на таблицу, лежит в `.cm-md-table-wrap`.
+ *
+ * Почему не по кнопке в каждой ячейке заголовка, как было: у `.cm-md-table`
+ * стоит `overflow: hidden` (им скругляются её углы), и он срезает всё, что
+ * выезжает выше верхней грани таблицы — именно это и резало кнопки пополам.
+ * Перенести скругление на строки нельзя, `border-radius` на `display:
+ * table-row` Chrome игнорирует. Значит, панель обязана быть снаружи бокса с
+ * клипом; выравнивание по колонке при этом уже нечем задать в CSS, поэтому
+ * `left` ставится из JS.
+ *
+ * Чтение геометрии происходит ровно один раз на наведение на колонку — не на
+ * кадр и не на нажатие клавиши.
+ */
+interface ColCtrl {
+  el: HTMLElement;
+  attach(cellEl: HTMLElement, colIndex: number): void;
+  scheduleHide(): void;
+}
+
+function createColCtrl(view: EditorView, ctx: TableContext, wrap: HTMLElement): ColCtrl {
+  const el = document.createElement('span');
+  el.className = 'cm-md-table-col-ctrl';
+
+  let target: { cellEl: HTMLElement; colIndex: number } | null = null;
+  let hideTimer: number | undefined;
+
+  const drag = mkBtn('⠿', 'cm-md-table-btn-drag cm-md-table-btn-drag-col', () => {});
+  drag.addEventListener('mousedown', (e) => {
+    if (target) startColDrag(e, view, ctx, target.colIndex, target.cellEl);
+  });
+  el.appendChild(drag);
+
+  if (ctx.colCount > 1) {
+    el.appendChild(
+      mkBtn('−', 'cm-md-table-btn-del', () => {
+        if (target) deleteColumn(view, ctx, target.colIndex);
+      })
+    );
+  }
+
+  const attach = (cellEl: HTMLElement, colIndex: number): void => {
+    window.clearTimeout(hideTimer);
+    target = { cellEl, colIndex };
+    const cellRect = cellEl.getBoundingClientRect();
+    const wrapRect = wrap.getBoundingClientRect();
+    el.style.left = `${cellRect.left - wrapRect.left + cellRect.width / 2}px`;
+    el.dataset.visible = 'true';
+  };
+
+  const scheduleHide = (): void => {
+    window.clearTimeout(hideTimer);
+    // Задержка нужна, чтобы мышь успела перейти из ячейки в саму панель:
+    // между ними 2px зазора, и без неё панель гасла бы на полпути к кнопке.
+    hideTimer = window.setTimeout(() => {
+      if (drag.matches(':active') || el.matches(':hover')) return;
+      el.dataset.visible = 'false';
+      target = null;
+    }, 120);
+  };
+
+  el.addEventListener('mouseenter', () => window.clearTimeout(hideTimer));
+  el.addEventListener('mouseleave', scheduleHide);
+
+  return { el, attach, scheduleHide };
 }
 
 function buildHeaderCtrlCell(view: EditorView, ctx: TableContext): HTMLElement {
@@ -811,7 +872,8 @@ function buildDataCtrlCell(
 function buildHeaderRow(
   row: RowData,
   ctx: TableContext,
-  view: EditorView
+  view: EditorView,
+  colCtrl: ColCtrl
 ): HTMLElement {
   const tr = document.createElement('span');
   tr.className = 'cm-md-table-row cm-md-table-row-header';
@@ -819,8 +881,10 @@ function buildHeaderRow(
   tr.appendChild(buildHeaderCtrlCell(view, ctx));
 
   row.cells.forEach((cell, i) => {
-    tr.appendChild(buildCell(cell, i, true, ctx, view));
+    tr.appendChild(buildCell(cell, i, true, ctx, view, colCtrl));
   });
+
+  tr.addEventListener('mouseleave', colCtrl.scheduleHide);
 
   return tr;
 }

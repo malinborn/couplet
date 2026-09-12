@@ -188,13 +188,42 @@ widget's `eq()` compares every cell `from`.
 ### Hover Controls (±)
 
 - **Toggle wrap/full (⇔)**: inline button in the header row's leading ctrl-cell
-- **Add row (+)**: inline button at the right of the table, plus floating "+" below
-- **Add column (+)**: `position: absolute` button at the right edge of the header row
+- **Add row (+)** and **add column (+)**: `position: absolute` against
+  `.cm-md-table-wrap`, in the `--table-side-gutter` strip right of the table
 - **Delete row (−)**: inline button in each data row's ctrl-cell (left of the drag handle, if >1 data rows)
-- **Delete column (−)**: positioned next to each header cell's drag handle inside `.cm-md-table-col-ctrl`
+- **Column drag (⠿) + delete column (−)**: one shared `.cm-md-table-col-ctrl`
+  panel per table, in the `--table-col-gutter` strip *above* the header row
 
 All buttons use `opacity: 0` → `opacity: 0.5` on parent hover → `opacity: 1` on button hover.
 Buttons use `mousedown` (not `click`) to fire before CM6 processes the event.
+
+#### Why the column panel is one element, positioned from JS (#48)
+
+`.cm-md-table` carries `border-radius` + `overflow: hidden` to clip its corner
+cells, and that clip is what used to cut the column buttons in half: they sat
+inside a header cell at `top: -8px`, i.e. above the table's own top edge. Three
+things are load-bearing in the fix and each one has a dead end behind it:
+
+- **The panel lives in `.cm-md-table-wrap`, not in the cell.** An element only
+  escapes an `overflow: hidden` ancestor if its containing block is *outside*
+  that ancestor. Moving the radius onto the rows instead would have kept the
+  panel in the cell — but **`border-radius` on `display: table-row` does
+  nothing in Chrome** (measured at 20px: corners stay square), so the clip has
+  to stay on the table.
+- **Column alignment is therefore JS.** `createColCtrl`'s `attach` reads the hovered
+  header cell's rect once per `mouseenter` and writes `left`. Nothing is read
+  per frame or per keystroke.
+- **The gutter is `padding-top` on `.cm-line.cm-md-table-header`, not on the
+  widget.** Padding on the wrap also reserves the space, but the wrap *is* the
+  widget's box and `drawSelection` draws the selection rectangle from that box
+  — a grey `--color-selection` bar then appears above the table whenever the
+  table is selected (e.g. right after a double-click). On the line the padding
+  is ordinary `.cm-line` CSS, the way headings already do it, and CM6 counts it
+  in the height map.
+
+The reserved strip is why a table at the very top of the document works: there
+is nothing to overflow into up there, so the widget owns the space instead of
+borrowing it.
 
 ### Visual Styles Live on Row and Wrap Elements, Not `.cm-line`
 
