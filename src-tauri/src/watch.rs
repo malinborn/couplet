@@ -87,13 +87,22 @@ pub fn run(root: &Path) -> i32 {
     loop {
         match rx.recv_timeout(Duration::from_secs(60)) {
             Ok(Ok(event)) => {
-                // The atomic write in comments.rs is a write to `.tmp` followed
-                // by a `rename` onto the final name. An event on the `.tmp`
-                // path carries no finished content and arrives before the
-                // rename, while the event for the final path arrives after it —
-                // so filtering on the final path via `is_sidecar` is what makes
-                // this correct. No `.tmp` path passes that check: its name is
-                // not of the `.mdmini_comments_*` shape.
+                // The atomic write in comments.rs is a write to a temp followed
+                // by a `rename` onto the final name. An event on the temp path
+                // carries no finished content and arrives before the rename,
+                // while the event for the final path arrives after it — so
+                // filtering on the final path via `is_sidecar` is what makes
+                // this correct. No temp path passes that check: its name is not
+                // of the `.mdmini_comments_*` shape.
+                //
+                // That last sentence only became true in #54. The old temp name
+                // was `path.with_extension("tmp")`, i.e.
+                // `.mdmini_comments_spec.tmp` — which still starts with
+                // `.mdmini_comments_`, so `is_sidecar` said yes and this filter
+                // let a half-written file through. `atomic_write::temp_path_for`
+                // now prepends a further dot, and
+                // `the_sidecar_temp_is_not_itself_mistaken_for_a_sidecar` holds
+                // it there.
                 let touched_sidecar = event.paths.iter().any(|p| crate::comments::is_sidecar(p));
                 if touched_sidecar {
                     // Small delay: on some filesystems a rename is split into

@@ -8,6 +8,7 @@
 compile_error!("mcp-bridge must never be enabled in a release build");
 
 pub mod ai_socket;
+pub mod atomic_write;
 pub mod comment_pause;
 pub mod comments;
 mod commands;

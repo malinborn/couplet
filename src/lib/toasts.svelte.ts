@@ -16,6 +16,21 @@ export type ToastPayload =
    * its own gives no one anything to act on.
    */
   | { kind: 'save-error'; fileName: string; message: string }
+  /**
+   * A comment sidecar write did not reach the disk (#54). Separate from
+   * `save-error` for two reasons that both bite: the document's toast tells the
+   * user to press ⌘S, which saves the document and does nothing for a comment,
+   * and a successful document save calls `dismissKind('save-error')` — which
+   * would wipe a standing comment failure the moment an unrelated autosave
+   * landed.
+   *
+   * It earns a toast at all because the sidecar is the one file with no second
+   * copy anywhere. The document has a dirty flag that reschedules the write and
+   * a recovery snapshot every five seconds; a comment box has neither, and
+   * since #23/#36 it holds the reply a human is still typing. Before this,
+   * every failed sidecar write reached `console.error` and nothing else.
+   */
+  | { kind: 'comment-error'; fileName: string; message: string }
   | { kind: 'update'; latest: string; current: string; highlight?: string }
   | { kind: 'session'; count: number }
   /** Startup nudge for someone who has never connected an agent. */
@@ -56,6 +71,10 @@ const ORDER: Record<ToastKind, number> = {
   // Top of the stack, above everything: it is the only notice that means work
   // is being lost right now, and it stays up until the next save succeeds.
   'save-error': 0,
+  // Same rank as the document's: both mean work is being lost right now. They
+  // can legitimately coexist — a volume that has gone read-only fails the
+  // document and the sidecar alike — and then the two sort together at the top.
+  'comment-error': 0,
   update: 1,
   session: 2,
   // Both AI notices sort last: neither is time-sensitive the way an update or a

@@ -50,7 +50,11 @@
 {#if store.toasts.length > 0}
   <div class="md-toast-stack">
     {#each store.toasts as toast (toast.id)}
-      <div class="md-toast" class:md-toast-alarm={toast.payload.kind === 'save-error'}>
+      <div
+        class="md-toast"
+        class:md-toast-alarm={toast.payload.kind === 'save-error' ||
+          toast.payload.kind === 'comment-error'}
+      >
         {#if toast.payload.kind === 'save-error'}
           <!-- Names the file and quotes the OS, because the two questions this
                toast has to answer are "which document" and "why" — and the
@@ -62,6 +66,17 @@
           </span>
           <span class="md-toast-highlight">{toast.payload.message}</span>
           <span class="md-toast-dim">Your edits are still here — fix the cause, then press <kbd>⌘S</kbd></span>
+        {:else if toast.payload.kind === 'comment-error'}
+          <!-- Deliberately not the document's wording: ⌘S would save the
+               document and leave the comment exactly where it is. The text the
+               user typed is still in the box, and the next keystroke retries
+               the write, so the instruction is to fix the cause and keep
+               typing. The message quotes the OS and names the sidecar. -->
+          <span class="md-toast-text">
+            <strong>Could not save comments on {toast.payload.fileName}</strong>
+          </span>
+          <span class="md-toast-highlight">{toast.payload.message}</span>
+          <span class="md-toast-dim">What you typed is still in the box — fix the cause, then keep typing</span>
         {:else if toast.payload.kind === 'update'}
           <span class="md-toast-text">
             <strong>mdmini {toast.payload.latest}</strong> available

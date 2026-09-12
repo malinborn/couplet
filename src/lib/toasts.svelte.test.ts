@@ -122,6 +122,52 @@ describe('createToastStore', () => {
     expect(store.toasts).toEqual([]);
   });
 
+  it('CommentError_RepeatedFailures_DoNotStack', () => {
+    // A comment box autosaves on a timer and a pause commits on another, so a
+    // sidecar the filesystem keeps refusing produces a steady stream of
+    // failures. One card, carrying the newest reason.
+    const store = createToastStore();
+    store.push({ kind: 'comment-error', fileName: 'spec.md', message: 'Permission denied' });
+    store.push({ kind: 'comment-error', fileName: 'spec.md', message: 'No space left on device' });
+    expect(store.toasts).toHaveLength(1);
+    const payload = store.toasts[0].payload;
+    expect(payload.kind === 'comment-error' && payload.message).toBe('No space left on device');
+  });
+
+  it('CommentError_SurvivesASuccessfulDocumentSave', () => {
+    // The reason it is not a `save-error`. `performSave` dismisses that kind on
+    // every successful document save, and comment writes and document writes
+    // fail independently — a sidecar carrying `everyone deny delete` refuses
+    // every write while the document beside it saves fine. Sharing the kind
+    // would clear the comment warning on the next autosave tick.
+    const store = createToastStore();
+    store.push({ kind: 'comment-error', fileName: 'spec.md', message: 'Permission denied' });
+    store.dismissKind('save-error');
+    expect(store.toasts).toHaveLength(1);
+    expect(store.toasts[0].payload.kind).toBe('comment-error');
+  });
+
+  it('CommentError_WithdrawnWhenACommentWriteFinallyLands', () => {
+    // `markCommentSaved` dismisses it: a stale "could not save" is as
+    // misleading as no warning at all.
+    const store = createToastStore();
+    store.push({ kind: 'comment-error', fileName: 'spec.md', message: 'Permission denied' });
+    store.dismissKind('comment-error');
+    expect(store.toasts).toEqual([]);
+  });
+
+  it('CommentErrorAndSaveErrorCoexistAtTheTop', () => {
+    // A volume that goes read-only fails both. Neither may hide the other, and
+    // neither may be pushed below an update notice.
+    const store = createToastStore();
+    store.push({ kind: 'update', latest: 'v1.0.0', current: '0.9.0' });
+    store.push({ kind: 'comment-error', fileName: 'spec.md', message: 'Read-only file system' });
+    store.push({ kind: 'save-error', fileName: 'spec.md', message: 'Read-only file system' });
+    const kinds = store.toasts.map((t) => t.payload.kind);
+    expect(kinds.slice(0, 2).sort()).toEqual(['comment-error', 'save-error']);
+    expect(kinds[2]).toBe('update');
+  });
+
   it('OnlyOneToastPerKind', () => {
     // The update checker runs hourly and must not stack duplicates.
     const store = createToastStore();

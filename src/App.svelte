@@ -543,8 +543,12 @@
     const written = (await writeComment(id)) ?? id;
     try {
       await commentCommit(entry.path, written);
+      toasts.dismissKind('comment-error');
     } catch (err) {
-      console.error('Comment commit failed:', err);
+      // The thread stays paused: the write that would have handed it to the
+      // agent did not happen, and pretending otherwise would leave the user
+      // waiting for a reply to a question no agent can see.
+      reportCommentError(entry.path, err);
       return;
     }
     await reloadComments();
@@ -615,7 +619,34 @@
    * exactly what made people think nothing had been saved — so it is written
    * into the card rather than left to be inferred.
    */
+  /**
+   * Surface a sidecar write that did not reach the disk (#54).
+   *
+   * Until now every one of these reached `console.error` and stopped there. The
+   * document can afford that for a moment — `isDirty` stays true, the next
+   * keystroke reschedules the save, and `recovery.rs` has a snapshot from at
+   * most five seconds ago. A comment box has none of those: nothing snapshots
+   * it, and since #23/#36 it holds a reply the human has not sent. A sidecar
+   * whose ACL or volume refuses the write is a conversation that silently stops
+   * being recorded while the user keeps typing into it.
+   *
+   * `fileName` is the *document*'s, not the sidecar's, because that is the file
+   * the user knows they are working in; the sidecar's own path is already in
+   * the message the backend returns.
+   */
+  function reportCommentError(path: string, err: unknown): void {
+    console.error('Comment write failed:', err);
+    toasts.push({
+      kind: 'comment-error',
+      fileName: path.split('/').pop() ?? path,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   function markCommentSaved(id: string): void {
+    // A write that lands ends the failure, whether or not the card is still on
+    // screen to show a label — so this runs before the early return below.
+    toasts.dismissKind('comment-error');
     const view = editorHandle?.view;
     const card = view?.dom.querySelector(`[data-comment-thread="${CSS.escape(id)}"]`);
     const label = card?.querySelector('.cm-ai-comment-saved');
@@ -684,7 +715,7 @@
         // Put the draft back, or the card would keep collecting text that has
         // nowhere to go.
         commentDrafts.set(id, draft);
-        console.error('Comment create failed:', err);
+        reportCommentError(entry.path, err);
         return null;
       }
     }
@@ -701,7 +732,11 @@
       markCommentSaved(id);
       return id;
     } catch (err) {
-      console.error('Comment save failed:', err);
+      // `entry.saved` is deliberately left alone, so the next keystroke tries
+      // again — the same reasoning as `isDirty` staying true on a failed
+      // document save. The toast is what covers the case where there is no next
+      // keystroke because the user has finished typing.
+      reportCommentError(entry.path, err);
       return null;
     }
   }
@@ -853,7 +888,14 @@
         void reloadComments();
         return;
       }
-      void commentResolve(path, id).then(reloadComments);
+      // Resolving is a sidecar write like any other, and it had no failure
+      // path at all: a refused write left the thread open on disk while the
+      // card disappeared from the screen, so it came back on the next reload
+      // with no explanation. `reloadComments` still runs, which is what puts
+      // the card back — now with a toast saying why.
+      void commentResolve(path, id)
+        .catch((err) => reportCommentError(path, err))
+        .then(reloadComments);
     },
     handoff: (id) => {
       const path = fileState.filePath;
