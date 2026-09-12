@@ -32,7 +32,7 @@
   import { liveRenderExtensions } from './lib/editor/live-render';
   import { envPreviewPlugin } from './lib/editor/preview/env';
   import { shellSecretsPlugin } from './lib/editor/preview/shell-secrets';
-  import { isShellConfig } from './lib/editor/file-language';
+  import { MARKDOWN_EXTENSIONS, isShellConfig } from './lib/editor/file-language';
   import { reinitializeTheme } from './lib/editor/preview/mermaid';
   import { computeReplacement } from './lib/editor/content-diff';
   import { resolveShowTarget, changedLineRanges } from './lib/ai-commands';
@@ -241,8 +241,6 @@
     });
   }
 
-  const MD_EXTENSIONS = new Set(['md', 'markdown', 'txt', '']);
-
   async function handleOpenFilePath(path: string): Promise<void> {
     try {
       const exists = await fileExists(path);
@@ -273,7 +271,7 @@
       if (isEnvFile) {
         editorHandle?.setEnvMode(true);
         activePreview = 'env';
-      } else if (!MD_EXTENSIONS.has(ext)) {
+      } else if (!MARKDOWN_EXTENSIONS.has(ext)) {
         editorHandle?.setEnvMode(false);
         editorHandle?.setCodeMode(ext, basename);
         activePreview = isShellConfig(basename) ? 'shell' : 'code';
@@ -1142,6 +1140,18 @@
     void editorHandle?.view;
     void activePreview;
     applyPreviewConfig();
+  });
+
+  // Keep the editor's idea of which file it holds in step with the store.
+  //
+  // An effect rather than a call inside `handleOpen`, because the path also
+  // changes on Save As and on New, and the JSON formatter's fence decision has
+  // to be right immediately in all three — a stale path here means a ```
+  // line offered into a `.py` buffer.
+  $effect(() => {
+    const path = fileState.filePath;
+    void editorHandle?.view;
+    editorHandle?.setDocumentPath(path ?? null);
   });
 </script>
 

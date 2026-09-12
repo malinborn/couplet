@@ -7,6 +7,7 @@ import { ensureSyntaxTree } from '@codemirror/language';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
 import { Strikethrough, Table } from '@lezer/markdown';
+import { documentPathField, setDocumentPath } from './json-fence';
 import {
   jsonOfferField,
   jsonPasteNotifier,
@@ -25,8 +26,8 @@ const EXPANDED = '{\n  "a": 1,\n  "b": [\n    2,\n    3\n  ]\n}';
 const FENCED = '```json\n' + EXPANDED + '\n```';
 
 /**
- * The editor's real configuration: markdown is the language, so the fence
- * decision is live. Every expectation below is what the user actually gets.
+ * The editor's real configuration: the markdown language plus a file path, so
+ * the fence decision is live. Every expectation below is what the user gets.
  */
 const markdownExtension = (): Extension =>
   markdown({ base: markdownLanguage, codeLanguages: languages, extensions: [Strikethrough, Table] });
@@ -34,19 +35,21 @@ const markdownExtension = (): Extension =>
 function makeView(
   doc: string,
   callbacks?: { onOffer: () => void; onWithdraw: () => void },
-  language: Extension = markdownExtension()
+  path: string | null = '/Users/me/notes.md'
 ): EditorView {
   const view = new EditorView({
     state: EditorState.create({
       doc,
       extensions: [
-        language,
+        markdownExtension(),
         history(),
         jsonOfferField,
+        documentPathField,
         ...(callbacks ? [jsonPasteNotifier(callbacks)] : []),
       ],
     }),
   });
+  view.dispatch({ effects: setDocumentPath.of(path) });
   // The fence decision reads the syntax tree; in a headless view nothing has
   // asked for a parse yet, so ask explicitly rather than measure a half-tree.
   ensureSyntaxTree(view.state, view.state.doc.length, 5000);
@@ -54,13 +57,17 @@ function makeView(
 }
 
 /**
- * A view with no language at all — md-mini's env mode, and the branch a
- * `.json` file opened in code-file mode takes too (there the language is JSON;
- * either way markdown is not active, which is the only thing the fence
- * decision asks).
+ * A view onto a `.json` file. Note the markdown language is still installed —
+ * that is deliberately the harder case, since the fence decision must come
+ * from the file type and not from whatever language happens to be active.
  */
 function makeCodeView(doc: string, callbacks?: { onOffer: () => void; onWithdraw: () => void }) {
-  return makeView(doc, callbacks, []);
+  return makeView(doc, callbacks, '/Users/me/data.json');
+}
+
+/** A view onto a Python file — a buffer a ``` line would corrupt. */
+function makePythonView(doc: string) {
+  return makeView(doc, undefined, '/Users/me/script.py');
 }
 
 /** Re-parse after an edit, for assertions that depend on the tree. */
@@ -137,7 +144,7 @@ describe('applyJsonOffer', () => {
     view.destroy();
   });
 
-  it('expands WITHOUT a fence when the document is not markdown', () => {
+  it('expands WITHOUT a fence in a .json file', () => {
     const view = makeCodeView(MINIFIED);
     view.dispatch({ effects: setJsonOffer.of({ from: 0, to: MINIFIED.length }) });
 
@@ -233,10 +240,27 @@ describe('formatJsonCommand — the hotkey and menu path', () => {
     view.destroy();
   });
 
-  it('formats the whole document with no fence in code-file mode', () => {
+  it('formats the whole document with no fence in a .json file', () => {
     const view = makeCodeView(MINIFIED);
     expect(formatJsonCommand(view)).toBe(true);
     expect(view.state.doc.toString()).toBe(EXPANDED);
+    view.destroy();
+  });
+
+  it('writes no backtick into a .py file, and still undoes in one step', () => {
+    // The corruption case: three backticks in Python source is a syntax error.
+    const source = 'payload = ' + MINIFIED + '\nprint(payload)\n';
+    const view = makePythonView(source);
+    view.dispatch({
+      selection: { anchor: source.indexOf('{'), head: source.indexOf('}') + 1 },
+    });
+
+    expect(formatJsonCommand(view)).toBe(true);
+    expect(view.state.doc.toString()).not.toContain('`');
+    expect(view.state.doc.toString()).toBe('payload = ' + EXPANDED + '\nprint(payload)\n');
+
+    undo(view);
+    expect(view.state.doc.toString()).toBe(source);
     view.destroy();
   });
 
@@ -269,8 +293,14 @@ describe('formatJsonCommand — the hotkey and menu path', () => {
     view.destroy();
   });
 
-  it('is a no-op on already-expanded JSON in code-file mode', () => {
+  it('is a no-op on already-expanded JSON in a .json file', () => {
     const view = makeCodeView(EXPANDED);
+    expect(formatJsonCommand(view)).toBe(false);
+    view.destroy();
+  });
+
+  it('is a no-op on already-expanded JSON in a .py file', () => {
+    const view = makePythonView(EXPANDED);
     expect(formatJsonCommand(view)).toBe(false);
     view.destroy();
   });
@@ -378,7 +408,7 @@ describe('jsonPasteNotifier', () => {
     view.destroy();
   });
 
-  it('stays silent on a paste of already-expanded JSON in code-file mode', async () => {
+  it('stays silent on a paste of already-expanded JSON in a .json file', async () => {
     const onOffer = vi.fn();
     const view = makeCodeView('', { onOffer, onWithdraw: vi.fn() });
 
