@@ -68,6 +68,79 @@ function push(spans: RawSpan[], from: number, to: number, tieEdge: 'from' | 'to'
   if (to > from) spans.push({ from, to, tieEdge });
 }
 
+/** The inline constructs whose two hidden markers have to live and die together. */
+export type PairKind = 'strong' | 'emphasis' | 'strikethrough' | 'inlineCode' | 'link';
+
+/**
+ * One inline span whose markers are hidden, described as three adjacent
+ * regions: the opening marker, the content, and the closing marker. This is
+ * what `markup-repair.ts` and `markup-delete.ts` reason about.
+ *
+ * It is deliberately produced by the *same* traversal that produces the hidden
+ * spans (`collectMarkupModel`). A separate walk would be a third thing to keep
+ * in step with `preview/plugin.ts`, and this seam is silent in both directions —
+ * see the note on `hiddenMarkRanges` and `CLAUDE.md`.
+ *
+ * `closeText` is not always the mirror of `openText`: a link's closing region
+ * is the whole `](url)`, exactly as `decorateLink` hides it, which is also what
+ * makes re-inserting it a faithful repair rather than a guess.
+ */
+export interface MarkupPair {
+  kind: PairKind;
+  openFrom: number;
+  openTo: number;
+  contentFrom: number;
+  contentTo: number;
+  closeFrom: number;
+  closeTo: number;
+  openText: string;
+  closeText: string;
+}
+
+function pushPair(
+  pairs: MarkupPair[],
+  doc: Text,
+  kind: PairKind,
+  openFrom: number,
+  openTo: number,
+  closeFrom: number,
+  closeTo: number
+): void {
+  // A malformed node (a missing or overlapping mark) yields no pair rather
+  // than a pair the repair layer would then "fix" into nonsense.
+  if (!(openFrom < openTo && openTo <= closeFrom && closeFrom < closeTo)) return;
+  pairs.push({
+    kind,
+    openFrom,
+    openTo,
+    contentFrom: openTo,
+    contentTo: closeFrom,
+    closeFrom,
+    closeTo,
+    openText: doc.sliceString(openFrom, openTo),
+    closeText: doc.sliceString(closeFrom, closeTo),
+  });
+}
+
+/**
+ * Collect the open/close pair for a node whose markers are plain mirrored
+ * runs of the same character (everything except `Link`).
+ */
+function pushSymmetricPair(
+  pairs: MarkupPair[],
+  doc: Text,
+  kind: PairKind,
+  node: SyntaxNode,
+  markName: string
+): void {
+  const marks = node.getChildren(markName);
+  const open = marks[0];
+  const close = marks[marks.length - 1];
+  if (!open || !close || open === close) return;
+  if (open.from !== node.from || close.to !== node.to) return;
+  pushPair(pairs, doc, kind, open.from, open.to, close.from, close.to);
+}
+
 /**
  * Mirrors `lists.ts`'s checkbox detection exactly — same 5-char window,
  * same regex, same case-sensitivity (lowercase `x` only; `[X]` does NOT
@@ -123,9 +196,10 @@ function isChecklistLookalikeLink(doc: Text, link: SyntaxNode): boolean {
  * Atomic ranges must agree with that, or the caret would be blocked from
  * entering text that is, in fact, rendered as plain visible characters.
  */
-function collectHiddenSpans(state: EditorState): RawSpan[] {
+function collectMarkupModel(state: EditorState): { spans: RawSpan[]; pairs: MarkupPair[] } {
   const doc = state.doc;
   const spans: RawSpan[] = [];
+  const pairs: MarkupPair[] = [];
 
   syntaxTree(state).iterate({
     enter(node) {
@@ -154,6 +228,13 @@ function collectHiddenSpans(state: EditorState): RawSpan[] {
           for (const mark of node.node.getChildren('EmphasisMark')) {
             push(spans, mark.from, mark.to, mark.from === node.from ? 'from' : 'to');
           }
+          pushSymmetricPair(
+            pairs,
+            doc,
+            node.name === 'StrongEmphasis' ? 'strong' : 'emphasis',
+            node.node,
+            'EmphasisMark'
+          );
           break; // descend — plugin.ts does too, so the inner markers of a
           // nested span like ***both*** are hidden and must be atomic as well.
           // Getting this wrong in either direction is the bug to avoid: the
@@ -163,12 +244,14 @@ function collectHiddenSpans(state: EditorState): RawSpan[] {
           for (const mark of node.node.getChildren('StrikethroughMark')) {
             push(spans, mark.from, mark.to, mark.from === node.from ? 'from' : 'to');
           }
+          pushSymmetricPair(pairs, doc, 'strikethrough', node.node, 'StrikethroughMark');
           break; // descend, same reason
         }
         case 'InlineCode': {
           for (const mark of node.node.getChildren('CodeMark')) {
             push(spans, mark.from, mark.to, mark.from === node.from ? 'from' : 'to');
           }
+          pushSymmetricPair(pairs, doc, 'inlineCode', node.node, 'CodeMark');
           return false;
         }
         case 'Link': {
@@ -191,6 +274,12 @@ function collectHiddenSpans(state: EditorState): RawSpan[] {
               : linkMarks.find((m) => m.from > node.from);
             if (openMark) push(spans, openMark.from, openMark.to, 'from');
             if (closeBracket) push(spans, closeBracket.from, node.to, 'to');
+            // The pair mirrors those two spans exactly, so the repair layer
+            // re-inserts `](url)` whole — the URL rides along with the closing
+            // marker, which is the only way a repaired link stays a link.
+            if (openMark && closeBracket) {
+              pushPair(pairs, doc, 'link', openMark.from, openMark.to, closeBracket.from, node.to);
+            }
           }
           return false;
         }
@@ -245,7 +334,7 @@ function collectHiddenSpans(state: EditorState): RawSpan[] {
     },
   });
 
-  return spans;
+  return { spans, pairs };
 }
 
 /**
@@ -256,12 +345,25 @@ function collectHiddenSpans(state: EditorState): RawSpan[] {
  * of view, per `preview/plugin.ts:27`'s existing full-tree precedent.
  */
 export function hiddenMarkRanges(state: EditorState): RangeSet<HiddenMarkSpan> {
-  const spans = collectHiddenSpans(state).sort((a, b) => a.from - b.from || a.to - b.to);
+  const spans = collectMarkupModel(state).spans.sort((a, b) => a.from - b.from || a.to - b.to);
   const builder = new RangeSetBuilder<HiddenMarkSpan>();
   for (const span of spans) {
     builder.add(span.from, span.to, new HiddenMarkSpan(span.tieEdge));
   }
   return builder.finish();
+}
+
+/**
+ * Every inline span in the document whose markers are hidden, innermost last
+ * (document order by opening marker). The repair and delete layers consult
+ * this instead of resolving nodes at a point, for the same reason
+ * `caretNormalizeFilter` consults the hidden `RangeSet`: a link hides one span
+ * wider than any `LinkMark`, so a position-to-node lookup cannot see it.
+ */
+export function markupPairs(state: EditorState): MarkupPair[] {
+  return collectMarkupModel(state).pairs.sort(
+    (a, b) => a.openFrom - b.openFrom || b.closeTo - a.closeTo
+  );
 }
 
 /**
@@ -279,12 +381,33 @@ export function hiddenMarkRanges(state: EditorState): RangeSet<HiddenMarkSpan> {
  * re-entrantly) — verified against the installed `@codemirror/state`
  * before relying on it; see the report.
  */
-const hiddenRangesField = StateField.define<RangeSet<HiddenMarkSpan>>({
-  create: hiddenMarkRanges,
+export interface MarkupModel {
+  hidden: RangeSet<HiddenMarkSpan>;
+  pairs: MarkupPair[];
+}
+
+function buildMarkupModel(state: EditorState): MarkupModel {
+  const { spans, pairs } = collectMarkupModel(state);
+  spans.sort((a, b) => a.from - b.from || a.to - b.to);
+  pairs.sort((a, b) => a.openFrom - b.openFrom || b.closeTo - a.closeTo);
+  const builder = new RangeSetBuilder<HiddenMarkSpan>();
+  for (const span of spans) builder.add(span.from, span.to, new HiddenMarkSpan(span.tieEdge));
+  return { hidden: builder.finish(), pairs };
+}
+
+/**
+ * The hidden ranges and the marker pairs, from one tree walk, cached on tree
+ * identity. Both consumers are on hot paths — `atomicRanges`' provider runs on
+ * every caret-motion query, and the repair filter runs on every transaction —
+ * so walking the tree per query would be O(document) per keypress.
+ */
+export const markupModelField = StateField.define<MarkupModel>({
+  create: buildMarkupModel,
   update(value, tr) {
-    return syntaxTree(tr.startState) === syntaxTree(tr.state) ? value : hiddenMarkRanges(tr.state);
+    return syntaxTree(tr.startState) === syntaxTree(tr.state) ? value : buildMarkupModel(tr.state);
   },
 });
+
 
 /**
  * Covers caret motion, mouse selection, and `deleteBy`'s atomic-skip — see
@@ -296,7 +419,7 @@ const hiddenRangesField = StateField.define<RangeSet<HiddenMarkSpan>>({
  * distinction `caretNormalizeFilter` cares about.
  */
 export const liveRenderAtomicRanges = EditorView.atomicRanges.of((view) =>
-  view.state.field(hiddenRangesField)
+  view.state.field(markupModelField).hidden
 );
 
 /** The nearer edge of `[from, to)` to `pos`, breaking an exact tie via `tieEdge`. */
@@ -342,7 +465,7 @@ export const caretNormalizeFilter = EditorState.transactionFilter.of((tr) => {
   // full state computation) is unavoidable: we need the syntax tree of
   // the transaction's *resulting* document, per the plan. Gating on an
   // explicit `tr.selection` keeps this off the hot path of ordinary typing.
-  const hidden = tr.state.field(hiddenRangesField);
+  const hidden = tr.state.field(markupModelField).hidden;
 
   let changed = false;
   const ranges = tr.selection.ranges.map((range) => {
@@ -380,4 +503,16 @@ export const caretNormalizeFilter = EditorState.transactionFilter.of((tr) => {
 });
 
 /** Extension bundle — drop into `previewCompartment` for the live-render flavour. */
-export const liveRenderAtomic: Extension[] = [hiddenRangesField, liveRenderAtomicRanges, caretNormalizeFilter];
+/**
+ * Extension bundle — drop into `previewCompartment` for the live-render flavour.
+ *
+ * `markup-repair.ts`'s filter belongs immediately after this array and is added
+ * by `index.ts` rather than here, so that `atomic.ts` stays free of a cycle
+ * (the repair layer reads `markupModelField` from this module). The order is
+ * load-bearing and documented at the call site.
+ */
+export const liveRenderAtomic: Extension[] = [
+  markupModelField,
+  liveRenderAtomicRanges,
+  caretNormalizeFilter,
+];

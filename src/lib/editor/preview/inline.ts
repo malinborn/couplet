@@ -4,6 +4,16 @@ import type { RangeSetBuilder } from '@codemirror/state';
 import type { SyntaxNode } from '@lezer/common';
 import { shouldReveal } from './flavour';
 import { isRenderedLink } from './link-refs';
+import { isMacPlatform } from '../hotkey-label';
+
+/** Tooltip on every rendered link — computed once, it cannot change at runtime. */
+let openHint: string | null = null;
+function linkOpenHint(): string {
+  if (openHint === null) {
+    openHint = isMacPlatform() ? '⌘-click to open link' : 'Ctrl+click to open link';
+  }
+  return openHint;
+}
 import type { DecoSink } from './utils';
 
 /**
@@ -129,8 +139,15 @@ export function decorateLink(
     builder.add(openMark.from, openMark.to, Decoration.replace({}));
   }
 
-  // 2. Mark the full node range for link styling
-  builder.add(node.from, node.to, Decoration.mark({ class: 'cm-md-link' }));
+  // 2. Mark the full node range for link styling. The `title` is the only
+  // place the app ever says how to open a link: since #32 a plain click puts
+  // the caret in the text and ⌘/Ctrl-click opens the URL (`../setup.ts`), and a
+  // gesture nobody can discover is the same as no gesture.
+  builder.add(
+    node.from,
+    node.to,
+    Decoration.mark({ class: 'cm-md-link', attributes: { title: linkOpenHint() } })
+  );
 
   // 3. Single replace for everything from ] to end of node: ](url)
   if (closeBracket) {

@@ -1,6 +1,8 @@
 import type { Extension } from '@codemirror/state';
 import { liveRenderAtomic } from './atomic';
 import { blockFormatKeymap } from './block-format';
+import { markupRepairFilter } from './markup-repair';
+import { markupDeleteKeymap } from './markup-delete';
 import { headingSpaceInput } from './heading-input';
 import { inlineContinuation } from './inline-continuation';
 import { selectionToolbar } from './selection-toolbar';
@@ -34,7 +36,17 @@ export function liveRenderExtensions(options?: {
 }): Extension[] {
   return [
     ...liveRenderAtomic,
+    // Registered *after* `caretNormalizeFilter` (the last entry of
+    // `liveRenderAtomic`) because CM6 applies transaction filters in reverse
+    // facet order: the last one registered is the first one to run. So the edit
+    // is repaired into well-formed markdown, and only then is the caret of the
+    // repaired transaction normalised. The other order would normalise a caret
+    // against a document that is about to change under it.
+    markupRepairFilter,
     blockFormatKeymap,
+    // `Prec.highest`, and after `blockFormatKeymap` so that stripping a block's
+    // formatting at its start still wins — see `markupDeleteKeymap`.
+    markupDeleteKeymap,
     // Arrow-key exit from a fenced code block. Only here, never in
     // live-preview, where the fence lines are visible under the caret and must
     // stay reachable — see the comment on `codeBlockArrowExit`. The Enter exit
@@ -47,5 +59,5 @@ export function liveRenderExtensions(options?: {
   ];
 }
 
-export { exitContinuationOnFormatToggle } from './inline-continuation';
+export { armContinuationOnFormatToggle } from './inline-continuation';
 export type { ExitableFormatKind } from './inline-continuation';

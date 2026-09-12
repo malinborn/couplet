@@ -100,10 +100,33 @@ export function createExtensions(): Extension[] {
         this.scroller.removeEventListener('scroll', this.handler);
       }
     }),
-    // Click on rendered links opens URL in browser (mousedown to fire before CM6 removes decoration)
+    /**
+     * Rendered links: **⌘/Ctrl-click opens the URL, a plain click puts the caret
+     * in the text.** It used to be the other way round, with no modifier at all,
+     * which meant the text of a link could not be clicked into in *either*
+     * engine — the handler ran on `mousedown`, before CM6 ever saw the event,
+     * and called `preventDefault` + `stopPropagation` unconditionally.
+     *
+     * That is the wrong default for an editor. "Click a word to fix a typo" has
+     * to work on every word in the document, and a link's text is the one place
+     * it silently did not; the only workaround was to select around the link
+     * with the keyboard. ⌘-click as the open gesture is what every IDE already
+     * does, so it needs no teaching, and the tooltip on the link says so.
+     *
+     * Changing it here changes live-preview too, deliberately: a split where
+     * one engine opens on click and the other places a caret would make the
+     * same gesture mean two things in the same app. The risk is bounded in
+     * live-preview, which reveals `[text](url)` under the caret — so a plain
+     * click there shows the user exactly what they clicked into, and the link
+     * is still one ⌘-click away.
+     */
     EditorView.domEventHandlers({
       mousedown(event: MouseEvent, view: EditorView) {
         if (event.button !== 0) return false; // left click only
+        // Not `event.metaKey` alone: Ctrl is the modifier on Windows/Linux, and
+        // on macOS Ctrl-click is a right-click, which the button test above has
+        // already let through as `button !== 0`.
+        if (!event.metaKey && !event.ctrlKey) return false;
         const target = event.target as HTMLElement;
         if (!target.closest('.cm-md-link')) return false;
 
