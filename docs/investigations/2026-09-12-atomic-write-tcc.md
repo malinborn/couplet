@@ -221,8 +221,11 @@ Designated requirement у приложения **нет вообще**. Для �
 **Что делать по A:**
 
 1. Создавать tmp через `OpenOptions::new().write(true).create_new(true).mode(0o600)` — не `fs::write`, чтобы не было окна с правами 0644.
-2. Перед `rename` перенести метаданные с оригинала на tmp: `libc::copyfile(orig, tmp, NULL, COPYFILE_SECURITY | COPYFILE_XATTR)`.
-   **`COPYFILE_STAT` не брать** — он тащит mtime, а свежесохранённый файл должен иметь новый mtime, иначе поедут file watcher и логика «файл изменился снаружи». `COPYFILE_METADATA` = `SECURITY|STAT|XATTR`, то есть целиком он не подходит.
+2. Перед `rename` перенести метаданные с оригинала на tmp: `libc::copyfile(orig, tmp, NULL, COPYFILE_ACL | COPYFILE_XATTR)`, а режим и владельца восстановить явно через `fchmod`/`fchown`.
+
+   > **Поправка от 2026-09-12, внесена при реализации #18.** В первой редакции здесь стояло `COPYFILE_SECURITY | COPYFILE_XATTR` с оговоркой «`COPYFILE_STAT` не брать». Эта комбинация невыразима: в `copyfile.h` определено `COPYFILE_SECURITY (COPYFILE_STAT | COPYFILE_ACL)`, то есть `SECURITY` **уже содержит** `STAT`, а `SECURITY|XATTR` — это буквально `COPYFILE_METADATA`. Следование исходной формулировке скопировало бы старый mtime, то есть ровно ту поломку watcher'а, от которой абзац и предостерегал.
+   >
+   > **`COPYFILE_STAT` не брать** остаётся верным по сути: свежесохранённый файл должен иметь новый mtime, иначе поедут file watcher и логика «файл изменился снаружи». Достигается это через `COPYFILE_ACL | COPYFILE_XATTR` плюс явные `fchmod`/`fchown`, а не через `SECURITY`. Проверяется тестом `updates_mtime_rather_than_copying_the_old_one`.
 3. Резолвить симлинки до записи (`fs::canonicalize`, с явной обработкой случая «цели ещё нет») — чинит сценарий 5.
 4. Прятать tmp: `.<имя>.tmp` или случайный суффикс в том же каталоге — чтобы не светился в Finder и синхронизациях.
 5. `sync_all()` на файле перед `rename` и `fsync` каталога после — закрывает потерю питания.
