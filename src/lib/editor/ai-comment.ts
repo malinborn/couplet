@@ -1,4 +1,4 @@
-import { StateEffect, StateField } from '@codemirror/state';
+import { StateEffect, StateField, type EditorState } from '@codemirror/state';
 import {
   Decoration,
   type DecorationSet,
@@ -7,7 +7,8 @@ import {
   type ViewUpdate,
   WidgetType,
 } from '@codemirror/view';
-import { quotePreview, type CommentThread } from '../comment-format';
+import { quotePreview, splitThread, type CommentThread } from '../comment-format';
+import { makeWidgetTextSelectable } from './widget-text-selection';
 
 /**
  * What a comment widget can ask the app to do. Carried on the `addAiComment`
@@ -17,7 +18,22 @@ import { quotePreview, type CommentThread } from '../comment-format';
  * solves. `eq()` on the widget deliberately excludes this field.
  */
 export interface CommentActions {
-  reply: (id: string, text: string) => void;
+  /**
+   * Called on every keystroke in the comment box. The app debounces and
+   * writes it to the sidecar — there is no send action, what is typed is
+   * saved (#23).
+   */
+  save: (id: string, text: string) => void;
+  /** Write whatever is pending for this thread now, without waiting for the
+   * debounce. Fired on blur and when the widget's DOM goes away. */
+  flush: (id: string) => void;
+  /**
+   * End the pause now instead of waiting out the countdown: write what is in
+   * the box and hand the thread to the agent. The button behind it exists
+   * because the twenty seconds are for the person who is still writing, and
+   * someone who has finished should not have to sit through them (#36).
+   */
+  sendNow: (id: string) => void;
   resolve: (id: string) => void;
   handoff: (id: string) => void;
   insertIntoText: (id: string, text: string) => void;
@@ -28,6 +44,20 @@ export interface CommentSpec {
   /** Quote not found in the document — thread is shown at its stored line. */
   orphaned: boolean;
   actions: CommentActions;
+  /**
+   * Text to put in the box, overriding what the file says. Set while an edit
+   * is still in flight, so a rebuild — the agent answering, the draft turning
+   * into a real thread — cannot swallow characters typed a moment ago.
+   * Excluded from `eq()`: including it would rebuild the card on every
+   * keystroke, which is the one thing that must not happen while typing.
+   */
+  draft?: string;
+  /**
+   * Put the caret in the box at this offset once it is on screen. Carries both
+   * "focus the box the hotkey just opened" (#22) and "the card was rebuilt
+   * under the user's hands, put them back where they were".
+   */
+  focusAt?: number;
 }
 
 /** Adds a comment-thread widget, anchored at the end of the line containing `pos`. */
@@ -39,7 +69,25 @@ export const addAiComment = StateEffect.define<{
   to: number;
   orphaned: boolean;
   actions: CommentActions;
+  /** In-flight text for the box — see `CommentSpec.draft`. */
+  draft?: string;
+  /** Caret offset to focus the box at — see `CommentSpec.focusAt`. */
+  focusAt?: number;
 }>();
+
+/**
+ * Class of the in-document highlight over a commented fragment.
+ *
+ * Exported because a table draws its own: a table row's source line is hidden
+ * at zero height, so the decoration below is painted onto nothing and the
+ * widget has to repeat the highlight on the characters that are actually on
+ * screen (#62). Same class, so the two look identical and the attention
+ * shimmer covers both.
+ */
+export const COMMENT_ANCHOR_CLASS = 'cm-ai-comment-anchor';
+
+/** Attribute naming which thread a highlight belongs to — see above. */
+export const COMMENT_ANCHOR_ATTR = 'data-comment-anchor';
 
 /**
  * Marks the fragment a thread is about. Without it the card states its quote
@@ -53,12 +101,45 @@ export const addAiComment = StateEffect.define<{
  */
 function anchorMark(threadId: string): Decoration {
   return Decoration.mark({
-    class: 'cm-ai-comment-anchor',
+    class: COMMENT_ANCHOR_CLASS,
     // Also on the DOM, so the attention plugin can find the spans belonging to
     // one thread without walking the decoration set.
-    attributes: { 'data-comment-anchor': threadId },
+    attributes: { [COMMENT_ANCHOR_ATTR]: threadId },
     threadId,
   });
+}
+
+/** A commented fragment, in document coordinates. */
+export interface CommentAnchorSpan {
+  id: string;
+  from: number;
+  to: number;
+}
+
+/**
+ * The commented fragments overlapping `[from, to]`.
+ *
+ * The field is the single source of truth for where a thread is anchored — it
+ * maps through every edit — so anything that wants to draw its own highlight
+ * asks here rather than keeping a copy. Used by the table widget, whose source
+ * lines are hidden and whose cells therefore have to paint the highlight
+ * themselves (#62).
+ */
+export function commentAnchorsIn(
+  state: EditorState,
+  from: number,
+  to: number
+): CommentAnchorSpan[] {
+  const set = state.field(aiCommentField, false);
+  if (!set) return [];
+  const out: CommentAnchorSpan[] = [];
+  set.between(from, to, (spanFrom, spanTo, value) => {
+    const id = (value.spec as { threadId?: string }).threadId;
+    // Widgets carry no threadId and are zero-length anyway; only anchors answer.
+    if (!id || spanTo <= spanFrom) return;
+    out.push({ id, from: spanFrom, to: spanTo });
+  });
+  return out;
 }
 
 /** True for an anchor highlight belonging to `threadId`. */
@@ -75,35 +156,83 @@ export const clearAiComments = StateEffect.define<null>();
 
 const STATUS_LABEL: Record<CommentThread['status'], string> = {
   open: 'waiting for agent',
+  // Says the true thing even when the countdown next to it is not running —
+  // after a reload, or once the card has been rebuilt for another reason.
+  paused: 'not sent yet',
   answered: 'answered',
   resolved: 'resolved',
 };
+
+/**
+ * Class on the countdown label and the "send now" button while there is no
+ * pause running. The app toggles it; the widget never rebuilds for it.
+ */
+export const COMMENT_IDLE = 'cm-ai-comment-idle';
+
+/**
+ * Class on the verb inside the "send now" button, so the app can rewrite it
+ * without touching the countdown span that sits next to it (#61).
+ */
+export const COMMENT_SEND_LABEL = 'cm-ai-comment-send-label';
+
+/** What the send-now button says while a pause is running. */
+export const COMMENT_SEND_TEXT = 'send now';
+
+/**
+ * Class on the button between "it fired" and "the card was rebuilt". Visible
+ * where {@link COMMENT_IDLE} is not, so the button can stay on screen for that
+ * moment instead of disappearing under the pointer.
+ */
+export const COMMENT_SENDING = 'cm-ai-comment-sending';
+
+/**
+ * What it says between the moment it fires and the rebuild that takes it away.
+ *
+ * The card is reloaded once the commit lands — the thread turns `open` and its
+ * header reads "waiting for agent", which is the lasting answer to "what
+ * happened". This covers the second in between, where a button that simply
+ * vanished under the pointer would read as a misclick.
+ */
+export const COMMENT_SENDING_TEXT = 'sending…';
 
 export class CommentWidget extends WidgetType {
   constructor(readonly spec: CommentSpec) {
     super();
   }
 
+  /**
+   * Only the finished part of the thread is compared.
+   *
+   * The text in the box is deliberately not: autosave rewrites the user's own
+   * trailing reply in the file, so including it would make every save a
+   * rebuild, and every rebuild would replace the textarea the user is typing
+   * into. Comparing the frozen part means a save changes nothing CM6 can see,
+   * while an agent's answer — which moves a turn into the frozen part — is
+   * caught immediately.
+   */
   eq(other: CommentWidget): boolean {
     const a = this.spec.thread;
     const b = other.spec.thread;
+    const mine = splitThread(a).frozen;
+    const theirs = splitThread(b).frozen;
     return (
       a.id === b.id &&
       a.status === b.status &&
       a.quote === b.quote &&
       this.spec.orphaned === other.spec.orphaned &&
-      a.replies.length === b.replies.length &&
-      a.replies.every(
+      mine.length === theirs.length &&
+      mine.every(
         (reply, i) =>
-          reply.author === b.replies[i].author &&
-          reply.at === b.replies[i].at &&
-          reply.text === b.replies[i].text
+          reply.author === theirs[i].author &&
+          reply.at === theirs[i].at &&
+          reply.text === theirs[i].text
       )
     );
   }
 
-  toDOM(): HTMLElement {
+  toDOM(view?: EditorView): HTMLElement {
     const { thread, orphaned, actions } = this.spec;
+    const { frozen, editable } = splitThread(thread);
 
     // CM6 measures a block widget's height from its root element's DOM box,
     // which does not include CSS margin (see ai-ask.ts's AskWidget for the
@@ -135,45 +264,87 @@ export class CommentWidget extends WidgetType {
       excerpt.title = thread.quote;
       head.appendChild(excerpt);
     }
+    makeWidgetTextSelectable(head, { swallowKeys: true });
     card.appendChild(head);
 
-    for (const reply of thread.replies) {
+    // Finished turns. Outlined and left alone — the visual difference from the
+    // live box below is the whole signal that a turn has been answered and can
+    // no longer be edited.
+    for (const reply of frozen) {
       const item = document.createElement('div');
       item.className = 'cm-ai-comment-reply';
 
       const who = document.createElement('div');
       who.className = 'cm-ai-comment-author';
       who.textContent = `${reply.author} · ${reply.at}`;
+      makeWidgetTextSelectable(who, { swallowKeys: true });
       item.appendChild(who);
 
       const body = document.createElement('div');
       body.className = 'cm-ai-comment-text';
       body.textContent = reply.text;
+      // The formulation in here is the thing people want to carry off into a
+      // task, a chat or a commit message.
+      makeWidgetTextSelectable(body, { swallowKeys: true });
       item.appendChild(body);
 
       card.appendChild(item);
     }
 
-    const input = document.createElement('input');
-    input.type = 'text';
+    // The live area. A textarea, not an input: a comment is prose, and Enter
+    // has to make a new line rather than mean "send" — there is no send.
+    const input = document.createElement('textarea');
     input.className = 'cm-ai-comment-input';
-    input.placeholder = 'Reply…';
+    input.rows = 1;
+    input.placeholder = frozen.length ? 'Reply — saved as you type' : 'Comment — saved as you type';
+    input.value = this.spec.draft ?? editable;
+    // Lets the app find this box by thread after a rebuild.
+    input.setAttribute('data-comment-input', thread.id);
+
+    /** Grow to fit the text. A block widget that changes height behind CM6's
+     * back leaves the height map wrong, hence the requestMeasure. */
+    const grow = (): void => {
+      const style = (input as { style?: { height: string } }).style;
+      if (!style) return; // DOM-less test harness
+      style.height = '0px';
+      style.height = `${Math.max(input.scrollHeight || 0, 24)}px`;
+      view?.requestMeasure();
+    };
+
     // ignoreEvent() (below) only tells CM6's own handling to leave widget
     // events alone — it does not stop the DOM event from bubbling past
     // contentDOM to document-level listeners (e.g. the Escape-clears-
     // highlights keymap, or table.ts's own Escape handlers). A real,
-    // focusable, editable input needs an explicit stopPropagation on every
+    // focusable, editable control needs an explicit stopPropagation on every
     // key event. mousedown must stop propagation too, but NOT
     // preventDefault — preventDefault there would block the browser from
-    // focusing/placing the caret in the input at all.
+    // focusing/placing the caret in the box at all, and would also stop a
+    // drag from selecting the text inside it (#28).
     input.addEventListener('mousedown', (event) => event.stopPropagation());
     input.addEventListener('keypress', (event) => event.stopPropagation());
     input.addEventListener('keyup', (event) => event.stopPropagation());
+    input.addEventListener('input', () => {
+      grow();
+      actions.save(thread.id, input.value);
+    });
+    // Clicking away is what used to lose the text. Now it is just another
+    // moment to write.
+    input.addEventListener('blur', () => actions.flush(thread.id));
     input.addEventListener('keydown', (event) => {
       event.stopPropagation();
-      if (event.key !== 'Enter') return;
-      const text = input.value.trim();
-      if (text) actions.reply(thread.id, text);
+      if (event.key === 'Escape') {
+        // Back to the document, without the keymap that clears AI highlights
+        // ever seeing this key.
+        input.blur?.();
+        view?.focus();
+        return;
+      }
+      // Nothing needs sending, but "I am done, write it now" is still a useful
+      // thing to be able to say.
+      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        actions.flush(thread.id);
+      }
     });
     card.appendChild(input);
 
@@ -181,7 +352,7 @@ export class CommentWidget extends WidgetType {
     row.className = 'cm-ai-comment-actions';
 
     const button = (label: string, onClick: () => void, confirmLabel?: string) => {
-      const element = document.createElement('button');
+      const element: HTMLButtonElement = document.createElement('button');
       element.type = 'button';
       element.className = 'cm-ai-comment-button';
       element.textContent = label;
@@ -207,24 +378,90 @@ export class CommentWidget extends WidgetType {
         }, 5000);
       });
       row.appendChild(element);
+      return element;
     };
+
+    // "send now" is rendered for every card and hidden until a pause is
+    // actually running — the app shows it by toggling a class, never by
+    // rebuilding the widget. A rebuild is what replaces the textarea, and
+    // replacing a textarea once a second (which is what a countdown held in
+    // state would do) drops the caret and kills IME composition mid-word.
+    const sendNow = button(COMMENT_SEND_TEXT, () => actions.sendNow(thread.id));
+    sendNow.className = `cm-ai-comment-button cm-ai-comment-send-now ${COMMENT_IDLE}`;
+    sendNow.setAttribute('data-comment-send-now', thread.id);
+    sendNow.title = 'Hand this comment to the agent now, without waiting out the pause';
+
+    // The countdown lives *inside* the button (#61). Next to it, at the far
+    // edge of the card, the number stated a fact ("sending in 13s") while the
+    // button stated an action, and nothing said the two were the same event —
+    // people read the button as unrelated and wondered what it was for. In the
+    // button they are one sentence: press it, or wait this long and it goes on
+    // its own.
+    //
+    // The two are separate elements so the app can rewrite either one without
+    // the other: the verb changes once, when the pause ends, and the seconds
+    // change every tick. Both are plain DOM writes — see the note above.
+    sendNow.textContent = '';
+    const sendLabel = document.createElement('span');
+    sendLabel.className = COMMENT_SEND_LABEL;
+    sendLabel.textContent = COMMENT_SEND_TEXT;
+    sendNow.appendChild(sendLabel);
+
+    const countdown = document.createElement('span');
+    countdown.className = `cm-ai-comment-countdown ${COMMENT_IDLE}`;
+    countdown.setAttribute('data-comment-countdown', thread.id);
+    sendNow.appendChild(countdown);
 
     button(
       'send to agent',
-      () => actions.handoff(thread.id),
+      () => {
+        // Whatever is in the box is part of what the agent is being handed,
+        // so it has to be in the file before the prompt leaves.
+        actions.flush(thread.id);
+        actions.handoff(thread.id);
+      },
       'paste it into your agent'
     );
-    const last = thread.replies[thread.replies.length - 1];
-    if (thread.status === 'answered' && last) {
-      button('insert into text', () => actions.insertIntoText(thread.id, last.text));
+    const answer = frozen[frozen.length - 1];
+    if (thread.status === 'answered' && answer) {
+      button('insert into text', () => actions.insertIntoText(thread.id, answer.text));
     }
     if (thread.status !== 'resolved') {
       button('resolve', () => actions.resolve(thread.id));
     }
+
+    // Autosave is invisible, and invisible saving is exactly what people did
+    // not believe was happening. The app writes "saved" in here.
+    const saved = document.createElement('span');
+    saved.className = 'cm-ai-comment-saved';
+    row.appendChild(saved);
     card.appendChild(row);
 
     wrap.appendChild(card);
+
+    // Focus is requested by whoever built this spec, never taken on its own —
+    // a card rebuilt while the user is in the document must not steal the
+    // caret out of it. A frame later, because CM6 is still settling its own
+    // focus in the frame the widget is inserted in (#22).
+    const caret = this.spec.focusAt;
+    if (caret !== undefined && typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => {
+        input.focus?.();
+        const at = Math.min(caret, input.value.length);
+        input.setSelectionRange?.(at, at);
+        grow();
+      });
+    } else if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(grow);
+    }
+
     return wrap;
+  }
+
+  /** The DOM is going away — rebuild, resolve, document switch. Anything still
+   * unwritten is written now rather than lost. */
+  destroy(): void {
+    this.spec.actions.flush(this.spec.thread.id);
   }
 
   ignoreEvent(): boolean {
@@ -249,11 +486,11 @@ export const aiCommentField = StateField.define<DecorationSet>({
     deco = deco.map(tr.changes);
     for (const effect of tr.effects) {
       if (effect.is(addAiComment)) {
-        const { thread, pos, to, orphaned, actions } = effect.value;
+        const { thread, pos, to, orphaned, actions, draft, focusAt } = effect.value;
         const clamped = Math.max(0, Math.min(pos, tr.state.doc.length));
         const anchor = tr.state.doc.lineAt(clamped).to;
         const widget = Decoration.widget({
-          widget: new CommentWidget({ thread, orphaned, actions }),
+          widget: new CommentWidget({ thread, orphaned, actions, draft, focusAt }),
           block: true,
           side: 1,
         });
@@ -364,10 +601,12 @@ class CommentAttentionPlugin {
 
   /** Card → fragment. */
   private syncAnchors(): void {
-    for (const el of this.view.dom.querySelectorAll('[data-comment-anchor]')) {
+    // Covers the marks over ordinary prose and the spans a table widget draws
+    // inside its cells alike — both carry the attribute (#62).
+    for (const el of this.view.dom.querySelectorAll(`[${COMMENT_ANCHOR_ATTR}]`)) {
       el.classList.toggle(
         ANCHOR_ATTENTION,
-        el.getAttribute('data-comment-anchor') === this.cardFocused
+        el.getAttribute(COMMENT_ANCHOR_ATTR) === this.cardFocused
       );
     }
   }

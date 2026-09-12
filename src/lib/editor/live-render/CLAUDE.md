@@ -26,7 +26,9 @@ The flavour facet decides whether markup is *revealed*; this bundle decides how
 | `inline-continuation.ts` | Typing at a span boundary continues the format; `isLiveRenderActive` |
 | `heading-input.ts` | Supplies the space that makes a `#` run a heading |
 | `format-commands.ts` | Tree-aware inline toggles used by both the toolbar and the shortcuts |
-| `selection-toolbar.ts` | Floating inline-format toolbar |
+| `selection-toolbar.ts` | Floating inline-format toolbar; also the only place that can see a selection inside a widget |
+| `cell-anchor.ts` | Rendered table-cell offsets → source offsets, for commenting on cell text |
+| `../cell-edit-session.ts` | The open cell edit overlay, published as neutral ground between `preview/tables.ts` and this toolbar |
 | `inspector.ts` / `inspector-model.ts` | Link URL and fenced-code language |
 | `effects.ts` | `openInspectorFor`, the toolbar → inspector handoff |
 
@@ -105,6 +107,38 @@ Exit is Escape or the Cmd+B family, and a state field remembers the suppressed
 boundary so a second keystroke still lands outside. If you add another exit
 gesture, it goes through that field.
 
+### Leaving a fenced code block (`../code-block-exit.ts`)
+
+A code block has no visible edge in this mode — the fences are hidden by a
+zero-height *line* decoration — so Enter only ever added lines inside it (#52).
+
+Two Enters at the end of the block leave it: Enter on a blank *last content
+line* that has at least one content line above it deletes that line and puts the
+caret below the closing fence. Mid-block Enter never exits, so a blank line
+between two functions stays typable. Shift+Enter always inserts and is
+deliberately **not** bound — `standardKeymap` already carries
+`{key: "Enter", …, shift: insertNewlineAndIndent}`, and a binding without a
+`shift` property is never consulted for Shift+Enter.
+
+Two things about it are worth knowing before changing it:
+
+- **The "only at the end" qualifier does not save the double-Enter reflex while
+  you are writing.** Top-down authoring happens at the end of the block by
+  definition, so `a` Enter Enter `b` ejects and puts `b` in a paragraph. It is
+  visible immediately and one Cmd+Z undoes it, and no Enter-count rule fixes it
+  (an exit after N blanks breaks whoever wanted N). Measured by typing, not
+  reasoned about.
+- **The arrow exit is live-render only.** ArrowDown on the last content line and
+  ArrowUp on the first one skip the hidden fence line, because here the default
+  motion parks the caret on a zero-height line where it is invisible. In
+  live-preview `fencedCode` is `'on-cursor'`, so those lines are visible text
+  under the caret and must stay reachable — hence the divergence. The Enter exit
+  itself is engine-wide and registered in `../setup.ts`.
+
+Escape was considered as the secondary hatch and rejected: it already means
+"leave the inline format span" here, and elsewhere it clears AI highlights and
+closes panels.
+
 ### `keybindings.ts` is shared with live-preview
 
 `Mod-b` / `Mod-i` / `Mod-Shift-x` live in `../keybindings.ts`, which both modes
@@ -154,6 +188,51 @@ the very selection that opened it. Deferring registration by a macrotask does
 not help. Clicks inside the editor are already governed by the selection: the
 plugin hides the toolbar when the selection collapses.
 
+### `view.hasFocus` is not the question any more
+
+A selection inside a table cell lives in a nested editing host (#31), so
+`activeElement` is the cell, not `contentDOM`, and `view.hasFocus` — which
+requires the latter — is `false`. Worse, CM6 never processes the drag at all:
+the widget returns `true` from `ignoreEvent`, so `state.selection` still holds
+whatever it held before, *stale rather than empty*. Measured: `hasFocus: false`,
+`activeEl: cm-md-table-celltext`, `state.selection` still on the previous prose
+selection.
+
+So the toolbar asks two things instead (`currentTarget`):
+
+- **Is focus in this editor?** — the window has focus, and the focused element
+  is inside a host (`[data-widget-text-host]`) that is inside this `view.dom`.
+  Deleting the focus test rather than widening it would pop the toolbar up over
+  a stale selection while the user is in another window or another app; all
+  three failure modes were driven in a browser.
+- **Where is the selection?** — a live host selection outranks
+  `state.selection`, and produces a comment-only toolbar. The format commands
+  edit the document through the selection and there is nothing here for them to
+  edit; rewriting a cell's source from a mapped range is a separate feature.
+
+A host selection also fires no `ViewUpdate`, in either direction, so the plugin
+listens to `selectionchange` and to the window's `blur` as well as `update()`.
+All three funnel into one `sync()`.
+
+What a comment on cell text anchors to is decided in `cell-anchor.ts`: the
+**source** of the selected span, with formatted spans taken whole. Anything else
+fails the re-anchor search on the next open — the quote has to be findable in
+the file, and `and sweet` is not in `**and** sweet`.
+
+That mapping now runs in both directions. `visibleRangeForSource` is the
+inverse, and it exists because the in-document anchor highlight lands on a table
+data line, which is zero-height — the `Decoration.mark` is there, it is simply
+painted onto nothing (#62). So `tables.ts` asks `ai-comment.ts` which fragments
+are commented, maps them back to rendered offsets through the same token split,
+and draws the highlight inside the cell with the same class the document
+decoration uses. Two consequences worth knowing:
+
+- The anchors are part of `TableWidget`'s `eq()`. They are structural here: they
+  decide what the DOM contains, and without them CM6 reuses the widget and a new
+  comment leaves no mark until something else rebuilds the table.
+- `livePreviewPlugin` rebuilds when the comment field changes, for the same
+  reason it rebuilds on `toggleTableMode`.
+
 ### A task item is `Task`, not `Link`
 
 The design doc claimed `- [x] done` collides with link parsing. It does not:
@@ -172,6 +251,68 @@ Reverting to the fenced source is the only way to edit a diagram. Hiding it
 permanently would require a full nested editor in the inspector, which is out
 of scope, so `LIVE_RENDER` pins mermaid to `'on-cursor'` and the inspector
 skips mermaid fences rather than offering a redundant language picker.
+
+### A third target: the cell edit overlay
+
+`currentTarget` resolves three surfaces, and the order is load-bearing. A cell
+edit overlay outranks everything: while it is open it holds both the focus and
+the authoritative text, and the document selection under it is stale.
+
+What makes it different from the other two is that its text **is not in the
+document**. So the format buttons cannot dispatch anything — they call
+`toggleInlineFormatInText`, which builds a throwaway `EditorState` from the
+overlay's text (`markdownExtension`, shared with `../setup.ts`) and runs the
+same `formatSpec` the document path runs. The alternative, wrapping strings
+over `ta.value`, is a second "bold"; see `../preview/CLAUDE.md` for why that
+diverges on the first nested case.
+
+One trap inside that: a freshly created `EditorState` has only whatever the
+initial budgeted parse produced, and reading `syntaxTree` on an unparsed state
+answers `Tree.empty`. Every toggle would then take the "add" path — bold could
+be switched on and never off. Use `ensureSyntaxTree`.
+
+The toolbar deliberately stays **open** after a format is applied here, unlike
+the widget path where the change rebuilds the row and takes the DOM selection
+with it. Nothing is rebuilt, the same words are still selected, and the next
+click should be able to put italic on top of the bold just applied.
+
+### The toolbar's hotkey captions come out of the keymap
+
+`INLINE_FORMAT_BINDINGS` in `../keybindings.ts` is the one list: the `keymap`
+is built from it, and the tooltips (#56) render their key half from it through
+`../hotkey-label.ts`. A second, hand-kept caption table is exactly the kind of
+duplication that stays wrong silently — nothing in the app ever compares a
+tooltip against a keymap.
+
+One measured trap lives in that helper: `navigator.userAgentData.platform`
+answers `"macOS"`, lowercase `m`, so the obvious `/Mac/` test reads a Mac as a
+PC and captions every button `Ctrl+B`. The legacy `navigator.platform` beside it
+says `MacIntel`, which is what keeps the mistake invisible anywhere the new API
+is missing.
+
+`</>` has no binding at all and gets a tooltip carrying just the action name —
+it is the least legible thing in the row, and the tooltip is the only place
+that ever says what it is.
+
+💬 looked like the same case and was not: its key is real, and is declared in
+the **native menu, in Rust** (`src-tauri/src/menu.rs`, item `ai_comment` →
+`CmdOrCtrl+Shift+M`). Actions whose keys come from there never enter
+`INLINE_FORMAT_BINDINGS`, so the caption honestly rendered without a key while
+the key worked (#59). There are two notations and two declaration sites, and
+they had already drifted.
+
+`../native-menu-accelerators.ts` mirrors the Rust, and
+`native-menu-accelerators.test.ts` parses `menu.rs` and asserts set equality —
+it fails on an accelerator added in Rust and not mirrored, on a stale entry,
+and on a changed key. The mirror is the cheap half; the test is the half that
+makes it stay true. Both notations collapse to a `Shortcut { label, aria }`
+before a button sees them, so one row cannot print its keys two ways.
+
+Today `ai_comment` is the only native menu item with a UI affordance — the
+others with accelerators (`new`, `open`, `save`, `save_as`, `close`,
+`reopen_session`, `select_all`, `find`, `format_json`, `toggle_mode`, the three
+zoom items) are menu-only. They are mirrored anyway, so the next button that
+needs one already has it.
 
 ## Known limitations
 
@@ -228,3 +369,30 @@ Three traps cost real time here:
 3. **Vite module caching.** After editing a file, `import('…/index.ts?v=x')`
    re-fetches that module but its transitive imports stay cached. Reload the
    webview instead.
+
+### Driving it in a plain browser — the mode does not turn on by itself
+
+`npm run dev` + Playwright is the cheaper route, and it has a trap of its own
+that silently measures **the wrong mode**.
+
+Setting `localStorage['md-mini:engine'] = '"live-render"'` is not enough.
+Without Tauri, the first `$effect` in `App.svelte` throws on
+`__TAURI_INTERNALS__.metadata`, Svelte never reaches the effect that
+reconfigures `previewCompartment`, and the editor stays on the compartment's
+default — `livePreviewPlugin` alone, i.e. live-preview. Everything then looks
+plausible: the document renders, markers are hidden while the caret is
+elsewhere, and a probe concludes the mode works or does not.
+
+So stub `window.__TAURI_INTERNALS__` (`metadata`, `transformCallback`,
+`invoke`) in an init script before the page loads, and then **assert the mode
+two ways** before measuring anything:
+
+- put the caret inside `**bold**` and check the `**` did *not* reappear — in
+  live-preview they do;
+- look for `SelectionToolbarPlugin` and `InspectorPlugin` in `view.plugins`.
+  They are the only ViewPlugins this bundle contributes, so their absence is
+  proof the bundle is not installed.
+
+Reach the view at `document.querySelector('.cm-content').cmTile.root.view`,
+and launch with `chromium.launch({ channel: 'chrome' })` — the cached
+chromium build lags the Playwright CLI in this repo.

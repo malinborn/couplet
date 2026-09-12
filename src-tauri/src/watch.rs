@@ -136,6 +136,9 @@ mod tests {
                 status: crate::comments::Status::Open,
                 line: 1,
                 quote: "цитата".to_string(),
+                prefix: None,
+                suffix: None,
+                until: None,
                 replies: vec![crate::comments::Reply {
                     author: "Макс".to_string(),
                     at: "2026-08-24 14:02".to_string(),
@@ -170,6 +173,80 @@ mod tests {
         assert!(line.contains("цитата"));
         assert!(line.contains("Вопрос?"));
         assert!(!line.contains('\n'), "exactly one line: {line}");
+    }
+
+    /// End to end over real files: what the monitor actually prints while a
+    /// human is typing a comment, and what it prints once they stop.
+    ///
+    /// The unit tests on `Seen` work on a hand-built list, so they cannot see
+    /// the filter that matters here — it lives in `collect_open`, which is the
+    /// only thing standing between a half-typed sentence and an agent's
+    /// session.
+    #[test]
+    fn a_comment_being_typed_never_reaches_the_stream_until_its_pause_ends() {
+        use crate::comments::{self, Context, Status, SELF_AUTHOR};
+
+        let dir = std::env::temp_dir().join(format!(
+            "mdmini-watch-pause-{}-{}",
+            std::process::id(),
+            comments::now_epoch()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = dir.join("spec.md");
+
+        comments::append_thread_paused(
+            &doc,
+            "c-aaaaaa",
+            1,
+            "цитата",
+            Context::default(),
+            SELF_AUTHOR,
+            "Почему не ng",
+        )
+        .unwrap();
+
+        let mut seen = Seen::default();
+        assert!(
+            seen.newly_open(&comments::collect_open(&dir)).is_empty(),
+            "mid-sentence, so nobody is woken"
+        );
+
+        // Still typing: the deadline moves, the silence holds.
+        comments::set_status_until(
+            &doc,
+            "c-aaaaaa",
+            Status::Paused,
+            Some(comments::now_epoch() + comments::PAUSE_SECS),
+        )
+        .unwrap();
+        assert!(seen.newly_open(&comments::collect_open(&dir)).is_empty());
+
+        // The pause ran out — the app committed it.
+        assert!(comments::commit_pause(&doc, "c-aaaaaa").unwrap());
+        let open = comments::collect_open(&dir);
+        let fresh = seen.newly_open(&open);
+        assert_eq!(fresh.len(), 1);
+        assert!(event_line(fresh[0]).contains("Почему не ng"));
+
+        // And exactly once: a resync must not repeat it.
+        assert!(seen.newly_open(&comments::collect_open(&dir)).is_empty());
+
+        // A follow-up pauses the thread again. Leaving the open set is what
+        // makes `Seen` forget it, so the next commit is an event again — the
+        // human is waiting once more.
+        comments::set_status_until(
+            &doc,
+            "c-aaaaaa",
+            Status::Paused,
+            Some(comments::now_epoch() + comments::PAUSE_SECS),
+        )
+        .unwrap();
+        assert!(seen.newly_open(&comments::collect_open(&dir)).is_empty());
+        comments::commit_pause(&doc, "c-aaaaaa").unwrap();
+        assert_eq!(seen.newly_open(&comments::collect_open(&dir)).len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

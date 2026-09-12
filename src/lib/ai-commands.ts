@@ -1,5 +1,6 @@
-import type { EditorState } from '@codemirror/state';
-import type { Replacement } from './editor/content-diff';
+import type { EditorState, Text } from '@codemirror/state';
+import type { LineRange, Replacement } from './editor/content-diff';
+import type { AiHighlightRange } from './editor/ai-highlight';
 import type { AiCommandPayload } from './tauri/events';
 
 /**
@@ -44,4 +45,21 @@ export function changedLineRanges(state: EditorState, repl: Replacement): [numbe
   const endPos = repl.from + repl.insert.length;
   const end = state.doc.lineAt(endPos - 1).number;
   return [start, end];
+}
+
+/**
+ * Document-coordinate spans for the 1-based inclusive `lineRanges`, resolved
+ * against `doc` — which must be the *post-change* document, since AI-highlight
+ * effect values are read in the transaction's end state.
+ *
+ * Out-of-range line numbers are clamped rather than thrown on: the ranges come
+ * from a pure text diff, and a caller passing a doc that has since moved on
+ * should degrade to a misplaced highlight, never to a crashed editor.
+ */
+export function docRangesForLineRanges(doc: Text, lineRanges: readonly LineRange[]): AiHighlightRange[] {
+  const clamp = (n: number): number => Math.min(Math.max(n, 1), doc.lines);
+  return lineRanges.map(([start, end]) => ({
+    from: doc.line(clamp(start)).from,
+    to: doc.line(clamp(end)).to,
+  }));
 }

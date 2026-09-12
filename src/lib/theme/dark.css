@@ -34,6 +34,17 @@
   --ai-ask-accent-text: #191724;
   --bg-overlay: rgba(25, 23, 36, 0.75);
   --border: #403d52;
+  /* Тоновая схема заголовков — см. комментарий в aurora-dark.css. */
+  --heading-tone-1: #c4a7e7;
+  --heading-tone-2: #bda2e0;
+  --heading-tone-3: #b39cd6;
+  --heading-tone-4: #a894c8;
+  --heading-tone-5: #9a8ab4;
+  --heading-tone-6: #8d82a6;
+  --heading-grad-1: linear-gradient(100deg, #eb6f92 0%, #c4a7e7 42%, #9ccfd8 76%, #c4a7e7 100%);
+  --heading-grad-2: linear-gradient(100deg, #d9a0d2 0%, #c2a6e4 55%, #bda2e0 100%);
+  --heading-grad-3: linear-gradient(100deg, #c0a4e2 0%, #b7a3d9 60%, #b39cd6 100%);
+  --heading-grad-4: linear-gradient(100deg, #ae98cf 0%, #a894c8 100%);
   --font-text: 'Inter', -apple-system, system-ui, sans-serif;
   --font-code: 'JetBrains Mono', 'SF Mono', monospace;
 }

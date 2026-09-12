@@ -3,7 +3,7 @@
   import Editor from './lib/editor/Editor.svelte';
   import type { EditorHandle } from './lib/editor/Editor.svelte';
   import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createFileState, createRecentFilesStore } from './lib/stores.svelte';
-  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncBetaInCycleMenu, commentThreads, commentCreate, commentReply, commentResolve, type PendingOpen } from './lib/tauri/commands';
+  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncBetaInCycleMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type PendingOpen } from './lib/tauri/commands';
   import {
     onMenuEvent,
     onOpenFile,
@@ -21,20 +21,26 @@
   import RecentFilesPanel from './lib/RecentFilesPanel.svelte';
   import ToastStack from './lib/ToastStack.svelte';
   import AiHintBadge from './lib/AiHintBadge.svelte';
+  import AiBindButton from './lib/AiBindButton.svelte';
   import { createToastStore } from './lib/toasts.svelte';
   import { shouldShowHint, nextCheckDelay } from './lib/ai-hint';
   import { previewCompartment, lineGlowCompartment } from './lib/editor/setup';
+  import { stashAndUnfoldAll, restoreStashedFolds } from './lib/editor/fold-memory';
   import { EditorView, highlightActiveLine } from '@codemirror/view';
-  import { ChangeSet, type StateEffect } from '@codemirror/state';
+  import { ChangeSet, Text, type StateEffect } from '@codemirror/state';
   import { livePreviewPlugin } from './lib/editor/preview/plugin';
   import { LIVE_PREVIEW, LIVE_RENDER, flavourFacet } from './lib/editor/preview/flavour';
   import { liveRenderExtensions } from './lib/editor/live-render';
   import { envPreviewPlugin } from './lib/editor/preview/env';
   import { shellSecretsPlugin } from './lib/editor/preview/shell-secrets';
-  import { isShellConfig } from './lib/editor/file-language';
+  import { MARKDOWN_EXTENSIONS, isShellConfig } from './lib/editor/file-language';
   import { reinitializeTheme } from './lib/editor/preview/mermaid';
-  import { computeReplacement } from './lib/editor/content-diff';
-  import { resolveShowTarget, changedLineRanges } from './lib/ai-commands';
+  import { computeReplacement, computeChangedLineRanges } from './lib/editor/content-diff';
+  import {
+    resolveShowTarget,
+    changedLineRanges,
+    docRangesForLineRanges,
+  } from './lib/ai-commands';
   import {
     setAiHighlights,
     pulseAiLine,
@@ -47,9 +53,25 @@
     aiCommentField,
     clearAiComments,
     CommentWidget,
+    COMMENT_IDLE,
+    COMMENT_SEND_LABEL,
+    COMMENT_SEND_TEXT,
+    COMMENT_SENDING,
+    COMMENT_SENDING_TEXT,
     type CommentActions,
   } from './lib/editor/ai-comment';
-  import { anchorPosition, buildHandoffPrompt, buildWatchPrompt } from './lib/comment-format';
+  import {
+    anchorContextAt,
+    anchorPosition,
+    buildHandoffPrompt,
+    buildWatchPrompt,
+    countdownLabel,
+    splitThread,
+    type AnchorContext,
+    type CommentThread,
+  } from './lib/comment-format';
+  import { buildBindPrompt } from './lib/ai-bind';
+  import { applyJsonOffer, formatJsonCommand } from './lib/editor/json-paste';
   import './lib/theme/dark.css';
   import './lib/theme/light.css';
   import './lib/theme/aurora-dark.css';
@@ -59,6 +81,7 @@
 
   const theme = createThemeStore();
   const engine = createEngineStore();
+
   const zoom = createZoomStore();
   const lineGlow = createLineGlowStore();
   const fileState = createFileState();
@@ -174,10 +197,22 @@
       await writeFile(fileState.filePath, content);
       fileState.isDirty = false;
       fileState.lastSavedAt = Date.now();
+      // A previous failure is over the moment a save lands.
+      toasts.dismissKind('save-error');
       // Clean up recovery file on successful save
       await invoke('delete_recovery', { path: fileState.filePath }).catch(() => {});
     } catch (err) {
+      // `isDirty` deliberately stays true: the document is still unsaved, so
+      // the next keystroke reschedules a save and the recovery snapshot keeps
+      // being written. Until #18 this branch was a `console.error` and nothing
+      // else — a file the filesystem refused to replace went on looking saved
+      // while the user kept typing into it.
       console.error('Auto-save failed:', err);
+      toasts.push({
+        kind: 'save-error',
+        fileName: fileState.filePath.split('/').pop() ?? fileState.filePath,
+        message: err instanceof Error ? err.message : String(err),
+      });
     } finally {
       // Keep isSaving true briefly to suppress FSEvent from our own atomic write
       setTimeout(() => { isSaving = false; }, 600);
@@ -238,8 +273,6 @@
     });
   }
 
-  const MD_EXTENSIONS = new Set(['md', 'markdown', 'txt', '']);
-
   async function handleOpenFilePath(path: string): Promise<void> {
     try {
       const exists = await fileExists(path);
@@ -270,7 +303,7 @@
       if (isEnvFile) {
         editorHandle?.setEnvMode(true);
         activePreview = 'env';
-      } else if (!MD_EXTENSIONS.has(ext)) {
+      } else if (!MARKDOWN_EXTENSIONS.has(ext)) {
         editorHandle?.setEnvMode(false);
         editorHandle?.setCodeMode(ext, basename);
         activePreview = isShellConfig(basename) ? 'shell' : 'code';
@@ -352,8 +385,334 @@
    * Keyed by the synthetic id the draft widget carries; `commentActions.reply`
    * uses the presence of a key here to decide "create" versus "append".
    */
-  let commentDrafts = new Map<string, { line: number; quote: string }>();
+  let commentDrafts = new Map<
+    string,
+    { line: number; quote: string; context: AnchorContext }
+  >();
   let commentDraftSeq = 0;
+
+  /**
+   * How long after the last keystroke the comment box is written to the
+   * sidecar. Long enough that a sentence is one write and not thirty, short
+   * enough that clicking away or closing the window right after typing cannot
+   * realistically beat it — and both of those flush immediately anyway.
+   */
+  const COMMENT_AUTOSAVE_MS = 700;
+
+  /**
+   * Text in a thread's box that has not been written yet.
+   *
+   * `saved` is what the last successful write put in the file, and the pair is
+   * what decides whether an in-flight edit survives a rebuild: still different
+   * means the user has typed since, so the box keeps showing it; equal means
+   * the file already has it, so the box goes back to following the file. That
+   * second case is what makes the freeze correct — when an agent answers, the
+   * user's last turn moves into the frozen part and the new box below it comes
+   * up empty instead of repeating the text that is now above it.
+   *
+   * `path` is captured per entry rather than read at write time: a flush can
+   * fire while the window is already showing a different document, and it must
+   * write to the file the text was typed in.
+   */
+  interface CommentPending {
+    path: string;
+    text: string;
+    saved: string;
+    timer: ReturnType<typeof setTimeout> | null;
+  }
+  let commentPending = new Map<string, CommentPending>();
+
+  /** What the file currently says is in each thread's box. */
+  let commentEditable = new Map<string, string>();
+
+  /**
+   * Threads whose pause is still running, and when each one ends (ms epoch).
+   *
+   * The deadline is the app's copy of what is already written on the thread's
+   * marker line, so a card can count down to the same moment the file will be
+   * judged against. Losing the map — a reload, a reopened document — loses
+   * nothing that matters: `syncCommentCountdowns` rebuilds it from the file,
+   * and the file alone is what decides whether an agent is woken.
+   */
+  let commentCountdowns = new Map<string, { path: string; deadline: number }>();
+
+  /** One ticker for every card, started on demand. */
+  let commentTicker: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * Paint the seconds left into the cards, and fire the ones that have run out.
+   *
+   * Writing `textContent` into an existing span is the whole mechanism, and
+   * that is deliberate: a countdown kept in CM6 state would rebuild the widget
+   * once a second, and a rebuilt widget is a new textarea — the caret jumps to
+   * the end and an IME composition in progress is destroyed. Same rule as the
+   * per-frame transaction ban in CLAUDE.md, for the same reason.
+   */
+  function tickCommentCountdowns(): void {
+    const view = editorHandle?.view;
+    const now = Date.now();
+    for (const [id, entry] of [...commentCountdowns]) {
+      if (now >= entry.deadline) {
+        void fireCommentCountdown(id);
+        continue;
+      }
+      const label = view?.dom.querySelector(
+        `[data-comment-countdown="${CSS.escape(id)}"]`
+      );
+      if (label) {
+        label.textContent = countdownLabel(entry.deadline - now);
+        label.classList.remove(COMMENT_IDLE);
+      }
+      // The countdown is a child of the button (#61), so both come back into
+      // view together — and the verb is reset here as well, because a card
+      // whose pause is re-armed after a `sending…` may be the very same DOM.
+      const button = view?.dom.querySelector(`[data-comment-send-now="${CSS.escape(id)}"]`);
+      button?.classList.remove(COMMENT_IDLE);
+      if (button?.classList.contains(COMMENT_SENDING)) {
+        button.classList.remove(COMMENT_SENDING);
+        (button as HTMLButtonElement).disabled = false;
+        const verb = button.querySelector(`.${COMMENT_SEND_LABEL}`);
+        if (verb) verb.textContent = COMMENT_SEND_TEXT;
+      }
+    }
+    if (!commentCountdowns.size && commentTicker !== null) {
+      clearInterval(commentTicker);
+      commentTicker = null;
+    }
+  }
+
+  /** Start (or restart) a thread's countdown, ending at `deadline` ms epoch. */
+  function armCommentCountdown(id: string, path: string, deadline: number): void {
+    commentCountdowns.set(id, { path, deadline });
+    if (commentTicker === null) commentTicker = setInterval(tickCommentCountdowns, 1000);
+    // Paint at once rather than waiting a second: the label must appear with
+    // the first keystroke, or the pause is invisible for the moment that
+    // matters most — when someone is wondering whether the agent already saw
+    // their half-written sentence.
+    tickCommentCountdowns();
+  }
+
+  /**
+   * Stop a thread's countdown.
+   *
+   * Two endings, and they have to look different. A pause that was *cancelled*
+   * — the thread resolved, the file says it is no longer paused — leaves
+   * nothing to say, so the button goes away as if it had never been there. A
+   * pause that *fired* is the button doing its job, and a control that vanishes
+   * under the pointer at the moment you were reaching for it reads as a
+   * misclick: it stays, disabled, saying `sending…` until the reload replaces
+   * the card with one whose header reads "waiting for agent" (#61).
+   */
+  function disarmCommentCountdown(id: string, sending = false): void {
+    commentCountdowns.delete(id);
+    const view = editorHandle?.view;
+    const label = view?.dom.querySelector(`[data-comment-countdown="${CSS.escape(id)}"]`);
+    if (label) {
+      label.textContent = '';
+      label.classList.add(COMMENT_IDLE);
+    }
+    const button = view?.dom.querySelector(`[data-comment-send-now="${CSS.escape(id)}"]`);
+    const verb = button?.querySelector(`.${COMMENT_SEND_LABEL}`);
+    if (button) {
+      button.classList.toggle(COMMENT_IDLE, !sending);
+      button.classList.toggle(COMMENT_SENDING, sending);
+      (button as HTMLButtonElement).disabled = sending;
+      if (verb) verb.textContent = sending ? COMMENT_SENDING_TEXT : COMMENT_SEND_TEXT;
+    }
+    if (!commentCountdowns.size && commentTicker !== null) {
+      clearInterval(commentTicker);
+      commentTicker = null;
+    }
+  }
+
+  /**
+   * Hand a thread to the agent now: write what is in the box, then end the
+   * pause.
+   *
+   * The order is the point. Committing first would open the thread with the
+   * text as of the last autosave — up to `COMMENT_AUTOSAVE_MS` behind what is
+   * on screen — and `mdmini watch` would wake an agent on a sentence that is
+   * already stale.
+   */
+  async function fireCommentCountdown(id: string): Promise<void> {
+    const entry = commentCountdowns.get(id);
+    if (!entry) return;
+    disarmCommentCountdown(id, true);
+    // A draft becomes a real thread on its first write, under an id the file
+    // gives it — the commit has to follow it there.
+    const written = (await writeComment(id)) ?? id;
+    try {
+      await commentCommit(entry.path, written);
+    } catch (err) {
+      console.error('Comment commit failed:', err);
+      return;
+    }
+    await reloadComments();
+  }
+
+  /**
+   * End every running pause immediately.
+   *
+   * Called when the window loses focus — which, for a comment, usually means
+   * the person has gone to the agent they are writing to, and every second of
+   * countdown after that is a second of waiting for nothing. It is also the
+   * cheapest insurance against the countdown dying with the app: the window
+   * that is about to be closed or quit is almost always one that lost focus
+   * first. The paths where it is not are covered in Rust — `CloseRequested`
+   * and `save_session_on_exit` in `src-tauri/src/lib.rs` — and, failing even
+   * those, by the deadline written on the marker line itself.
+   */
+  function commitAllCommentPauses(): void {
+    for (const id of [...commentCountdowns.keys()]) void fireCommentCountdown(id);
+  }
+
+  /**
+   * Bring the countdowns in line with what the file says.
+   *
+   * Runs after every rebuild of the cards. Three cases, and the third is the
+   * one that matters: a thread that is `paused` with a deadline already behind
+   * it was left that way by an md-mini that did not survive to commit it, and
+   * committing it here is how the app heals the file it just opened. The same
+   * state also reaches agents on its own — `awaiting` in `comments.rs` reads an
+   * expired pause as waiting — this only makes it prompt.
+   */
+  function syncCommentCountdowns(threads: CommentThread[]): void {
+    const path = fileState.filePath;
+    if (!path) return;
+    for (const thread of threads) {
+      if (thread.status !== 'paused') {
+        if (commentCountdowns.has(thread.id)) disarmCommentCountdown(thread.id);
+        continue;
+      }
+      const deadline = (thread.until ?? 0) * 1000;
+      if (deadline <= Date.now()) {
+        // Nothing is being typed into it right now, so there is nothing to
+        // wait for: hand it over.
+        armCommentCountdown(thread.id, path, 0);
+        continue;
+      }
+      const known = commentCountdowns.get(thread.id);
+      // A live countdown wins over the file's: the app's own deadline is the
+      // one the user's last keystroke set, and the file may be a write behind.
+      if (!known || known.deadline < deadline) armCommentCountdown(thread.id, path, deadline);
+      else armCommentCountdown(thread.id, path, known.deadline);
+    }
+  }
+
+  /** Thread whose box should take the caret on the next rebuild, and where. */
+  let commentFocus: { id: string; at: number } | null = null;
+
+  /** The comment box that currently has focus, if any. */
+  function focusedCommentBox(): { id: string; at: number } | null {
+    const el = document.activeElement as HTMLTextAreaElement | null;
+    const id = el?.getAttribute?.('data-comment-input');
+    if (!id) return null;
+    return { id, at: el?.selectionStart ?? el?.value.length ?? 0 };
+  }
+
+  /**
+   * Say that a write landed. Autosave is invisible, and that invisibility is
+   * exactly what made people think nothing had been saved — so it is written
+   * into the card rather than left to be inferred.
+   */
+  function markCommentSaved(id: string): void {
+    const view = editorHandle?.view;
+    const card = view?.dom.querySelector(`[data-comment-thread="${CSS.escape(id)}"]`);
+    const label = card?.querySelector('.cm-ai-comment-saved');
+    if (!label) return;
+    label.textContent = 'saved';
+    setTimeout(() => {
+      if (label.textContent === 'saved') label.textContent = '';
+    }, 2500);
+  }
+
+  /**
+   * Write a thread's pending text now. Creating the thread if this is its
+   * first text — that is what turns a draft card into a real one.
+   *
+   * Returns the id the text ended up under, so a caller that has more to do
+   * with this thread — the pause commit — can follow a draft to the real id
+   * the file just gave it. `null` when nothing was written.
+   */
+  async function writeComment(id: string): Promise<string | null> {
+    const entry = commentPending.get(id);
+    if (!entry) return null;
+    if (entry.timer !== null) {
+      clearTimeout(entry.timer);
+      entry.timer = null;
+    }
+    const text = entry.text;
+    // An empty box writes nothing. Clearing it is not how a comment is
+    // deleted — resolve is — and an empty thread would reach an agent as an
+    // empty question.
+    if (!text.trim() || text === entry.saved) return null;
+
+    const draft = commentDrafts.get(id);
+    if (draft) {
+      commentDrafts.delete(id);
+      const caret = focusedCommentBox();
+      try {
+        const started = await commentStart(
+          entry.path,
+          draft.line,
+          draft.quote,
+          text,
+          draft.context
+        );
+        const realId = started.id;
+        // The countdown was started under the draft's id by the keystroke that
+        // created this thread; move it, with the deadline the file actually
+        // recorded rather than the one this side guessed.
+        disarmCommentCountdown(id);
+        armCommentCountdown(realId, entry.path, started.until * 1000);
+        commentPending.delete(id);
+        commentPending.set(realId, { path: entry.path, text, saved: text, timer: null });
+        commentEditable.set(realId, text);
+        // The card is about to be rebuilt under the id the file gave it; the
+        // caret has to come along, or the first save silently ejects the user
+        // from the box they are writing in.
+        commentFocus = { id: realId, at: caret?.id === id ? caret.at : text.length };
+        // The sidecar has only just come into existence, so the watcher armed
+        // when this document was opened isn't watching it yet. Re-registering
+        // the file rebuilds the watcher over both paths — otherwise the very
+        // first agent reply would arrive with nothing listening for it.
+        await invoke('register_open_file', { path: entry.path }).catch(() => {});
+        await reloadComments();
+        markCommentSaved(realId);
+        return realId;
+      } catch (err) {
+        // Put the draft back, or the card would keep collecting text that has
+        // nowhere to go.
+        commentDrafts.set(id, draft);
+        console.error('Comment create failed:', err);
+        return null;
+      }
+    }
+
+    try {
+      // The status the write implies comes back with it: a deadline while the
+      // thread is still being held back, `null` once it has been handed over
+      // and cannot be taken back.
+      const until = await commentWriteReply(entry.path, id, text);
+      entry.saved = text;
+      commentEditable.set(id, text);
+      if (until === null) disarmCommentCountdown(id);
+      else armCommentCountdown(id, entry.path, until * 1000);
+      markCommentSaved(id);
+      return id;
+    } catch (err) {
+      console.error('Comment save failed:', err);
+      return null;
+    }
+  }
+
+  /** Drop everything pending for a thread — used when it is resolved, so a
+   * queued write cannot bring it back from the dead. */
+  function forgetCommentPending(id: string): void {
+    const entry = commentPending.get(id);
+    if (entry?.timer !== null && entry?.timer !== undefined) clearTimeout(entry.timer);
+    commentPending.delete(id);
+  }
 
   /**
    * Rebuild every comment widget from the sidecar.
@@ -373,27 +732,72 @@
     }
     const threads = await commentThreads(path).catch(() => []);
     const doc = view.state.doc.toString();
+    // Whoever is in a box right now goes back into it afterwards. Without
+    // this, an agent answering — or the user's own autosave flipping the
+    // status back to open — would throw the caret out of the box mid-word.
+    const focus = commentFocus ?? focusedCommentBox();
+    commentFocus = null;
     const effects: StateEffect<unknown>[] = [clearAiComments.of(null)];
     for (const thread of threads) {
       if (thread.status === 'resolved') continue;
-      const { pos, to, orphaned } = anchorPosition(doc, thread.quote, thread.line);
-      effects.push(addAiComment.of({ thread, pos, to, orphaned, actions: commentActions }));
-    }
-    // Drafts are not in the file, so a reload would otherwise silently discard
-    // half-typed comments — re-add them on top.
-    for (const [id, draft] of commentDrafts) {
-      const { pos, to, orphaned } = anchorPosition(doc, draft.quote, draft.line);
+      const { pos, to, orphaned } = anchorPosition(doc, thread.quote, thread.line, {
+        prefix: thread.prefix,
+        suffix: thread.suffix,
+      });
+      commentEditable.set(thread.id, splitThread(thread).editable);
       effects.push(
         addAiComment.of({
-          thread: { id, status: 'open', line: draft.line, quote: draft.quote, replies: [] },
+          thread,
           pos,
           to,
           orphaned,
           actions: commentActions,
+          draft: pendingTextFor(thread.id),
+          focusAt: focus?.id === thread.id ? focus.at : undefined,
+        })
+      );
+    }
+    // Drafts are not in the file, so a reload would otherwise silently discard
+    // half-typed comments — re-add them on top.
+    for (const [id, draft] of commentDrafts) {
+      const { pos, to, orphaned } = anchorPosition(doc, draft.quote, draft.line, draft.context);
+      effects.push(
+        addAiComment.of({
+          // `paused`, not `open`: a draft is a comment being typed, which is
+          // exactly what the pause means. Saying `open` on the card would
+          // promise a wake-up that the first write is about to hold back.
+          thread: { id, status: 'paused', line: draft.line, quote: draft.quote, replies: [] },
+          pos,
+          to,
+          orphaned,
+          actions: commentActions,
+          draft: pendingTextFor(id),
+          focusAt: focus?.id === id ? focus.at : undefined,
         })
       );
     }
     view.dispatch({ effects });
+    // After the dispatch: the cards were just replaced, so the countdown spans
+    // in them are the new, empty ones.
+    syncCommentCountdowns(threads);
+  }
+
+  /**
+   * Text to put in a thread's box, or `undefined` to let the file decide.
+   *
+   * An entry whose text matches what was written is no longer an edit in
+   * flight — it is the file, and it is dropped so the box follows the file
+   * again. That is what lets a turn freeze: once the agent answers, the same
+   * text is above the box and the box itself must come up empty.
+   */
+  function pendingTextFor(id: string): string | undefined {
+    const entry = commentPending.get(id);
+    if (!entry) return undefined;
+    if (entry.text === entry.saved && entry.timer === null) {
+      commentPending.delete(id);
+      return undefined;
+    }
+    return entry.text;
   }
 
   /** Document offset a comment widget currently sits at, or null if it's gone. */
@@ -411,28 +815,39 @@
   }
 
   const commentActions: CommentActions = {
-    reply: (id, text) => {
+    save: (id, text) => {
       const path = fileState.filePath;
       if (!path) return;
-      const draft = commentDrafts.get(id);
-      if (draft) {
-        // First text on a draft is what creates the thread in the file.
-        commentDrafts.delete(id);
-        void commentCreate(path, draft.line, draft.quote, text).then(async () => {
-          // The sidecar has only just come into existence, so the watcher armed
-          // when this document was opened isn't watching it yet. Re-registering
-          // the file rebuilds the watcher over both paths — otherwise the very
-          // first agent reply would arrive with nothing listening for it.
-          await invoke('register_open_file', { path }).catch(() => {});
-          await reloadComments();
-        });
-        return;
-      }
-      void commentReply(path, id, text).then(reloadComments);
+      const entry = commentPending.get(id) ?? {
+        path,
+        text,
+        saved: commentEditable.get(id) ?? '',
+        timer: null,
+      };
+      entry.path = path;
+      entry.text = text;
+      if (entry.timer !== null) clearTimeout(entry.timer);
+      entry.timer = setTimeout(() => {
+        entry.timer = null;
+        void writeComment(id);
+      }, COMMENT_AUTOSAVE_MS);
+      commentPending.set(id, entry);
+    },
+    flush: (id) => {
+      void writeComment(id);
+    },
+    sendNow: (id) => {
+      // Deliberately not "flush, then let the timer do its thing": the button
+      // says now, and what it does is exactly what the countdown would have
+      // done when it ran out.
+      void fireCommentCountdown(id);
     },
     resolve: (id) => {
       const path = fileState.filePath;
       if (!path) return;
+      forgetCommentPending(id);
+      // A pause on a resolved thread has nothing left to hand over.
+      disarmCommentCountdown(id);
       if (commentDrafts.delete(id)) {
         // Nothing was ever written; just drop the card.
         void reloadComments();
@@ -471,6 +886,40 @@
    * reaches every window, and only the focused one should answer for its own
    * document. The toast is the whole point — a clipboard write is invisible.
    */
+  /**
+   * Put the "here is the document I'm looking at" prompt on the clipboard —
+   * the top-left button's whole job (#29).
+   *
+   * No focus guard, unlike `copyWatchCommand` below: this is a click inside
+   * this window's own chrome, so which document is meant is never in question.
+   */
+  function copyBindPrompt(): void {
+    const path = fileState.filePath;
+    if (!path) {
+      toasts.push({ kind: 'ai-bind-copied', saved: false });
+      return;
+    }
+    void navigator.clipboard
+      .writeText(buildBindPrompt(path))
+      .then(() => toasts.push({ kind: 'ai-bind-copied', saved: true }))
+      .catch(() => toasts.push({ kind: 'ai-bind-copied', saved: false }));
+  }
+
+  /**
+   * Expand the JSON the offer toast is pointing at, or — when invoked from the
+   * hotkey or the menu with no offer pending — the selection, falling back to
+   * the whole document.
+   *
+   * One ordinary transaction either way, so Cmd+Z undoes it in one press. The
+   * document is never reformatted without one of these three explicit acts.
+   */
+  function formatJson(fromOffer: boolean): void {
+    const view = editorHandle?.view;
+    if (!view) return;
+    if (fromOffer && applyJsonOffer(view)) return;
+    formatJsonCommand(view);
+  }
+
   function copyWatchCommand(): void {
     if (!document.hasFocus()) return;
     const path = fileState.filePath;
@@ -504,29 +953,59 @@
     startCommentFromSelection();
   }
 
-  /** The actual work, with no focus guard — see `createCommentFromSelection`. */
-  function startCommentFromSelection(): void {
+  /**
+   * The actual work, with no focus guard — see `createCommentFromSelection`.
+   *
+   * `target` overrides the document selection. The live-render toolbar passes
+   * one for text selected inside a table cell: that selection lives in the
+   * widget's nested editing host, so `state.selection` knows nothing about it
+   * and the range has been resolved back to the source by `cell-anchor.ts`
+   * (#42).
+   */
+  function startCommentFromSelection(target?: { from: number; to: number }): void {
     const view = editorHandle?.view;
     if (!view || !fileState.filePath) return;
-    const range = view.state.selection.main;
+    const range = target ?? view.state.selection.main;
+    const empty = range.from === range.to;
     const line = view.state.doc.lineAt(range.from);
-    const quote = range.empty
-      ? line.text.trim()
-      : view.state.sliceDoc(range.from, range.to).trim();
+    const raw = empty ? line.text : view.state.sliceDoc(range.from, range.to);
+    const quote = raw.trim();
     if (!quote) return;
+
+    // Exact document range of the quote. The quote is trimmed, so the range
+    // has to skip the same leading whitespace — otherwise the highlight and
+    // the stored context would both be off by the indentation of the line.
+    const quoteFrom = (empty ? line.from : range.from) + (raw.length - raw.trimStart().length);
+    const quoteTo = quoteFrom + quote.length;
+    // Recorded now, while the exact position is known: after this the only way
+    // back to it is a search, and a search needs something to disambiguate on.
+    const context = anchorContextAt(view.state.doc.toString(), quoteFrom, quoteTo);
 
     commentDraftSeq += 1;
     const id = `draft:${commentDraftSeq}`;
-    commentDrafts.set(id, { line: line.number, quote });
+    commentDrafts.set(id, { line: line.number, quote, context });
     view.dispatch({
       effects: addAiComment.of({
-        thread: { id, status: 'open', line: line.number, quote, replies: [] },
-        pos: range.from,
+        thread: {
+          // See the draft branch of `reloadComments`: a card being written is
+          // paused, and says so.
+          id,
+          status: 'paused',
+          line: line.number,
+          quote,
+          prefix: context.prefix,
+          suffix: context.suffix,
+          replies: [],
+        },
+        pos: quoteFrom,
         // A draft already knows its exact range — no quote search needed, and
         // the fragment gets highlighted from the moment the card appears.
-        to: range.empty ? line.to : range.to,
+        to: quoteTo,
         orphaned: false,
         actions: commentActions,
+        // The point of the hotkey is to start writing. Leaving the caret in
+        // the document means every comment costs an extra click (#22).
+        focusAt: 0,
       }),
     });
   }
@@ -672,7 +1151,9 @@
     }
 
     // cmd === 'edit'
-    const repl = computeReplacement(view.state.doc.toString(), payload.content ?? '');
+    const oldContent = view.state.doc.toString();
+    const newContent = payload.content ?? '';
+    const repl = computeReplacement(oldContent, newContent);
     if (!repl) {
       await respondToAi(payload.id, { ok: true, changed_lines: [] });
       return;
@@ -682,7 +1163,13 @@
     // CM6's automatic selection mapping intact and preserves scroll position.
     const changes = ChangeSet.of(repl, view.state.doc.length);
     const scrollEffect = view.scrollSnapshot().map(changes);
-    const highlightRange = { from: repl.from, to: repl.from + repl.insert.length };
+    // The *change* is deliberately one coalescing span; the *highlight* is not.
+    // Edits scattered across the file would otherwise wash everything between
+    // the first and last of them (issue #27). Positions must be post-change,
+    // since the highlight field reads effect values in the end state — hence
+    // the diff runs against `newContent` rather than the live doc.
+    const lineRanges = computeChangedLineRanges(oldContent, newContent);
+    const highlightRanges = docRangesForLineRanges(Text.of(newContent.split('\n')), lineRanges);
     view.dispatch({
       changes,
       // With `show` the user is being led to the change — bring the caret
@@ -690,7 +1177,7 @@
       ...(payload.show ? { selection: { anchor: repl.from } } : {}),
       effects: [
         ...(scrollEffect ? [scrollEffect] : []),
-        setAiHighlights.of([highlightRange]),
+        setAiHighlights.of(highlightRanges),
         ...(payload.show ? [EditorView.scrollIntoView(repl.from, { y: 'center' })] : []),
       ],
       // Unlike an external-reload or an untitled-restore transaction, an AI
@@ -703,7 +1190,9 @@
 
     await respondToAi(payload.id, {
       ok: true,
-      changed_lines: [changedLineRanges(view.state, repl)],
+      // A pure deletion produces no new lines to report, so fall back to the
+      // single span's line (`view.state` is post-change after the dispatch).
+      changed_lines: lineRanges.length > 0 ? lineRanges : [changedLineRanges(view.state, repl)],
     });
   }
 
@@ -750,6 +1239,18 @@
     if (fileState.isDirty && fileState.filePath) {
       performSave();
     }
+    // Leaving md-mini ends every running comment pause on the spot.
+    //
+    // Two reasons, and the second is the load-bearing one. Someone who switches
+    // away from a comment they were writing has almost always switched to the
+    // agent they were writing it for, and sitting out the rest of the countdown
+    // there helps nobody. And a window about to be closed or quit is usually
+    // one that lost focus first — so this is the earliest of the several places
+    // that keep a thread from staying `paused` with nobody left to un-pause it.
+    // The later ones are in Rust (`CloseRequested`, `save_session_on_exit`),
+    // and the last one is the deadline on the marker line, which needs no
+    // process at all.
+    commitAllCommentPauses();
   }
 
   onMount(() => {
@@ -853,6 +1354,12 @@
           break;
         case 'ai_watch_command':
           copyWatchCommand();
+          break;
+        case 'format_json':
+          // The native accelerator wins over the webview, so in the app this
+          // is the path that actually runs for Cmd+Shift+J; the CM6 binding in
+          // json-paste.ts covers the browser build of the same editor.
+          if (document.hasFocus()) formatJson(false);
           break;
       }
 
@@ -1060,10 +1567,16 @@
     const v = editorHandle?.view;
     if (!v) return;
 
+    // Folds are a preview-mode affordance: their only indicator is the
+    // heading line decoration, which the reconfigure below removes. Left
+    // folded, a Raw document silently hides the sections the user went to Raw
+    // to read. Unfold on the way in, refold on the way out.
     if (e === 'raw') {
+      stashAndUnfoldAll(v);
       v.dispatch({ effects: previewCompartment.reconfigure([]) });
       return;
     }
+    restoreStashedFolds(v);
 
     if (activePreview !== 'markdown') {
       const plugin = activePreview === 'shell' ? shellSecretsPlugin
@@ -1087,7 +1600,7 @@
         // item, minus the focus guard: a click in this window's own toolbar is
         // unambiguous about which document is meant.
         ...(liveRender
-          ? liveRenderExtensions({ onComment: () => startCommentFromSelection() })
+          ? liveRenderExtensions({ onComment: (range) => startCommentFromSelection(range) })
           : []),
       ]),
     });
@@ -1100,6 +1613,18 @@
     void activePreview;
     applyPreviewConfig();
   });
+
+  // Keep the editor's idea of which file it holds in step with the store.
+  //
+  // An effect rather than a call inside `handleOpen`, because the path also
+  // changes on Save As and on New, and the JSON formatter's fence decision has
+  // to be right immediately in all three — a stale path here means a ```
+  // line offered into a `.py` buffer.
+  $effect(() => {
+    const path = fileState.filePath;
+    void editorHandle?.view;
+    editorHandle?.setDocumentPath(path ?? null);
+  });
 </script>
 
 <main style="font-size: {zoom.level}rem;">
@@ -1107,10 +1632,14 @@
     bind:handle={editorHandle}
     onchange={handleChange}
     onAiHighlightVisibilityChange={handleAiHighlightVisibilityChange}
+    onJsonOffer={() => toasts.push({ kind: 'json-offer' })}
+    onJsonOfferWithdrawn={() => toasts.dismissKind('json-offer')}
   />
 </main>
 
 <AiHintBadge visible={showAiHint} />
+
+<AiBindButton onclick={copyBindPrompt} />
 
 {#if showRecentFiles}
   <RecentFilesPanel
@@ -1122,6 +1651,7 @@
 
 <ToastStack
   store={toasts}
+  onFormatJson={() => formatJson(true)}
   onDismiss={(entry) => {
     // Closing the update notice closes it everywhere, not just here.
     if (entry.payload.kind === 'update') {

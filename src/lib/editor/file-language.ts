@@ -40,3 +40,37 @@ export function findCodeLanguage(basename: string, ext: string): LanguageDescrip
   const e = ext.toLowerCase();
   return languages.find(l => l.extensions.includes(e)) ?? null;
 }
+
+/**
+ * Extensions md-mini opens as a **markdown-flavoured** buffer: live preview on,
+ * the document rendered rather than syntax-highlighted.
+ *
+ * `''` is in the set because a path with no extension lands here. Note the
+ * extension is taken the way `App.svelte` takes it — `path.split('.').pop()` —
+ * so `.zshrc` yields `zshrc`, not `''`, and a shell config is correctly not
+ * markdown.
+ *
+ * Lives here rather than inline in `App.svelte` so the project has exactly one
+ * answer to "what kind of file is this".
+ */
+export const MARKDOWN_EXTENSIONS = new Set(['md', 'markdown', 'txt', '']);
+
+/**
+ * True when this path opens as a markdown buffer. `null` means untitled, which
+ * is what a new window is, and a new window is markdown.
+ *
+ * Mirrors `App.svelte`'s open-file branch exactly — env files first, then the
+ * extension set, then everything else is a code buffer — and is tested against
+ * all three outcomes so the two cannot drift.
+ *
+ * The caller that must not get this wrong is the JSON formatter's fence
+ * decision (#47): a ``` line inserted into a `.py` or `.cs` buffer is not a
+ * cosmetic mistake, it is a syntax error written into the user's source.
+ */
+export function isMarkdownBuffer(path: string | null | undefined): boolean {
+  if (!path) return true;
+  const basename = path.split('/').pop()?.toLowerCase() ?? '';
+  const ext = path.split('.').pop()?.toLowerCase() ?? '';
+  if (basename.startsWith('.env') || ext === 'env') return false;
+  return MARKDOWN_EXTENSIONS.has(ext);
+}

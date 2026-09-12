@@ -1078,9 +1078,10 @@ JSON RESPONSE CONTRACT
     ask --multi --free-text, both:    {"ok":true,"answers":["A"],"custom":"and also this"}
     error (any verb):                 {"ok":false,"error":"target not found"}
 
-  changed_lines is a [start,end] pair, 1-based inclusive line numbers in the
-  resulting document — one pair, since md-mini computes a single minimal
-  common-prefix/common-suffix span, not a multi-hunk diff.
+  changed_lines holds one [start,end] pair per changed region, 1-based
+  inclusive line numbers in the resulting document. Edits scattered across the
+  file report several pairs rather than one span covering everything between
+  them; a block that was rewritten wholesale is reported in full.
 
 EXIT CODES
     0   Request reached md-mini and succeeded ("ok":true).
@@ -1150,6 +1151,8 @@ The user can also comment on a fragment of a document and expect you to answer. 
 - `mdmini question [<file>]` — list open threads (id, status, anchor, quoted fragment, replies). Without a path, everything under the current directory.
 - `echo "reply" | mdmini answer <file> --id c-7f3a2c` — append your reply and mark the thread answered.
 - `mdmini watch [<dir>]` — long-running; prints one line per newly-open thread.
+
+A thread the user is still typing has `status=paused` and is deliberately invisible to both `question` and `watch` — you are told about it about twenty seconds after they stop typing, or the moment they press "send now". So a comment can exist for half a minute before you hear about it, and that is working as intended, not a delivery failure.
 
 If your harness can react to a stream (Claude Code: `Monitor({command: "mdmini watch", description: "new mdmini comments", persistent: true})`), arm it once per session and you get woken in this same session, with your context intact, instead of polling. `persistent: true` matters: without it the monitor dies after five minutes and its silence looks exactly like "no comments". Also add a `Stop` hook running `mdmini question` that blocks the turn while anything is open — a monitor that emits too much is stopped by the harness without telling you, and the hook is what stops comments piling up unseen.
 

@@ -1,7 +1,5 @@
 import { keymap, drawSelection, highlightActiveLine, ViewPlugin } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
-import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
-import { languages } from '@codemirror/language-data';
 import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { searchKeymap } from '@codemirror/search';
 import { Compartment, EditorState, type Extension } from '@codemirror/state';
@@ -9,10 +7,11 @@ import { EditorView } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import { codeFolding, foldKeymap, syntaxHighlighting } from '@codemirror/language';
 import { classHighlighter } from '@lezer/highlight';
-import { Strikethrough, Table } from '@lezer/markdown';
 import { editorTheme } from '../theme/editor-theme';
+import { markdownExtension } from './markdown-language';
 import { markdownKeybindings } from './keybindings';
 import { listContinuation } from './autocomplete';
+import { codeBlockExitKeymap } from './code-block-exit';
 import { slashCommands } from './slash-commands';
 import { livePreviewPlugin } from './preview/plugin';
 import { tableModeField } from './preview/table-state';
@@ -20,10 +19,12 @@ import { mermaidViewField } from './preview/mermaid-state';
 import { tableSelectionSnapOut } from './preview/table-selection';
 import { hoverBlockMenu } from './hover-menu';
 import { markdownFoldService, headingFoldClick, headingFoldStatePlugin } from './folding';
+import { foldMemory } from './fold-memory';
 import { headingSlugsField, navigateToHeading } from './heading-slugs';
 import { aiHighlightField, aiHighlightKeymap } from './ai-highlight';
 import { aiAskField } from './ai-ask';
 import { aiCommentAttention, aiCommentField } from './ai-comment';
+import { jsonFormatKeymap, jsonOfferField } from './json-paste';
 
 export const previewCompartment = new Compartment();
 export const languageCompartment = new Compartment();
@@ -54,21 +55,20 @@ export function createExtensions(): Extension[] {
     aiAskField,
     aiCommentField,
     aiCommentAttention,
+    jsonOfferField,
+    jsonFormatKeymap,
     lineGlowCompartment.of([]),
     drawSelection(),
+    // Prec.highest, and it has to sit outside previewCompartment: the two-Enter
+    // exit from a fenced code block applies to every engine (#52).
+    codeBlockExitKeymap,
     listContinuation(),
     slashCommands(),
     autocompletion(),
     markdownKeybindings(),
     history(),
     closeBrackets(),
-    languageCompartment.of(
-      markdown({
-        base: markdownLanguage,
-        codeLanguages: languages,
-        extensions: [Strikethrough, Table],
-      })
-    ),
+    languageCompartment.of(markdownExtension()),
     keymap.of([
       ...foldKeymap,
       ...defaultKeymap,
@@ -78,6 +78,7 @@ export function createExtensions(): Extension[] {
     ]),
     markdownFoldService,
     codeFolding(),
+    foldMemory,
     headingFoldClick,
     headingFoldStatePlugin,
     syntaxHighlighting(classHighlighter),

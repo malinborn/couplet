@@ -29,6 +29,10 @@ tauri-plugin-dialog = "2.6.0"
 tauri-plugin-shell = "2"
 dirs = "6.0.0"
 cocoa = "0.26"
+# Used by the atomic save path in `commands.rs`: `copyfile` (ACL + xattr),
+# `fchown`, `fchmod`. Already in the tree transitively via `cocoa`; declared
+# directly because `commands.rs` calls it by name.
+libc = "0.2"
 # DEV-ONLY agent driving bridge. `optional = true` + the `mcp-bridge` feature
 # below means that with the feature off this crate is NOT COMPILED AT ALL — it is
 # absent from the binary, not merely disabled at runtime.

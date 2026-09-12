@@ -8,7 +8,16 @@
      * The update notice uses this to dismiss itself in every window at once.
      */
     onDismiss,
-  }: { store: ToastStore; onDismiss?: (entry: ToastEntry) => void } = $props();
+    /**
+     * Applies the pending JSON expansion (#30). Supplied by the window shell,
+     * which owns the editor handle — this component stays presentational.
+     */
+    onFormatJson,
+  }: {
+    store: ToastStore;
+    onDismiss?: (entry: ToastEntry) => void;
+    onFormatJson?: () => void;
+  } = $props();
 
   function dismiss(entry: ToastEntry): void {
     store.dismiss(entry.id);
@@ -41,8 +50,19 @@
 {#if store.toasts.length > 0}
   <div class="md-toast-stack">
     {#each store.toasts as toast (toast.id)}
-      <div class="md-toast">
-        {#if toast.payload.kind === 'update'}
+      <div class="md-toast" class:md-toast-alarm={toast.payload.kind === 'save-error'}>
+        {#if toast.payload.kind === 'save-error'}
+          <!-- Names the file and quotes the OS, because the two questions this
+               toast has to answer are "which document" and "why" — and the
+               reason is usually actionable (permissions, a full disk, a volume
+               that went away). It carries no action of its own: the next
+               successful save withdraws it. -->
+          <span class="md-toast-text">
+            <strong>Could not save {toast.payload.fileName}</strong>
+          </span>
+          <span class="md-toast-highlight">{toast.payload.message}</span>
+          <span class="md-toast-dim">Your edits are still here — fix the cause, then press <kbd>⌘S</kbd></span>
+        {:else if toast.payload.kind === 'update'}
           <span class="md-toast-text">
             <strong>mdmini {toast.payload.latest}</strong> available
             <span class="md-toast-dim">(you have v{toast.payload.current})</span>
@@ -74,6 +94,36 @@
           >
             Getting Started
           </button>
+        {:else if toast.payload.kind === 'json-offer'}
+          <!-- The offer, not the act. Nothing has changed in the document at
+               this point and nothing will until this button is clicked — a
+               false positive costs exactly one ignored toast. -->
+          <span class="md-toast-text">
+            <strong>That looks like JSON</strong>
+            <span class="md-toast-dim">— expand it?</span>
+          </span>
+          <button
+            class="md-toast-cmd md-toast-action"
+            onclick={() => { onFormatJson?.(); dismiss(toast); }}
+          >
+            Format
+          </button>
+          <span class="md-toast-dim">or <kbd>⇧⌘J</kbd></span>
+        {:else if toast.payload.kind === 'ai-bind-copied'}
+          <!-- Same shape as the watch notice below, and for the same reason:
+               the clipboard write is invisible, and the copy is only half the
+               action — the prompt still has to reach an agent. -->
+          {#if toast.payload.saved}
+            <span class="md-toast-text">
+              <strong>Prompt copied</strong>
+              <span class="md-toast-dim">— send it to your AI agent to connect it to this file</span>
+            </span>
+          {:else}
+            <span class="md-toast-text">
+              <strong>Save the file first</strong>
+              <span class="md-toast-dim">— an agent needs a path to open</span>
+            </span>
+          {/if}
         {:else if toast.payload.kind === 'ai-watch-copied'}
           <!-- Says what to do next, not just that a copy happened: the
                clipboard is only half the action — the prompt still has to be

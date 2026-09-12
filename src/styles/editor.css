@@ -1,10 +1,146 @@
-/* Headings */
-.cm-md-h1 { font-size: 2em; font-weight: 700; color: var(--color-heading); line-height: 1.3; padding: 0.67em 0 0; }
-.cm-md-h2 { font-size: 1.6em; font-weight: 700; color: var(--color-heading); line-height: 1.3; padding: 0.5em 0 0; }
-.cm-md-h3 { font-size: 1.3em; font-weight: 600; color: var(--color-heading); line-height: 1.4; }
-.cm-md-h4 { font-size: 1.1em; font-weight: 600; color: var(--color-heading); }
-.cm-md-h5 { font-size: 1em; font-weight: 600; color: var(--color-heading); }
-.cm-md-h6 { font-size: 0.9em; font-weight: 600; color: var(--color-heading); }
+/* Headings
+ *
+ * Three axes move together on every step — size, weight and colour — because
+ * no single one of them survives all four themes: the light theme's serif
+ * (Merriweather) ships only 400 and 700, so weight alone collapses there, and
+ * `color-mix` is not available on older WebKit. Each rule therefore states a
+ * plain colour first and refines it, so the worst case is the old flat
+ * heading colour rather than an unstyled line.
+ *
+ * The h1:h2 size ratio is 1.38 (it was 1.25, which read as "the same size").
+ */
+.cm-md-h1 {
+  font-size: 2.2em;
+  font-weight: 800;
+  color: var(--heading-tone-1, var(--color-heading));
+  line-height: 1.25;
+  letter-spacing: -0.025em;
+  padding: 0.8em 0 0.1em;
+}
+.cm-md-h2 {
+  font-size: 1.6em;
+  font-weight: 700;
+  color: var(--heading-tone-2, var(--color-heading));
+  line-height: 1.3;
+  letter-spacing: -0.014em;
+  padding: 0.7em 0 0.05em;
+}
+.cm-md-h3 {
+  font-size: 1.25em;
+  font-weight: 700;
+  color: var(--heading-tone-3, var(--color-heading));
+  color: var(--heading-tone-3, color-mix(in oklab, var(--color-heading) 88%, var(--text-primary)));
+  line-height: 1.4;
+  letter-spacing: -0.005em;
+  padding: 0.55em 0 0;
+}
+.cm-md-h4 {
+  font-size: 1.05em;
+  font-weight: 700;
+  color: var(--heading-tone-4, var(--color-heading));
+  color: var(--heading-tone-4, color-mix(in oklab, var(--color-heading) 62%, var(--text-primary)));
+  padding: 0.5em 0 0;
+}
+.cm-md-h5 {
+  font-size: 0.95em;
+  font-weight: 700;
+  color: var(--heading-tone-5, var(--text-subtle));
+  letter-spacing: 0.045em;
+  padding: 0.45em 0 0;
+}
+.cm-md-h6 {
+  font-size: 0.85em;
+  font-weight: 700;
+  color: var(--heading-tone-6, var(--text-muted));
+  letter-spacing: 0.1em;
+  padding: 0.4em 0 0;
+}
+
+/* Heading tone scheme — the theme declares it, these rules only consume it.
+ *
+ * A theme sets `--heading-tone-1..6` (solid colour per level) and may add
+ * `--heading-grad-1..6` (a gradient for that level). Nothing here knows which
+ * theme is active, so a new theme is a new `*.css` in `src/lib/theme/`, never
+ * an edit to this block. Both variables are optional: without them the rules
+ * above fall back to the old flat heading colour.
+ *
+ * Four things this has to survive:
+ *
+ * 1. No `background-clip: text` → invisible text. Everything that paints the
+ *    glyphs lives inside `@supports`; outside it only `color` above applies,
+ *    so the degraded state is a readable solid tone.
+ * 2. Gradient stretches over the element box, not the glyphs. `.cm-line` is
+ *    the full editor width, so a box-sized gradient would make a three-word
+ *    heading show only its first slice and would change with window width.
+ *    Instead the sweep is a fixed length in `em` of the heading's own font
+ *    size (`--heading-grad-span`): the same colour travel per character at
+ *    every level and every window size. Past the sweep the `background-color`
+ *    (the level's solid tone, which is also the gradient's last stop) takes
+ *    over, so a long heading settles into its base tone instead of vanishing.
+ * 3. `.cm-activeLine` also paints a background, and at equal specificity CM6's
+ *    injected `<style>` can win — its faint glow would then be what gets
+ *    clipped to the glyphs, i.e. near-invisible text. `.cm-content` in the
+ *    selector puts these rules decisively above it.
+ * 4. `-webkit-text-fill-color` is transparent for the line, so `color` stays
+ *    real (caret fallback, `currentColor`) — but it inherits, so the fold
+ *    arrow and inline children that carry their own colour restore it.
+ */
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .cm-content .cm-line.cm-md-h1,
+  .cm-content .cm-line.cm-md-h2,
+  .cm-content .cm-line.cm-md-h3,
+  .cm-content .cm-line.cm-md-h4,
+  .cm-content .cm-line.cm-md-h5,
+  .cm-content .cm-line.cm-md-h6 {
+    background-repeat: no-repeat;
+    background-size: var(--heading-grad-span, 18em) 100%;
+    background-position: 0 0;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    /* A transparent text fill is exactly the state in which a caret that
+     * takes its colour from the text disappears. It does not here, and not by
+     * luck: `drawSelection()` ships `.cm-line { caret-color: transparent
+     * !important }` and draws the caret as a `.cm-cursor` div tinted from
+     * `--color-caret-*` — measured present and correctly sized inside all six
+     * levels. This declaration loses to that `!important`; it only becomes
+     * load-bearing if `drawSelection()` ever leaves setup.ts. */
+    caret-color: var(--color-cursor);
+  }
+  .cm-content .cm-line.cm-md-h1 {
+    background-color: var(--heading-tone-1, var(--color-heading));
+    background-image: var(--heading-grad-1, none);
+  }
+  .cm-content .cm-line.cm-md-h2 {
+    background-color: var(--heading-tone-2, var(--color-heading));
+    background-image: var(--heading-grad-2, none);
+  }
+  .cm-content .cm-line.cm-md-h3 {
+    background-color: var(--heading-tone-3, var(--color-heading));
+    background-image: var(--heading-grad-3, none);
+  }
+  .cm-content .cm-line.cm-md-h4 {
+    background-color: var(--heading-tone-4, var(--color-heading));
+    background-image: var(--heading-grad-4, none);
+  }
+  .cm-content .cm-line.cm-md-h5 {
+    background-color: var(--heading-tone-5, var(--text-subtle));
+    background-image: var(--heading-grad-5, none);
+  }
+  .cm-content .cm-line.cm-md-h6 {
+    background-color: var(--heading-tone-6, var(--text-muted));
+    background-image: var(--heading-grad-6, none);
+  }
+
+  /* Transparent fill inherits. The fold arrow and anything inside a heading
+   * that has its own colour (link, inline code, a bold span) paint themselves
+   * again on top of the clipped background. */
+  :is(.cm-md-h1, .cm-md-h2, .cm-md-h3, .cm-md-h4, .cm-md-h5, .cm-md-h6)::after,
+  :is(.cm-md-h1, .cm-md-h2, .cm-md-h3, .cm-md-h4, .cm-md-h5, .cm-md-h6)
+    :is(.cm-md-link, .cm-md-inline-code, .cm-md-strikethrough, .tok-meta) {
+    -webkit-text-fill-color: currentColor;
+  }
+}
 
 /* Inline formatting */
 .cm-md-bold { font-weight: 700; color: var(--color-bold); }
@@ -25,11 +161,53 @@
   cursor: pointer;
 }
 
-/* Lists */
+/* Lists
+ *
+ * Nesting indent. One depth is one step of `--list-indent-step`, and nothing
+ * else: the item's own leading whitespace is collapsed to zero width by
+ * `.cm-md-list-indent`, because its width is marker-dependent in CommonMark
+ * (a child of `-` starts at column 2, of `1.` at 3, of `10.` at 4) and would
+ * otherwise make an ordered list step differently than a bullet one — #44.
+ *
+ * Two class names deep (`.cm-line.cm-md-list-dN`) to beat CM6's own generated
+ * `.ͼ1 .cm-line`. `em` so the step follows the zoom level; the `6px` restores
+ * the base `.cm-line` padding this shorthand replaces.
+ *
+ * Applied by `preview/lists.ts` whether or not the caret reveals the marker,
+ * so clicking into an item does not shift it sideways.
+ */
+.cm-content {
+  --list-indent-step: 1.7em;
+}
+.cm-line.cm-md-list-d2 { padding-left: calc(6px + var(--list-indent-step)); }
+.cm-line.cm-md-list-d3 { padding-left: calc(6px + 2 * var(--list-indent-step)); }
+.cm-line.cm-md-list-d4 { padding-left: calc(6px + 3 * var(--list-indent-step)); }
+.cm-line.cm-md-list-d5 { padding-left: calc(6px + 4 * var(--list-indent-step)); }
+.cm-line.cm-md-list-d6 { padding-left: calc(6px + 5 * var(--list-indent-step)); }
+
+.cm-md-list-indent {
+  font-size: 0;
+}
+
+/* The marker column. Fixed width per list (`listMarkColumns`) and right
+ * aligned, the way an <ol> lays its numbers out, so `9.` and `10.` — and a
+ * revealed `-` and its bullet widget — all leave their text on one column. */
+.cm-md-list-mark,
+.cm-md-bullet {
+  display: inline-block;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.cm-md-list-mark-w2 { min-width: 2ch; }
+.cm-md-list-mark-w3 { min-width: 3ch; }
+.cm-md-list-mark-w4 { min-width: 4ch; }
+
 .cm-md-bullet {
   color: var(--color-list-marker);
+}
+
+.cm-md-bullet-glyph {
   font-size: 1.2em;
-  margin-right: 0.3em;
 }
 
 .cm-md-checkbox {
@@ -165,7 +343,23 @@
 .tok-attributeValue { color: #f6c177; }
 .tok-function { color: #eb6f92; }
 .cm-md-code-line .tok-heading { color: #c4a7e7; font-weight: bold; }
-.tok-link { color: #9ccfd8; text-decoration: underline; }
+/* `.tok-link` is scoped to code for the same reason `.tok-heading` is.
+ *
+ * These token colours exist for syntax highlighting inside code, but the
+ * markdown parser tags its own `Link` nodes `link` as well, so an unscoped
+ * rule reaches straight into the prose. And it painted things that are not
+ * links at all: `@lezer/markdown` emits a `Link` node for every `[` ... `]`
+ * pair, so `see [1] here`, `array[0]` and every bracket in a pretty-printed
+ * JSON array came out blue and underlined (#51).
+ *
+ * Removing the decoration was not enough on its own — the decoration and the
+ * highlighter are two separate painters over the same characters. Document
+ * links are styled by `.cm-md-link`, which `decorateLink` adds only for a link
+ * that actually resolves. */
+:is(.cm-md-code-line, .cm-code-file-mode) .tok-link {
+  color: #9ccfd8;
+  text-decoration: underline;
+}
 
 /* Syntax token colors — light theme */
 :root[data-theme$='light'] .tok-keyword { color: #7c3aed; }
@@ -186,12 +380,21 @@
 :root[data-theme$='light'] .tok-meta { color: #78716c; }
 :root[data-theme$='light'] .tok-function { color: #be123c; }
 :root[data-theme$='light'] .cm-md-code-line .tok-heading { color: #7c3aed; font-weight: bold; }
-:root[data-theme$='light'] .tok-link { color: #2563eb; text-decoration: underline; }
+:root[data-theme$='light'] :is(.cm-md-code-line, .cm-code-file-mode) .tok-link {
+  color: #2563eb;
+  text-decoration: underline;
+}
 
 /* Tables — line decorations */
 /* Gutter width = del circle (16px) + gap (2px) + drag (26px) + gap (4px) = 48px */
 .cm-line.cm-md-table-line {
   --table-row-gutter: 48px;
+  /* Полоса над таблицей, в которой живут кнопки колонок. Место реальное, а не
+   * «выехать за край»: у таблицы в самом верху документа наружу выезжать некуда,
+   * там её обрезал бы `overflow: hidden` на `.cm-content`. */
+  --table-col-gutter: 24px;
+  /* Полоса справа от таблицы под «+ колонка» / «+ строка». */
+  --table-side-gutter: 32px;
   font-family: var(--font-code);
   font-size: 0.9em;
   contain: inline-size;
@@ -217,9 +420,27 @@
 
 /* Widget wrapper for single-widget table */
 .cm-md-table-wrap {
-  flex: 1 1 auto;
+  /* `flex: 0 1 auto`, а не `1 1 auto`: обёртка обжимает таблицу вместо того,
+   * чтобы тянуться во всю ширину строки. Кнопки позиционируются абсолютно от
+   * неё, поэтому раньше они улетали к правому краю окна. */
+  flex: 0 1 auto;
   min-width: 0;
+  /* Оставляем справа место под кнопки — иначе широкая таблица выдавливает их
+   * за `.cm-content` и они обрезаются / дают горизонтальную прокрутку. */
+  max-width: calc(100% - var(--table-side-gutter));
   position: relative;
+}
+
+/* Полоса под кнопки колонок — padding строки-хоста, а НЕ виджета.
+ *
+ * Если положить её на `.cm-md-table-wrap`, бокс виджета станет выше таблицы, а
+ * `drawSelection` рисует прямоугольник выделения ровно по боксу виджета: над
+ * таблицей появлялась серая плашка `--color-selection` каждый раз, когда
+ * таблица выделена (например, после двойного клика по ячейке). На строке
+ * padding безопасен — это обычный CSS `.cm-line`, как у заголовков, и CM6
+ * честно учитывает его в height map. */
+.cm-line.cm-md-table-header {
+  padding-top: var(--table-col-gutter);
 }
 
 .cm-md-table-wrap[data-mode="wrap"] .cm-md-table {
@@ -240,6 +461,11 @@
   font-family: var(--font-code);
   font-size: 0.9em;
   line-height: 1.6;
+  /* Скруглённые углы = клип по padding-box. Он же режет всё, что выезжает за
+   * верхнюю грань таблицы, поэтому кнопки колонок живут СНАРУЖИ этого бокса —
+   * в `.cm-md-table-wrap`. Перенести скругление на строки нельзя: border-radius
+   * на `display: table-row` Chrome игнорирует (проверено на радиусе 20px —
+   * углы остаются прямыми). */
   border-radius: 4px;
   overflow: hidden;
 }
@@ -257,6 +483,18 @@
   word-break: normal;
   vertical-align: top;
   border-bottom: 1px solid var(--color-table-border);
+}
+
+/* Текст ячейки — вложенный editing host (иначе Chrome не даёт выделить текст
+ * внутри виджета, см. `makeWidgetTextSelectable`). Редактировать его нельзя —
+ * правка идёт через оверлей по двойному клику, — поэтому мигающая каретка тут
+ * врала бы. Подсветка выделения при этом рисуется как обычно. */
+.cm-md-table .cm-md-table-celltext {
+  caret-color: transparent;
+  outline: none;
+  cursor: text;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .cm-md-table .cm-md-table-row-ctrl {
@@ -373,7 +611,7 @@
 
 /* Delete button (−) — muted rose */
 .cm-md-table-row:hover .cm-md-table-btn-del,
-.cm-md-table-cell-has-ctrl:hover .cm-md-table-col-ctrl .cm-md-table-btn-del {
+.cm-md-table-col-ctrl .cm-md-table-btn-del {
   color: #c4657a;
   opacity: 0.5;
 }
@@ -399,7 +637,7 @@
 
 /* Drag handle (⠿) — neutral */
 .cm-md-table-row:hover .cm-md-table-btn-drag-row,
-.cm-md-table-cell-has-ctrl:hover .cm-md-table-col-ctrl .cm-md-table-btn-drag {
+.cm-md-table-col-ctrl .cm-md-table-btn-drag {
   color: #6e6a86;
   opacity: 0.5;
   cursor: grab;
@@ -425,7 +663,7 @@
 }
 
 :root[data-theme$='light'] .cm-md-table-row:hover .cm-md-table-btn-del,
-:root[data-theme$='light'] .cm-md-table-cell-has-ctrl:hover .cm-md-table-col-ctrl .cm-md-table-btn-del {
+:root[data-theme$='light'] .cm-md-table-col-ctrl .cm-md-table-btn-del {
   color: #c0415a;
 }
 
@@ -445,7 +683,7 @@
 }
 
 :root[data-theme$='light'] .cm-md-table-row:hover .cm-md-table-btn-drag-row,
-:root[data-theme$='light'] .cm-md-table-cell-has-ctrl:hover .cm-md-table-col-ctrl .cm-md-table-btn-drag {
+:root[data-theme$='light'] .cm-md-table-col-ctrl .cm-md-table-btn-drag {
   color: #a8a4c0;
 }
 
@@ -464,12 +702,12 @@
   border-radius: 11px;
 }
 
+/* «+ строка» — в той же правой полосе, что и «+ колонка» (прежние -68px были
+ * зазором под давно не отрисовываемую `.cm-md-table-btn-del-row`). */
 .cm-md-table-btn-add-row {
   position: absolute;
-  right: -68px;
+  right: -28px;
   bottom: 0.3em;
-  width: 30px;
-  border-radius: 11px;
   z-index: 1;
 }
 
@@ -504,46 +742,51 @@
   border-radius: 11px;
 }
 
-/* Show column controls above header cell — only the hovered cell */
-.cm-md-table-cell-has-ctrl {
-  /* Extend hover zone upward so mouse can reach the controls */
-  padding-top: 24px;
-  margin-top: -24px;
-}
-
+/* Кнопки колонки выезжают в полосу НАД строкой заголовка (`--table-col-gutter`
+ * на `.cm-md-table-wrap`), а не поверх неё: текст заголовка не закрыт, контрол
+ * виден целиком. Панель одна на таблицу и лежит в `.cm-md-table-wrap` — снаружи
+ * `overflow: hidden` таблицы, который раньше срезал её верхнюю половину. По
+ * какой колонке она стоит, решает `left`, который ставит JS на наведение
+ * (`createColCtrl` в tables.ts). */
 .cm-md-table-col-ctrl {
   position: absolute;
-  top: -8px;
-  left: 50%;
-  transform: translateX(-50%);
+  /* Выезжает в padding строки-хоста — он снаружи бокса виджета, поэтому отсчёт
+   * отрицательный. Ничего не режет: клип `.cm-md-table` остался внутри, а до
+   * `.cm-content` полоса принадлежит строке, даже если таблица в самом верху. */
+  top: calc(-1 * var(--table-col-gutter));
   display: flex;
   gap: 3px;
+  padding-bottom: 2px;
   pointer-events: none;
   opacity: 0;
-  transition: opacity 0.15s 0s;
+  transform: translateX(-50%) translateY(3px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
 }
 
-.cm-md-table-cell-has-ctrl:hover > .cm-md-table-col-ctrl {
+.cm-md-table-col-ctrl[data-visible='true'] {
   pointer-events: auto;
   opacity: 1;
-  transition-delay: 0s;
+  transform: translateX(-50%) translateY(0);
 }
 
-/* Keep controls visible briefly when mouse moves between cell and controls */
-.cm-md-table-col-ctrl:hover {
-  pointer-events: auto;
-  opacity: 1;
+/* Ручка колонки — 22px, ровно под высоту полосы (26px ручки строк сюда не
+ * влезают и потребовали бы более толстого отступа над каждой таблицей). */
+.cm-md-table-col-ctrl .cm-md-table-btn-drag {
+  width: 22px;
+  height: 22px;
 }
 
 .cm-md-table-col-ctrl .cm-md-table-btn {
-  opacity: 0.7;
+  opacity: 0.85;
 }
 
 .cm-md-table-col-ctrl .cm-md-table-btn:hover {
   opacity: 1;
 }
 
-/* Add column button (right of header) */
+/* Кнопка «+ колонка» — справа от самой правой колонки. Отсчёт идёт от
+ * `.cm-md-table-wrap`, которая теперь обжимает таблицу, поэтому кнопка следует
+ * за её фактической шириной. `top` учитывает полосу над таблицей. */
 .cm-md-table-btn-add-col {
   position: absolute;
   right: -28px;
@@ -614,13 +857,19 @@
   opacity: 1;
 }
 
+/* Поле ввода ячейки. Переменных `--color-bg` / `--color-text` /
+ * `--color-accent` в темах нет — они молча резолвились в ничто, поле было
+ * ПРОЗРАЧНЫМ, и вводимый текст рисовался поверх строк под ним. Метрики
+ * (шрифт, padding) поле забирает у самой ячейки в `showCellEditor`, чтобы
+ * буквы стояли там же, где стояли до двойного клика. */
 .cm-md-table-editor {
   font-family: var(--font-code);
-  font-size: 0.9em;
   line-height: 1.6;
-  background: var(--color-bg);
-  color: var(--color-text);
-  border: 1px solid var(--color-accent);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  /* `--color-checkbox` — единственный акцент, заданный во всех четырёх темах
+   * (в light `--color-heading` почти чёрный и читается как жирная рамка). */
+  border: 1px solid var(--color-checkbox);
   border-radius: 3px;
   padding: 0.2em 0.8ch;
   margin: 0;
@@ -630,6 +879,13 @@
   overflow: hidden;
   box-sizing: border-box;
   white-space: pre-wrap;
+}
+
+/* Пока ячейка редактируется, её отрисованный текст скрыт целиком, вместе с
+ * `<code>` / `<a>` внутри: прежний `color: transparent` на ячейке до них не
+ * доставал — у них свой цвет, — и они просвечивали сквозь поле ввода. */
+.cm-md-table .cm-md-table-cell-editing > .cm-md-table-celltext {
+  visibility: hidden;
 }
 
 /* ===== Heading fold toggle (inline ::after, right of text) ===== */
@@ -1433,15 +1689,38 @@
   background-color: var(--bg-base);
   background-image: linear-gradient(var(--ai-ask-bg), var(--ai-ask-bg));
   font-size: 0.9em;
-  /* Протяжённое выделение по документу не должно закрашивать карточку. */
+  /* Хром карточки — рамка, отступы, ряд кнопок — из выделения выключен:
+   * протяжённое выделение по документу не должно закрашивать карточку целиком.
+   * А вот текст внутри выделяться обязан. */
   -webkit-user-select: none;
   user-select: none;
 }
 
-/* Поле ввода — единственное место в карточке, где выделение текста нужно. */
-.cm-ai-comment-input:focus {
+/* Содержательный текст карточки: ответ агента, свой вопрос, автор и время,
+ * цитата в шапке. Формулировку регулярно нужно перенести в задачу, в чат, в
+ * коммит — а `user-select: none` на карточке не давал её даже выделить (#28).
+ *
+ * Именно эти элементы, а не карточка целиком: кнопки и рамка остаются вне
+ * выделения, поэтому протяжённое выделение по документу по-прежнему не
+ * закрашивает карточку как блок. */
+.cm-ai-comment-text,
+.cm-ai-comment-author,
+.cm-ai-comment-head,
+.cm-ai-comment-excerpt,
+.cm-ai-comment-input {
   -webkit-user-select: text;
   user-select: text;
+  cursor: text;
+}
+
+/* Эти блоки — вложенные editing hosts (иначе Chrome не даёт выделить в них
+ * текст, см. `makeWidgetTextSelectable`), но редактировать их нельзя, поэтому мигающая
+ * каретка в них врала бы. Выделение при этом красится как обычно. */
+.cm-ai-comment-text,
+.cm-ai-comment-author,
+.cm-ai-comment-head {
+  caret-color: transparent;
+  outline: none;
 }
 
 .cm-ai-comment-orphaned {
@@ -1454,8 +1733,25 @@
   margin-bottom: 0.4rem;
 }
 
+/* Завершённый ход — свой или ответ агента. Пока агент не ответил, реплика
+ * пользователя живёт не здесь, а в поле ввода (см. `splitThread`), поэтому
+ * «очерченный блок» здесь и означает ровно одно: это уже нельзя править.
+ *
+ * Отличается от активного поля сразу тремя вещами, а не оттенком: сплошная
+ * полоса слева, заливка и отсутствие рамки ввода. Разница должна читаться
+ * боковым зрением, без сравнения двух блоков рядом. */
 .cm-ai-comment-reply {
   margin-bottom: 0.4rem;
+  padding: 0.35rem 0.5rem;
+  border-left: 3px solid var(--ai-ask-border);
+  border-radius: 0 4px 4px 0;
+  background: var(--ai-ask-chip-bg);
+}
+
+/* Ответ агента — тот самый, ради которого всё и затевалось. Полоса акцентная,
+ * чтобы в треде из нескольких ходов глаз сразу находил ответ. */
+.cm-ai-comment-reply:last-of-type {
+  border-left-color: var(--ai-ask-accent);
 }
 
 .cm-ai-comment-author {
@@ -1467,15 +1763,45 @@
   white-space: pre-wrap;
 }
 
+/* Активная область. Всегда редактируема, отправлять ничего не надо — поэтому
+ * выглядит как место для письма, а не как поле формы: без заливки, высота по
+ * тексту, рамка тоньше и светлее, чем полоса у зафиксированного блока.
+ *
+ * `resize: none` и `overflow: hidden` — потому что высоту задаёт `grow()` в
+ * `ai-comment.ts`: блочный виджет, выросший мимо CM6, оставляет карту высот
+ * неверной, и ручной ресайз сделал бы ровно это. */
 .cm-ai-comment-input {
+  display: block;
+  box-sizing: border-box;
   width: 100%;
   margin: 0.3rem 0;
-  padding: 0.3rem 0.4rem;
-  border: 1px solid var(--ai-ask-border);
+  padding: 0.35rem 0.45rem;
+  border: 1px dashed var(--ai-ask-border);
   border-radius: 4px;
-  background: var(--ai-ask-chip-bg);
+  background: transparent;
   color: inherit;
   font: inherit;
+  line-height: 1.45;
+  min-height: 1.6em;
+  resize: none;
+  overflow: hidden;
+}
+
+/* В фокусе рамка становится сплошной и акцентной: «сюда сейчас пишут». */
+.cm-ai-comment-input:focus {
+  outline: none;
+  border-style: solid;
+  border-color: var(--ai-ask-accent);
+}
+
+/* Автосохранение невидимо, и именно эта невидимость порождала вопрос «а
+ * сохранилось ли». Подпись появляется после записи и через пару секунд
+ * уходит — постоянная надпись превратилась бы в шум. */
+.cm-ai-comment-saved {
+  margin-left: auto;
+  align-self: center;
+  opacity: 0.6;
+  font-size: 0.85em;
 }
 
 .cm-ai-comment-actions {
@@ -1510,6 +1836,43 @@
 
 .cm-ai-comment-button.cm-ai-comment-button-done:hover {
   background: var(--ai-ask-accent);
+}
+
+/* Отсчёт живёт внутри кнопки «send now» (#61). Снаружи он сообщал факт
+ * («sending in 13s»), кнопка — действие, и ничто не говорило, что это одно и
+ * то же событие: кнопка читалась как непонятно зачем нужная. Вместе они одна
+ * фраза — «нажми, либо само уйдёт через столько-то». Текст пишет приложение
+ * раз в секунду прямо в DOM: виджет ради отсчёта не перестраивается, иначе
+ * каретка выпрыгивала бы из поля ввода. */
+.cm-ai-comment-send-now:not(.cm-ai-comment-idle) {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+}
+
+.cm-ai-comment-countdown {
+  opacity: 0.75;
+  /* Моноширинные цифры: иначе кнопка дёргается по ширине на каждой секунде. */
+  font-variant-numeric: tabular-nums;
+}
+
+/* Отсчёт идёт — кнопка чуть заметнее прочих: это единственная в карточке
+ * кнопка, у которой прямо сейчас есть срок. */
+.cm-ai-comment-send-now:not(.cm-ai-comment-idle) {
+  border-color: var(--ai-ask-accent);
+}
+
+/* Момент между «сработало» и перестройкой карточки. Кнопка остаётся на месте,
+ * но уже ничего не ждёт от нажатия. */
+.cm-ai-comment-button.cm-ai-comment-sending {
+  cursor: default;
+  opacity: 0.7;
+}
+
+/* Пауза не идёт — кнопки «отправить сейчас» нет. Скрываем классом, а не
+ * пересборкой карточки. */
+.cm-ai-comment-idle {
+  display: none;
 }
 
 /* The fragment a thread is anchored to. The card alone states its quote but

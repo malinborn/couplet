@@ -43,7 +43,8 @@ Tables are the most complex decoration. Key design decisions and hard-won lesson
 
 Unlike other elements, tables do **NOT** use `cursorInRange` to toggle between preview and raw mode. Tables are always rendered as widgets. Reasons:
 - Clicking a table would cause a jarring visual shift (rendered → raw markdown)
-- Cell editing is done via double-click → floating `<textarea>` overlay
+- Cell editing is done via double-click → floating `<textarea>` overlay,
+  published to the rest of the app through `../cell-edit-session.ts`
 - Use `Cmd+E` to switch to raw mode for structural editing
 
 ### Delimiter Detection: Position, Not Regex
@@ -58,12 +59,41 @@ const isDelimiter = /^\s*\|[\s|:-]+\|\s*$/.test(line.text);
 
 The regex approach breaks when users type dashes in cells — the row gets classified as delimiter and hidden. The position-based approach is correct because GFM delimiter is always the 2nd row.
 
-### Widget `eq()` Must Compare `mode` and `ctx`
+### Comment Anchors Are Drawn by the Widget (#62)
+
+A comment anchored to text inside a table used to leave no visible trace. The
+`Decoration.mark` from `ai-comment.ts` is created correctly and maps through
+every edit — it just lands on a data line drawn at `height: 0`, so it is painted
+onto nothing. Only the card's excerpt said what the thread was about.
+
+The widget therefore repeats the highlight on the characters that are on screen:
+
+- `decorateTable` reads the fragments from `commentAnchorsIn(view.state, …)`.
+  The field stays the single source of truth; nothing keeps a copy that could
+  drift when the document is edited above the table.
+- `cellHighlights(cell, anchors)` clips each anchor to the cell and maps source
+  → rendered offsets with `visibleRangeForSource` (`live-render/cell-anchor.ts`,
+  the inverse of the function the selection toolbar already uses). Formatted
+  spans are atomic in that direction too, so an anchor storing `**and**`
+  highlights the word "and".
+- `renderCellContent` wraps the overlapping run in a span carrying the same
+  class and `data-comment-anchor` attribute as the document decoration — so it
+  looks identical to a highlight in prose, and the attention shimmer, which
+  finds its elements by that attribute, covers it with no extra code.
+- The anchors are part of `TableWidget.eq()` (see below), and `plugin.ts`
+  rebuilds when the comment field changes.
+
+`parseInlineMarkdown` lives in `inline-tokens.ts` rather than `tables.ts` for
+this: `cell-anchor.ts` needs it too, and leaving it here made the two files
+import each other.
+
+### Widget `eq()` Must Compare `mode`, `ctx` and Comment Anchors
 
 The new `TableWidget` (one per table, rendered on the header line via
-`Decoration.replace`) holds the wrap/full `mode` plus the entire
-`TableContext`. Its `eq()` must compare:
+`Decoration.replace`) holds the wrap/full `mode`, the entire `TableContext`, and
+the comment anchors inside the table. Its `eq()` must compare:
 - `mode` (changes from wrap → full and vice versa via the toggle button)
+- the anchors (id and both offsets) — they decide what the cells draw
 - ctx structural fields (`nodeFrom`, `nodeTo`, `rows.length`, `colCount`)
 - `ctx.colWidths` element-wise (so addRow placeholder sizing stays correct)
 - Per-row cell `text` and `from` positions
@@ -104,12 +134,16 @@ cells.push({ text: '', from: midpoint, to: midpoint });
 
 Double-click on a cell shows a `position: fixed` `<textarea>` over the cell:
 
-- Cell text is made `transparent` while editing (prevents text overlap)
+- The rendered cell text is hidden via the `cm-md-table-cell-editing` class
+- The textarea copies the cell's font, line-height and padding, so the glyphs
+  land where they were before the double-click (it lives in `document.body`,
+  where relative CSS units would resolve against the body font size instead)
 - Textarea is positioned using `getBoundingClientRect()` of the cell element
-- Auto-grows on every `input` event via `el.style.height = '0'; el.style.height = max(scrollHeight, rect.height) + 'px'`
+- Auto-grows on every `input` event, and the cell grows with it — see
+  "Cell Editing Expands the Cell, Not the Table" below
 - Cmd/Ctrl+Enter commits, Tab commits, Escape cancels, blur auto-commits after 50ms
 - Plain Enter inserts a newline (textarea default)
-- The original cell color is restored on cleanup via the `destroy()` helper
+- `destroy()` removes the class and the inline sizing it wrote on the cell
 
 Newlines and pipes roundtrip through encoding helpers in
 `table-encoding.ts`:
@@ -145,20 +179,107 @@ line and dispatches a redirect to either the header line (moved up) or the
 line after the table (moved down). The redirect is deferred via
 `queueMicrotask` to avoid recursing inside the updateListener.
 
-### `ignoreEvent()` Returns `false`
+### `ignoreEvent()` — `false` Everywhere Except Cell Text
 
-This means the widget absorbs all DOM events (CM6 doesn't process them). This prevents CM6 from placing the cursor inside the table on click, which would trigger decoration removal if `cursorInRange` were used.
+The sense of this method is the opposite of what the name suggests to most
+readers, and this file used to state it backwards. `eventBelongsToEditor` in
+`@codemirror/view` bails out of CM6's own handling when `ignoreEvent(event)`
+returns **`true`**. So returning `false`, as `TableWidget` does, means CM6
+**does** process the widget's events — which is how a click on a table still
+moves the document selection.
+
+The one exemption is a cell's text. It is wrapped in a
+`.cm-md-table-celltext` span that is its own nested editing host
+(`makeWidgetTextSelectable`, `../widget-text-selection.ts`), because a
+`contenteditable="false"` widget island is atomic to Chrome and a drag inside
+it selects nothing at all (#31; `user-select: text`,
+`-webkit-user-modify: read-only`, `contenteditable="plaintext-only"` and
+`user-select: all` were all measured and none of them help).
+
+For that subtree `ignoreEvent` returns `true`, so:
+
+- the browser's own selection stands instead of `MouseSelection` snapping it
+  out to the whole table through `atomicRanges`;
+- `copy` copies the visible cell text rather than the table's markdown source.
+
+The host refuses every input route (`beforeinput`, `dragstart`) — CM6 does not
+own that DOM, so an edit made there would go nowhere and vanish on the next
+rebuild — and hides its caret in CSS, since editing still happens through the
+double-click overlay. The hover controls stay **outside** the host: a
+`contenteditable` ancestor would swallow the mousedown that starts a column
+drag.
+
+Consequence worth knowing: while a cell selection is live, DOM focus is on the
+cell and `view.hasFocus` is `false`, and `state.selection` never learns the
+selection exists at all — CM6 does not process the drag, so it keeps whatever it
+held before. Anything asking "is the user working in this editor" must therefore
+ask about the hosts too, and anything wanting the selected text must map it back
+through `live-render/cell-anchor.ts` (#42). The cell's source range rides on the
+host as `data-source-from` / `data-source-to`, put there by
+`makeWidgetTextSelectable`; it is safe to freeze into the DOM only because the
+widget's `eq()` compares every cell `from`.
 
 ### Hover Controls (±)
 
 - **Toggle wrap/full (⇔)**: inline button in the header row's leading ctrl-cell
-- **Add row (+)**: inline button at the right of the table, plus floating "+" below
-- **Add column (+)**: `position: absolute` button at the right edge of the header row
+- **Add row (+)** and **add column (+)**: `position: absolute` against
+  `.cm-md-table-wrap`, in the `--table-side-gutter` strip right of the table
 - **Delete row (−)**: inline button in each data row's ctrl-cell (left of the drag handle, if >1 data rows)
-- **Delete column (−)**: positioned next to each header cell's drag handle inside `.cm-md-table-col-ctrl`
+- **Column drag (⠿) + delete column (−)**: one shared `.cm-md-table-col-ctrl`
+  panel per table, in the `--table-col-gutter` strip *above* the header row
 
 All buttons use `opacity: 0` → `opacity: 0.5` on parent hover → `opacity: 1` on button hover.
 Buttons use `mousedown` (not `click`) to fire before CM6 processes the event.
+
+#### Why the column panel is one element, positioned from JS (#48)
+
+`.cm-md-table` carries `border-radius` + `overflow: hidden` to clip its corner
+cells, and that clip is what used to cut the column buttons in half: they sat
+inside a header cell at `top: -8px`, i.e. above the table's own top edge. Three
+things are load-bearing in the fix and each one has a dead end behind it:
+
+- **The panel lives in `.cm-md-table-wrap`, not in the cell.** An element only
+  escapes an `overflow: hidden` ancestor if its containing block is *outside*
+  that ancestor. Moving the radius onto the rows instead would have kept the
+  panel in the cell — but **`border-radius` on `display: table-row` does
+  nothing in Chrome** (measured at 20px: corners stay square), so the clip has
+  to stay on the table.
+- **Column alignment is therefore JS.** `createColCtrl`'s `attach` reads the hovered
+  header cell's rect once per `mouseenter` and writes `left`. Nothing is read
+  per frame or per keystroke.
+- **The gutter is `padding-top` on `.cm-line.cm-md-table-header`, not on the
+  widget.** Padding on the wrap also reserves the space, but the wrap *is* the
+  widget's box and `drawSelection` draws the selection rectangle from that box
+  — a grey `--color-selection` bar then appears above the table whenever the
+  table is selected (e.g. right after a double-click). On the line the padding
+  is ordinary `.cm-line` CSS, the way headings already do it, and CM6 counts it
+  in the height map.
+
+The reserved strip is why a table at the very top of the document works: there
+is nothing to overflow into up there, so the widget owns the space instead of
+borrowing it.
+
+### Cell Editing Expands the Cell, Not the Table (#50)
+
+While a cell is being edited it grows to hold the overlay: `showCellEditor`
+writes `min-width` and `height` inline **on the active cell only**. The column
+widens and the row grows because `table-layout: auto` reacts to those two
+properties — no JS measures or syncs any other row, and no CM6 transaction is
+dispatched until the commit.
+
+Three details that are easy to get wrong:
+
+- **`height`, not `min-height`.** Chrome ignores `min-height` on
+  `display: table-cell` (CSS 2.1 leaves it undefined); `height` is treated as a
+  minimum. With `min-height` the cell stayed 32px under a 67px overlay.
+- **The width is computed once** (`cellEditWidth`, unit-tested). Recomputing it
+  on input would close the loop *cell width → field width → cell width*, which
+  is the per-keystroke table-geometry recalculation this is meant to avoid.
+  Only the height follows the text, and the overlay is repositioned from the
+  cell's fresh rect afterwards, since widening one column can reflow the others.
+- **The rendered text is hidden with `visibility` on the
+  `.cm-md-table-cell-editing` class**, not `color: transparent` on the cell:
+  `<code>` and `<a>` children set their own colour and used to show through.
 
 ### Visual Styles Live on Row and Wrap Elements, Not `.cm-line`
 
@@ -327,6 +448,71 @@ easy to get wrong:
   `return false` cases. The decoration pass does not descend into inline nodes,
   so the inner `_x_` of `**_x_**` is never hidden — marking it atomic would
   trap the caret in text the user can see.
+
+## Two selections in a table cell, and both get a toolbar
+
+A cell has two quite different editing surfaces. Both raise the format toolbar;
+what differs is what the buttons act on.
+
+1. **The rendered cell.** Drag across the text without double-clicking. The
+   drag lands in the nested editing host (`makeWidgetTextSelectable`), produces
+   no document selection at all, and `cell-anchor.ts` maps it back to a source
+   range. The buttons go through `toggleInlineFormatAt`, a range-taking sibling
+   of `toggleInlineFormat`.
+2. **The edit overlay.** Double-click opens a `<textarea>` over the cell,
+   holding the cell's *source*. The buttons go through
+   `toggleInlineFormatInText`, which runs the same `formatSpec` over a
+   throwaway state built from the overlay's text.
+
+Both carry B / I / S / `</>` / 💬 and no Link: `toggleLink` opens the
+inspector, which positions with `coordsAtPos` and would draw the URL editor at
+the table's top-left instead of at the cell (#57).
+
+Worth knowing when reading a bug report: the overlay draws a coloured border
+around the cell (`--color-checkbox`), so "the cell had a green outline" means
+case 2, not case 1.
+
+### The overlay toolbar: what #55 decided, and why #60 overrode it
+
+#55 shipped case 1 only, on three arguments. The first — "markers are visible
+and typeable in the overlay, so the toolbar's reason to exist is absent" — the
+owner overruled: double-click is also the universal select-a-word gesture, so
+users land in the overlay without meaning to, and formatting cannot depend on
+knowing which surface you are on.
+
+The other two were real, and are answered in code rather than dropped:
+
+- **No second "bold".** Wrapping strings over `ta.value` would have been two
+  implementations, diverging on the first nested case — with `hello` selected
+  inside `**hello**`, a text heuristic reads one asterisk on each side as
+  "already wrapped" and turns bold into italic. So the overlay does not format
+  itself at all: it publishes itself through `cell-edit-session.ts`, and the
+  toolbar drives it through `toggleInlineFormatInText`. Measured in a browser:
+  bold then italic on overlay text yields `***alpha***`, the same as on prose.
+- **💬 commits first.** A comment anchors to a *document* range, and while the
+  overlay is open the document holds the cell's previous text. The button
+  commits the cell, then maps the overlay offsets across the encoding
+  (`encodedOffset`) — `|` costs two characters and a newline four, so the
+  offsets do not survive on their own. Committing is what clicking anywhere
+  else would have done, which is why it is not a disabled button with a
+  tooltip explaining itself.
+
+Three details that are easy to get wrong here:
+
+- **The overlay lives in `document.body`**, not in `view.dom`. So the toolbar's
+  "click outside" test does not cover it (clicking into the overlay would close
+  the toolbar on the click that opened it), and `view.dom`'s `blur` cannot mean
+  "hide" any more — opening the overlay blurs the editor by design.
+- **A textarea's selection is invisible to `document.getSelection()`**, and
+  `selectionchange` on it is fired at the element and only in recent engines.
+  `cell-edit-session.ts` therefore listens to the element for the whole set of
+  events that can move a selection, and publishes one notification.
+- **Never assign `textarea.value` to apply a format.** It wipes the element's
+  native undo stack, so Cmd+Z in the overlay stops undoing the user's own
+  typing too. `applyTextareaEdit` narrows the rewrite to the changed span
+  (`minimalEdit`) and puts it through `execCommand('insertText')`, which the
+  browser records as one undoable edit. Measured: two Cmd+Z steps back through
+  italic and then bold, landing on the original text.
 
 ## Dependencies
 

@@ -4,8 +4,25 @@ import type { SyntaxNode } from '@lezer/common';
 import type { DecoSink } from './utils';
 import { markdownTable } from 'markdown-table';
 import { toggleTableMode, getTableMode } from './table-state';
-import { encodeForCommit, decodeForEdit } from './table-encoding';
+import { encodeForCommit, decodeForEdit, encodedOffset } from './table-encoding';
+import {
+  applyTextareaEdit,
+  endCellEditSession,
+  setCellEditSession,
+} from '../cell-edit-session';
 import { navigateToHeading } from '../heading-slugs';
+import { makeWidgetTextSelectable, eventInside } from '../widget-text-selection';
+import { parseInlineMarkdown } from './inline-tokens';
+import { visibleRangeForSource } from '../live-render/cell-anchor';
+import {
+  commentAnchorsIn,
+  COMMENT_ANCHOR_ATTR,
+  COMMENT_ANCHOR_CLASS,
+  type CommentAnchorSpan,
+} from '../ai-comment';
+
+/** Class of the per-cell nested editing host that carries the cell's text. */
+export const CELL_TEXT_CLASS = 'cm-md-table-celltext';
 
 export interface CellInfo {
   text: string;
@@ -377,7 +394,13 @@ function startColDrag(
 class TableWidget extends WidgetType {
   constructor(
     private ctx: TableContext,
-    private mode: 'wrap' | 'full'
+    private mode: 'wrap' | 'full',
+    /**
+     * Commented fragments inside this table, in document coordinates. Part of
+     * the widget's identity (see `eq`): a comment appearing or going away
+     * changes what the cells draw, and nothing else in the context moves (#62).
+     */
+    private anchors: CommentAnchorSpan[] = []
   ) {
     super();
   }
@@ -390,18 +413,23 @@ class TableWidget extends WidgetType {
     const table = document.createElement('span');
     table.className = 'cm-md-table';
 
+    const colCtrl = createColCtrl(view, this.ctx, wrap);
+
     const headerRow = this.ctx.rows.find((r) => r.isHeader);
     if (headerRow) {
-      table.appendChild(buildHeaderRow(headerRow, this.ctx, view));
+      table.appendChild(buildHeaderRow(headerRow, this.ctx, view, colCtrl, this.anchors));
     }
 
     const dataRows = this.ctx.rows.filter((r) => !r.isDelimiter && !r.isHeader);
     const dataCount = dataRows.length;
     dataRows.forEach((row, i) => {
-      table.appendChild(buildDataRow(row, i, this.ctx, view, dataCount));
+      table.appendChild(buildDataRow(row, i, this.ctx, view, dataCount, this.anchors));
     });
 
     wrap.appendChild(table);
+    // Снаружи `.cm-md-table` — её `overflow: hidden` срезал бы верхнюю часть
+    // панели, которая выезжает над строкой заголовка.
+    wrap.appendChild(colCtrl.el);
 
     // "+ add column" — absolutely positioned at right of the header row
     const addCol = mkBtn('+', 'cm-md-table-btn-add cm-md-table-btn-add-col', () =>
@@ -426,6 +454,19 @@ class TableWidget extends WidgetType {
 
   eq(other: TableWidget): boolean {
     if (this.mode !== other.mode) return false;
+    // Anchors are structural context here in exactly the sense the root
+    // CLAUDE.md means: they decide what the DOM contains. Left out, CM6 would
+    // keep the widget it already had and a comment made on cell text would
+    // leave no mark until something else happened to rebuild the table.
+    if (this.anchors.length !== other.anchors.length) return false;
+    if (
+      !this.anchors.every((a, i) => {
+        const o = other.anchors[i];
+        return a.id === o.id && a.from === o.from && a.to === o.to;
+      })
+    ) {
+      return false;
+    }
     if (this.ctx.nodeFrom !== other.ctx.nodeFrom) return false;
     if (this.ctx.nodeTo !== other.ctx.nodeTo) return false;
     if (this.ctx.rows.length !== other.ctx.rows.length) return false;
@@ -442,66 +483,30 @@ class TableWidget extends WidgetType {
     });
   }
 
-  ignoreEvent(): boolean {
-    return false;
+  /**
+   * `false` everywhere except inside a cell's text.
+   *
+   * The widget deliberately lets CM6 handle its events (that is what `false`
+   * means here — see `eventBelongsToEditor` in `@codemirror/view`), which is
+   * how a click on a table still moves the document selection.
+   *
+   * But cell text is a nested editing host (`makeWidgetTextSelectable`), and
+   * CM6's `MouseSelection` would immediately snap a drag started there out to
+   * the whole table range via `atomicRanges`, leaving the browser with an
+   * empty selection — measured, that is exactly what #31 reported. Handing
+   * those events back to the browser lets the native selection stand, and the
+   * same exemption makes `copy` copy the visible cell text instead of the
+   * table's markdown source.
+   */
+  ignoreEvent(event: Event): boolean {
+    return eventInside(event, `.${CELL_TEXT_CLASS}`);
   }
 }
 
-export type InlineToken =
-  | { type: 'text'; value: string }
-  | { type: 'code'; value: string }
-  | { type: 'boldItalic'; value: string }
-  | { type: 'bold'; value: string }
-  | { type: 'italic'; value: string }
-  | { type: 'strike'; value: string }
-  | { type: 'link'; text: string; url: string };
-
-/**
- * Parse a cell's text into inline markdown tokens.
- *
- * Supported: code, bold+italic, bold, italic, strikethrough, links `[text](url)`.
- * Order matters — longer patterns are matched first to avoid emphasis swallowing link
- * brackets. Unmatched text becomes `text` tokens.
- */
-export function parseInlineMarkdown(text: string): InlineToken[] {
-  if (!text) return [];
-
-  // Order: code | link | ***bi*** | **b** | *i* | ~~s~~. Link before emphasis so the
-  // square brackets don't get treated as italic-eligible text.
-  const inlineRegex = /(`+)(.*?)\1|\[([^\]\n]+)\]\(([^)\s]+)\)|(\*\*\*|___)(.*?)\5|(\*\*|__)(.*?)\7|(\*|_)(.*?)\9|(~~)(.*?)\11/g;
-
-  const tokens: InlineToken[] = [];
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = inlineRegex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      tokens.push({ type: 'text', value: text.slice(lastIndex, match.index) });
-    }
-
-    if (match[1] !== undefined) {
-      tokens.push({ type: 'code', value: match[2] });
-    } else if (match[3] !== undefined) {
-      tokens.push({ type: 'link', text: match[3], url: match[4] });
-    } else if (match[5] !== undefined) {
-      tokens.push({ type: 'boldItalic', value: match[6] });
-    } else if (match[7] !== undefined) {
-      tokens.push({ type: 'bold', value: match[8] });
-    } else if (match[9] !== undefined) {
-      tokens.push({ type: 'italic', value: match[10] });
-    } else if (match[11] !== undefined) {
-      tokens.push({ type: 'strike', value: match[12] });
-    }
-
-    lastIndex = match.index + match[0].length;
-  }
-
-  if (lastIndex < text.length) {
-    tokens.push({ type: 'text', value: text.slice(lastIndex) });
-  }
-
-  return tokens;
-}
+// Re-exported so `./tables` stays the import path callers already use; the
+// implementation moved to `inline-tokens.ts` to break the cycle with
+// `live-render/cell-anchor.ts`, which this file now imports in turn (#62).
+export { parseInlineMarkdown, type InlineToken } from './inline-tokens';
 
 /** Open a URL via the Tauri shell, falling back to `window.open` in non-Tauri builds. */
 function openUrl(url: string): void {
@@ -537,8 +542,100 @@ export function routeLinkClick(
   }
 }
 
+/**
+ * A commented fragment of one cell, in *rendered* characters.
+ *
+ * The document-level highlight (`ai-comment.ts`) cannot serve a table: the
+ * source lines of every row but the header are drawn at zero height, so the
+ * mark is painted onto nothing and the reader sees no sign that a comment is
+ * attached to anything (#62). The widget repeats it on the visible text, which
+ * means translating the thread's source offsets through the same token split
+ * that produced the DOM.
+ */
+export interface CellHighlight {
+  id: string;
+  visFrom: number;
+  visTo: number;
+}
+
+/**
+ * Which parts of a cell's rendered text carry a comment highlight.
+ *
+ * Anchors are clipped to the cell first — a quote found by search can run past
+ * a `|` — and then mapped from source to visible offsets. A cell whose text
+ * does not reconstruct yields nothing rather than a highlight a few characters
+ * off: a mark on the wrong word is worse than the card's quote alone.
+ */
+export function cellHighlights(
+  cell: CellInfo,
+  anchors: CommentAnchorSpan[]
+): CellHighlight[] {
+  if (!cell.text) return [];
+  const out: CellHighlight[] = [];
+  for (const anchor of anchors) {
+    const srcFrom = Math.max(0, anchor.from - cell.from);
+    const srcTo = Math.min(cell.text.length, anchor.to - cell.from);
+    if (srcTo <= srcFrom) continue;
+    const visible = visibleRangeForSource(cell.text, srcFrom, srcTo);
+    if (!visible) continue;
+    out.push({ id: anchor.id, visFrom: visible.from, visTo: visible.to });
+  }
+  return out.sort((a, b) => a.visFrom - b.visFrom);
+}
+
+/**
+ * Append `value` to `parent`, wrapping the highlighted parts of it.
+ *
+ * `visStart` is where this run of text begins in the cell's rendered text, so
+ * one counter walks the whole cell across `<strong>`, `<code>` and `<a>`
+ * boundaries. Where two threads overlap the earlier one keeps the shared
+ * characters — nesting two marks would double the wash and say nothing extra.
+ */
+function appendCellText(
+  parent: HTMLElement,
+  value: string,
+  visStart: number,
+  highlights: CellHighlight[]
+): void {
+  if (!value) return;
+  const hits = highlights.filter(
+    (h) => h.visFrom < visStart + value.length && h.visTo > visStart
+  );
+  if (hits.length === 0) {
+    parent.appendChild(document.createTextNode(value));
+    return;
+  }
+
+  let cursor = 0;
+  for (const hit of hits) {
+    const start = Math.max(hit.visFrom - visStart, cursor);
+    const end = Math.min(hit.visTo - visStart, value.length);
+    if (end <= start) continue;
+    if (start > cursor) {
+      parent.appendChild(document.createTextNode(value.slice(cursor, start)));
+    }
+    const span = document.createElement('span');
+    // The same class the document decoration uses, so a comment on cell text
+    // looks exactly like a comment on a paragraph — and the attention shimmer,
+    // which finds its spans by the attribute, covers this one too.
+    span.className = COMMENT_ANCHOR_CLASS;
+    span.setAttribute(COMMENT_ANCHOR_ATTR, hit.id);
+    span.textContent = value.slice(start, end);
+    parent.appendChild(span);
+    cursor = end;
+  }
+  if (cursor < value.length) {
+    parent.appendChild(document.createTextNode(value.slice(cursor)));
+  }
+}
+
 /** Render inline markdown (code, bold, italic, strikethrough, links) into a cell element. */
-function renderCellContent(cellEl: HTMLElement, text: string, view: EditorView): void {
+function renderCellContent(
+  cellEl: HTMLElement,
+  text: string,
+  view: EditorView,
+  highlights: CellHighlight[] = []
+): void {
   if (!text) return;
 
   const tokens = parseInlineMarkdown(text);
@@ -548,41 +645,51 @@ function renderCellContent(cellEl: HTMLElement, text: string, view: EditorView):
     return;
   }
 
+  // Where the token being rendered starts in the cell's rendered text — the
+  // coordinate `highlights` speaks in.
+  let vis = 0;
+
   for (const token of tokens) {
     switch (token.type) {
       case 'text':
-        cellEl.appendChild(document.createTextNode(token.value));
+        appendCellText(cellEl, token.value, vis, highlights);
+        vis += token.value.length;
         break;
       case 'code': {
         const code = document.createElement('code');
         code.className = 'cm-md-table-inline-code';
-        code.textContent = token.value;
+        appendCellText(code, token.value, vis, highlights);
+        vis += token.value.length;
         cellEl.appendChild(code);
         break;
       }
       case 'boldItalic': {
         const strong = document.createElement('strong');
         const em = document.createElement('em');
-        em.textContent = token.value;
+        appendCellText(em, token.value, vis, highlights);
+        vis += token.value.length;
         strong.appendChild(em);
         cellEl.appendChild(strong);
         break;
       }
       case 'bold': {
         const el = document.createElement('strong');
-        el.textContent = token.value;
+        appendCellText(el, token.value, vis, highlights);
+        vis += token.value.length;
         cellEl.appendChild(el);
         break;
       }
       case 'italic': {
         const el = document.createElement('em');
-        el.textContent = token.value;
+        appendCellText(el, token.value, vis, highlights);
+        vis += token.value.length;
         cellEl.appendChild(el);
         break;
       }
       case 'strike': {
         const el = document.createElement('s');
-        el.textContent = token.value;
+        appendCellText(el, token.value, vis, highlights);
+        vis += token.value.length;
         cellEl.appendChild(el);
         break;
       }
@@ -591,7 +698,8 @@ function renderCellContent(cellEl: HTMLElement, text: string, view: EditorView):
         a.className = 'cm-md-link';
         a.href = token.url;
         a.rel = 'noopener noreferrer';
-        a.textContent = token.text;
+        appendCellText(a, token.text, vis, highlights);
+        vis += token.text.length;
         // mousedown drives the actual routing — same trigger setup.ts uses for
         // top-level Link nodes. The click handler is a backstop that kills the
         // native `<a>` activation on every code path (keyboard activation,
@@ -630,12 +738,70 @@ function mkBtn(text: string, className: string, onClick: () => void): HTMLElemen
   return btn;
 }
 
+/**
+ * Комфортная ширина поля ввода ячейки (px).
+ *
+ * В колонке шириной в три символа набирать текст нечитаемо, поэтому на время
+ * ввода поле расширяется хотя бы до этого значения — но никогда не сужает
+ * ячейку и никогда не вылезает за правый край строки.
+ */
+const CELL_EDIT_MIN_WIDTH = 280;
+
+/** Совпадает с `--table-side-gutter` в editor.css — полоса справа под кнопки. */
+const TABLE_SIDE_GUTTER = 32;
+
+/**
+ * Ширина поля ввода ячейки на время редактирования.
+ *
+ * Правило: не уже самой ячейки, по возможности — не уже `min`, но никогда не
+ * шире места, оставшегося до правого края строки. Считается один раз, при
+ * открытии поля: если бы она пересчитывалась по ходу набора, получилась бы
+ * петля «ширина ячейки → ширина поля → ширина ячейки» — то есть пересчёт
+ * геометрии таблицы на каждый символ.
+ */
+export function cellEditWidth(
+  cellWidth: number,
+  available: number,
+  min = CELL_EDIT_MIN_WIDTH
+): number {
+  return Math.max(cellWidth, Math.min(min, Math.max(cellWidth, available)));
+}
+
+/**
+ * Поле правки ячейки — и как над ним работает тулбар форматирования (#60).
+ *
+ * Сначала тулбара тут не было (#55): в поле лежит исходник, `**жирный**` виден
+ * буквально, и смысл «маркеры скрыты» тут не работает. Владелец это отвёл —
+ * двойной клик это ещё и универсальный жест «выделить слово», провалиться в
+ * правку легко, и человек не обязан знать, в каком он режиме.
+ *
+ * Два возражения из #55 остались настоящими, и сняты они так:
+ *
+ * 1. Второй реализации «жирного» нет. Поле не умеет форматировать само: оно
+ *    публикует себя через `cell-edit-session.ts`, а тулбар гоняет его текст
+ *    через `toggleInlineFormatInText` — тот же `formatSpec` по дереву разбора,
+ *    что и для обычного выделения, просто на временном состоянии.
+ * 2. 💬 сначала коммитит ячейку и только потом ставит якорь
+ *    (`commitAndMap`). Пока поле открыто, текст ячейки в документе устаревший,
+ *    и якорь указал бы на то, чего в файле нет; коммит — ровно то же, что
+ *    произошло бы при клике мимо поля.
+ *
+ * Link в поле по-прежнему нет, но по другой причине (#57): инспектор
+ * позиционируется по `coordsAtPos`, то есть по строке таблицы, а не по ячейке.
+ */
 function showCellEditor(view: EditorView, cellEl: HTMLElement, cell: CellInfo): void {
   document.querySelector('.cm-md-table-editor')?.remove();
 
   const rect = cellEl.getBoundingClientRect();
-  const originalColor = cellEl.style.color;
-  cellEl.style.color = 'transparent';
+  const cellStyle = getComputedStyle(cellEl);
+  const lineEl = cellEl.closest('.cm-md-table-line');
+  const rightLimit = lineEl
+    ? lineEl.getBoundingClientRect().right - TABLE_SIDE_GUTTER
+    : window.innerWidth - TABLE_SIDE_GUTTER;
+
+  const editWidth = cellEditWidth(rect.width, rightLimit - rect.left);
+
+  cellEl.classList.add('cm-md-table-cell-editing');
 
   const ta = document.createElement('textarea');
   ta.className = 'cm-md-table-editor';
@@ -644,20 +810,57 @@ function showCellEditor(view: EditorView, cellEl: HTMLElement, cell: CellInfo): 
   ta.style.position = 'fixed';
   ta.style.left = `${rect.left}px`;
   ta.style.top = `${rect.top}px`;
-  ta.style.width = `${Math.max(rect.width, 100)}px`;
+  ta.style.width = `${editWidth}px`;
+  // Метрики берём у ячейки, чтобы символы стояли ровно там же, где стояли до
+  // двойного клика: у поля свой контекст (оно висит в `document.body`), и
+  // относительные единицы в его CSS считались бы от размера шрифта body.
+  ta.style.fontFamily = cellStyle.fontFamily;
+  ta.style.fontSize = cellStyle.fontSize;
+  ta.style.lineHeight = cellStyle.lineHeight;
+  ta.style.padding = cellStyle.padding;
+  ta.style.textAlign = cellStyle.textAlign;
 
-  const grow = (): void => {
+  /**
+   * Раскрыть ячейку под размер поля ввода.
+   *
+   * Единственная запись, которую делает ввод, — инлайновые `min-width` /
+   * `min-height` на АКТИВНОЙ ячейке. Транзакции CM6 тут нет вовсе, а колонку
+   * расширяет и строку растит сам браузер по `table-layout: auto` — ширины
+   * соседних строк никто не считает и не выравнивает в JS.
+   *
+   * Расширение колонки может перевёрстывать соседние колонки и сдвинуть саму
+   * ячейку, поэтому позиция поля берётся заново уже после раскладки.
+   */
+  const reflow = (): void => {
     ta.style.height = '0';
-    ta.style.height = `${Math.max(ta.scrollHeight, rect.height)}px`;
+    const height = Math.max(ta.scrollHeight, rect.height);
+    ta.style.height = `${height}px`;
+
+    cellEl.style.boxSizing = 'border-box';
+    cellEl.style.minWidth = `${editWidth}px`;
+    // Именно `height`, а не `min-height`: на `display: table-cell` Chrome
+    // min-height игнорирует (в CSS 2.1 его действие на ячейку не определено),
+    // зато `height` трактует как минимум — строка от него растёт, но никогда
+    // не становится ниже своего содержимого. Измерено: с `min-height` ячейка
+    // оставалась 32px при поле в 67px.
+    cellEl.style.height = `${height}px`;
+
+    const live = cellEl.getBoundingClientRect();
+    ta.style.left = `${live.left}px`;
+    ta.style.top = `${live.top}px`;
   };
-  ta.addEventListener('input', grow);
+  ta.addEventListener('input', reflow);
 
   let committed = false;
 
   const destroy = (): void => {
-    ta.removeEventListener('input', grow);
+    ta.removeEventListener('input', reflow);
+    endCellEditSession(ta);
     ta.remove();
-    cellEl.style.color = originalColor;
+    cellEl.classList.remove('cm-md-table-cell-editing');
+    cellEl.style.boxSizing = '';
+    cellEl.style.minWidth = '';
+    cellEl.style.height = '';
     view.focus();
   };
 
@@ -692,7 +895,29 @@ function showCellEditor(view: EditorView, cellEl: HTMLElement, cell: CellInfo): 
   document.body.appendChild(ta);
   ta.focus();
   ta.select();
-  grow(); // initial size
+  reflow(); // initial size
+
+  setCellEditSession({
+    textarea: ta,
+    replace: (text, from, to) => {
+      applyTextareaEdit(ta, text, from, to);
+      // Формат мог удлинить текст — поле и ячейка должны за этим успеть.
+      // `applyTextareaEdit` не всегда проходит через `input` (fallback —
+      // прямое присваивание), поэтому reflow зовём явно.
+      reflow();
+    },
+    commitAndMap: (from, to) => {
+      // Снимок до коммита: `commit()` разрушает поле, а `ta.value` после
+      // `remove()` читать уже нечестно.
+      const value = ta.value;
+      const base = cell.from;
+      commit();
+      return {
+        from: base + encodedOffset(value, from),
+        to: base + encodedOffset(value, to),
+      };
+    },
+  });
 }
 
 // --- DOM builder helpers (used by TableWidget in Task 5) ---
@@ -702,12 +927,27 @@ function buildCell(
   colIndex: number,
   isHeader: boolean,
   ctx: TableContext,
-  view: EditorView
+  view: EditorView,
+  colCtrl?: ColCtrl,
+  anchors: CommentAnchorSpan[] = []
 ): HTMLElement {
   const cellEl = document.createElement('span');
   cellEl.className = 'cm-md-table-cell';
   if (isHeader) cellEl.classList.add('cm-md-table-cell-header');
-  renderCellContent(cellEl, cell.text, view);
+
+  // The text gets its own element so the nested editing host covers exactly
+  // the cell's content and none of the hover controls: a `contenteditable`
+  // ancestor would swallow the mousedown that starts a column drag.
+  const textEl = document.createElement('span');
+  textEl.className = CELL_TEXT_CLASS;
+  // The cell's source range travels on the element: a selection made inside it
+  // is invisible to `state.selection` (the widget claims the events), so this
+  // is the only way back from rendered characters to document positions — see
+  // `live-render/cell-anchor.ts`. Safe to freeze into the DOM because the
+  // widget's `eq()` compares every cell `from`, so any shift rebuilds it.
+  makeWidgetTextSelectable(textEl, { source: { from: cell.from, to: cell.to } });
+  renderCellContent(textEl, cell.text, view, cellHighlights(cell, anchors));
+  cellEl.appendChild(textEl);
 
   cellEl.addEventListener('dblclick', (e) => {
     e.preventDefault();
@@ -715,26 +955,113 @@ function buildCell(
     showCellEditor(view, cellEl, cell);
   });
 
-  if (isHeader) {
-    const ctrl = document.createElement('span');
-    ctrl.className = 'cm-md-table-col-ctrl';
-
-    const colDrag = mkBtn('⠿', 'cm-md-table-btn-drag cm-md-table-btn-drag-col', () => {});
-    colDrag.addEventListener('mousedown', (e) => {
-      startColDrag(e, view, ctx, colIndex, cellEl);
-    });
-    ctrl.appendChild(colDrag);
-
-    if (ctx.colCount > 1) {
-      const del = mkBtn('−', 'cm-md-table-btn-del', () => deleteColumn(view, ctx, colIndex));
-      ctrl.appendChild(del);
-    }
-
-    cellEl.appendChild(ctrl);
+  if (isHeader && colCtrl) {
     cellEl.classList.add('cm-md-table-cell-has-ctrl');
+    // Панель кнопок одна на таблицу и живёт снаружи неё — сюда она только
+    // переезжает по наведению. См. `createColCtrl`.
+    cellEl.addEventListener('mouseenter', () => colCtrl.attach(cellEl, colIndex));
   }
 
   return cellEl;
+}
+
+/**
+ * Панель кнопок колонки — одна на таблицу, лежит в `.cm-md-table-wrap`.
+ *
+ * Почему не по кнопке в каждой ячейке заголовка, как было: у `.cm-md-table`
+ * стоит `overflow: hidden` (им скругляются её углы), и он срезает всё, что
+ * выезжает выше верхней грани таблицы — именно это и резало кнопки пополам.
+ * Перенести скругление на строки нельзя, `border-radius` на `display:
+ * table-row` Chrome игнорирует. Значит, панель обязана быть снаружи бокса с
+ * клипом; выравнивание по колонке при этом уже нечем задать в CSS, поэтому
+ * `left` ставится из JS.
+ *
+ * Чтение геометрии происходит ровно один раз на наведение на колонку — не на
+ * кадр и не на нажатие клавиши.
+ */
+interface ColCtrl {
+  el: HTMLElement;
+  attach(cellEl: HTMLElement, colIndex: number): void;
+  scheduleHide(): void;
+}
+
+/** Живо ли выделение текста внутри `root` (ячейки — вложенные editing host'ы). */
+function selectionInside(root: HTMLElement): boolean {
+  const sel = document.getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
+  const node = sel.anchorNode;
+  return node !== null && root.contains(node);
+}
+
+function createColCtrl(view: EditorView, ctx: TableContext, wrap: HTMLElement): ColCtrl {
+  const el = document.createElement('span');
+  el.className = 'cm-md-table-col-ctrl';
+
+  let target: { cellEl: HTMLElement; colIndex: number } | null = null;
+  let hideTimer: number | undefined;
+
+  const drag = mkBtn('⠿', 'cm-md-table-btn-drag cm-md-table-btn-drag-col', () => {});
+  drag.addEventListener('mousedown', (e) => {
+    if (target) startColDrag(e, view, ctx, target.colIndex, target.cellEl);
+  });
+  el.appendChild(drag);
+
+  if (ctx.colCount > 1) {
+    el.appendChild(
+      mkBtn('−', 'cm-md-table-btn-del', () => {
+        if (target) deleteColumn(view, ctx, target.colIndex);
+      })
+    );
+  }
+
+  const attach = (cellEl: HTMLElement, colIndex: number): void => {
+    window.clearTimeout(hideTimer);
+    target = { cellEl, colIndex };
+    // Выделение текста в ячейке поднимает над заголовком свой тулбар (💬 и
+    // прочее) — ровно в ту полосу, где стоит эта панель. Пока выделение живо,
+    // панель уступает место: намерение пользователя сейчас в выделении.
+    if (selectionInside(wrap)) {
+      el.dataset.visible = 'false';
+      return;
+    }
+    const cellRect = cellEl.getBoundingClientRect();
+    const wrapRect = wrap.getBoundingClientRect();
+    el.style.left = `${cellRect.left - wrapRect.left + cellRect.width / 2}px`;
+    el.dataset.visible = 'true';
+  };
+
+  const scheduleHide = (): void => {
+    window.clearTimeout(hideTimer);
+    // Задержка нужна, чтобы мышь успела перейти из ячейки в саму панель:
+    // между ними 2px зазора, и без неё панель гасла бы на полпути к кнопке.
+    hideTimer = window.setTimeout(() => {
+      if (drag.matches(':active') || el.matches(':hover')) return;
+      el.dataset.visible = 'false';
+      target = null;
+    }, 120);
+  };
+
+  el.addEventListener('mouseenter', () => window.clearTimeout(hideTimer));
+  el.addEventListener('mouseleave', scheduleHide);
+
+  // Начало любого взаимодействия внутри таблицы гасит панель. Нажатия на её
+  // собственные кнопки сюда не доходят: `mkBtn` глушит всплытие, поэтому
+  // перетаскивание колонки панель не прячет.
+  wrap.addEventListener('mousedown', () => {
+    el.dataset.visible = 'false';
+  });
+  // По отпусканию кнопки решаем заново: выделения нет — панель возвращается,
+  // хотя `mouseenter` больше не придёт (указатель так и стоит в той ячейке).
+  wrap.addEventListener('mouseup', () => {
+    const restore = target;
+    if (!restore) return;
+    window.setTimeout(() => {
+      if (drag.matches(':active')) return;
+      attach(restore.cellEl, restore.colIndex);
+    }, 0);
+  });
+
+  return { el, attach, scheduleHide };
 }
 
 function buildHeaderCtrlCell(view: EditorView, ctx: TableContext): HTMLElement {
@@ -779,7 +1106,9 @@ function buildDataCtrlCell(
 function buildHeaderRow(
   row: RowData,
   ctx: TableContext,
-  view: EditorView
+  view: EditorView,
+  colCtrl: ColCtrl,
+  anchors: CommentAnchorSpan[] = []
 ): HTMLElement {
   const tr = document.createElement('span');
   tr.className = 'cm-md-table-row cm-md-table-row-header';
@@ -787,8 +1116,10 @@ function buildHeaderRow(
   tr.appendChild(buildHeaderCtrlCell(view, ctx));
 
   row.cells.forEach((cell, i) => {
-    tr.appendChild(buildCell(cell, i, true, ctx, view));
+    tr.appendChild(buildCell(cell, i, true, ctx, view, colCtrl, anchors));
   });
+
+  tr.addEventListener('mouseleave', colCtrl.scheduleHide);
 
   return tr;
 }
@@ -798,7 +1129,8 @@ function buildDataRow(
   dataRowIndex: number,
   ctx: TableContext,
   view: EditorView,
-  dataCount: number
+  dataCount: number,
+  anchors: CommentAnchorSpan[] = []
 ): HTMLElement {
   const tr = document.createElement('span');
   tr.className = 'cm-md-table-row cm-md-table-row-data';
@@ -807,7 +1139,7 @@ function buildDataRow(
   tr.appendChild(ctrlCell);
 
   row.cells.forEach((cell, i) => {
-    tr.appendChild(buildCell(cell, i, false, ctx, view));
+    tr.appendChild(buildCell(cell, i, false, ctx, view, undefined, anchors));
   });
 
   return tr;
@@ -870,6 +1202,10 @@ export function decorateTable(
   if (!headerRow) return;
 
   const mode = getTableMode(view.state, ctx.nodeFrom);
+  // Read straight from the comment field, which maps its ranges through every
+  // edit — including edits above the table, which is the case where a copy
+  // kept anywhere else would drift (#62).
+  const anchors = commentAnchorsIn(view.state, node.from, node.to);
 
   // Header line: host of the full-table widget
   builder.add(
@@ -880,7 +1216,7 @@ export function decorateTable(
   builder.add(
     headerRow.from,
     headerRow.to,
-    Decoration.replace({ widget: new TableWidget(ctx, mode) })
+    Decoration.replace({ widget: new TableWidget(ctx, mode, anchors) })
   );
 
   // Hide all non-header lines (delimiter + data rows)

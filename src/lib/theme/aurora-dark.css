@@ -36,6 +36,24 @@
   --ai-ask-chip-hover-bg: rgba(111, 217, 192, 0.18);
   --ai-ask-accent: #6fd9c0;
   --ai-ask-accent-text: #171629;
+  /* Тоновая схема заголовков (см. блок «Headings» в src/styles/editor.css).
+   * --heading-tone-N — сплошной цвет уровня. Это же значение остаётся видимым,
+   *   если background-clip: text не поддержан, поэтому он обязателен.
+   * --heading-grad-N — необязательная градиентная подсветка начала строки.
+   *   Последний stop обязан совпадать с --heading-tone-N: тогда заголовок
+   *   длиннее пробега градиента бесшовно уходит в базовый тон.
+   * Выраженность падает с уровнем: h1 — три цвета авроры, h4 — почти плоский,
+   * h5/h6 градиента не объявляют вовсе. */
+  --heading-tone-1: #8f9ff5;
+  --heading-tone-2: #8b9bf0;
+  --heading-tone-3: #8795e6;
+  --heading-tone-4: #808ed8;
+  --heading-tone-5: #7c86c2;
+  --heading-tone-6: #767eb2;
+  --heading-grad-1: linear-gradient(100deg, #f78cc7 0%, #b48cf0 30%, #7edff2 62%, #8f9ff5 100%);
+  --heading-grad-2: linear-gradient(100deg, #c79ae8 0%, #9db2f2 55%, #8b9bf0 100%);
+  --heading-grad-3: linear-gradient(100deg, #97a6f0 0%, #8ea7e9 60%, #8795e6 100%);
+  --heading-grad-4: linear-gradient(100deg, #8793e0 0%, #808ed8 100%);
   --font-text: 'Inter', -apple-system, system-ui, sans-serif;
   --font-code: 'JetBrains Mono', 'SF Mono', monospace;
 }

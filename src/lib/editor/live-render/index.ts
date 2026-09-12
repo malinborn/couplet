@@ -5,6 +5,7 @@ import { headingSpaceInput } from './heading-input';
 import { inlineContinuation } from './inline-continuation';
 import { selectionToolbar } from './selection-toolbar';
 import { elementInspector } from './inspector';
+import { codeBlockArrowExit } from '../code-block-exit';
 
 /**
  * Everything the live-render flavour adds on top of the shared decoration
@@ -23,10 +24,22 @@ import { elementInspector } from './inspector';
  * resolved through the view's PendingKeys / beforeinput path rather than from
  * keydown alone. See the comment on `blockFormatKeymap`.
  */
-export function liveRenderExtensions(options?: { onComment?: () => void }): Extension[] {
+export function liveRenderExtensions(options?: {
+  /**
+   * `range` is set only when the selection lives inside a widget's nested
+   * editing host (table cell text), where `state.selection` cannot describe
+   * it — see `selection-toolbar.ts` and `cell-anchor.ts`.
+   */
+  onComment?: (range?: { from: number; to: number }) => void;
+}): Extension[] {
   return [
     ...liveRenderAtomic,
     blockFormatKeymap,
+    // Arrow-key exit from a fenced code block. Only here, never in
+    // live-preview, where the fence lines are visible under the caret and must
+    // stay reachable — see the comment on `codeBlockArrowExit`. The Enter exit
+    // itself is engine-wide and lives in `../setup.ts`.
+    codeBlockArrowExit(),
     headingSpaceInput(),
     inlineContinuation(),
     selectionToolbar({ onComment: options?.onComment }),

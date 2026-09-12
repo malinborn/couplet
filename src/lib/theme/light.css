@@ -34,6 +34,15 @@
   --ai-ask-accent-text: #ffffff;
   --bg-overlay: rgba(250, 250, 249, 0.75);
   --border: #e7e5e4;
+  /* Тоновая схема заголовков — строгая тема: только тон, без градиентов
+   * (--heading-grad-N не объявлены, заголовок красится сплошным тоном).
+   * См. комментарий в aurora-dark.css. */
+  --heading-tone-1: #1c1917;
+  --heading-tone-2: #292524;
+  --heading-tone-3: #3b3532;
+  --heading-tone-4: #524b45;
+  --heading-tone-5: #6b635c;
+  --heading-tone-6: #7a726a;
   --font-text: 'Merriweather', Georgia, serif;
   --font-code: 'JetBrains Mono', 'SF Mono', monospace;
 }

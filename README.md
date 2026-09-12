@@ -18,6 +18,12 @@ brew install --cask mdmini
 
 Or download the `.dmg` from [Releases](https://github.com/malinborn/mdmini/releases).
 
+### After an update, macOS asks for folder access again
+
+Expected, and not something an update can avoid. mdmini is ad-hoc signed — no Apple Team ID — so macOS identifies it by a code hash that changes with every release. After `brew upgrade`, the permission you granted to Documents or Desktop belongs to what macOS considers a different app, and it asks once more.
+
+Fixing it properly means Developer ID signing and notarization, which costs $99/year. mdmini is free and open source, and that is not a bill it is going to carry. Granting access again after an upgrade is the whole of the workaround.
+
 ## Usage
 
 ```bash

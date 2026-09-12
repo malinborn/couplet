@@ -21,6 +21,8 @@ import { decorateTable } from './tables';
 import { decorateMermaidBlock, mermaidRendered } from './mermaid';
 import { toggleTableMode } from './table-state';
 import { flavourFacet } from './flavour';
+import { aiCommentField } from '../ai-comment';
+import { isRenderedLink } from './link-refs';
 import type { DecoSink } from './utils';
 
 /**
@@ -83,6 +85,11 @@ function buildDecorations(view: EditorView): DecorationSet {
           decorateInlineCode(view, node.node, builder);
           return false;
         case 'Link':
+          // Not every `Link` node is a link (#51) — see `isRenderedLink`. When
+          // it is not one, add nothing and descend, so inline formatting the
+          // user wrote inside the brackets still renders: `[**bold** text]`
+          // keeps its brackets AND its bold.
+          if (!isRenderedLink(view.state.doc, node.node)) break;
           decorateLink(view, node.node, builder);
           return false;
         case 'FencedCode': {
@@ -144,7 +151,15 @@ export const livePreviewPlugin = ViewPlugin.fromClass(
       // switch appears to do nothing until the next keystroke.
       const flavourChanged =
         update.state.facet(flavourFacet) !== update.startState.facet(flavourFacet);
-      if (update.docChanged || update.viewportChanged || update.selectionSet || treeChanged || mermaidUpdate || tableModeUpdate || flavourChanged) {
+      // A table paints the highlight of a comment anchored inside a cell
+      // itself, because its own source lines are hidden (#62) — so the set of
+      // anchors is an input to this pass, and the pass has to run when it
+      // changes. Comparing the field's value covers add, remove and reload;
+      // the mapping it does on every edit is already covered by `docChanged`.
+      const commentsChanged =
+        update.state.field(aiCommentField, false) !==
+        update.startState.field(aiCommentField, false);
+      if (update.docChanged || update.viewportChanged || update.selectionSet || treeChanged || mermaidUpdate || tableModeUpdate || flavourChanged || commentsChanged) {
         try {
           this.decorations = buildDecorations(update.view);
         } catch (e) {

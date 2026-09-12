@@ -12,6 +12,8 @@
   import { envPreviewPlugin } from './preview/env';
   import { computeReplacement } from './content-diff';
   import { aiHighlightPresenceNotifier } from './ai-highlight';
+  import { jsonPasteNotifier } from './json-paste';
+  import { jsonDocumentPath, setDocumentPath } from './json-fence';
   import '../../styles/editor-metrics.css';
 
   export interface EditorHandle {
@@ -20,11 +22,30 @@
     updateContent: (newContent: string) => void;
     setCodeMode: (ext: string | null, basename?: string) => void;
     setEnvMode: (enabled: boolean) => void;
+    /**
+     * Tell the editor which file it is showing; `null` for untitled.
+     *
+     * Read by the JSON formatter to decide whether its result may be wrapped
+     * in a ```json fence — a decision that must never be taken from the
+     * editor's active language, because a code language is loaded
+     * asynchronously and, for an unrecognised extension, never at all.
+     */
+    setDocumentPath: (path: string | null) => void;
   }
 
-  let { onchange, onAiHighlightVisibilityChange, handle = $bindable() }: {
+  let {
+    onchange,
+    onAiHighlightVisibilityChange,
+    onJsonOffer,
+    onJsonOfferWithdrawn,
+    handle = $bindable(),
+  }: {
     onchange?: (doc: string) => void;
     onAiHighlightVisibilityChange?: (visible: boolean) => void;
+    /** Pasted content parses as JSON worth expanding — raise the offer toast. */
+    onJsonOffer?: () => void;
+    /** The pending offer stopped being applicable — take the toast down. */
+    onJsonOfferWithdrawn?: () => void;
     handle?: EditorHandle;
   } = $props();
 
@@ -100,6 +121,10 @@
           });
         }
       },
+      setDocumentPath(path: string | null) {
+        if (!view) return;
+        view.dispatch({ effects: setDocumentPath.of(path) });
+      },
       setEnvMode(enabled: boolean) {
         if (!view) return;
         if (enabled) {
@@ -131,6 +156,11 @@
         // onchange listener above — createExtensions() is a static list shared by
         // every consumer, so per-window callbacks are wired here instead.
         aiHighlightPresenceNotifier((visible) => onAiHighlightVisibilityChange?.(visible)),
+        jsonPasteNotifier({
+          onOffer: () => onJsonOffer?.(),
+          onWithdraw: () => onJsonOfferWithdrawn?.(),
+        }),
+        jsonDocumentPath,
       ],
     });
 

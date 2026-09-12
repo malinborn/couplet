@@ -82,3 +82,47 @@
   margin: 0 2px;
   flex-shrink: 0;
 }
+
+/* ===== Hotkey tooltip on toolbar buttons (#56) =====
+ *
+ * `pointer-events: none` is load-bearing, not polish: the tooltip is placed
+ * right next to a button the pointer is already on, and a tooltip that could
+ * take the pointer would fire `mouseout` on that button the instant it
+ * appeared — showing and hiding itself in a loop.
+ *
+ * It is also why nothing here focuses anything. The selection the toolbar
+ * exists for lives in the editor (or, for a table cell, in a nested editing
+ * host), and only a focus change could drop it. Hover never moves focus. */
+.cm-toolbar-tooltip {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 10000;
+  pointer-events: none;
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: var(--bg-overlay);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  color: var(--text-subtle);
+  font-family: var(--font-text);
+  font-size: 0.75rem;
+  line-height: 1.3;
+  white-space: nowrap;
+  /* Hidden until `computePosition` has answered — see `toolbar-tooltip.ts`.
+   * Without it the caption paints one frame in the window's top-left corner. */
+  opacity: 0;
+}
+
+.cm-toolbar-tooltip[data-placed='true'] {
+  opacity: 1;
+  transition: opacity 90ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cm-toolbar-tooltip[data-placed='true'] {
+    transition: none;
+  }
+}

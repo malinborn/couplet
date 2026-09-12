@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { encodeForCommit, decodeForEdit } from './table-encoding';
+import { encodeForCommit, decodeForEdit, encodedOffset } from './table-encoding';
 
 describe('encodeForCommit', () => {
   it('NoSpecialChars_ReturnsUnchanged', () => {
@@ -78,5 +78,54 @@ describe('decodeForEdit', () => {
   // newlines so <br> is the only sensible roundtrip path.
   it('LiteralBrTagFromUser_BecomesNewline', () => {
     expect(decodeForEdit('see <br> tag')).toBe('see \n tag');
+  });
+});
+
+/**
+ * The comment button commits an open cell overlay before anchoring (#60), so
+ * the selection has to survive the encoding: `|` becomes two characters and a
+ * newline becomes four. An off-by-anything here points the comment at the
+ * wrong words, and the re-anchor search on the next open then fails silently.
+ */
+describe('encodedOffset', () => {
+  it('is the identity on plain text', () => {
+    expect(encodedOffset('hello world', 6)).toBe(6);
+  });
+
+  it('counts the backslash an escaped pipe adds', () => {
+    // "a|b" -> "a\\|b": everything after the pipe shifts by one.
+    expect(encodedOffset('a|b', 1)).toBe(1);
+    expect(encodedOffset('a|b', 2)).toBe(3);
+    expect(encodedOffset('a|b', 3)).toBe(4);
+  });
+
+  it('counts the four characters a newline becomes', () => {
+    expect(encodedOffset('a\nb', 2)).toBe(5);
+  });
+
+  it('agrees with encodeForCommit at the end of the string', () => {
+    const cases = ['plain', 'a|b|c', 'one\ntwo', 'pipe | and\nline'];
+    for (const value of cases) {
+      expect(encodedOffset(value, value.length)).toBe(encodeForCommit(value).length);
+    }
+  });
+
+  it('clamps into the trailing newlines the commit strips', () => {
+    // encodeForCommit drops the trailing blank line, so there is no offset
+    // past "ab" for a selection that reached into it to land on.
+    expect(encodeForCommit('ab\n\n')).toBe('ab');
+    expect(encodedOffset('ab\n\n', 4)).toBe(2);
+  });
+
+  it('is not confused by a newline that is not trailing', () => {
+    // The strip is the one position-dependent step in the encoding; a mid
+    // string newline must still cost its four characters.
+    expect(encodeForCommit('a\nb\n')).toBe('a<br>b');
+    expect(encodedOffset('a\nb\n', 3)).toBe(6);
+  });
+
+  it('clamps out-of-range offsets rather than going negative', () => {
+    expect(encodedOffset('abc', -5)).toBe(0);
+    expect(encodedOffset('abc', 99)).toBe(3);
   });
 });

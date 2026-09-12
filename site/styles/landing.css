@@ -1276,6 +1276,16 @@ code { font-family: var(--font-mono); }
 /* ── Install / quick start ── */
 .install-section { padding: 32px 0 64px; }
 .install-section h2 { font-weight: 700; font-size: clamp(28px, 4vw, 36px); margin: 0 0 8px; }
+/* Known limitation, under the terminal rather than beside it: someone hitting
+   the permission prompt again after an upgrade comes looking here, and finds
+   it without it interrupting anyone who is only after the install command. */
+.install-note {
+  margin: 20px 0 0;
+  color: var(--muted);
+  max-width: 640px;
+  font-size: 14px;
+  line-height: 1.6;
+}
 
 .terminal {
   background: #12131c;
