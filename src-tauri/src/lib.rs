@@ -194,7 +194,7 @@ pub fn run() {
                 if id == "ai_connect" {
                     let content = onboarding::connect_doc();
                     if let Err(e) =
-                        onboarding::open_bundled_doc(&app_handle, "ai-connect.md", &content)
+                        onboarding::open_bundled_doc(&app_handle, "teach-your-ai.md", &content)
                     {
                         eprintln!("AI menu: {}", e);
                     }

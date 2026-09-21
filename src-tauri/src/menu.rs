@@ -303,7 +303,7 @@ pub fn build_menu(
     // агент: см. `onboarding::connect_doc`.
     let ai_menu = SubmenuBuilder::new(app, "AI")
         .item(
-            &MenuItemBuilder::with_id("ai_connect", "Connect Your AI").build(app)?,
+            &MenuItemBuilder::with_id("ai_connect", "Teach Your AI mdmini").build(app)?,
         )
         .separator()
         // The one item here that *does* something to the open document rather

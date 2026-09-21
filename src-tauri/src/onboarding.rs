@@ -232,7 +232,7 @@ pub fn ai_open_getting_started(app: AppHandle) {
     }
 }
 
-/// Content for the "Connect Your AI" menu item.
+/// Content for the "Teach Your AI mdmini" menu item.
 ///
 /// Заменил собой четыре документа: «Getting Started», «Connect via CLI»,
 /// «Connect via MCP» и «Teach your AI». Каждый из них объяснял свою часть и
@@ -248,7 +248,7 @@ pub(crate) fn connect_doc() -> String {
     let mut d = String::new();
 
     d.push_str(
-        r#"# Connect Your AI
+        r#"# Teach Your AI mdmini
 
 One move: hand your agent the prompt below. It does the rest itself.
 
@@ -453,12 +453,12 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    // --- Connect Your AI ----------------------------------------------------
+    // --- Teach Your AI mdmini ------------------------------------------------
 
     #[test]
     fn connect_doc_carries_both_snippets_verbatim() {
         let doc = connect_doc();
-        assert!(doc.starts_with("# Connect Your AI"));
+        assert!(doc.starts_with("# Teach Your AI mdmini"));
         // Смысл документа в том, что тело скилла — это те же сниппеты, что
         // печатает CLI. Пересказ здесь разойдётся с ними на первой же правке.
         assert!(doc.contains(crate::ai_socket::MCP_AGENT_SNIPPET));
@@ -536,7 +536,7 @@ mod tests {
         const MENU_RS: &str = include_str!("menu.rs");
         let mut out = Vec::new();
         for rest in MENU_RS.split("with_id(\"ai_").skip(1) {
-            // …"ai_connect", "Connect Your AI")… — нужна вторая строка.
+            // …"ai_connect", "Teach Your AI mdmini")… — нужна вторая строка.
             let Some(after_id) = rest.split_once("\", \"") else {
                 continue;
             };
