@@ -31,7 +31,25 @@ export type ToastPayload =
    * every failed sidecar write reached `console.error` and nothing else.
    */
   | { kind: 'comment-error'; fileName: string; message: string }
+  /**
+   * A language change (native menu, `apply_language_change` in `lib.rs`)
+   * failed to persist — a read-only or full app data directory, same failure
+   * shape `save-error`/`comment-error` already cover. Without this, the only
+   * signal was an `eprintln!`, invisible in a bundled app: the user clicks a
+   * language, nothing visibly happens, indistinguishable from a broken menu
+   * item. Carries the OS's own message for the same reason `save-error` does.
+   */
+  | { kind: 'language-error'; message: string }
   | { kind: 'update'; latest: string; current: string; highlight?: string }
+  /**
+   * Answers to a manual "Check for Updates…" click (#82) — the automatic
+   * checker stays silent on these two outcomes, but a click always gets a
+   * reply. `update` itself (above) still covers "a newer version exists",
+   * reused via `report_update`'s `force` flag so it bypasses dismissal
+   * suppression instead of being a second "found" toast.
+   */
+  | { kind: 'update-none' }
+  | { kind: 'update-check-failed' }
   | { kind: 'session'; count: number }
   /** Startup nudge for someone who has never connected an agent. */
   | { kind: 'ai-nudge' }
@@ -84,7 +102,15 @@ const ORDER: Record<ToastKind, number> = {
   // can legitimately coexist — a volume that has gone read-only fails the
   // document and the sidecar alike — and then the two sort together at the top.
   'comment-error': 0,
+  // Same rank again, same reasoning: a read-only app data directory that
+  // breaks a language change is exactly as urgent as a failed save.
+  'language-error': 0,
   update: 1,
+  // Direct responses to the same menu click that produces `update` above —
+  // sorts right beside it rather than with the "just clicked" group below,
+  // since it answers the identical question.
+  'update-none': 1,
+  'update-check-failed': 1,
   session: 2,
   // Both AI notices sort last: neither is time-sensitive the way an update or a
   // restorable session is. They never coexist — one requires having never

@@ -2289,6 +2289,7 @@ dependencies = [
  "dirs",
  "libc",
  "notify",
+ "objc",
  "serde",
  "serde_json",
  "tauri",

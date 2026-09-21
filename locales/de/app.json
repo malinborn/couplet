@@ -1,0 +1,140 @@
+{
+  "toast.dismiss": "Schließen",
+
+  "toast.save_error.headline": "{fileName} konnte nicht gespeichert werden",
+  "toast.save_error.instruction": "Ihre Änderungen sind noch da — Ursache beheben, dann drücken",
+
+  "toast.comment_error.headline": "Kommentare zu {fileName} konnten nicht gespeichert werden",
+  "toast.comment_error.instruction": "Ihr Text steht noch im Feld — Ursache beheben und weiterschreiben",
+
+  "toast.language_error.headline": "Die Sprache konnte nicht geändert werden",
+
+  "toast.update.headline": "mdmini {latest} verfügbar",
+  "toast.update.current": "Sie haben v{current}",
+  "toast.update.copy_title": "Zum Kopieren klicken",
+  "toast.update.copied": "Kopiert!",
+
+  "toast.update_none.message": "Sie haben bereits die neueste Version",
+  "toast.update_check_failed.message": "Update-Prüfung fehlgeschlagen — Verbindung prüfen",
+
+  "toast.session.windows.one": "{count} Fenster aus Ihrer letzten Sitzung",
+  "toast.session.windows.few": "{count} Fenster aus Ihrer letzten Sitzung",
+  "toast.session.windows.many": "{count} Fenster aus Ihrer letzten Sitzung",
+  "toast.session.windows.other": "{count} Fenster aus Ihrer letzten Sitzung",
+  "toast.session.reopen_prefix": "Drücken Sie",
+  "toast.session.reopen_suffix": "zum Wiederöffnen",
+
+  "toast.ai_nudge.message": "<strong>Ihre KI kann md-mini steuern</strong> <span class=\"md-toast-dim\">— siehe das Menü <strong>KI</strong></span>",
+  "toast.ai_nudge.action": "Erste Schritte",
+
+  "toast.themes_nudge.message": "<strong>md-mini hat Designs</strong> <span class=\"md-toast-dim\">— vier davon im Menü <strong>Design</strong></span>",
+
+  "toast.json_offer.message": "<strong>Das sieht nach JSON aus</strong> <span class=\"md-toast-dim\">— erweitern?</span>",
+  "toast.json_offer.action": "Formatieren",
+  "toast.json_offer.or": "oder",
+
+  "toast.ai_bind_copied.saved": "<strong>Prompt kopiert</strong> <span class=\"md-toast-dim\">— senden Sie ihn an Ihren KI-Agenten, damit er sich mit dieser Datei verbindet</span>",
+  "toast.ai_bind_copied.unsaved": "<strong>Speichern Sie die Datei zuerst</strong> <span class=\"md-toast-dim\">— ein Agent braucht einen Pfad zum Öffnen</span>",
+
+  "toast.ai_watch_copied.saved": "<strong>Watch-Befehl kopiert</strong> <span class=\"md-toast-dim\">— fügen Sie ihn in die Sitzung Ihres Agenten ein</span>",
+  "toast.ai_watch_copied.unsaved": "<strong>Speichern Sie die Datei zuerst</strong> <span class=\"md-toast-dim\">— ein ungespeichertes Dokument hat keinen Pfad zum Beobachten</span>",
+
+  "toast.ai_first_use.message": "<strong>Das war Ihre KI</strong> <span class=\"md-toast-dim\">— md-mini ist verbunden</span>",
+  "toast.ai_first_use.more": "Mehr im Menü <strong>KI</strong> → Erste Schritte",
+
+  "editor.ai_comment.status.open": "wartet auf Agent",
+  "editor.ai_comment.status.paused": "noch nicht gesendet",
+  "editor.ai_comment.status.answered": "beantwortet",
+  "editor.ai_comment.status.resolved": "erledigt",
+  "editor.ai_comment.anchor_lost": "Anker verloren",
+  "editor.ai_comment.placeholder_reply": "Antwort — wird beim Tippen gespeichert",
+  "editor.ai_comment.placeholder_comment": "Kommentar — wird beim Tippen gespeichert",
+  "editor.ai_comment.send_now": "jetzt senden",
+  "editor.ai_comment.sending": "wird gesendet…",
+  "editor.ai_comment.send_now_title": "Diesen Kommentar jetzt an den Agenten übergeben, ohne die Pause abzuwarten",
+  "editor.ai_comment.send_to_agent": "an Agent senden",
+  "editor.ai_comment.paste_confirm": "in die Sitzung Ihres Agenten einfügen",
+  "editor.ai_comment.insert_into_text": "in Text einfügen",
+  "editor.ai_comment.resolve": "erledigen",
+  "editor.ai_comment.saved_label": "gespeichert",
+
+  "editor.ai_ask.dismiss": "Schließen",
+  "editor.ai_ask.multi_hint": " (beliebige auswählen, dann OK)",
+  "editor.ai_ask.placeholder": "Eigene Antwort…",
+  "editor.ai_ask.ok": "OK",
+
+  "editor.inspector.link_group": "Link",
+  "editor.inspector.link_url": "Link-URL",
+  "editor.inspector.open": "Öffnen",
+  "editor.inspector.jump_to_heading": "Zur Überschrift springen",
+  "editor.inspector.open_in_browser": "Link im Browser öffnen",
+  "editor.inspector.remove_link": "Link entfernen",
+  "editor.inspector.code_language_group": "Sprache des Codeblocks",
+  "editor.inspector.plain_text": "Klartext",
+
+  "editor.selection_toolbar.group_label": "Textformatierung",
+  "editor.selection_toolbar.bold": "Fett",
+  "editor.selection_toolbar.italic": "Kursiv",
+  "editor.selection_toolbar.strikethrough": "Durchgestrichen",
+  "editor.selection_toolbar.code": "Code",
+  "editor.selection_toolbar.comment": "Auswahl kommentieren",
+  "editor.selection_toolbar.comment_tooltip": "Kommentar",
+  "editor.selection_toolbar.link": "Link",
+
+  "editor.mermaid.zoom_out": "Verkleinern",
+  "editor.mermaid.zoom_in": "Vergrößern",
+  "editor.mermaid.fit": "Diagramm einpassen",
+  "editor.mermaid.resize_hint": "Ziehen zum Skalieren, Doppelklick zum Zurücksetzen",
+  "editor.mermaid.rendering": "Diagramm wird gerendert…",
+
+  "editor.tables.toggle_mode": "Umbruch / volle Breite umschalten",
+  "editor.tables.new_column": "Spalte",
+  "editor.tables.hotkeys_title": "Tastenkürzel für Tabellen",
+
+  "editor.table_keys.col_next": "Spalte nach rechts",
+  "editor.table_keys.col_prev": "Spalte nach links",
+  "editor.table_keys.col_prev_note": "Springt innerhalb der Zeile — wechselt nie die Zeile",
+  "editor.table_keys.row_next": "Nächste Zeile, gleiche Spalte",
+  "editor.table_keys.row_next_note": "In der letzten Zeile: verlässt die Tabelle",
+  "editor.table_keys.break": "Zeilenumbruch in der Zelle",
+  "editor.table_keys.commit": "Änderung übernehmen",
+  "editor.table_keys.new_row": "Neue Zeile darunter",
+  "editor.table_keys.cancel": "Änderung verwerfen",
+
+  "editor.block_templates.h1": "Überschrift 1",
+  "editor.block_templates.h2": "Überschrift 2",
+  "editor.block_templates.h3": "Überschrift 3",
+  "editor.block_templates.h4": "Überschrift 4",
+  "editor.block_templates.h5": "Überschrift 5",
+  "editor.block_templates.h6": "Überschrift 6",
+  "editor.block_templates.ul": "Aufzählungsliste",
+  "editor.block_templates.ol": "Nummerierte Liste",
+  "editor.block_templates.task": "Checkbox",
+  "editor.block_templates.code": "Codeblock",
+  "editor.block_templates.table": "Tabelle",
+  "editor.block_templates.quote": "Zitat",
+  "editor.block_templates.hr": "Trennlinie",
+  "editor.block_templates.table_column": "Spalte {n}",
+
+  "editor.hover_menu.insert_block": "Block einfügen",
+
+  "editor.env.empty_value": "LEER",
+
+  "ui.copy": "Kopieren",
+  "ui.copied": "Kopiert!",
+  "ui.untitled": "Unbenannt",
+  "ui.untitled_filename": "Unbenannt.md",
+  "ui.window_title": "{name} — md-mini",
+
+  "ui.recent_files.title": "Zuletzt verwendet",
+  "ui.recent_files.close": "Schließen",
+  "ui.recent_files.empty": "Keine zuletzt verwendeten Dateien.",
+
+  "ui.ai_bind.tooltip": "Prompt kopieren, der diese Datei mit Ihrem KI-Agenten verbindet",
+  "ui.ai_bind.label": "Mit KI-Agent verbinden",
+
+  "ui.ai_hint.text": "KI-Bearbeitungsmarkierung ausblenden",
+
+  "dialog.external_change.title": "Externe Änderung",
+  "dialog.external_change.message": "Die Datei wurde extern geändert. Neu laden und Ihre Änderungen verwerfen?"
+}

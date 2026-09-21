@@ -4,6 +4,8 @@ use tauri::{
     AppHandle, Wry,
 };
 
+use crate::i18n::t;
+
 /// Истина о тумблере — здесь, а не в пункте меню.
 ///
 /// Прочитать состояние `CheckMenuItem` в обработчике нельзя: macOS применяет
@@ -103,57 +105,57 @@ impl ViewToggleItems {
     }
 }
 
+/// `explicit_language` is the stored preference (`preferences::read_language`),
+/// `None` meaning "follow system" — it decides which item in the Language
+/// radio group starts checked. There is no runtime `sync` for it like Theme
+/// or Editor Engine have: a language change restarts the app (see
+/// `lib.rs::apply_language_change`), so the menu is only ever built once per
+/// process with the answer already known.
 pub fn build_menu(
     app: &AppHandle,
     pending_session_count: usize,
+    explicit_language: Option<&str>,
 ) -> tauri::Result<(
     tauri::menu::Menu<Wry>,
     ThemeMenuItems,
     EngineMenuItems,
     ViewToggleItems,
 )> {
-    let file_menu = SubmenuBuilder::new(app, "File")
+    let file_menu = SubmenuBuilder::new(app, t("menu.file.title"))
         .item(
-            &MenuItemBuilder::with_id("new", "New")
+            &MenuItemBuilder::with_id("new", t("menu.file.new"))
                 .accelerator("CmdOrCtrl+N")
                 .build(app)?,
         )
         .item(
-            &MenuItemBuilder::with_id("open", "Open...")
+            &MenuItemBuilder::with_id("open", t("menu.file.open"))
                 .accelerator("CmdOrCtrl+O")
                 .build(app)?,
         )
         .separator()
         .item(
-            &MenuItemBuilder::with_id("save", "Save")
+            &MenuItemBuilder::with_id("save", t("menu.file.save"))
                 .accelerator("CmdOrCtrl+S")
                 .build(app)?,
         )
         .item(
-            &MenuItemBuilder::with_id("save_as", "Save As...")
+            &MenuItemBuilder::with_id("save_as", t("menu.file.save_as"))
                 .accelerator("CmdOrCtrl+Shift+S")
                 .build(app)?,
         )
         .separator()
         .item(
-            &MenuItemBuilder::with_id("close", "Close Window")
+            &MenuItemBuilder::with_id("close", t("menu.file.close"))
                 .accelerator("CmdOrCtrl+W")
                 .build(app)?,
         )
         .separator()
-        .item(
-            &MenuItemBuilder::with_id("recent_files", "Recent Files...")
-                .build(app)?,
-        )
+        .item(&MenuItemBuilder::with_id("recent_files", t("menu.file.recent_files")).build(app)?)
         .separator()
         .item(
             &MenuItemBuilder::with_id(
                 "reopen_session",
-                if pending_session_count == 1 {
-                    "Reopen 1 Window from Last Session".to_string()
-                } else {
-                    format!("Reopen {} Windows from Last Session", pending_session_count)
-                },
+                crate::i18n::t_plural("menu.file.reopen_session", pending_session_count as u64),
             )
             .accelerator("CmdOrCtrl+Shift+T")
             .enabled(pending_session_count > 0)
@@ -161,7 +163,7 @@ pub fn build_menu(
         )
         .build()?;
 
-    let edit_menu = SubmenuBuilder::new(app, "Edit")
+    let edit_menu = SubmenuBuilder::new(app, t("menu.edit.title"))
         .undo()
         .redo()
         .separator()
@@ -169,13 +171,13 @@ pub fn build_menu(
         .copy()
         .paste()
         .item(
-            &MenuItemBuilder::with_id("select_all", "Select All")
+            &MenuItemBuilder::with_id("select_all", t("menu.edit.select_all"))
                 .accelerator("CmdOrCtrl+A")
                 .build(app)?,
         )
         .separator()
         .item(
-            &MenuItemBuilder::with_id("find", "Find...")
+            &MenuItemBuilder::with_id("find", t("menu.edit.find"))
                 .accelerator("CmdOrCtrl+F")
                 .build(app)?,
         )
@@ -187,7 +189,7 @@ pub fn build_menu(
         // No handling needed in lib.rs — an unclaimed id falls through to the
         // generic `menu-event` emit and the frontend switches on it.
         .item(
-            &MenuItemBuilder::with_id("format_json", "Format JSON")
+            &MenuItemBuilder::with_id("format_json", t("menu.edit.format_json"))
                 .accelerator("CmdOrCtrl+Shift+J")
                 .build(app)?,
         )
@@ -196,12 +198,12 @@ pub fn build_menu(
     // Подписи, и только они: идентификаторы (`engine_live_preview`) и значения
     // в настройках (`live-preview`) остались прежними — они записаны на диске
     // у всех, кто уже пользуется приложением.
-    let engine_raw = CheckMenuItemBuilder::with_id("engine_raw", "Raw").build(app)?;
+    let engine_raw = CheckMenuItemBuilder::with_id("engine_raw", t("menu.view.engine_raw")).build(app)?;
     let engine_live_preview =
-        CheckMenuItemBuilder::with_id("engine_live_preview", "Preview").build(app)?;
+        CheckMenuItemBuilder::with_id("engine_live_preview", t("menu.view.engine_preview")).build(app)?;
     let engine_live_render =
-        CheckMenuItemBuilder::with_id("engine_live_render", "Live Render").build(app)?;
-    let engine_submenu = SubmenuBuilder::new(app, "Editor Engine")
+        CheckMenuItemBuilder::with_id("engine_live_render", t("menu.view.engine_live_render")).build(app)?;
+    let engine_submenu = SubmenuBuilder::new(app, t("menu.view.engine_title"))
         .item(&engine_raw)
         .item(&engine_live_preview)
         .item(&engine_live_render)
@@ -211,11 +213,11 @@ pub fn build_menu(
     // выводит из себя её смещение. Пункт здесь, а не в Theme: это не палитра, а
     // способ рисовать один элемент.
     let toggle_ocd_alignment =
-        CheckMenuItemBuilder::with_id("toggle_ocd_alignment", "OCD Alignment").build(app)?;
+        CheckMenuItemBuilder::with_id("toggle_ocd_alignment", t("menu.view.ocd_alignment")).build(app)?;
 
-    let view_menu = SubmenuBuilder::new(app, "View")
+    let view_menu = SubmenuBuilder::new(app, t("menu.view.title"))
         .item(
-            &MenuItemBuilder::with_id("toggle_mode", "Toggle Raw Markdown")
+            &MenuItemBuilder::with_id("toggle_mode", t("menu.view.toggle_mode"))
                 .accelerator("CmdOrCtrl+E")
                 .build(app)?,
         )
@@ -226,25 +228,22 @@ pub fn build_menu(
             // (`Minus`, `Digit0`, `Equal`), а `Plus` кодом не является — пункт
             // оставался без клавиши вовсе, и по нему было видно, что чего-то
             // не хватает, только в сравнении с соседним Zoom Out.
-            &MenuItemBuilder::with_id("zoom_in", "Zoom In")
+            &MenuItemBuilder::with_id("zoom_in", t("menu.view.zoom_in"))
                 .accelerator("CmdOrCtrl+Equal")
                 .build(app)?,
         )
         .item(
-            &MenuItemBuilder::with_id("zoom_out", "Zoom Out")
+            &MenuItemBuilder::with_id("zoom_out", t("menu.view.zoom_out"))
                 .accelerator("CmdOrCtrl+Minus")
                 .build(app)?,
         )
         .item(
-            &MenuItemBuilder::with_id("zoom_reset", "Reset Zoom")
+            &MenuItemBuilder::with_id("zoom_reset", t("menu.view.zoom_reset"))
                 .accelerator("CmdOrCtrl+0")
                 .build(app)?,
         )
         .separator()
-        .item(
-            &CheckMenuItemBuilder::with_id("toggle_line_glow", "Line Glow")
-                .build(app)?,
-        )
+        .item(&CheckMenuItemBuilder::with_id("toggle_line_glow", t("menu.view.line_glow")).build(app)?)
         .item(&toggle_ocd_alignment)
         .build()?;
 
@@ -256,20 +255,23 @@ pub fn build_menu(
     // настройках остались прежними (`light`, `dark`, `aurora-light`…), и
     // «Classic» здесь — то же имя, которым эта семья зовётся в коде с самого
     // начала (`ThemeFamily`), просто раньше в меню она была «Default».
-    let theme_family_classic =
-        CheckMenuItemBuilder::with_id("theme_family_classic", "Classic").build(app)?;
-    let theme_family_aurora =
-        CheckMenuItemBuilder::with_id("theme_family_aurora", "Aurora").build(app)?;
+    //
+    // Названия семей — Classic / Aurora / Blueprint / Phosphor — имена
+    // собственные и не переводятся.
+    let theme_family_classic = CheckMenuItemBuilder::with_id("theme_family_classic", "Classic").build(app)?;
+    let theme_family_aurora = CheckMenuItemBuilder::with_id("theme_family_aurora", "Aurora").build(app)?;
     let theme_family_blueprint =
         CheckMenuItemBuilder::with_id("theme_family_blueprint", "Blueprint").build(app)?;
     let theme_family_phosphor =
         CheckMenuItemBuilder::with_id("theme_family_phosphor", "Phosphor").build(app)?;
-    let theme_half_light = CheckMenuItemBuilder::with_id("theme_half_light", "Light").build(app)?;
-    let theme_half_dark = CheckMenuItemBuilder::with_id("theme_half_dark", "Dark").build(app)?;
+    let theme_half_light =
+        CheckMenuItemBuilder::with_id("theme_half_light", t("menu.theme.half_light")).build(app)?;
+    let theme_half_dark =
+        CheckMenuItemBuilder::with_id("theme_half_dark", t("menu.theme.half_dark")).build(app)?;
     let theme_system =
-        CheckMenuItemBuilder::with_id("theme_system", "Follow System").build(app)?;
+        CheckMenuItemBuilder::with_id("theme_system", t("menu.common.follow_system")).build(app)?;
 
-    let theme_menu = SubmenuBuilder::new(app, "Theme")
+    let theme_menu = SubmenuBuilder::new(app, t("menu.theme.title"))
         .item(&theme_family_classic)
         .item(&theme_family_aurora)
         .item(&theme_family_blueprint)
@@ -281,8 +283,56 @@ pub fn build_menu(
         .item(&theme_system)
         .build()?;
 
+    // Язык — та же радиогруппа, что Theme: «Follow System» чекбоксом сверху,
+    // разделитель, затем варианты. Ровно один отмечен изначально, и навсегда
+    // на время процесса — смена языка перестраивает меню не «на лету», а
+    // рестартом (см. `lib.rs::apply_language_change`), так что здесь не нужен
+    // ни `Toggle`, ни последующий `sync`: правильная отметка известна уже в
+    // момент постройки меню.
+    //
+    // Названия языков — на самих языках, не переводятся: немец находит
+    // «Deutsch» в любой локали.
+    let language_system =
+        CheckMenuItemBuilder::with_id("language_system", t("menu.common.follow_system")).build(app)?;
+    let language_en = CheckMenuItemBuilder::with_id("language_en", "English").build(app)?;
+    let language_es = CheckMenuItemBuilder::with_id("language_es", "Español").build(app)?;
+    let language_de = CheckMenuItemBuilder::with_id("language_de", "Deutsch").build(app)?;
+    let language_fr = CheckMenuItemBuilder::with_id("language_fr", "Français").build(app)?;
+    let language_ru = CheckMenuItemBuilder::with_id("language_ru", "Русский").build(app)?;
+    let language_zh = CheckMenuItemBuilder::with_id("language_zh", "简体中文").build(app)?;
+
+    // Builder-time defaults are unchecked (same as every other `CheckMenuItem`
+    // in this file); the correct mark is applied right after construction via
+    // `set_checked`, the same method `ThemeMenuItems::sync` and
+    // `EngineMenuItems::sync` use at runtime — proven to exist, unlike a
+    // builder-time `checked()` this file never otherwise relies on.
+    let _ = language_system.set_checked(explicit_language.is_none());
+    let _ = language_en.set_checked(explicit_language == Some("en"));
+    let _ = language_es.set_checked(explicit_language == Some("es"));
+    let _ = language_de.set_checked(explicit_language == Some("de"));
+    let _ = language_fr.set_checked(explicit_language == Some("fr"));
+    let _ = language_ru.set_checked(explicit_language == Some("ru"));
+    let _ = language_zh.set_checked(explicit_language == Some("zh"));
+
+    let language_menu = SubmenuBuilder::new(app, t("menu.app.language"))
+        .item(&language_system)
+        .separator()
+        .item(&language_en)
+        .item(&language_es)
+        .item(&language_de)
+        .item(&language_fr)
+        .item(&language_ru)
+        .item(&language_zh)
+        .build()?;
+
+    // Заголовок подменю приложения — «md-mini» — не переводится: macOS сама
+    // подставляет туда имя бандла.
     let app_menu = SubmenuBuilder::new(app, "md-mini")
         .about(None)
+        .separator()
+        .item(&MenuItemBuilder::with_id("check_updates", t("menu.app.check_updates")).build(app)?)
+        .separator()
+        .item(&language_menu)
         .separator()
         .services()
         .separator()
@@ -301,10 +351,8 @@ pub fn build_menu(
     // оставлял сборку человеку — владелец, подключая себе, в итоге составлял
     // из них солянку вручную. Теперь документ выдаёт промпт, а сборку делает
     // агент: см. `onboarding::connect_doc`.
-    let ai_menu = SubmenuBuilder::new(app, "AI")
-        .item(
-            &MenuItemBuilder::with_id("ai_connect", "Teach Your AI mdmini").build(app)?,
-        )
+    let ai_menu = SubmenuBuilder::new(app, t("menu.ai.title"))
+        .item(&MenuItemBuilder::with_id("ai_connect", t("menu.ai.connect")).build(app)?)
         .separator()
         // The one item here that *does* something to the open document rather
         // than explaining setup. It carries an accelerator because it is used
@@ -315,7 +363,7 @@ pub fn build_menu(
         // No handling needed in lib.rs — an unclaimed id falls through to the
         // generic `menu-event` emit, and the frontend switches on it.
         .item(
-            &MenuItemBuilder::with_id("ai_comment", "Comment on Selection")
+            &MenuItemBuilder::with_id("ai_comment", t("menu.ai.comment"))
                 .accelerator("CmdOrCtrl+Shift+M")
                 .build(app)?,
         )
@@ -323,12 +371,9 @@ pub fn build_menu(
         // to happen in the agent's own session, which the editor cannot reach
         // into. So the discoverable surface is a command the user hands over,
         // and it belongs next to the other "Connect AI via …" items.
-        .item(
-            &MenuItemBuilder::with_id("ai_watch_command", "Connect Agent to Doc Questions")
-                .build(app)?,
-        )
+        .item(&MenuItemBuilder::with_id("ai_watch_command", t("menu.ai.watch_command")).build(app)?)
         .separator()
-        .item(&MenuItemBuilder::with_id("ai_playbook", "AI Playbook").build(app)?)
+        .item(&MenuItemBuilder::with_id("ai_playbook", t("menu.ai.playbook")).build(app)?)
         .build()?;
 
     let menu = MenuBuilder::new(app)

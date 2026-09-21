@@ -1,0 +1,140 @@
+{
+  "toast.dismiss": "关闭",
+
+  "toast.save_error.headline": "无法保存 {fileName}",
+  "toast.save_error.instruction": "你的修改还在——解决问题后按",
+
+  "toast.comment_error.headline": "无法保存 {fileName} 上的评论",
+  "toast.comment_error.instruction": "你输入的内容还在框里——解决问题后继续输入",
+
+  "toast.language_error.headline": "无法更改语言",
+
+  "toast.update.headline": "mdmini {latest} 已发布",
+  "toast.update.current": "你当前是 v{current}",
+  "toast.update.copy_title": "点击复制",
+  "toast.update.copied": "已复制！",
+
+  "toast.update_none.message": "你已经是最新版本",
+  "toast.update_check_failed.message": "检查更新失败——请检查网络连接",
+
+  "toast.session.windows.one": "{count} 个来自上次会话的窗口",
+  "toast.session.windows.few": "{count} 个来自上次会话的窗口",
+  "toast.session.windows.many": "{count} 个来自上次会话的窗口",
+  "toast.session.windows.other": "{count} 个来自上次会话的窗口",
+  "toast.session.reopen_prefix": "按",
+  "toast.session.reopen_suffix": "以重新打开",
+
+  "toast.ai_nudge.message": "<strong>你的 AI 可以操作 md-mini</strong> <span class=\"md-toast-dim\">——看看 <strong>AI</strong> 菜单</span>",
+  "toast.ai_nudge.action": "快速上手",
+
+  "toast.themes_nudge.message": "<strong>md-mini 有主题</strong> <span class=\"md-toast-dim\">——在 <strong>主题</strong> 菜单里，共四种</span>",
+
+  "toast.json_offer.message": "<strong>这看起来像 JSON</strong> <span class=\"md-toast-dim\">——展开它？</span>",
+  "toast.json_offer.action": "格式化",
+  "toast.json_offer.or": "或",
+
+  "toast.ai_bind_copied.saved": "<strong>提示词已复制</strong> <span class=\"md-toast-dim\">——发给你的 AI 智能体，让它接入这个文件</span>",
+  "toast.ai_bind_copied.unsaved": "<strong>请先保存文件</strong> <span class=\"md-toast-dim\">——智能体需要一个路径才能打开它</span>",
+
+  "toast.ai_watch_copied.saved": "<strong>Watch 命令已复制</strong> <span class=\"md-toast-dim\">——粘贴到你智能体的会话里</span>",
+  "toast.ai_watch_copied.unsaved": "<strong>请先保存文件</strong> <span class=\"md-toast-dim\">——未保存的文档没有可监视的路径</span>",
+
+  "toast.ai_first_use.message": "<strong>刚才是你的 AI</strong> <span class=\"md-toast-dim\">——md-mini 已连接</span>",
+  "toast.ai_first_use.more": "更多内容在 <strong>AI</strong> 菜单 → 快速上手",
+
+  "editor.ai_comment.status.open": "等待智能体",
+  "editor.ai_comment.status.paused": "尚未发送",
+  "editor.ai_comment.status.answered": "已回复",
+  "editor.ai_comment.status.resolved": "已关闭",
+  "editor.ai_comment.anchor_lost": "锚点丢失",
+  "editor.ai_comment.placeholder_reply": "回复——边输入边保存",
+  "editor.ai_comment.placeholder_comment": "评论——边输入边保存",
+  "editor.ai_comment.send_now": "立即发送",
+  "editor.ai_comment.sending": "发送中…",
+  "editor.ai_comment.send_now_title": "立即把这条评论交给智能体，不等待间隔",
+  "editor.ai_comment.send_to_agent": "发送给智能体",
+  "editor.ai_comment.paste_confirm": "粘贴到你智能体的会话里",
+  "editor.ai_comment.insert_into_text": "插入到正文",
+  "editor.ai_comment.resolve": "关闭",
+  "editor.ai_comment.saved_label": "已保存",
+
+  "editor.ai_ask.dismiss": "关闭",
+  "editor.ai_ask.multi_hint": " （可多选，然后点击 OK）",
+  "editor.ai_ask.placeholder": "输入你自己的答案…",
+  "editor.ai_ask.ok": "OK",
+
+  "editor.inspector.link_group": "链接",
+  "editor.inspector.link_url": "链接地址",
+  "editor.inspector.open": "打开",
+  "editor.inspector.jump_to_heading": "跳转到该标题",
+  "editor.inspector.open_in_browser": "在浏览器中打开链接",
+  "editor.inspector.remove_link": "删除链接",
+  "editor.inspector.code_language_group": "代码块语言",
+  "editor.inspector.plain_text": "纯文本",
+
+  "editor.selection_toolbar.group_label": "文本格式",
+  "editor.selection_toolbar.bold": "粗体",
+  "editor.selection_toolbar.italic": "斜体",
+  "editor.selection_toolbar.strikethrough": "删除线",
+  "editor.selection_toolbar.code": "代码",
+  "editor.selection_toolbar.comment": "评论所选内容",
+  "editor.selection_toolbar.comment_tooltip": "评论",
+  "editor.selection_toolbar.link": "链接",
+
+  "editor.mermaid.zoom_out": "缩小",
+  "editor.mermaid.zoom_in": "放大",
+  "editor.mermaid.fit": "适应图表",
+  "editor.mermaid.resize_hint": "拖动以调整大小，双击重置",
+  "editor.mermaid.rendering": "正在渲染图表…",
+
+  "editor.tables.toggle_mode": "切换换行 / 全宽",
+  "editor.tables.new_column": "列",
+  "editor.tables.hotkeys_title": "表格键盘快捷键",
+
+  "editor.table_keys.col_next": "右侧列",
+  "editor.table_keys.col_prev": "左侧列",
+  "editor.table_keys.col_prev_note": "在行内循环——不会切换到其他行",
+  "editor.table_keys.row_next": "下一行，同一列",
+  "editor.table_keys.row_next_note": "在最后一行：离开表格",
+  "editor.table_keys.break": "在单元格内换行",
+  "editor.table_keys.commit": "应用修改",
+  "editor.table_keys.new_row": "下方新建一行",
+  "editor.table_keys.cancel": "放弃修改",
+
+  "editor.block_templates.h1": "标题 1",
+  "editor.block_templates.h2": "标题 2",
+  "editor.block_templates.h3": "标题 3",
+  "editor.block_templates.h4": "标题 4",
+  "editor.block_templates.h5": "标题 5",
+  "editor.block_templates.h6": "标题 6",
+  "editor.block_templates.ul": "项目符号列表",
+  "editor.block_templates.ol": "编号列表",
+  "editor.block_templates.task": "复选框",
+  "editor.block_templates.code": "代码块",
+  "editor.block_templates.table": "表格",
+  "editor.block_templates.quote": "引用",
+  "editor.block_templates.hr": "分割线",
+  "editor.block_templates.table_column": "列 {n}",
+
+  "editor.hover_menu.insert_block": "插入块",
+
+  "editor.env.empty_value": "空",
+
+  "ui.copy": "复制",
+  "ui.copied": "已复制！",
+  "ui.untitled": "无标题",
+  "ui.untitled_filename": "无标题.md",
+  "ui.window_title": "{name} — md-mini",
+
+  "ui.recent_files.title": "最近的文件",
+  "ui.recent_files.close": "关闭",
+  "ui.recent_files.empty": "没有最近打开的文件。",
+
+  "ui.ai_bind.tooltip": "复制一段提示词，把这个文件连接到你的 AI 智能体",
+  "ui.ai_bind.label": "连接到 AI 智能体",
+
+  "ui.ai_hint.text": "隐藏 AI 编辑高亮",
+
+  "dialog.external_change.title": "外部更改",
+  "dialog.external_change.message": "文件已被外部修改。重新加载并放弃你的修改？"
+}

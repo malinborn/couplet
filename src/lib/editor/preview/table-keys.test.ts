@@ -73,9 +73,9 @@ describe('matchCellBinding', () => {
  * notation stops being the one `hotkeyLabel` can render.
  */
 describe('the cheatsheet is generated from the bindings', () => {
-  it('every binding carries a description the panel can show', () => {
+  it('every binding carries a description key the panel can show', () => {
     for (const binding of TABLE_CELL_BINDINGS) {
-      expect(binding.description.trim().length).toBeGreaterThan(0);
+      expect(binding.descriptionKey.trim().length).toBeGreaterThan(0);
     }
   });
 

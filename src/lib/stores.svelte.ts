@@ -9,6 +9,7 @@ import {
   type ThemeHalf,
   type ConcreteTheme,
 } from './theme-resolve';
+import { t } from './i18n';
 
 /**
  * Third mode added alongside the original binary `live-preview | raw`:
@@ -281,8 +282,8 @@ export function createFileState() {
       lastSavedAt = v;
     },
     get title() {
-      const name = filePath ? filePath.split('/').pop() : 'Untitled';
-      return `${isDirty ? '\u25cf ' : ''}${name} \u2014 md-mini`;
+      const name = filePath ? filePath.split('/').pop() : t('ui.untitled');
+      return `${isDirty ? '\u25cf ' : ''}${t('ui.window_title', { name })}`;
     },
   };
 }

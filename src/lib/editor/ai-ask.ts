@@ -1,5 +1,6 @@
 import { StateEffect, StateField, type EditorState } from '@codemirror/state';
 import { Decoration, type DecorationSet, EditorView, WidgetType } from '@codemirror/view';
+import { t } from '../i18n';
 
 /**
  * One pending `mdmini ask` question. Rendered as a widget in the document —
@@ -87,7 +88,7 @@ export class AskWidget extends WidgetType {
     const dismiss = document.createElement('button');
     dismiss.type = 'button';
     dismiss.className = 'cm-ai-ask-dismiss';
-    dismiss.setAttribute('aria-label', 'Dismiss');
+    dismiss.setAttribute('aria-label', t('editor.ai_ask.dismiss'));
     dismiss.textContent = '✕';
     // Keep the editor selection from moving to a click in the widget.
     dismiss.addEventListener('mousedown', (event) => event.preventDefault());
@@ -102,7 +103,7 @@ export class AskWidget extends WidgetType {
       // marker below is missed — spelled out next to the question itself.
       const modeHint = document.createElement('span');
       modeHint.className = 'cm-ai-ask-mode';
-      modeHint.textContent = ' (select any, then OK)';
+      modeHint.textContent = t('editor.ai_ask.multi_hint');
       questionEl.appendChild(modeHint);
     }
     card.appendChild(questionEl);
@@ -121,7 +122,7 @@ export class AskWidget extends WidgetType {
       input = document.createElement('input');
       input.type = 'text';
       input.className = 'cm-ai-ask-input';
-      input.placeholder = 'Your own answer…';
+      input.placeholder = t('editor.ai_ask.placeholder');
       // ignoreEvent() (below) only tells CM6's own handling to leave widget
       // events alone — it does not stop the DOM event from bubbling past
       // contentDOM to document-level listeners (e.g. the Escape-clears-
@@ -166,7 +167,7 @@ export class AskWidget extends WidgetType {
       const confirm = document.createElement('button');
       confirm.type = 'button';
       confirm.className = 'cm-ai-ask-confirm';
-      confirm.textContent = 'OK';
+      confirm.textContent = t('editor.ai_ask.ok');
       confirm.addEventListener('mousedown', (event) => event.preventDefault());
       confirm.addEventListener('click', () => {
         const answers = options.filter((option) => this.selected.has(option));

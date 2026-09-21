@@ -15,8 +15,29 @@ use crate::paths;
 use crate::window;
 
 const MARKER_FILE: &str = "onboarding-version";
-const WELCOME_MD: &str = include_str!("../welcome.md");
+
+const WELCOME_EN: &str = include_str!("../welcome.en.md");
+const WELCOME_ES: &str = include_str!("../welcome.es.md");
+const WELCOME_DE: &str = include_str!("../welcome.de.md");
+const WELCOME_FR: &str = include_str!("../welcome.fr.md");
+const WELCOME_RU: &str = include_str!("../welcome.ru.md");
+const WELCOME_ZH: &str = include_str!("../welcome.zh.md");
+
 const PLAYBOOK_MD: &str = include_str!("../playbook.md");
+
+/// The welcome document for `lang`. `playbook.md` has no per-language
+/// equivalent — it is a prompt for an agent, written with CLI syntax, and
+/// stays English by policy.
+fn welcome_doc(lang: &str) -> &'static str {
+    match lang {
+        "es" => WELCOME_ES,
+        "de" => WELCOME_DE,
+        "fr" => WELCOME_FR,
+        "ru" => WELCOME_RU,
+        "zh" => WELCOME_ZH,
+        _ => WELCOME_EN,
+    }
+}
 
 /// Written once, the first time an AI command reaches this install over the
 /// command socket. Its presence is what silences the startup nudge forever.
@@ -70,8 +91,8 @@ pub fn open_bundled_doc(app: &AppHandle, filename: &str, content: &str) -> Resul
 }
 
 /// Show the welcome window if this version hasn't been shown yet. Called at the
-/// end of `setup`, after `paths::init`. Never panics or breaks startup — any
-/// failure is logged to stderr and swallowed.
+/// end of `setup`, after `paths::init` and `i18n::init`. Never panics or breaks
+/// startup — any failure is logged to stderr and swallowed.
 pub fn maybe_show(app: &AppHandle) {
     let version = app
         .config()
@@ -92,8 +113,9 @@ pub fn maybe_show(app: &AppHandle) {
         return;
     }
 
-    let filename = format!("welcome-{}.md", version);
-    if let Err(e) = open_bundled_doc(app, &filename, WELCOME_MD) {
+    let lang = crate::i18n::active_language();
+    let filename = format!("welcome-{}-{}.md", version, lang);
+    if let Err(e) = open_bundled_doc(app, &filename, welcome_doc(lang)) {
         eprintln!("onboarding: {}", e);
         return;
     }
@@ -222,68 +244,94 @@ pub fn ai_nudge_dismiss() {
     }
 }
 
-/// Open the welcome doc — the same one the first run shows.
+/// Open the welcome doc — the same one the first run shows, in the active
+/// language.
 ///
 /// Раньше здесь был отдельный «Getting Started», пересказывавший приветствие
 /// длиннее. Два документа про одно и то же расходятся: приветствие правили, а
 /// его двойника забывали, и он ещё долго описывал меню, которого уже нет.
 #[tauri::command]
 pub fn ai_open_getting_started(app: AppHandle) {
-    if let Err(e) = open_bundled_doc(&app, "welcome.md", WELCOME_MD) {
+    let lang = crate::i18n::active_language();
+    let filename = format!("welcome-{}.md", lang);
+    if let Err(e) = open_bundled_doc(&app, &filename, welcome_doc(lang)) {
         eprintln!("onboarding: {}", e);
     }
 }
 
-/// Content for the "Teach Your AI mdmini" menu item.
+/// Slugify a heading exactly the way `heading-slugs.ts` does on the frontend:
+/// lowercase, drop everything that isn't a letter/number/space/hyphen, collapse
+/// runs of whitespace into one hyphen, then trim leading/trailing hyphens.
 ///
-/// Заменил собой четыре документа: «Getting Started», «Connect via CLI»,
-/// «Connect via MCP» и «Teach your AI». Каждый из них объяснял свою часть и
-/// оставлял человеку работу по сборке — владелец, собирая себе, в итоге делал
-/// из них солянку вручную. Здесь вместо объяснения выдаётся промпт: агент сам
-/// регистрирует MCP, пишет скилл и добавляет короткий абзац в главный конфиг.
-///
-/// Тело скилла — это `MCP_AGENT_SNIPPET` и `AGENT_SNIPPET` дословно, поэтому
-/// промпт не может разойтись с тем, что печатает `mdmini agent`.
+/// `char::is_alphanumeric()` is Unicode-aware (true for Cyrillic, CJK, accented
+/// Latin, …), which is what lets this agree with the TS version across all six
+/// languages, not just ASCII English headings.
+fn slugify(text: &str) -> String {
+    let mut out = String::new();
+    let mut pending_hyphen = false;
+    for c in text.to_lowercase().chars() {
+        if c.is_alphanumeric() {
+            if pending_hyphen && !out.is_empty() {
+                out.push('-');
+            }
+            pending_hyphen = false;
+            out.push(c);
+        } else if c.is_whitespace() || c == '-' {
+            pending_hyphen = true;
+        }
+        // Everything else (punctuation) is dropped, same as the TS regex.
+    }
+    out
+}
+
+/// Content for the "Teach Your AI mdmini" menu item, in the process-wide
+/// active language.
+pub(crate) fn connect_doc() -> String {
+    connect_doc_for(crate::i18n::active_language())
+}
+
+/// The pure, per-language body of `connect_doc` — parameterized rather than
+/// reading the global active language directly, so every language can be
+/// exercised in tests without fighting the `OnceLock` that `i18n::init` can
+/// only set once per process.
 ///
 /// Внешний забор — четыре бэктика: внутри промпта есть свои тройные блоки.
-pub(crate) fn connect_doc() -> String {
+/// `PROMPT_INTRO`, `PROMPT_VERIFY`, `CONFIG_BLOCK` и сниппеты `ai_socket`
+/// остаются английскими в любом языке — это промпт для агента и он должен
+/// совпадать байт в байт с тем, что печатает `mdmini agent`.
+pub(crate) fn connect_doc_for(lang: &str) -> String {
+    let t = |key: &str| crate::i18n::t_for(lang, key);
     let mut d = String::new();
 
-    d.push_str(
-        r#"# Teach Your AI mdmini
+    d.push_str(&format!("# {}\n\n", t("menu.ai.connect")));
+    d.push_str(&format!("{}\n\n", t("doc.connect.intro")));
+    d.push_str(&format!("{}\n\n", t("doc.connect.four_things_intro")));
+    d.push_str(&format!(
+        "{}\n{}\n{}\n{}\n\n",
+        t("doc.connect.step1"),
+        t("doc.connect.step2"),
+        t("doc.connect.step3"),
+        t("doc.connect.step4"),
+    ));
+    d.push_str(&format!("{}\n", t("doc.connect.rather_config")));
 
-One move: hand your agent the prompt below. It does the rest itself.
+    let heading_prompt = t("doc.connect.heading_prompt");
+    let heading_skill_only = t("doc.connect.heading_skill_only");
+    // Recomputed from the *translated* heading text, not hardcoded — a
+    // translated heading with an English-shaped anchor would silently break
+    // the link the moment a locale's heading differs from English.
+    let slug_prompt = slugify(&heading_prompt);
+    let slug_skill_only = slugify(&heading_skill_only);
 
-The prompt does four things:
+    d.push_str(&format!(
+        "[{}](#{})\n{}\n\n",
+        t("doc.connect.second_prompt_link_text"),
+        slug_skill_only,
+        t("doc.connect.link_hint"),
+    ));
 
-1. **Registers md-mini as an MCP server** — `show` / `edit` / `ask` /
-   `question` / `answer` then become ordinary tools your agent can see and
-   call, with no snippet in any instruction file.
-2. **Writes an `mdmini` skill** — everything about using those tools well
-   lives in it. A skill is loaded only once it is needed, so it costs nothing
-   until it does.
-3. **Adds a short paragraph to your agent's main config**
-   (`~/.claude/CLAUDE.md`, or its equivalent) — only *when* to reach for
-   md-mini, and that the skill should be loaded first. The rest of the
-   knowledge stays in the skill.
-4. **Sets the order: MCP, and the CLI when that is not available.** The agent
-   is told plainly: work over MCP if you can; if you cannot, if it was never
-   registered, or if it goes quiet, the same things are one `mdmini` command
-   away in a terminal.
-
-Would you rather we left your main config alone?
-[There is a second prompt, skill only](#skill-only-leaving-your-config-alone)
-(⌘-click: a plain click in md-mini places the caret, so the text of a link
-stays editable).
-
-## The prompt
-
-Copy the whole block and hand it to your agent.
-
-````
-"#,
-    );
-
+    d.push_str(&format!("## {}\n\n", heading_prompt));
+    d.push_str(&format!("{}\n\n````\n", t("doc.connect.copy_instruction")));
     d.push_str(PROMPT_INTRO);
     d.push_str(
         r#"
@@ -295,29 +343,17 @@ Copy the whole block and hand it to your agent.
     );
     d.push_str(PROMPT_VERIFY);
     d.push_str(&prompt_payload());
-    d.push_str(
-        r#"
-
---- CONFIG ---
-"#,
-    );
+    d.push_str("\n\n--- CONFIG ---\n");
     d.push_str(CONFIG_BLOCK);
-    d.push_str(
-        r#"
---- CONFIG END ---
-````
+    d.push_str("\n--- CONFIG END ---\n````\n\n");
 
-## Skill only, leaving your config alone
-
-The same prompt, except it does not touch your main config. The cost: your
-agent will not work out on its own when md-mini is worth reaching for, so you
-will have to call the skill by hand (`/mdmini`, or "use the mdmini skill").
-That is why we still recommend the first one —
-[back to it](#the-prompt) (⌘-click).
-
-````
-"#,
-    );
+    d.push_str(&format!("## {}\n\n", heading_skill_only));
+    d.push_str(&format!(
+        "{} [{}](#{}) (\u{2318}-click).\n\n````\n",
+        t("doc.connect.skill_only_body"),
+        t("doc.connect.back_to_it"),
+        slug_prompt,
+    ));
     d.push_str(PROMPT_INTRO);
     d.push_str(
         r#"
@@ -327,23 +363,17 @@ That is why we still recommend the first one —
     );
     d.push_str(PROMPT_VERIFY);
     d.push_str(&prompt_payload());
-    d.push_str(
-        r#"
-````
+    d.push_str("````\n\n");
 
-## Where the main config lives
-
-The prompt above already knows these places; the list is here in case your
-agent asks.
-
-"#,
-    );
+    d.push_str(&format!("## {}\n\n", t("doc.connect.heading_config_location")));
+    d.push_str(&format!("{}\n\n", t("doc.connect.config_location_body")));
     d.push_str(crate::ai_socket::INSTRUCTION_FILE_LOCATIONS);
     d.push('\n');
     d
 }
 
 /// Первые два шага обоих промптов — они одинаковы; различается только третий.
+/// Остаётся английским во всех языках: это текст промпта для агента.
 const PROMPT_INTRO: &str = r#"Set up md-mini (`mdmini`) for me. Do the steps in order, then tell me in one
 short paragraph what you changed and what you skipped.
 
@@ -366,7 +396,7 @@ short paragraph what you changed and what you skipped.
    Its body is everything between the SKILL markers below, verbatim.
 "#;
 
-/// Последний шаг обоих промптов.
+/// Последний шаг обоих промптов. Остаётся английским.
 const PROMPT_VERIFY: &str = r#"
 4. Check your work: `mdmini --version` prints a version, and the skill file
    exists. If `mdmini` is not on PATH, stop and tell me — do not install
@@ -378,7 +408,8 @@ not supported, or a call fails. Same capabilities either way.
 "#;
 
 /// Тело скилла — оба сниппета дословно, поэтому промпт не может разойтись с
-/// тем, что печатает `mdmini agent` и `mdmini agent --mcp`.
+/// тем, что печатает `mdmini agent` и `mdmini agent --mcp`. Остаётся
+/// английским во всех языках.
 fn prompt_payload() -> String {
     format!(
         "\n--- SKILL ---\n\n{}\n\nIf MCP is unavailable, unregistered, or failing, the same capabilities are on the command line:\n\n{}\n\n--- SKILL END ---\n",
@@ -389,7 +420,8 @@ fn prompt_payload() -> String {
 
 /// Всё, что попадает в главный конфиг. Намеренно короткое: этот файл читается
 /// при каждом запуске агента, поэтому знание живёт в скилле, а здесь — только
-/// повод его загрузить.
+/// повод его загрузить. Остаётся английским во всех языках — это текст для
+/// агента, а не для человека.
 const CONFIG_BLOCK: &str = r#"
 ## md-mini
 
@@ -405,7 +437,8 @@ not registered, not supported by this harness, or a call fails, use the
 throwaway files.
 "#;
 
-/// Content for the "AI Playbook" menu item — static, bundled at compile time.
+/// Content for the "AI Playbook" menu item — static, bundled at compile time,
+/// English only by design (see `docs/superpowers/specs/2026-09-21-i18n-design.md`).
 pub(crate) fn playbook_doc() -> &'static str {
     PLAYBOOK_MD
 }
@@ -455,40 +488,116 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    // --- slugify --------------------------------------------------------------
+
+    #[test]
+    fn slugify_matches_the_ts_algorithm_on_ascii() {
+        assert_eq!(slugify("The prompt"), "the-prompt");
+        assert_eq!(
+            slugify("Skill only, leaving your config alone"),
+            "skill-only-leaving-your-config-alone"
+        );
+    }
+
+    #[test]
+    fn slugify_handles_non_latin_scripts() {
+        // Cyrillic and CJK are alphanumeric under Unicode, same as the TS
+        // `\p{L}\p{N}` regex — this is the whole point of not hand-rolling an
+        // ASCII-only check.
+        assert_eq!(slugify("Промпт"), "промпт");
+        assert!(!slugify("只安装技能，不动配置文件").is_empty());
+    }
+
+    /// Pins the invariant that lets this Rust `slugify` agree with
+    /// `heading-slugs.ts` WITHOUT a `.normalize('NFC')` call here.
+    ///
+    /// The TS version normalizes to NFC before matching `\p{L}\p{N}`; this
+    /// one does not — it relies on every catalog string already being NFC
+    /// (composed), because `char::is_alphanumeric()` does not recognize a
+    /// bare combining mark (U+0300–U+036F) as a letter and would silently
+    /// drop it, while the TS regex, after NFC composition, never even sees a
+    /// combining mark to drop (a decomposed `à` — `a` + U+0300 — becomes the
+    /// precomposed `à` first). A decomposed heading would therefore slugify
+    /// to two different strings in the two runtimes and break a
+    /// `connect_doc` anchor.
+    ///
+    /// All 24 current heading/locale combinations were measured and every
+    /// one is already NFC — but the existing anchor tests recompute their
+    /// expected slug with this same `slugify`, so they are self-consistent
+    /// and cannot catch a regression here. This test does not add NFC
+    /// normalization (deliberately no `unicode-normalization` dependency for
+    /// one invariant that has never yet been violated); it only pins that
+    /// the invariant continues to hold.
+    #[test]
+    fn no_translated_heading_contains_a_combining_mark() {
+        for lang in crate::i18n::SUPPORTED_LANGUAGES {
+            for key in ["doc.connect.heading_prompt", "doc.connect.heading_skill_only"] {
+                let heading = crate::i18n::t_for(lang, key);
+                assert!(
+                    !heading.chars().any(|c| ('\u{0300}'..='\u{036F}').contains(&c)),
+                    "lang {lang} key {key}: heading contains a combining mark (would slugify \
+                     differently in Rust vs. TS): {heading:?}"
+                );
+            }
+        }
+    }
+
     // --- Teach Your AI mdmini ------------------------------------------------
 
     #[test]
     fn connect_doc_carries_both_snippets_verbatim() {
-        let doc = connect_doc();
-        assert!(doc.starts_with("# Teach Your AI mdmini"));
-        // Смысл документа в том, что тело скилла — это те же сниппеты, что
-        // печатает CLI. Пересказ здесь разойдётся с ними на первой же правке.
-        assert!(doc.contains(crate::ai_socket::MCP_AGENT_SNIPPET));
-        assert!(doc.contains(crate::ai_socket::AGENT_SNIPPET));
+        for lang in crate::i18n::SUPPORTED_LANGUAGES {
+            let doc = connect_doc_for(lang);
+            let title = crate::i18n::t_for(lang, "menu.ai.connect");
+            assert!(
+                doc.starts_with(&format!("# {}", title)),
+                "lang {lang}: doc does not start with its own translated title"
+            );
+            // Смысл документа в том, что тело скилла — это те же сниппеты, что
+            // печатает CLI. Пересказ здесь разойдётся с ними на первой же правке.
+            assert!(doc.contains(crate::ai_socket::MCP_AGENT_SNIPPET), "lang {lang}");
+            assert!(doc.contains(crate::ai_socket::AGENT_SNIPPET), "lang {lang}");
+        }
     }
 
     #[test]
     fn connect_doc_has_both_prompts_and_the_link_between_them() {
-        let doc = connect_doc();
-        // Два промпта — два забора из четырёх бэктиков, открывающий и
-        // закрывающий у каждого.
-        assert_eq!(doc.matches("````").count(), 4);
-        // Ссылки ведут к заголовкам друг друга: слаг считается так же, как
-        // `slugify` во фронтенде (нижний регистр, пробелы в дефисы,
-        // пунктуация выброшена). Обе стороны — вниз к запасному варианту и
-        // обратно наверх к рекомендованному: человек, передумавший на втором
-        // промпте, не должен искать дорогу назад скроллом.
-        assert!(doc.contains("(#skill-only-leaving-your-config-alone)"));
-        assert!(doc.contains("## Skill only, leaving your config alone"));
-        assert!(doc.contains("(#the-prompt)"));
-        assert!(doc.contains("## The prompt"));
+        for lang in crate::i18n::SUPPORTED_LANGUAGES {
+            let doc = connect_doc_for(lang);
+            // Два промпта — два забора из четырёх бэктиков, открывающий и
+            // закрывающий у каждого.
+            assert_eq!(doc.matches("````").count(), 4, "lang {lang}");
+
+            // Ссылки ведут к заголовкам друг друга: слаг пересчитывается из
+            // переведённого текста заголовка, а не захардкожен по-английски.
+            let heading_prompt = crate::i18n::t_for(lang, "doc.connect.heading_prompt");
+            let heading_skill_only = crate::i18n::t_for(lang, "doc.connect.heading_skill_only");
+            let slug_prompt = slugify(&heading_prompt);
+            let slug_skill_only = slugify(&heading_skill_only);
+
+            assert!(
+                doc.contains(&format!("(#{slug_skill_only})")),
+                "lang {lang}: missing anchor to {slug_skill_only:?}"
+            );
+            assert!(doc.contains(&format!("## {heading_skill_only}")), "lang {lang}");
+            assert!(
+                doc.contains(&format!("(#{slug_prompt})")),
+                "lang {lang}: missing anchor to {slug_prompt:?}"
+            );
+            assert!(doc.contains(&format!("## {heading_prompt}")), "lang {lang}");
+        }
     }
 
     #[test]
     fn connect_doc_tells_the_agent_mcp_first_then_cli() {
-        let doc = connect_doc();
-        assert!(doc.contains("prefer the MCP tools"));
-        assert!(doc.contains("fall back to the `mdmini` CLI"));
+        // Agent-facing prompt text (`PROMPT_VERIFY`) stays English in every
+        // language — this is the part that must be byte-identical to
+        // `mdmini agent`'s own output regardless of who is reading the doc.
+        for lang in crate::i18n::SUPPORTED_LANGUAGES {
+            let doc = connect_doc_for(lang);
+            assert!(doc.contains("prefer the MCP tools"), "lang {lang}");
+            assert!(doc.contains("fall back to the `mdmini` CLI"), "lang {lang}");
+        }
     }
 
     #[test]
@@ -512,52 +621,64 @@ mod tests {
 
     // --- Getting Started doc ------------------------------------------------
 
+    /// Подписи пунктов меню AI, в порядке их следования в меню, для языка
+    /// `lang`. Раньше это скрапилось литералами из исходника `menu.rs`
+    /// регуляркой — так и работало, пока лейблы были строковыми литералами.
+    /// Теперь второй аргумент `with_id` — вызов `t()`, и скрапинг сломался бы
+    /// вводящей в заблуждение ошибкой; читаем прямо из каталога.
+    fn ai_menu_labels(lang: &str) -> Vec<String> {
+        [
+            "menu.ai.connect",
+            "menu.ai.comment",
+            "menu.ai.watch_command",
+            "menu.ai.playbook",
+        ]
+        .iter()
+        .map(|key| crate::i18n::t_for(lang, key))
+        .collect()
+    }
+
     #[test]
     fn welcome_doc_names_the_menu_item_it_sends_people_to() {
         // Приветствие — единственная страница, которую видит человек на первом
         // запуске, и весь её смысл в одном шаге: открыть этот пункт меню. Если
-        // пункт переименуют, а её забудут, шаг станет невыполнимым.
-        //
-        // Раньше здесь сверялся весь список пунктов — приветствие рисовало
-        // схему меню целиком. Схемы больше нет, и требовать её обратно значит
-        // требовать документ, который снова придётся держать в синхроне
-        // вручную; сверяется ровно то, на что страница ссылается.
-        let entry = ai_menu_labels()
-            .into_iter()
-            .next()
-            .expect("AI menu has at least one item");
-        assert!(
-            WELCOME_MD.contains(&entry),
-            "welcome.md does not name {:?}, the menu item it tells people to open",
-            entry
-        );
-    }
-
-    /// Подписи пунктов меню AI, вытащенные из `menu.rs`.
-    fn ai_menu_labels() -> Vec<String> {
-        const MENU_RS: &str = include_str!("menu.rs");
-        let mut out = Vec::new();
-        for rest in MENU_RS.split("with_id(\"ai_").skip(1) {
-            // …"ai_connect", "Teach Your AI mdmini")… — нужна вторая строка.
-            let Some(after_id) = rest.split_once("\", \"") else {
-                continue;
-            };
-            let Some((label, _)) = after_id.1.split_once('"') else {
-                continue;
-            };
-            out.push(label.to_string());
+        // пункт переименуют, а её забудут, шаг станет невыполнимым. Проверяется
+        // для каждого языка его собственный, переведённый лейбл.
+        for lang in crate::i18n::SUPPORTED_LANGUAGES {
+            let entry = ai_menu_labels(lang)
+                .into_iter()
+                .next()
+                .expect("AI menu has at least one item");
+            assert!(
+                welcome_doc(lang).contains(&entry),
+                "welcome.{}.md does not name {:?}, the menu item it tells people to open",
+                lang,
+                entry
+            );
         }
-        assert!(!out.is_empty(), "no AI menu items found in menu.rs");
-        out
     }
-
 
     #[test]
     fn welcome_doc_covers_what_the_menus_offer() {
         // Три вещи, которые человек иначе не найдёт: их некому подсказать,
-        // кроме этой страницы, и каждая живёт в своём меню.
-        for topic in ["Theme", "Editor Engine", "OCD Alignment"] {
-            assert!(WELCOME_MD.contains(topic), "welcome.md says nothing about {:?}", topic);
+        // кроме этой страницы, и каждая живёт в своём меню. Проверяется по
+        // всем шести языкам — их переведённые названия должны совпасть с тем,
+        // что реально стоит в меню (native.json), не с английским текстом.
+        for lang in crate::i18n::SUPPORTED_LANGUAGES {
+            let doc = welcome_doc(lang);
+            for key in [
+                "menu.theme.title",
+                "menu.view.engine_title",
+                "menu.view.ocd_alignment",
+            ] {
+                let label = crate::i18n::t_for(lang, key);
+                assert!(
+                    doc.contains(&label),
+                    "welcome.{}.md says nothing about {:?}",
+                    lang,
+                    label
+                );
+            }
         }
     }
 

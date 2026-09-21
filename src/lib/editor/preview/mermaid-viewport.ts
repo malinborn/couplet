@@ -1,3 +1,5 @@
+import { t } from '../../i18n';
+
 /**
  * Pan/zoom geometry for rendered mermaid diagrams.
  *
@@ -406,17 +408,17 @@ export function createViewport(
 
   const controls = document.createElement('div');
   controls.className = 'cm-md-mermaid-controls';
-  const zoomOutBtn = makeButton('−', 'Zoom out', 'cm-md-mermaid-btn');
+  const zoomOutBtn = makeButton('−', t('editor.mermaid.zoom_out'), 'cm-md-mermaid-btn');
   const readout = document.createElement('span');
   readout.className = 'cm-md-mermaid-zoom-readout';
-  const zoomInBtn = makeButton('+', 'Zoom in', 'cm-md-mermaid-btn');
-  const fitBtn = makeButton('⤢', 'Fit diagram', 'cm-md-mermaid-btn');
+  const zoomInBtn = makeButton('+', t('editor.mermaid.zoom_in'), 'cm-md-mermaid-btn');
+  const fitBtn = makeButton('⤢', t('editor.mermaid.fit'), 'cm-md-mermaid-btn');
   controls.append(zoomOutBtn, readout, zoomInBtn, fitBtn);
   dom.appendChild(controls);
 
   const handle = document.createElement('div');
   handle.className = 'cm-md-mermaid-resize';
-  handle.title = 'Drag to resize, double-click to reset';
+  handle.title = t('editor.mermaid.resize_hint');
   dom.appendChild(handle);
 
   // -- Mutable state --

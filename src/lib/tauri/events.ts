@@ -60,6 +60,20 @@ export function onSessionRestored(handler: (count: number) => void): Promise<() 
   });
 }
 
+/**
+ * The native menu's Language item failed to persist (`apply_language_change`
+ * in `lib.rs` returned an error before ever reaching `app.restart()`).
+ * Broadcast to every window, deliberately not window-targeted like
+ * `onAiCommand`/`onCheckUpdatesRequested`: a language change is a process-wide
+ * setting, not something owned by one document's window, so every open
+ * window surfacing the same failure is correct rather than noisy.
+ */
+export function onLanguageChangeFailed(handler: (message: string) => void): Promise<() => void> {
+  return listen<string>('language-change-failed', (event) => {
+    handler(event.payload);
+  });
+}
+
 /** A newer release was found. Emitted to every window by the polling one. */
 /** Matches `UpdateInfo` in src-tauri/src/updater.rs. */
 export interface UpdateInfo {
@@ -81,6 +95,27 @@ export function onUpdateAvailable(handler: (info: UpdateInfo) => void): Promise<
  */
 export function onUpdateDismissed(handler: () => void): Promise<() => void> {
   return listen('update-dismissed', () => {
+    handler();
+  });
+}
+
+/**
+ * The user picked "Check for Updates…" from the menu (#82).
+ *
+ * Routed like `ai-command`, deliberately **not** through the general
+ * `menu-event` broadcast (`onMenuEvent`, above): that channel reaches every
+ * window, and five open windows would mean five simultaneous GitHub
+ * requests for the same answer. Rust targets exactly one window with
+ * `emit_to` (see the `check_updates` handler in `lib.rs`) — a bare `emit`
+ * would not have been enough on its own, since an unfiltered `emit`
+ * broadcasts to every listener regardless of target label. That is also why
+ * this must be read through `getCurrentWebviewWindow().listen()` rather than
+ * the global `listen`: a global listener's target is `Any`, which matches a
+ * *targeted* emit too, so every window's global listener would still fire
+ * and race to run its own check. See `onAiCommand` below for the same trap.
+ */
+export function onCheckUpdatesRequested(handler: () => void): Promise<() => void> {
+  return getCurrentWebviewWindow().listen('check-updates-requested', () => {
     handler();
   });
 }
