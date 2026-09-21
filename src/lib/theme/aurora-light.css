@@ -48,6 +48,10 @@
   --heading-grad-2: linear-gradient(100deg, #9b52c9 0%, #6b66e4 50%, #5768e0 100%);
   --heading-grad-3: linear-gradient(100deg, #6478e6 0%, #5c78d8 55%, #5a6ad9 100%);
   --heading-grad-4: linear-gradient(100deg, #6470cf 0%, #5f6cc9 100%);
+  /* Текст выполненной задачи: сероватый градиент вместо плоского тона.
+   * Последний stop обязан совпадать с --color-strikethrough — по той же
+   * причине, что и у заголовков (длинный пункт бесшовно уходит в базовый тон). */
+  --task-done-grad: linear-gradient(100deg, #b5468c 0%, #7a54c8 34%, #1f8ba3 68%, #6b6f92 100%);
   --font-text: 'Inter', -apple-system, system-ui, sans-serif;
   --font-code: 'JetBrains Mono', 'SF Mono', monospace;
 }

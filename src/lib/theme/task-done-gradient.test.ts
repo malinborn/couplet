@@ -1,0 +1,53 @@
+import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+/**
+ * `.cm-md-task-done` paints a ticked task through one code path in every theme:
+ * `--color-strikethrough` as the flat `background-color`, `--task-done-grad` as
+ * an optional `background-image` on top of it (see `styles/editor.css`).
+ *
+ * That leaves two things a stylesheet edit can quietly break, neither of which
+ * any rendering test would catch — a wrong gradient still renders.
+ */
+
+const THEMES = ['light', 'dark', 'aurora-light', 'aurora-dark'] as const;
+const AURORA = ['aurora-light', 'aurora-dark'] as const;
+
+function css(theme: string): string {
+  return readFileSync(fileURLToPath(new URL(`./${theme}.css`, import.meta.url)), 'utf8');
+}
+
+function variable(theme: string, name: string): string | null {
+  const match = css(theme).match(new RegExp(`--${name}:\\s*([^;]+);`));
+  return match ? match[1].trim() : null;
+}
+
+/** The colour of a gradient's last stop, e.g. `…, #9192b3 100%)` → `#9192b3`. */
+function lastStop(gradient: string): string | null {
+  const stops = gradient.match(/#[0-9a-fA-F]{3,8}/g);
+  return stops ? stops[stops.length - 1] : null;
+}
+
+describe('the ticked-task gradient', () => {
+  it.each(THEMES)('%s declares the flat tone it falls back to', (theme) => {
+    expect(variable(theme, 'color-strikethrough')).toMatch(/^#[0-9a-fA-F]{3,8}$/);
+  });
+
+  // The gradient is sized to the item, so its last stop is the colour every
+  // ticked item ends on — and the one a strict theme paints flat throughout.
+  // Letting it drift makes the two themes disagree about what "done" looks
+  // like at the end of a line, which no rendering test would call a failure.
+  it.each(AURORA)('%s ends its gradient on the flat tone', (theme) => {
+    const grad = variable(theme, 'task-done-grad');
+    expect(grad, `${theme} declares --task-done-grad`).not.toBeNull();
+    expect(lastStop(grad as string)).toBe(variable(theme, 'color-strikethrough'));
+  });
+
+  // Declaring it in a strict theme is how it would get a gradient by accident:
+  // the CSS has no theme selector, it just resolves the var.
+  it('is an aurora-only flourish', () => {
+    expect(variable('light', 'task-done-grad')).toBeNull();
+    expect(variable('dark', 'task-done-grad')).toBeNull();
+  });
+});

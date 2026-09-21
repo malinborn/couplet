@@ -259,6 +259,50 @@
   text-decoration-color: var(--color-strikethrough);
 }
 
+/* …and in the aurora themes the grey is a gradient instead of a flat tone.
+ *
+ * Same mechanism as the headings above, including why it is one code path and
+ * not a theme-scoped branch: `background-color` is the flat tone and stays
+ * visible on its own, `--task-done-grad` is declared only by the aurora themes,
+ * so a strict theme resolves `none` and renders exactly as it did before.
+ *
+ * What is NOT copied from the headings is their fixed `--heading-grad-span`.
+ * A heading is one long line and the span is a decorative lead-in; a task item
+ * is a few words, so a fixed span showed only the first sliver of the sweep and
+ * read as flat grey with a faint tint. Sizing the gradient to the element means
+ * every item traverses the whole ramp, short and long alike. Each line of a
+ * wrapped item is its own span (see `checkedTextRanges`), so each gets its own
+ * sweep rather than a slice of one.
+ *
+ * The last stop still has to equal `--color-strikethrough`: that is the colour
+ * every item ends on, and the one a strict theme paints flat.
+ *
+ * `text-decoration-color` is set above and is not `currentColor`, so the
+ * line-through survives the transparent fill.
+ */
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .cm-md-task-done {
+    background-color: var(--color-strikethrough);
+    background-image: var(--task-done-grad, none);
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+    background-position: 0 0;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    /* Loses to `drawSelection()`'s own `!important`; see the heading block. */
+    caret-color: var(--color-cursor);
+  }
+
+  /* The fill is inherited, so children show the wrapper's clipped background —
+   * which is the point, bold and italic get the gradient too. Inline code is
+   * the one exception: it paints an opaque background of its own over that
+   * clipped one, and its glyphs would then have nothing left to show. */
+  .cm-md-task-done .cm-md-inline-code {
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
 /* Blockquotes */
 .cm-md-blockquote {
   border-left: 3px solid var(--color-blockquote-border);
