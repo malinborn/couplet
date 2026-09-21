@@ -572,23 +572,41 @@
   text-align: center;
 }
 
-/* Row background styles */
+/* Row background styles
+ *
+ * Шапка таблицы — часть палитры, но выпущенные четыре темы её не объявляют,
+ * поэтому их значения лежат здесь как дефолты: тема, которая молчит, выглядит
+ * ровно как раньше. Тема, которой этот фиолетовый не идёт, объявляет
+ * `--table-header-grad` одной строкой — до этого шапка была прибита гвоздями и
+ * «Фосфор» получал сиреневую шапку на зелёной бумаге.
+ *
+ * Правил по-прежнему два, потому что дефолты у светлых и тёмных разные, и
+ * выбираются они тем же `data-theme$='light'`, что и палитра подсветки кода
+ * ниже. Имя темы здесь load-bearing: тема с именем не на `-light`/`-dark`
+ * молча получит чужой набор.
+ */
 .cm-md-table .cm-md-table-row-header {
-  background: linear-gradient(135deg, #302848 0%, #24203a 40%, #1f1d2e 70%, #282248 100%);
+  background: var(
+    --table-header-grad,
+    linear-gradient(135deg, #302848 0%, #24203a 40%, #1f1d2e 70%, #282248 100%)
+  );
 }
 
 :root[data-theme$='light'] .cm-md-table .cm-md-table-row-header {
-  background: linear-gradient(135deg, #e8e0f6 0%, #ede8f4 40%, #f5f3f8 70%, #e4ecf8 100%);
+  background: var(
+    --table-header-grad,
+    linear-gradient(135deg, #e8e0f6 0%, #ede8f4 40%, #f5f3f8 70%, #e4ecf8 100%)
+  );
 }
 
 .cm-md-table .cm-md-table-row-header .cm-md-table-cell {
   font-weight: 600;
-  color: var(--color-heading);
+  color: var(--table-header-text, var(--color-heading));
   border-bottom: 2px solid var(--color-table-border);
 }
 
 :root[data-theme$='light'] .cm-md-table .cm-md-table-row-header .cm-md-table-cell {
-  color: #44403c;
+  color: var(--table-header-text, #44403c);
 }
 
 .cm-md-table .cm-md-table-row-data {

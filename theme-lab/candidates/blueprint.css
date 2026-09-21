@@ -1,0 +1,108 @@
+/* «Блюпринт» — чертёж.
+ *
+ * Тёмная — цианотипия, как её делали до ксерокса: лист засвечивают через
+ * кальку, берлинская лазурь темнеет везде, кроме линий, и чертёж выходит
+ * белым по синему. Поэтому здесь фон насыщенно-синий, а заголовки — чистый
+ * белый: это не «акцент», это непроявленная бумага.
+ *
+ * Светлая — та же калька до засветки: тёплый полупрозрачный лист, линии
+ * синим карандашом. В обеих половинах единственный тёплый цвет — красный
+ * карандаш правки, и достаётся он ровно тому, что в документе меняют:
+ * каретке и чекбоксам.
+ */
+
+:root[data-theme='blueprint-light'] {
+  --bg-base: #f4f2e9;
+  --bg-surface: #eae7db;
+  --text-primary: #1d3b63;
+  --text-subtle: #4a6b8a;
+  --text-muted: #8b9cae;
+  --highlight: #dde5ef;
+  --color-heading: #123a7a;
+  --color-bold: #0f2f66;
+  --color-italic: #3a5f92;
+  --color-link: #0a6ea8;
+  --color-code-bg: #eae7db;
+  --color-code-text: #1d3b63;
+  --color-selection: #dbe6f2;
+  --color-border: #ded9c9;
+  --color-cursor: #c0492b;
+  --color-line-highlight: #efece1;
+  --color-strikethrough: #8b9cae;
+  --color-blockquote-border: #7f9dc0;
+  --color-hr: #ded9c9;
+  --color-list-marker: #6b83a0;
+  --color-checkbox: #c0492b;
+  --color-table-border: #ded9c9;
+  --color-table-even-bg: #efece2;
+  /* Основная надпись чертежа — та самая рамка со штампом внизу листа. */
+  --table-header-grad: linear-gradient(135deg, #dee5ef 0%, #e6ebf3 40%, #edf0f6 70%, #d9e2ee 100%);
+  --table-header-text: #123a7a;
+  --color-glow: 18, 58, 122;
+  --ai-edit-bg: rgba(10, 110, 168, 0.12);
+  --ai-edit-shimmer: rgba(10, 110, 168, 0.26);
+  --ai-ask-bg: rgba(18, 58, 122, 0.07);
+  --ai-ask-border: rgba(18, 58, 122, 0.26);
+  --ai-ask-chip-bg: #f4f2e9;
+  --ai-ask-chip-hover-bg: rgba(18, 58, 122, 0.13);
+  --ai-ask-accent: #123a7a;
+  --ai-ask-accent-text: #f4f2e9;
+  --bg-overlay: rgba(244, 242, 233, 0.75);
+  --border: #ded9c9;
+  /* Без градиентов: чертёж — это линия одной толщины и одного цвета. */
+  --heading-tone-1: #123a7a;
+  --heading-tone-2: #1b4079;
+  --heading-tone-3: #244676;
+  --heading-tone-4: #2f4d72;
+  --heading-tone-5: #3c556e;
+  --heading-tone-6: #495d6a;
+  --font-text: 'Inter', -apple-system, system-ui, sans-serif;
+  --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+}
+
+:root[data-theme='blueprint-dark'] {
+  --bg-base: #0c2b52;
+  --bg-surface: #103462;
+  --text-primary: #dbe7f5;
+  --text-subtle: #9fc0e0;
+  --text-muted: #6c93bd;
+  --highlight: #1d4a85;
+  --color-heading: #ffffff;
+  --color-bold: #ffffff;
+  --color-italic: #b9d6f2;
+  --color-link: #7fd4ff;
+  --color-code-bg: #103462;
+  --color-code-text: #dbe7f5;
+  --color-selection: #1d4a85;
+  --color-border: #1c4478;
+  --color-cursor: #ff7a59;
+  --color-line-highlight: #0e2f5a;
+  --color-strikethrough: #6c93bd;
+  --color-blockquote-border: #7fd4ff;
+  --color-hr: #1c4478;
+  --color-list-marker: #6c93bd;
+  --color-checkbox: #ff7a59;
+  --color-table-border: #1c4478;
+  --color-table-even-bg: #0e2f5a;
+  --table-header-grad: linear-gradient(135deg, #16396c 0%, #123160 40%, #102c58 70%, #184076 100%);
+  --table-header-text: #ffffff;
+  --color-glow: 127, 212, 255;
+  --ai-edit-bg: rgba(127, 212, 255, 0.18);
+  --ai-edit-shimmer: rgba(127, 212, 255, 0.38);
+  --ai-ask-bg: rgba(127, 212, 255, 0.1);
+  --ai-ask-border: rgba(127, 212, 255, 0.3);
+  --ai-ask-chip-bg: rgba(255, 255, 255, 0.05);
+  --ai-ask-chip-hover-bg: rgba(127, 212, 255, 0.18);
+  --ai-ask-accent: #7fd4ff;
+  --ai-ask-accent-text: #0c2b52;
+  --bg-overlay: rgba(12, 43, 82, 0.75);
+  --border: #1c4478;
+  --heading-tone-1: #ffffff;
+  --heading-tone-2: #eef5fd;
+  --heading-tone-3: #dfecfa;
+  --heading-tone-4: #cbdff2;
+  --heading-tone-5: #b4cfe9;
+  --heading-tone-6: #9dbfdf;
+  --font-text: 'Inter', -apple-system, system-ui, sans-serif;
+  --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+}

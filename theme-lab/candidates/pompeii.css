@@ -1,0 +1,112 @@
+/* «Помпеи» — фреска.
+ *
+ * Палитра римского стенописца целиком: четыре земляных пигмента (охра,
+ * терракота, сиена, зелёная земля) и один дорогой привозной — египетский
+ * синий, первый синтетический пигмент в истории. Поэтому синий здесь ровно
+ * один и стоит только на ссылках: в те деньги его не тратили на фон.
+ *
+ * Светлая — стена при дневном свете: известковая штукатурка, помпейский
+ * красный на заголовках. Тёмная — чёрный кубикулум виллы Мистерий, комната,
+ * которую писали не по белому, а по чёрному; при лампе от неё остаются
+ * только охра и слоновая кость.
+ *
+ * С засечками: это тема для чтения, а не для кода.
+ */
+
+:root[data-theme='pompeii-light'] {
+  --bg-base: #f3e7d6;
+  --bg-surface: #e9dbc6;
+  --text-primary: #3a2b22;
+  --text-subtle: #6a5243;
+  --text-muted: #9c8471;
+  --highlight: #e6d2b4;
+  --color-heading: #9e3b25;
+  --color-bold: #7d2f1e;
+  --color-italic: #8a5a2b;
+  --color-link: #1f4e8c;
+  --color-code-bg: #e9dbc6;
+  --color-code-text: #3a2b22;
+  --color-selection: #e6d2b4;
+  --color-border: #ddcbb0;
+  --color-cursor: #9e3b25;
+  --color-line-highlight: #efe2ce;
+  --color-strikethrough: #9c8471;
+  --color-blockquote-border: #b8873f;
+  --color-hr: #ddcbb0;
+  --color-list-marker: #b8873f;
+  --color-checkbox: #2f6b4f;
+  --color-table-border: #ddcbb0;
+  --color-table-even-bg: #f0e3d0;
+  /* Штукатурка с охряной каймой — бордюр, которым фреску отделяли от стены. */
+  --table-header-grad: linear-gradient(135deg, #e7d2ae 0%, #ecdcbd 40%, #f0e4cc 70%, #e4cfa8 100%);
+  --table-header-text: #9e3b25;
+  --color-glow: 158, 59, 37;
+  --ai-edit-bg: rgba(47, 107, 79, 0.14);
+  --ai-edit-shimmer: rgba(184, 135, 63, 0.3);
+  --ai-ask-bg: rgba(158, 59, 37, 0.07);
+  --ai-ask-border: rgba(158, 59, 37, 0.26);
+  --ai-ask-chip-bg: #f3e7d6;
+  --ai-ask-chip-hover-bg: rgba(158, 59, 37, 0.13);
+  --ai-ask-accent: #9e3b25;
+  --ai-ask-accent-text: #f3e7d6;
+  --bg-overlay: rgba(243, 231, 214, 0.75);
+  --border: #ddcbb0;
+  --heading-tone-1: #9e3b25;
+  --heading-tone-2: #97402a;
+  --heading-tone-3: #8e462f;
+  --heading-tone-4: #834c35;
+  --heading-tone-5: #77523b;
+  --heading-tone-6: #6a5743;
+  --font-text: 'Merriweather', Georgia, serif;
+  --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+}
+
+:root[data-theme='pompeii-dark'] {
+  --bg-base: #1c1210;
+  --bg-surface: #271a16;
+  --text-primary: #ecdcc4;
+  --text-subtle: #c0a284;
+  --text-muted: #8d7258;
+  --highlight: #3c2620;
+  --color-heading: #d4583c;
+  --color-bold: #e0764f;
+  --color-italic: #d1a66a;
+  --color-link: #6f9fd0;
+  --color-code-bg: #271a16;
+  --color-code-text: #ecdcc4;
+  --color-selection: #3c2620;
+  --color-border: #33211c;
+  --color-cursor: #d4583c;
+  --color-line-highlight: #221715;
+  --color-strikethrough: #8d7258;
+  --color-blockquote-border: #b8873f;
+  --color-hr: #33211c;
+  --color-list-marker: #b8873f;
+  --color-checkbox: #6fae86;
+  --color-table-border: #33211c;
+  --color-table-even-bg: #221715;
+  --table-header-grad: linear-gradient(135deg, #3a231a 0%, #301d17 40%, #281913 70%, #402718 100%);
+  --table-header-text: #d1a66a;
+  --color-glow: 212, 88, 60;
+  --ai-edit-bg: rgba(111, 174, 134, 0.18);
+  --ai-edit-shimmer: rgba(209, 166, 106, 0.38);
+  --ai-ask-bg: rgba(212, 88, 60, 0.12);
+  --ai-ask-border: rgba(212, 88, 60, 0.32);
+  --ai-ask-chip-bg: rgba(255, 255, 255, 0.05);
+  --ai-ask-chip-hover-bg: rgba(212, 88, 60, 0.2);
+  --ai-ask-accent: #d4583c;
+  --ai-ask-accent-text: #1c1210;
+  --bg-overlay: rgba(28, 18, 16, 0.75);
+  --border: #33211c;
+  --heading-tone-1: #d4583c;
+  --heading-tone-2: #cc6142;
+  --heading-tone-3: #c26b49;
+  --heading-tone-4: #b57551;
+  --heading-tone-5: #a67d59;
+  --heading-tone-6: #978462;
+  /* Единственный градиент — h1: красный, уходящий в охру, как выгоревший
+   * край фрески. Последний stop равен --heading-tone-1. */
+  --heading-grad-1: linear-gradient(100deg, #e8a24f 0%, #de7a45 42%, #d4583c 100%);
+  --font-text: 'Merriweather', Georgia, serif;
+  --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+}

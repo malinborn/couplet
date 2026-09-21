@@ -35,8 +35,11 @@
   --color-list-marker: #3d5c46;
   --color-checkbox: #9a5b00;
   --color-table-border: #cddcc6;
-  --color-table-header-bg: #dce7d6;
   --color-table-even-bg: #e4ecdf;
+  /* Шапка — там, где зелёная бумага встречается с янтарём: хаки, а не
+   * сиреневый дефолт, который на этой подложке не работал вовсе. */
+  --table-header-grad: linear-gradient(135deg, #dee2be 0%, #e6e9cf 40%, #ecefdc 70%, #dbe0ba 100%);
+  --table-header-text: #7a4a00;
   --color-glow: 15, 92, 46;
   --ai-edit-bg: rgba(15, 92, 46, 0.12);
   --ai-edit-shimmer: rgba(15, 92, 46, 0.26);
@@ -81,8 +84,11 @@
   --color-list-marker: #5fa872;
   --color-checkbox: #ffcf6b;
   --color-table-border: #173d27;
-  --color-table-header-bg: #0b1a10;
   --color-table-even-bg: #09170d;
+  /* Янтарь второго люминофора: шапка — единственное место, где он занимает
+   * площадь, а не тонкую линию. */
+  --table-header-grad: linear-gradient(135deg, #2b2110 0%, #231b0c 40%, #1b1508 70%, #302511 100%);
+  --table-header-text: #ffcf6b;
   --color-glow: 143, 230, 162;
   --ai-edit-bg: rgba(143, 230, 162, 0.16);
   --ai-edit-shimmer: rgba(143, 230, 162, 0.36);

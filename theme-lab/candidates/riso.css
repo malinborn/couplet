@@ -1,0 +1,118 @@
+/* «Ризограф» — трафаретная печать в два прогона.
+ *
+ * Ризограф печатает по одному цвету за проход, и цвета не смешиваются: нет
+ * ни полутонов, ни составного чёрного — только флуоресцентный розовый,
+ * синий и бумага между ними. Отсюда правило этой темы: каждый акцент берётся
+ * ровно из двух красок, третьего цвета нет вообще, а всё «серое» — это цвет
+ * бумаги, а не краска.
+ *
+ * Заголовок первого уровня — единственное место, где оба прогона наложены
+ * друг на друга: тот самый несовмещённый градиент розового в синий, по
+ * которому ризо и узнают.
+ *
+ * Светлая — газетная бумага дневного тиража. Тёмная — ночная смена: те же две
+ * краски на чёрной бумаге, где флуоресцент наконец светится.
+ */
+
+:root[data-theme='riso-light'] {
+  --bg-base: #f7f2e7;
+  --bg-surface: #ece5d6;
+  --text-primary: #2b2a28;
+  --text-subtle: #56534d;
+  --text-muted: #8d887e;
+  --highlight: #ffd9ea;
+  /* Розовый в заголовке притемнён до #d81b74: чистый флуоресцент даёт на
+   * кремовой бумаге 2.99 к фону — в печати так и выглядит, но здесь это
+   * текст, который читают. Сам #ff3d8b остался там, где он фигура, а не
+   * буква: каретка, чекбокс, полоса цитаты. */
+  --color-heading: #d81b74;
+  --color-bold: #0f62c9;
+  --color-italic: #c72a72;
+  --color-link: #0078bf;
+  --color-code-bg: #ece5d6;
+  --color-code-text: #2b2a28;
+  --color-selection: #ffd9ea;
+  --color-border: #e0d8c6;
+  --color-cursor: #ff3d8b;
+  --color-line-highlight: #f2ece0;
+  --color-strikethrough: #8d887e;
+  --color-blockquote-border: #ff3d8b;
+  --color-hr: #e0d8c6;
+  --color-list-marker: #0078bf;
+  --color-checkbox: #ff3d8b;
+  --color-table-border: #e0d8c6;
+  --color-table-even-bg: #f2ecdf;
+  /* Шапка — участок, где оба прогона легли друг на друга и промахнулись. */
+  --table-header-grad: linear-gradient(135deg, #ffdcec 0%, #f6e2e8 40%, #e6ecf6 70%, #d9e8f7 100%);
+  --table-header-text: #c72a72;
+  --color-glow: 255, 61, 139;
+  --ai-edit-bg: rgba(0, 120, 191, 0.12);
+  --ai-edit-shimmer: rgba(255, 61, 139, 0.3);
+  --ai-ask-bg: rgba(255, 61, 139, 0.08);
+  --ai-ask-border: rgba(255, 61, 139, 0.3);
+  --ai-ask-chip-bg: #f7f2e7;
+  --ai-ask-chip-hover-bg: rgba(255, 61, 139, 0.14);
+  --ai-ask-accent: #ff3d8b;
+  --ai-ask-accent-text: #f7f2e7;
+  --bg-overlay: rgba(247, 242, 231, 0.75);
+  --border: #e0d8c6;
+  --heading-tone-1: #d81b74;
+  --heading-tone-2: #c4247e;
+  --heading-tone-3: #ad2d88;
+  --heading-tone-4: #923792;
+  --heading-tone-5: #74409b;
+  --heading-tone-6: #4f4aa8;
+  /* Последний stop равен --heading-tone-1: заголовок длиннее пробега уходит в
+   * ровный розовый, как одиночный прогон. */
+  --heading-grad-1: linear-gradient(100deg, #0078bf 0%, #923792 46%, #d81b74 100%);
+  --font-text: 'Inter', -apple-system, system-ui, sans-serif;
+  --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+}
+
+:root[data-theme='riso-dark'] {
+  --bg-base: #17151c;
+  --bg-surface: #211e29;
+  --text-primary: #ece7de;
+  --text-subtle: #a8a29a;
+  --text-muted: #746e68;
+  --highlight: #35303f;
+  --color-heading: #ff4d9e;
+  --color-bold: #4f9bff;
+  --color-italic: #ff8fc4;
+  --color-link: #4f9bff;
+  --color-code-bg: #211e29;
+  --color-code-text: #ece7de;
+  --color-selection: #35303f;
+  --color-border: #2c2836;
+  --color-cursor: #ff4d9e;
+  --color-line-highlight: #1c1a23;
+  --color-strikethrough: #746e68;
+  --color-blockquote-border: #ff4d9e;
+  --color-hr: #2c2836;
+  --color-list-marker: #4f9bff;
+  --color-checkbox: #ff4d9e;
+  --color-table-border: #2c2836;
+  --color-table-even-bg: #1d1a24;
+  --table-header-grad: linear-gradient(135deg, #3a1f33 0%, #2e1d30 40%, #231f33 70%, #1f2740 100%);
+  --table-header-text: #ff8fc4;
+  --color-glow: 255, 77, 158;
+  --ai-edit-bg: rgba(79, 155, 255, 0.18);
+  --ai-edit-shimmer: rgba(255, 77, 158, 0.4);
+  --ai-ask-bg: rgba(255, 77, 158, 0.12);
+  --ai-ask-border: rgba(255, 77, 158, 0.32);
+  --ai-ask-chip-bg: rgba(255, 255, 255, 0.05);
+  --ai-ask-chip-hover-bg: rgba(255, 77, 158, 0.2);
+  --ai-ask-accent: #ff4d9e;
+  --ai-ask-accent-text: #17151c;
+  --bg-overlay: rgba(23, 21, 28, 0.75);
+  --border: #2c2836;
+  --heading-tone-1: #ff4d9e;
+  --heading-tone-2: #f055a4;
+  --heading-tone-3: #dc5eab;
+  --heading-tone-4: #c067b4;
+  --heading-tone-5: #9d72bf;
+  --heading-tone-6: #7a7dcb;
+  --heading-grad-1: linear-gradient(100deg, #4f9bff 0%, #c067b4 46%, #ff4d9e 100%);
+  --font-text: 'Inter', -apple-system, system-ui, sans-serif;
+  --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+}

@@ -18,11 +18,10 @@ import '../src/lib/theme/dark.css';
 import '../src/lib/theme/aurora-light.css';
 import '../src/lib/theme/aurora-dark.css';
 
-import './candidates/solarized.css';
-import './candidates/gruvbox.css';
-import './candidates/catppuccin.css';
-import './candidates/library.css';
 import './candidates/phosphor.css';
+import './candidates/blueprint.css';
+import './candidates/riso.css';
+import './candidates/pompeii.css';
 
 import './lab.css';
 
@@ -54,34 +53,28 @@ const FAMILIES: Family[] = [
     shipped: true,
   },
   {
-    name: 'Solarized',
-    note: 'Классика 2011-го. Одна палитра в двух положениях: контраст держат акценты, а не яркость фона.',
-    light: 'solarized-light',
-    dark: 'solarized-dark',
-  },
-  {
-    name: 'Gruvbox',
-    note: 'Ретро-тёплая. Единственный тёплый тёмный фон — рядом с Rosé Pine и Aurora разница видна сразу.',
-    light: 'gruvbox-light',
-    dark: 'gruvbox-dark',
-  },
-  {
-    name: 'Catppuccin',
-    note: 'Latte и Mocha. Пастель с насыщенными акцентами; градиенты идут ей по палитре, а не поверх неё.',
-    light: 'catppuccin-light',
-    dark: 'catppuccin-dark',
-  },
-  {
-    name: 'Библиотека',
-    note: 'Своя. Читальный зал днём и вечером: бумага и чернила / каштан и латунь. С засечками в тексте.',
-    light: 'library-light',
-    dark: 'library-dark',
-  },
-  {
     name: 'Фосфор',
-    note: 'Своя. Терминал до цвета: зелёный люминофор с янтарём / лист АЦПУ. Моноширинный в самом тексте.',
+    note: 'Терминал до появления цвета: зелёный люминофор с янтарём / лист АЦПУ. Моноширинный в самом тексте.',
     light: 'phosphor-light',
     dark: 'phosphor-dark',
+  },
+  {
+    name: 'Блюпринт',
+    note: 'Чертёж: цианотипия (белым по синему) / калька с синим карандашом. Красный — только правка: каретка и чекбоксы.',
+    light: 'blueprint-light',
+    dark: 'blueprint-dark',
+  },
+  {
+    name: 'Ризограф',
+    note: 'Печать в два прогона: флуоресцентный розовый и синий, третьего цвета нет. h1 — место, где прогоны промахнулись.',
+    light: 'riso-light',
+    dark: 'riso-dark',
+  },
+  {
+    name: 'Помпеи',
+    note: 'Фреска: четыре земляных пигмента и один привозной. Синий один и только на ссылках. С засечками.',
+    light: 'pompeii-light',
+    dark: 'pompeii-dark',
   },
 ];
 
@@ -243,7 +236,7 @@ try {
 } catch {
   /* приватное окно */
 }
-apply(restored && ORDER.includes(restored) ? restored : 'solarized-light');
+apply(restored && ORDER.includes(restored) ? restored : 'phosphor-dark');
 
 document.addEventListener('keydown', (e) => {
   // Стрелки работают, только когда фокус не в редакторе — иначе они двигали бы
