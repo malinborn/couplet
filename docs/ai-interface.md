@@ -392,13 +392,15 @@ Prefer MCP? `claude mcp add --scope user mdmini -- mdmini mcp` registers md-mini
 
 None of the above helps a user who doesn't know the interface exists — the reported failure
 mode after 1.0. Three surfaces address it, and all three name the same place, the **AI** menu's
-**Getting Started**, so someone who sets this up once and forgets has a way back. Design:
-`docs/superpowers/specs/2026-08-23-ai-discoverability-design.md`.
+**Teach Your AI mdmini**, so someone who sets this up once and forgets has a way back. Design:
+`docs/superpowers/specs/2026-08-23-ai-discoverability-design.md` (written when the menu still
+carried four setup documents; 1.3.0 collapsed them into that one item and its prompt).
 
 | Surface | Raised when |
 |---------|-------------|
 | Startup toast (`ai-nudge`) | `main` window, at launch, while `ai-connected` is absent: at most 3 times, at most once a day, never on a launch that also opened the welcome window. Following or closing it retires it permanently (`ai-nudge.json` → `dismissed`). |
-| `Getting Started` doc | The toast's CTA and the first item of the AI menu — the same document either way (`getting-started-ai.md`, bundled). Its lead block is a map of the AI menu, not setup instructions. |
+| Welcome doc | Shown once per version on launch, and again from the toast's CTA — the same bundled `welcome.md` either way. Points at one menu item and otherwise covers themes, engines and the OCD toggle. |
+| `Teach Your AI mdmini` doc | The AI menu's first item. Not instructions to follow by hand: it hands over a prompt that makes the agent register MCP, write itself a skill and add a short note to its own config. |
 | First-use toast (`ai-first-use`) | The first AI command this install ever handles. |
 
 Both the marker and the toast come out of one check-and-set: `dispatch` calls

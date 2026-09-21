@@ -17,7 +17,6 @@ use crate::window;
 const MARKER_FILE: &str = "onboarding-version";
 const WELCOME_MD: &str = include_str!("../welcome.md");
 const PLAYBOOK_MD: &str = include_str!("../playbook.md");
-const GETTING_STARTED_MD: &str = include_str!("../getting-started-ai.md");
 
 /// Written once, the first time an AI command reaches this install over the
 /// command socket. Its presence is what silences the startup nudge forever.
@@ -223,11 +222,14 @@ pub fn ai_nudge_dismiss() {
     }
 }
 
-/// Open the "Getting Started" doc. Shared by the AI menu item and the startup
-/// nudge's call to action, so both land on exactly the same document.
+/// Open the welcome doc — the same one the first run shows.
+///
+/// Раньше здесь был отдельный «Getting Started», пересказывавший приветствие
+/// длиннее. Два документа про одно и то же расходятся: приветствие правили, а
+/// его двойника забывали, и он ещё долго описывал меню, которого уже нет.
 #[tauri::command]
 pub fn ai_open_getting_started(app: AppHandle) {
-    if let Err(e) = open_bundled_doc(&app, "ai-getting-started.md", GETTING_STARTED_MD) {
+    if let Err(e) = open_bundled_doc(&app, "welcome.md", WELCOME_MD) {
         eprintln!("onboarding: {}", e);
     }
 }
@@ -511,24 +513,24 @@ mod tests {
     // --- Getting Started doc ------------------------------------------------
 
     #[test]
-    fn getting_started_doc_maps_the_ai_menu() {
-        let doc = GETTING_STARTED_MD;
-        assert!(doc.starts_with("# Getting Started with AI in md-mini"));
-        // Карта меню — смысл этого документа: без неё остаётся руководство,
-        // которое не говорит, где всё это лежит.
-        assert!(doc.contains("## Where this lives"));
-
-        // Список пунктов берётся из самого меню, а не переписывается сюда
-        // руками. Ровно этот дрейф и случился, когда четыре пункта заменили
-        // одним: документ продолжал рисовать старую схему, а тест —
-        // проверять её же, и оба молчали.
-        for label in ai_menu_labels() {
-            assert!(
-                doc.contains(&label),
-                "menu map is missing {:?}; AI menu and getting-started-ai.md have drifted",
-                label
-            );
-        }
+    fn welcome_doc_names_the_menu_item_it_sends_people_to() {
+        // Приветствие — единственная страница, которую видит человек на первом
+        // запуске, и весь её смысл в одном шаге: открыть этот пункт меню. Если
+        // пункт переименуют, а её забудут, шаг станет невыполнимым.
+        //
+        // Раньше здесь сверялся весь список пунктов — приветствие рисовало
+        // схему меню целиком. Схемы больше нет, и требовать её обратно значит
+        // требовать документ, который снова придётся держать в синхроне
+        // вручную; сверяется ровно то, на что страница ссылается.
+        let entry = ai_menu_labels()
+            .into_iter()
+            .next()
+            .expect("AI menu has at least one item");
+        assert!(
+            WELCOME_MD.contains(&entry),
+            "welcome.md does not name {:?}, the menu item it tells people to open",
+            entry
+        );
     }
 
     /// Подписи пунктов меню AI, вытащенные из `menu.rs`.
@@ -551,11 +553,12 @@ mod tests {
 
 
     #[test]
-    fn welcome_doc_also_points_at_the_ai_menu() {
-        // First-run users only ever see the welcome window, and they are the
-        // ones who set this up once and forget where it was.
-        assert!(WELCOME_MD.contains("## Where this lives"));
-        assert!(WELCOME_MD.contains("Getting Started"));
+    fn welcome_doc_covers_what_the_menus_offer() {
+        // Три вещи, которые человек иначе не найдёт: их некому подсказать,
+        // кроме этой страницы, и каждая живёт в своём меню.
+        for topic in ["Theme", "Editor Engine", "OCD Alignment"] {
+            assert!(WELCOME_MD.contains(topic), "welcome.md says nothing about {:?}", topic);
+        }
     }
 
     // --- Startup nudge ------------------------------------------------------
