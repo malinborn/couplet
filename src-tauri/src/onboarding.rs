@@ -250,31 +250,33 @@ pub(crate) fn connect_doc() -> String {
     d.push_str(
         r#"# Connect Your AI
 
-Одно действие: отдайте агенту промпт ниже. Дальше он всё сделает сам.
+One move: hand your agent the prompt below. It does the rest itself.
 
-Промпт делает четыре вещи:
+The prompt does four things:
 
-1. **Регистрирует md-mini как MCP-сервер** — тогда `show` / `edit` / `ask` /
-   `question` / `answer` становятся обычными инструментами агента, которые он
-   видит сам и которым не нужен сниппет в инструкциях.
-2. **Создаёт скилл `mdmini`** — всё знание о том, как пользоваться этими
-   инструментами хорошо, лежит в нём. Скилл грузится только когда понадобился,
-   поэтому он ничего не стоит, пока не нужен.
-3. **Добавляет короткий абзац в главный конфиг агента** (`~/.claude/CLAUDE.md`
-   или его аналог) — только про то, *когда* звать md-mini и что перед этим
-   надо загрузить скилл. Всё остальное знание остаётся в скилле.
-4. **Задаёт порядок: MCP, а если не вышло — CLI.** Агенту прямо сказано:
-   умеешь MCP — работай через MCP; не умеешь, не зарегистрировался или он
-   молчит — те же действия доступны через `mdmini` в терминале.
+1. **Registers md-mini as an MCP server** — `show` / `edit` / `ask` /
+   `question` / `answer` then become ordinary tools your agent can see and
+   call, with no snippet in any instruction file.
+2. **Writes an `mdmini` skill** — everything about using those tools well
+   lives in it. A skill is loaded only once it is needed, so it costs nothing
+   until it does.
+3. **Adds a short paragraph to your agent's main config**
+   (`~/.claude/CLAUDE.md`, or its equivalent) — only *when* to reach for
+   md-mini, and that the skill should be loaded first. The rest of the
+   knowledge stays in the skill.
+4. **Sets the order: MCP, and the CLI when that is not available.** The agent
+   is told plainly: work over MCP if you can; if you cannot, if it was never
+   registered, or if it goes quiet, the same things are one `mdmini` command
+   away in a terminal.
 
-Если главный конфиг трогать не хочется —
-[есть второй промпт, только со скиллом](#только-скилл-без-правки-конфига)
-(⌘-клик: обычный клик в md-mini ставит каретку, чтобы текст ссылки можно было
-править).
+Would you rather we left your main config alone?
+[There is a second prompt, skill only](#skill-only-leaving-your-config-alone)
+(⌘-click: a plain click in md-mini places the caret, so the text of a link
+stays editable).
 
-## Промпт
+## The prompt
 
-Скопируйте целиком и отдайте агенту.
+Copy the whole block and hand it to your agent.
 
 ````
 "#,
@@ -303,12 +305,13 @@ pub(crate) fn connect_doc() -> String {
 --- CONFIG END ---
 ````
 
-## Только скилл, без правки конфига
+## Skill only, leaving your config alone
 
-Тот же промпт, но главный конфиг он не трогает. Цена — агент не узнает сам,
-что пора звать md-mini: скилл придётся звать вручную (`/mdmini` или «используй
-скилл mdmini»). Поэтому для гладкой работы мы всё же советуем первый вариант —
-[вернуться к нему](#промпт) (⌘-клик).
+The same prompt, except it does not touch your main config. The cost: your
+agent will not work out on its own when md-mini is worth reaching for, so you
+will have to call the skill by hand (`/mdmini`, or "use the mdmini skill").
+That is why we still recommend the first one —
+[back to it](#the-prompt) (⌘-click).
 
 ````
 "#,
@@ -326,9 +329,10 @@ pub(crate) fn connect_doc() -> String {
         r#"
 ````
 
-## Где лежит главный конфиг
+## Where the main config lives
 
-Промпт выше знает эти места сам; список здесь на случай, если агент спросит.
+The prompt above already knows these places; the list is here in case your
+agent asks.
 
 "#,
     );
@@ -472,10 +476,10 @@ mod tests {
         // пунктуация выброшена). Обе стороны — вниз к запасному варианту и
         // обратно наверх к рекомендованному: человек, передумавший на втором
         // промпте, не должен искать дорогу назад скроллом.
-        assert!(doc.contains("(#только-скилл-без-правки-конфига)"));
-        assert!(doc.contains("## Только скилл, без правки конфига"));
-        assert!(doc.contains("(#промпт)"));
-        assert!(doc.contains("## Промпт"));
+        assert!(doc.contains("(#skill-only-leaving-your-config-alone)"));
+        assert!(doc.contains("## Skill only, leaving your config alone"));
+        assert!(doc.contains("(#the-prompt)"));
+        assert!(doc.contains("## The prompt"));
     }
 
     #[test]
