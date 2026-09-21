@@ -9,6 +9,7 @@ import {
   type ThemeHalf,
   type ConcreteTheme,
 } from './theme-resolve';
+import { applyWindowZoom, clampZoom, stepZoom } from './window-zoom';
 
 /**
  * Third mode added alongside the original binary `live-preview | raw`:
@@ -230,28 +231,41 @@ export function createLineGlowStore() {
   };
 }
 
+/**
+ * Масштаб всего окна. Шаг и применение живут в `window-zoom.ts` — здесь только
+ * состояние и его сохранение.
+ */
 export function createZoomStore() {
-  let level = $state<number>(loadSetting('zoomLevel', 1.0));
+  // Начальный масштаб читается в локальную переменную, а не из `level`: Svelte
+  // справедливо предупреждает, что чтение `$state` вне реактивного контекста
+  // берёт только первое значение — здесь именно это и нужно.
+  const initial = clampZoom(loadSetting('zoomLevel', 1.0));
+  let level = $state<number>(initial);
+
+  // Каждое окно применяет сохранённый масштаб при создании: зум страницы живёт
+  // в самом webview, а не в настройке, поэтому новое окно иначе открылось бы на
+  // 100%, пока настройка говорит другое.
+  applyWindowZoom(initial);
+
+  function set(next: number): void {
+    if (next === level) return;
+    level = next;
+    saveSetting('zoomLevel', level);
+    applyWindowZoom(level);
+  }
 
   return {
     get level() {
       return level;
     },
     zoomIn() {
-      if (level < 2.0) {
-        level = Math.round((level + 0.1) * 10) / 10;
-        saveSetting('zoomLevel', level);
-      }
+      set(stepZoom(level, 1));
     },
     zoomOut() {
-      if (level > 0.8) {
-        level = Math.round((level - 0.1) * 10) / 10;
-        saveSetting('zoomLevel', level);
-      }
+      set(stepZoom(level, -1));
     },
     reset() {
-      level = 1.0;
-      saveSetting('zoomLevel', level);
+      set(1.0);
     },
   };
 }

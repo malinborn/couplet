@@ -1710,7 +1710,10 @@
   });
 </script>
 
-<main style="font-size: {zoom.level}rem;">
+<!-- Масштаб применяется зумом страницы webview, а не каскадом `font-size` —
+     см. `lib/window-zoom.ts`. Атрибут ничего не масштабирует: это проба,
+     по которой уровень видно в DOM (и в браузерном тесте) без IPC. -->
+<main data-zoom={zoom.level}>
   <Editor
     bind:handle={editorHandle}
     onchange={handleChange}
