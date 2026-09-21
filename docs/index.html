@@ -51,7 +51,7 @@
     "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
     "url": "https://md-mini.com/",
     "downloadUrl": "https://github.com/malinborn/mdmini/releases",
-    "softwareVersion": "1.2.0",
+    "softwareVersion": "1.3.0",
     "license": "https://opensource.org/licenses/GPL-3.0"
   }
   </script>
@@ -59,8 +59,8 @@
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 
-  <script type="module" crossorigin src="/assets/index-DHJ6rmrw.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-CQpmrFkD.css">
+  <script type="module" crossorigin src="/assets/index-BBSfBBRN.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-Ca5WSJu6.css">
 </head>
 <body>
 
@@ -457,6 +457,27 @@
       <div class="changelog-list">
 
         <details class="changelog-entry" open>
+          <summary class="changelog-summary">
+            <span class="changelog-version">v1.3.0</span>
+            <span class="changelog-date">2026-09-21</span>
+            <span class="changelog-tag feature">feature</span>
+            <span class="changelog-title">Four themes, a renderer out of beta, and a cross for everyone who cannot unsee the tick</span>
+          </summary>
+          <ul class="changelog-body-list">
+            <li><strong>Live Render is the default, and no longer a beta</strong> &mdash; the mode that hides markdown syntax outright is what you get on launch, including if you never opted in. The three engines are still there under <code>View &rarr; Editor Engine</code>, now spelled <em>Raw</em>, <em>Preview</em> and <em>Live Render</em>: the word &ldquo;Live&rdquo; in &ldquo;Live Preview&rdquo; only ever existed to contrast with the beta, and there is nothing left to contrast with. Someone sitting in Raw stays in Raw &mdash; that is a decision to look at the source, not a rendering preference to overrule</li>
+            <li><strong>&#8984;E stopped rotating through renderers</strong> &mdash; Live Render and Preview are two answers to &ldquo;how should the markup look&rdquo;, chosen once in a submenu. &#8984;E asks something else entirely &mdash; &ldquo;show me the source&rdquo; &mdash; so it now flips between Raw and whichever renderer you picked, and lands back where you left. The &ldquo;Include Live Render in &#8984;E&rdquo; switch that used to make it a three-way rotation is gone</li>
+            <li><strong>Two new themes, and neither is a port</strong> &mdash; <em>Blueprint</em> is a cyanotype: white on deep blue, because white there is not an accent but unexposed paper, with red reserved for what you change &mdash; the caret, the checkbox, struck-through text. <em>Phosphor</em> is a terminal from before colour: P1 green on black glass, amber as the only second hue, and monospace in the prose itself. Both come in a light half too &mdash; tracing paper and fanfold printout</li>
+            <li><strong>The Theme menu is three groups, not a list</strong> &mdash; family (Classic, Aurora, Blueprint, Phosphor), half (Light, Dark), and <strong>Follow System</strong> as a checkbox. &ldquo;System&rdquo; was a fifth mutually exclusive option, which is the one thing it is not: it decides the half, and it has nothing to say about which family you like. Tick it and the theme follows your Mac from day into night without leaving the family. &ldquo;Default&rdquo; is now called <em>Classic</em>, the name it has had in the code since it was written</li>
+            <li><strong>A ticked task reads as done</strong> &mdash; greyed and struck through, while bold stays bold, italic stays italic and a link keeps its underline: only the colour is taken over. A wrapped item stays greyed across its continuation lines, and an unfinished child of a finished parent does not &mdash; the range follows the item, not the line. In the Aurora themes the grey is a gradient, and in Blueprint the line is drawn in that theme's red pencil while the text stays muted: crossed off, not deleted</li>
+            <li><strong>One menu item where four documents used to be</strong> &mdash; <code>AI &rarr; Teach Your AI mdmini</code>. &ldquo;Getting Started&rdquo;, &ldquo;Connect via CLI&rdquo;, &ldquo;Connect via MCP&rdquo; and &ldquo;Teach your AI&rdquo; each explained their own part and left the assembly to you, so you ended up stitching a setup out of four texts. Now the document hands over a prompt: your agent registers md-mini over MCP, writes itself a skill on using it well, and adds a short note to its own config about when to reach for it. A second prompt in the same document does the skill only, if you would rather your main config stayed untouched</li>
+            <li><strong>OCD Alignment</strong> &mdash; the tick in a checked box sits a hair off centre, and that is not sloppiness: <code>&#10003;</code> is not a symmetrical glyph, so it never looks centred anywhere. If that hair is going to follow you around all day, <code>View &rarr; OCD Alignment</code> replaces it with a cross drawn as two strokes rotated around one point, symmetrical by construction. We like the tick. We also know how it is</li>
+            <li><strong>The table header stopped ignoring the theme</strong> &mdash; its gradient was hardcoded in two variants, picked by whether the theme's name ended in &ldquo;light&rdquo;, so Phosphor got a lilac header on green paper. It is a theme variable now, with the old values as the default, so the themes that never asked look exactly as they did</li>
+            <li><strong>A checkbox in the menu works with two windows open</strong> &mdash; a menu event is broadcast to every window, and each applied it to its own copy of the setting. Harmless for a radio item, where N windows set the same value; not for a toggle, where N windows flip it N times &mdash; so <strong>Follow System</strong> visibly did nothing whenever a second window was open. The event now carries the value rather than the instruction to flip</li>
+            <li><strong>Zoom In has a key again</strong> &mdash; it was declared as <code>&#8984;Plus</code>, and accelerators are parsed by key code, where <code>Plus</code> is not one. The item simply had no shortcut, which you could only notice by comparing it with Zoom Out. It is <code>&#8984;=</code> now, next to <code>&#8984;&minus;</code>. And in Live Render's link inspector, <strong>Open</strong> on a link that points inside the document jumps to that heading instead of doing nothing at all</li>
+          </ul>
+        </details>
+
+        <details class="changelog-entry">
           <summary class="changelog-summary">
             <span class="changelog-version">v1.2.0</span>
             <span class="changelog-date">2026-09-12</span>
