@@ -236,6 +236,29 @@
   font-weight: bold;
 }
 
+/* A ticked task reads as done: greyed and struck through.
+ *
+ * Only the colour is taken over — `font-weight`, `font-style` and the link's
+ * underline are left to the spans inside, so `- [x] **важное**` stays bold.
+ * Those spans set a colour of their own (`.cm-md-bold` and friends), which as
+ * the inner element would win over the wrapper, hence the descendant rule.
+ * `text-decoration` needs no such help: it propagates to descendants and a
+ * child cannot switch it off, so a nested `~~strikethrough~~` simply keeps its
+ * own line on top of this one.
+ */
+.cm-md-task-done,
+.cm-md-task-done
+  :is(.cm-md-bold, .cm-md-italic, .cm-md-strikethrough, .cm-md-link, .cm-md-inline-code) {
+  color: var(--color-strikethrough);
+}
+.cm-md-task-done {
+  text-decoration: line-through;
+  text-decoration-color: var(--color-strikethrough);
+}
+.cm-md-task-done .cm-md-link {
+  text-decoration-color: var(--color-strikethrough);
+}
+
 /* Blockquotes */
 .cm-md-blockquote {
   border-left: 3px solid var(--color-blockquote-border);

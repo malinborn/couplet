@@ -91,6 +91,39 @@ const depthLines: readonly Decoration[] = Array.from(
  */
 const indentMark = Decoration.mark({ class: 'cm-md-list-indent' });
 
+const checkedTextMark = Decoration.mark({ class: 'cm-md-task-done' });
+
+/**
+ * The checked item's own text, as one range per line it occupies.
+ *
+ * Bounded by the `Task` node rather than by the line, for two reasons: a
+ * wrapped item keeps its continuation lines greyed, and a nested child list is
+ * left alone — `Task` ends where the child `BulletList` begins, so ticking a
+ * parent does not strike through its unfinished children.
+ *
+ * One range per line rather than one spanning range because the line-through
+ * would otherwise be drawn over the indentation too: the space after `[x]` and,
+ * on a wrapped item, the leading whitespace of every continuation line — a
+ * stray dash hanging to the left of the text.
+ */
+function checkedTextRanges(
+  item: SyntaxNode,
+  doc: Text,
+  markerEnd: number
+): { from: number; to: number }[] {
+  const task = item.getChild('Task');
+  const end = task ? task.to : doc.lineAt(markerEnd).to;
+  const out: { from: number; to: number }[] = [];
+  for (let n = doc.lineAt(markerEnd).number; n <= doc.lineAt(end).number; n++) {
+    const line = doc.line(n);
+    const to = Math.min(line.to, end);
+    const start = Math.max(line.from, markerEnd);
+    const from = start + (doc.sliceString(start, to).match(/^[ \t]*/)?.[0].length ?? 0);
+    if (to > from) out.push({ from, to });
+  }
+  return out;
+}
+
 // `999.` is where sanity ends; a wider marker just grows its own box.
 const MAX_MARK_COLUMNS = 4;
 // A bullet is one character, but reserving two keeps bullet items and
@@ -179,6 +212,11 @@ export function decorateListItem(
         widget: new CheckboxWidget(isChecked, checkboxStart),
       })
     );
+    if (isChecked) {
+      for (const r of checkedTextRanges(node, doc, checkboxStart + 3)) {
+        builder.add(r.from, r.to, checkedTextMark);
+      }
+    }
     return;
   }
 

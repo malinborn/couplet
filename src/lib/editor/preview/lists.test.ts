@@ -215,4 +215,60 @@ describe('decorateListItem', () => {
     expect(out.some((r) => r.spec.includes('cm-md-list-mark'))).toBe(false);
     expect(out.some((r) => r.spec === 'CheckboxWidget')).toBe(true);
   });
+
+  describe('a ticked task', () => {
+    const done = (rows: Emitted[]) => rows.filter((r) => r.spec === 'cm-md-task-done');
+
+    it('greys its text, starting past the space after the marker', () => {
+      const text = '- [x] task';
+      expect(done(emitted(text, 1, 0, LIVE_PREVIEW))).toEqual([
+        { from: text.indexOf('task'), to: text.length, spec: 'cm-md-task-done' },
+      ]);
+    });
+
+    it('leaves an unticked one alone', () => {
+      expect(done(emitted('- [ ] task', 1, 0, LIVE_PREVIEW))).toEqual([]);
+    });
+
+    // One range per line, each starting past the indent — the line-through must
+    // not hang to the left of a continuation line's first word.
+    it('covers a wrapped continuation line but stops before a nested child', () => {
+      const text = ['- [x] parent', '  still the parent', '  - [ ] child'].join('\n');
+      const ranges = done(emitted(text, 1, 0, LIVE_PREVIEW));
+      expect(ranges.map((r) => text.slice(r.from, r.to))).toEqual([
+        'parent',
+        'still the parent',
+      ]);
+    });
+
+    it('marks a ticked child without touching its unticked parent', () => {
+      const text = ['- [ ] parent', '  - [x] child'].join('\n');
+      expect(done(emitted(text, 1, 0, LIVE_PREVIEW))).toEqual([]);
+      const [range] = done(emitted(text, 2, 0, LIVE_PREVIEW));
+      expect(text.slice(range.from, range.to)).toBe('child');
+    });
+
+    // The checkbox is drawn whatever the caret is doing, so the text it
+    // describes has to follow it — otherwise clicking into a done item would
+    // undo the greying while the tick stays on.
+    it('stays greyed with the caret on the line, in either flavour', () => {
+      const text = '- [x] task';
+      const caret = text.indexOf('task') + 1;
+      expect(done(emitted(text, 1, caret, LIVE_PREVIEW))).toHaveLength(1);
+      expect(done(emitted(text, 1, caret, LIVE_RENDER))).toHaveLength(1);
+    });
+
+    it('adds nothing for an empty item', () => {
+      expect(done(emitted('- [x]', 1, 0, LIVE_PREVIEW))).toEqual([]);
+      expect(done(emitted('- [x] ', 1, 0, LIVE_PREVIEW))).toEqual([]);
+    });
+
+    // The inline decorators still run over the same span; the wrapper only
+    // recolours, so bold stays bold. Guards the range, not the CSS.
+    it('spans inline formatting rather than stopping at it', () => {
+      const text = '- [x] **bold** and *it*';
+      const [range] = done(emitted(text, 1, 0, LIVE_PREVIEW));
+      expect(text.slice(range.from, range.to)).toBe('**bold** and *it*');
+    });
+  });
 });
