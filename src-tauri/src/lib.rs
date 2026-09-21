@@ -29,6 +29,26 @@ use session::SessionState;
 use updater::UpdateState;
 use window::{FileWatchers, OpenFiles, PendingFiles, PendingOpen};
 
+/// Новое значение тумблера — то, которое рассылается окнам.
+///
+/// `None` для всего, что тумблером не является: такие события уходят как есть.
+/// Здесь только пункты, чьё значение фронтенд сообщает при старте
+/// (`sync_theme_menu`, `sync_ocd_alignment_menu`) — без этого `Toggle` не с
+/// чего было бы начинать. `toggle_line_glow` такой синхронизации не имеет и
+/// потому сюда не включён; он до сих пор рассылает «переключи» и ведёт себя
+/// соответственно, когда окон больше одного.
+fn toggle_value(app: &tauri::AppHandle, id: &str) -> Option<bool> {
+    match id {
+        "theme_system" => app
+            .try_state::<menu::ThemeMenuItems>()
+            .map(|s| s.follow_system.flip()),
+        "toggle_ocd_alignment" => app
+            .try_state::<menu::ViewToggleItems>()
+            .map(|s| s.ocd_enabled.flip()),
+        _ => None,
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // `mut` is only needed by the `mcp-bridge` registration below; without that
@@ -107,7 +127,7 @@ pub fn run() {
             onboarding::ai_open_getting_started,
             commands::sync_theme_menu,
             commands::sync_engine_menu,
-            commands::sync_beta_in_cycle_menu,
+            commands::sync_ocd_alignment_menu,
         ])
         .setup(|app| {
             // FIRST, before anything touches disk: decide which data directory this
@@ -145,9 +165,11 @@ pub fn run() {
                 }
             };
 
-            let (menu, theme_items, engine_items) = menu::build_menu(app.handle(), pending_count)?;
+            let (menu, theme_items, engine_items, view_toggles) =
+                menu::build_menu(app.handle(), pending_count)?;
             app.set_menu(menu)?;
             app.manage(theme_items);
+            app.manage(view_toggles);
             app.manage(engine_items);
 
             let app_handle = app.handle().clone();
@@ -247,6 +269,25 @@ pub fn run() {
                     }
                     return;
                 }
+
+                // Галочка обязана нести значение, а не команду «переключи».
+                //
+                // Ниже событие рассылается во все окна, и каждое применяет его
+                // к своей копии настройки. Для radio-пункта это безвредно: N
+                // окон выставляют одно и то же значение. Для тумблера — нет:
+                // N окон переключают его N раз, и с двумя открытыми окнами
+                // галочка на экране не меняется вовсе. Это родня того, что уже
+                // описано выше про `ai_comment`, только там дублировалась
+                // доставка, а здесь — сам эффект.
+                //
+                // Значение берётся из `Toggle`, а не из самого пункта меню:
+                // macOS применяет щелчок уже после нашего обработчика, и пункт
+                // отвечает доизменённым состоянием.
+                let id = match toggle_value(_app, &id) {
+                    Some(true) => format!("{id}:on"),
+                    Some(false) => format!("{id}:off"),
+                    None => id,
+                };
 
                 // Broadcast all other menu events to all windows
                 for (_label, win) in _app.webview_windows() {

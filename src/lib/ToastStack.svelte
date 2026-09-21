@@ -109,6 +109,15 @@
           >
             Getting Started
           </button>
+        {:else if toast.payload.kind === 'themes-nudge'}
+          <!-- Меню названо в тексте, а не на кнопке: закрытый тост всё равно
+               должен оставить единственный факт, ради которого он был. -->
+          <span class="md-toast-text">
+            <strong>md-mini has themes</strong>
+            <span class="md-toast-dim">
+              — four of them in the <strong>Theme</strong> menu
+            </span>
+          </span>
         {:else if toast.payload.kind === 'json-offer'}
           <!-- The offer, not the act. Nothing has changed in the document at
                this point and nothing will until this button is clicked — a

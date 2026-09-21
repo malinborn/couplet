@@ -12,8 +12,9 @@ import {
 
 /**
  * Third mode added alongside the original binary `live-preview | raw`:
- * `live-render` hides markdown syntax permanently (Notion-like), gated
- * behind `betaInCycle` so it never surfaces to a user who hasn't opted in.
+ * `live-render` hides markdown syntax permanently (Notion-like). Вышел из
+ * беты и стал движком по умолчанию — см. `loadEngineSetting`; `live-preview`
+ * остался и выбирается в подменю.
  */
 export type EditorEngine = 'raw' | 'live-preview' | 'live-render';
 
@@ -89,8 +90,18 @@ export function createThemeStore() {
       followSystem = false;
       persist();
     },
-    toggleFollowSystem() {
-      followSystem = !followSystem;
+    /**
+     * Значение, а не переключение: событие меню приходит в каждое окно, и
+     * «переключи» сработало бы столько раз, сколько окон открыто. Снаружи
+     * значение приходит из самого пункта меню, который macOS уже переключил.
+     *
+     * Выключая галочку, забираем себе ту половину, что сейчас на экране:
+     * иначе тема прыгнула бы к давно выбранной половине, хотя человек всего
+     * лишь перестал следовать системе.
+     */
+    setFollowSystem(value: boolean) {
+      if (!value) theme = resolved;
+      followSystem = value;
       persist();
     },
     get resolved() {
@@ -108,24 +119,48 @@ export function createThemeStore() {
  * (`md-mini:engine`) hasn't been written yet — so an existing user's choice
  * survives the three-way split instead of silently resetting to the default.
  */
-function loadEngineSetting(): EditorEngine {
+function loadStoredEngine(): EditorEngine | null {
   const stored = loadSetting<EditorEngine | null>('engine', null);
   if (isEditorEngine(stored)) return stored;
   const legacy = loadSetting<EditorEngine | null>('mode', null);
-  return isEditorEngine(legacy) ? legacy : 'live-preview';
+  return isEditorEngine(legacy) ? legacy : null;
+}
+
+/**
+ * Live Render вышел из беты и стал движком по умолчанию — разово и для тех,
+ * кто его не включал.
+ *
+ * Разово: ключ `liveRenderDefault` ставится один раз, и дальше выбор человека
+ * снова за ним. Без такого ключа «дефолт» пересиливал бы выбор при каждом
+ * запуске, и вернуться на live-preview было бы невозможно.
+ *
+ * Кто сидит в `raw`, там и остаётся: raw — это не «другой рендер», а решение
+ * смотреть на исходник прямо сейчас, и выдёргивать оттуда человека фича про
+ * рендер не должна. Но `lastNonRaw` ему тоже переписывается, так что первый же
+ * Cmd+E приводит его в Live Render.
+ */
+function loadEngineSetting(): EditorEngine {
+  const stored = loadStoredEngine();
+  const migrated = loadSetting<boolean>('liveRenderDefault', false);
+  if (!migrated) {
+    saveSetting('liveRenderDefault', true);
+    saveSetting('lastNonRawEngine', 'live-render');
+    if (stored !== 'raw') {
+      saveSetting('engine', 'live-render');
+      return 'live-render';
+    }
+  }
+  return stored ?? 'live-render';
 }
 
 export function createEngineStore() {
   const initial = loadEngineSetting();
   let engine = $state<EditorEngine>(initial);
-  // Default false: the beta must never turn itself on for anyone who hasn't
-  // explicitly opted in via the View menu.
-  let betaInCycle = $state<boolean>(loadSetting('betaInCycle', false));
   // Which rendering engine Cmd+E returns to when leaving `raw`. Persisted so
   // the round trip survives a restart.
   let lastNonRaw = $state<Exclude<EditorEngine, 'raw'>>(
     initial === 'raw'
-      ? loadSetting<Exclude<EditorEngine, 'raw'>>('lastNonRawEngine', 'live-preview')
+      ? loadSetting<Exclude<EditorEngine, 'raw'>>('lastNonRawEngine', 'live-render')
       : initial
   );
 
@@ -142,31 +177,41 @@ export function createEngineStore() {
     get value() {
       return engine;
     },
-    get betaInCycle() {
-      return betaInCycle;
-    },
     /** Direct selection — used by the Editor Engine submenu. */
     set(next: EditorEngine) {
       apply(next);
     },
-    /** Cmd+E. With the beta excluded from the cycle (the default) this is
-     * `raw <-> the last rendering engine used` — for anyone on live-preview
-     * that is exactly the binary toggle they have today, and for someone
-     * working in live-render it returns them to live-render rather than
-     * silently dropping them into live-preview. Opting the beta into the
-     * cycle via `toggleBetaInCycle()` makes it a three-way rotation. */
+    /**
+     * Cmd+E: `raw` и выбранный движок рендера, и ничего больше.
+     *
+     * Live Render и Live Preview между собой не переключаются: это два ответа
+     * на вопрос «как показывать разметку», и выбирают из них осознанно, в
+     * подменю. Cmd+E отвечает на другой вопрос — «показать исходник», — и
+     * возвращает ровно туда, откуда ушли.
+     */
     cycle() {
-      if (betaInCycle) {
-        apply(
-          engine === 'live-preview' ? 'live-render' : engine === 'live-render' ? 'raw' : 'live-preview'
-        );
-      } else {
-        apply(engine === 'raw' ? lastNonRaw : 'raw');
-      }
+      apply(engine === 'raw' ? lastNonRaw : 'raw');
     },
-    toggleBetaInCycle() {
-      betaInCycle = !betaInCycle;
-      saveSetting('betaInCycle', betaInCycle);
+  };
+}
+
+/**
+ * Идеально центрированный крестик вместо галочки в чекбоксе.
+ *
+ * Настройка глобальная (одна на приложение), но каждое окно держит свою копию,
+ * как и остальные здесь; согласованность обеспечивается тем, что событие меню
+ * несёт значение, а не команду «переключи» — см. `toggle_value` в `lib.rs`.
+ */
+export function createOcdAlignmentStore() {
+  let enabled = $state<boolean>(loadSetting('ocdAlignment', false));
+
+  return {
+    get enabled() {
+      return enabled;
+    },
+    set(value: boolean) {
+      enabled = value;
+      saveSetting('ocdAlignment', enabled);
     },
   };
 }

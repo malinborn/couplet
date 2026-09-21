@@ -57,7 +57,16 @@ export type ToastPayload =
    * something already done — deliberately, because the document must never
    * reformat itself. Withdrawn when the offer stops applying.
    */
-  | { kind: 'json-offer' };
+  | { kind: 'json-offer' }
+  /**
+   * Одноразовое «у нас есть темы».
+   *
+   * Тем стало четыре, и все они живут в меню, которое человек открывает раз в
+   * жизни — в результате про них знает только тот, кто их и добавил. Тост
+   * показывается один раз за установку и ничего не предлагает нажать: его
+   * единственная задача — назвать меню. Дальше разбираются сами.
+   */
+  | { kind: 'themes-nudge' };
 
 export type ToastKind = ToastPayload['kind'];
 
@@ -82,6 +91,9 @@ const ORDER: Record<ToastKind, number> = {
   // connected, the other requires having just connected.
   'ai-nudge': 3,
   'ai-first-use': 3,
+  // Рядом с AI-подсказками и по той же причине: не срочно. Совпасть с ними
+  // может — обе одноразовые и обе про «а так тоже можно».
+  'themes-nudge': 3,
   // Sorts last of all: it is a direct response to something the user just
   // clicked, so it belongs nearest their attention rather than above notices
   // they have not acted on.

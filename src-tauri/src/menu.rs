@@ -1,13 +1,45 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{
     menu::{CheckMenuItem, CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, SubmenuBuilder},
     AppHandle, Wry,
 };
+
+/// Истина о тумблере — здесь, а не в пункте меню.
+///
+/// Прочитать состояние `CheckMenuItem` в обработчике нельзя: macOS применяет
+/// щелчок **после** того, как наш код отработал, и пункт отвечает
+/// доизменённым значением (измерено: сразу после клика по снятой галочке
+/// `is_checked()` даёт `false`). Значение засевается фронтендом при старте —
+/// той же синхронизацией, что расставляет отметки, — и дальше живёт здесь.
+///
+/// Нужно всё это ради одного: событие меню рассылается во все окна, и каждое
+/// применяет его к своей копии настройки. Для radio-пункта это безвредно, а
+/// «переключи» N окон выполнили бы N раз — с двумя открытыми окнами галочка
+/// на экране не менялась бы вовсе.
+#[derive(Default)]
+pub struct Toggle {
+    value: AtomicBool,
+}
+
+impl Toggle {
+    pub fn set(&self, value: bool) {
+        self.value.store(value, Ordering::Relaxed);
+    }
+
+    /// Следующее значение — то, которое рассылается окнам.
+    pub fn flip(&self) -> bool {
+        let next = !self.value.load(Ordering::Relaxed);
+        self.value.store(next, Ordering::Relaxed);
+        next
+    }
+}
 
 pub struct ThemeMenuItems {
     pub families: Vec<(&'static str, CheckMenuItem<Wry>)>,
     pub half_light: CheckMenuItem<Wry>,
     pub half_dark: CheckMenuItem<Wry>,
     pub system: CheckMenuItem<Wry>,
+    pub follow_system: Toggle,
 }
 
 impl ThemeMenuItems {
@@ -33,6 +65,7 @@ impl ThemeMenuItems {
         let _ = self.half_light.set_checked(!dark);
         let _ = self.half_dark.set_checked(dark);
         let _ = self.system.set_checked(follow_system);
+        self.follow_system.set(follow_system);
     }
 }
 
@@ -40,29 +73,45 @@ pub struct EngineMenuItems {
     pub raw: CheckMenuItem<Wry>,
     pub live_preview: CheckMenuItem<Wry>,
     pub live_render: CheckMenuItem<Wry>,
-    pub beta_in_cycle: CheckMenuItem<Wry>,
+}
+
+/// Тумблеры меню View, состояние которых фронтенд синхронизирует при старте.
+///
+/// Держатся отдельно от `EngineMenuItems` не для порядка: `lib.rs` читает
+/// состояние такого пункта, чтобы разослать окнам значение, а не команду
+/// «переключи» (см. `toggle_value`), и для этого пункт должен где-то жить.
+pub struct ViewToggleItems {
+    pub ocd_alignment: CheckMenuItem<Wry>,
+    pub ocd_enabled: Toggle,
 }
 
 impl EngineMenuItems {
     /// Single writer for the Editor Engine checkmarks: checks exactly the
     /// item matching `engine` ("raw" | "live-preview" | "live-render"),
-    /// unchecks the rest. `beta_in_cycle` is synced separately since it's
-    /// an independent toggle, not one of the three mutually exclusive choices.
+    /// unchecks the rest.
     pub fn sync(&self, engine: &str) {
         let _ = self.raw.set_checked(engine == "raw");
         let _ = self.live_preview.set_checked(engine == "live-preview");
         let _ = self.live_render.set_checked(engine == "live-render");
     }
+}
 
-    pub fn sync_beta_in_cycle(&self, enabled: bool) {
-        let _ = self.beta_in_cycle.set_checked(enabled);
+impl ViewToggleItems {
+    pub fn sync_ocd_alignment(&self, enabled: bool) {
+        let _ = self.ocd_alignment.set_checked(enabled);
+        self.ocd_enabled.set(enabled);
     }
 }
 
 pub fn build_menu(
     app: &AppHandle,
     pending_session_count: usize,
-) -> tauri::Result<(tauri::menu::Menu<Wry>, ThemeMenuItems, EngineMenuItems)> {
+) -> tauri::Result<(
+    tauri::menu::Menu<Wry>,
+    ThemeMenuItems,
+    EngineMenuItems,
+    ViewToggleItems,
+)> {
     let file_menu = SubmenuBuilder::new(app, "File")
         .item(
             &MenuItemBuilder::with_id("new", "New")
@@ -148,7 +197,7 @@ pub fn build_menu(
     let engine_live_preview =
         CheckMenuItemBuilder::with_id("engine_live_preview", "Live Preview").build(app)?;
     let engine_live_render =
-        CheckMenuItemBuilder::with_id("engine_live_render", "(beta) Live Render").build(app)?;
+        CheckMenuItemBuilder::with_id("engine_live_render", "Live Render").build(app)?;
     let engine_submenu = SubmenuBuilder::new(app, "Editor Engine")
         .item(&engine_raw)
         .item(&engine_live_preview)
@@ -156,11 +205,11 @@ pub fn build_menu(
         .item(&engine_live_render)
         .build()?;
 
-    let toggle_beta_in_cycle = CheckMenuItemBuilder::with_id(
-        "toggle_beta_in_cycle",
-        "Include Live Render in Cmd+E",
-    )
-    .build(app)?;
+    // Идеально центрированный крестик вместо галочки в чекбоксе — для тех, кого
+    // выводит из себя её смещение. Пункт здесь, а не в Theme: это не палитра, а
+    // способ рисовать один элемент.
+    let toggle_ocd_alignment =
+        CheckMenuItemBuilder::with_id("toggle_ocd_alignment", "OCD Alignment").build(app)?;
 
     let view_menu = SubmenuBuilder::new(app, "View")
         .item(
@@ -169,7 +218,6 @@ pub fn build_menu(
                 .build(app)?,
         )
         .item(&engine_submenu)
-        .item(&toggle_beta_in_cycle)
         .separator()
         .item(
             &MenuItemBuilder::with_id("zoom_in", "Zoom In")
@@ -191,6 +239,7 @@ pub fn build_menu(
             &CheckMenuItemBuilder::with_id("toggle_line_glow", "Line Glow")
                 .build(app)?,
         )
+        .item(&toggle_ocd_alignment)
         .build()?;
 
     // Семья и половина — две независимые группы, а не восемь комбинаций:
@@ -300,14 +349,19 @@ pub fn build_menu(
         half_light: theme_half_light,
         half_dark: theme_half_dark,
         system: theme_system,
+        follow_system: Toggle::default(),
     };
 
     let engine_items = EngineMenuItems {
         raw: engine_raw,
         live_preview: engine_live_preview,
         live_render: engine_live_render,
-        beta_in_cycle: toggle_beta_in_cycle,
     };
 
-    Ok((menu, theme_items, engine_items))
+    let view_toggles = ViewToggleItems {
+        ocd_alignment: toggle_ocd_alignment,
+        ocd_enabled: Toggle::default(),
+    };
+
+    Ok((menu, theme_items, engine_items, view_toggles))
 }

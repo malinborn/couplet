@@ -236,6 +236,43 @@
   font-weight: bold;
 }
 
+/* OCD Alignment (View → OCD Alignment).
+ *
+ * Галочку невозможно посадить по центру: у ✓ левый хвост короче правого, так
+ * что оптический центр не совпадает с геометрическим, и подогнанные вручную
+ * `top`/`left` выше — единственный способ, каким она вообще сносно стоит.
+ *
+ * Крестик рисуется двумя полосками, а не символом `×`, и это принципиально.
+ * Отцентрировать глиф нельзя: у него свои боковые отступы и своя высота
+ * внутри em-квадрата, поэтому «по центру» оказывается коробка глифа, а не то,
+ * что видно, — и крестик уезжает точно так же, как галочка, только меньше.
+ * Две полоски одинаковой длины, повёрнутые на ±45° вокруг одной точки,
+ * симметричны по построению: центрировать нечего, потому что нечему съехать.
+ *
+ * Точка эта — центр padding-box, а рамка у чекбокса равномерная, так что он
+ * концентричен border-box при любом `box-sizing`.
+ */
+:root[data-ocd] .cm-md-checkbox:checked::before,
+:root[data-ocd] .cm-md-checkbox:checked::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 9px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--bg-base);
+  color: transparent;
+}
+
+:root[data-ocd] .cm-md-checkbox:checked::before {
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+:root[data-ocd] .cm-md-checkbox:checked::after {
+  transform: translate(-50%, -50%) rotate(-45deg);
+}
+
 /* A ticked task reads as done: greyed and struck through.
  *
  * Only the colour is taken over — `font-weight`, `font-style` and the link's

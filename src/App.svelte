@@ -2,8 +2,8 @@
   import { onMount } from 'svelte';
   import Editor from './lib/editor/Editor.svelte';
   import type { EditorHandle } from './lib/editor/Editor.svelte';
-  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createFileState, createRecentFilesStore } from './lib/stores.svelte';
-  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncBetaInCycleMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type PendingOpen } from './lib/tauri/commands';
+  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createFileState, createRecentFilesStore } from './lib/stores.svelte';
+  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type PendingOpen } from './lib/tauri/commands';
   import {
     onMenuEvent,
     onOpenFile,
@@ -87,6 +87,7 @@
 
   const zoom = createZoomStore();
   const lineGlow = createLineGlowStore();
+  const ocdAlignment = createOcdAlignmentStore();
   const fileState = createFileState();
   const recentFiles = createRecentFilesStore();
   const toasts = createToastStore();
@@ -1361,9 +1362,6 @@
         case 'engine_live_render':
           engine.set('live-render');
           break;
-        case 'toggle_beta_in_cycle':
-          engine.toggleBetaInCycle();
-          break;
         case 'zoom_in':
           zoom.zoomIn();
           break;
@@ -1375,6 +1373,12 @@
           break;
         case 'toggle_line_glow':
           lineGlow.toggle();
+          break;
+        case 'toggle_ocd_alignment:on':
+          ocdAlignment.set(true);
+          break;
+        case 'toggle_ocd_alignment:off':
+          ocdAlignment.set(false);
           break;
         case 'theme_family_classic':
           theme.setFamily('classic');
@@ -1394,8 +1398,11 @@
         case 'theme_half_dark':
           theme.setHalf('dark');
           break;
-        case 'theme_system':
-          theme.toggleFollowSystem();
+        case 'theme_system:on':
+          theme.setFollowSystem(true);
+          break;
+        case 'theme_system:off':
+          theme.setFollowSystem(false);
           break;
         case 'recent_files':
           showRecentFiles = true;
@@ -1428,8 +1435,11 @@
       if (action === 'toggle_mode' || action.startsWith('engine_')) {
         syncEngineMenu(engine.value);
       }
-      if (action === 'toggle_beta_in_cycle') {
-        syncBetaInCycleMenu(engine.betaInCycle);
+      // Тумблер приходит со своим значением, так что нативная отметка уже
+      // верна; корректирующая синхронизация всё равно нужна, потому что
+      // значение пишут все окна, а отметка одна.
+      if (action.startsWith('toggle_ocd_alignment')) {
+        syncOcdAlignmentMenu(ocdAlignment.enabled);
       }
     });
 
@@ -1520,6 +1530,22 @@
       if (nudge) {
         toasts.push({ kind: 'ai-nudge' });
       }
+
+      // «У нас есть темы» — один раз за установку, в том же окне запуска.
+      //
+      // Тем стало четыре, и живут они в меню, которое человек открывает
+      // примерно никогда: без этого про них знал бы только тот, кто их
+      // добавил. Ключ ставится до показа, а не после закрытия: тост ничего не
+      // делает, кроме как называет меню, и «показали, но не досмотрел» —
+      // не повод показывать снова.
+      try {
+        if (!localStorage.getItem('md-mini:themesNudgeSeen')) {
+          localStorage.setItem('md-mini:themesNudgeSeen', '1');
+          toasts.push({ kind: 'themes-nudge' });
+        }
+      } catch {
+        /* приватное окно — лучше не показать, чем показывать каждый запуск */
+      }
     });
 
     const unlistenSessionRestored = onSessionRestored(() => {
@@ -1560,13 +1586,17 @@
     syncThemeMenu(theme.resolved, theme.followSystem);
   });
 
-  // Startup sync for the Editor Engine submenu + beta-cycle checkbox,
+  // Startup sync for the Editor Engine submenu and the OCD checkbox,
   // mirroring the theme effect above.
   $effect(() => {
     syncEngineMenu(engine.value);
   });
   $effect(() => {
-    syncBetaInCycleMenu(engine.betaInCycle);
+    syncOcdAlignmentMenu(ocdAlignment.enabled);
+  });
+
+  $effect(() => {
+    document.documentElement.toggleAttribute('data-ocd', ocdAlignment.enabled);
   });
 
   $effect(() => {

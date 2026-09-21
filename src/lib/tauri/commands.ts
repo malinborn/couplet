@@ -31,9 +31,9 @@ export function syncEngineMenu(engine: EditorEngine): void {
   invoke('sync_engine_menu', { engine }).catch(() => {});
 }
 
-/** Sets the "Include Live Render in Cmd+E" checkbox; harmless no-op outside Tauri. */
-export function syncBetaInCycleMenu(enabled: boolean): void {
-  invoke('sync_beta_in_cycle_menu', { enabled }).catch(() => {});
+/** Sets the "OCD Alignment" checkbox; harmless no-op outside Tauri. */
+export function syncOcdAlignmentMenu(enabled: boolean): void {
+  invoke('sync_ocd_alignment_menu', { enabled }).catch(() => {});
 }
 
 const FILE_FILTERS = [

@@ -69,15 +69,18 @@ pub async fn sync_engine_menu(
     Ok(())
 }
 
-/// Sets the "Include Live Render in Cmd+E" checkbox to match the frontend's
-/// persisted `betaInCycle` flag. Independent of `sync_engine_menu` because
-/// it isn't one of the three mutually exclusive engine choices.
+/// Sets the "OCD Alignment" checkbox to match the frontend's persisted flag.
+///
+/// Нужна не только для вида: `lib.rs` читает состояние этого пункта, чтобы
+/// разослать окнам значение тумблера, а не команду «переключи», — и без
+/// синхронизации при старте пункт меню и настройка разошлись бы после
+/// перезапуска, а значение из меню оказалось бы враньём.
 #[command]
-pub async fn sync_beta_in_cycle_menu(
-    state: tauri::State<'_, crate::menu::EngineMenuItems>,
+pub async fn sync_ocd_alignment_menu(
+    state: tauri::State<'_, crate::menu::ViewToggleItems>,
     enabled: bool,
 ) -> Result<(), String> {
-    state.sync_beta_in_cycle(enabled);
+    state.sync_ocd_alignment(enabled);
     Ok(())
 }
 
