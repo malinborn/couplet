@@ -57,6 +57,22 @@ export function getHeadingPos(state: EditorState, slug: string): number | null {
   return map.get(slug) ?? null;
 }
 
+/**
+ * Ведёт ли ссылка внутрь этого же документа.
+ *
+ * Признак — `#` в начале, а не отсутствие `http`. Без схемы бывают и файловые
+ * ссылки (`./notes.md`, `../readme.md`), и `mailto:`, и они ведут наружу:
+ * приняв их за якоря, мы бы молча никуда не переходили вместо того, чтобы
+ * открыть. `#` — то, чем internal link в markdown и записывается.
+ *
+ * Правило живёт здесь одно на всех, кто по ссылкам ходит: обработчик клика
+ * (`setup.ts`), ячейки таблиц (`preview/tables.ts`) и кнопка Open в
+ * инспекторе (`live-render/inspector.ts`).
+ */
+export function isAnchor(url: string): boolean {
+  return url.startsWith('#');
+}
+
 export function navigateToHeading(view: EditorView, rawSlug: string): void {
   let decoded: string;
   try {

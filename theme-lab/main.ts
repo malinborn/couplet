@@ -26,7 +26,10 @@ import './lab.css';
 
 import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
-import { createExtensions } from '../src/lib/editor/setup';
+import { createExtensions, previewCompartment } from '../src/lib/editor/setup';
+import { livePreviewPlugin } from '../src/lib/editor/preview/plugin';
+import { liveRenderExtensions } from '../src/lib/editor/live-render';
+import { flavourFacet, LIVE_RENDER } from '../src/lib/editor/preview/flavour';
 
 interface Family {
   name: string;
@@ -204,8 +207,19 @@ function step(delta: number): void {
   apply(ORDER[(index + delta + ORDER.length) % ORDER.length]);
 }
 
+/**
+ * `?engine=live-render` поднимает стенд в live-render — том же виде, что
+ * собирает приложение. Нужно не только для тем: часть интерфейса существует
+ * только в этом движке (инспектор ссылок, плавающая панель форматирования), и
+ * иначе её негде посмотреть, кроме как в собранном приложении.
+ */
+function liveRenderRequested(): boolean {
+  return new URLSearchParams(location.search).get('engine') === 'live-render';
+}
+
 function mountEditor(): void {
   const parent = document.getElementById('editor')!;
+  const liveRender = liveRenderRequested();
   const state = EditorState.create({
     // Курсор в конце: `cursorInRange()` раскрывает разметку под кареткой, и на
     // позиции 0 первая строка показала бы сырой markdown.
@@ -213,7 +227,21 @@ function mountEditor(): void {
     selection: { anchor: SAMPLE.length },
     extensions: [createExtensions()],
   });
-  new EditorView({ state, parent });
+  const view = new EditorView({ state, parent });
+  // Компартмент уже занят движком по умолчанию, поэтому не при создании
+  // состояния, а переконфигурацией после — ровно как это делает приложение.
+  if (liveRender) {
+    view.dispatch({
+      effects: previewCompartment.reconfigure([
+        flavourFacet.of(LIVE_RENDER),
+        livePreviewPlugin,
+        liveRenderExtensions(),
+      ]),
+    });
+  }
+  document.querySelector<HTMLElement>('#bar .id')!.dataset.engine = liveRender
+    ? 'live-render'
+    : 'live-preview';
 }
 
 buildPicker();

@@ -13,6 +13,7 @@ import {
   type FenceTarget,
 } from './inspector-model';
 import { openInspectorFor } from './effects';
+import { isAnchor, navigateToHeading } from '../heading-slugs';
 import '../../../styles/live-render-inspector.css';
 
 /**
@@ -173,7 +174,20 @@ function buildLinkPanel(view: EditorView, target: LinkTarget, autoFocus: boolean
   openBtn.type = 'button';
   openBtn.className = 'cm-inspector-btn';
   openBtn.textContent = 'Open';
-  openBtn.setAttribute('aria-label', 'Open link in browser');
+
+  /**
+   * Подпись зависит от того, куда ведёт ссылка: у якоря «открыть в браузере»
+   * было бы враньём, а кнопка одна. Обновляется по мере правки поля, иначе
+   * разойдётся с тем, что в нём сейчас написано.
+   */
+  function syncOpenLabel(): void {
+    openBtn.setAttribute(
+      'aria-label',
+      isAnchor(input.value) ? 'Jump to the heading' : 'Open link in browser'
+    );
+  }
+  syncOpenLabel();
+  input.addEventListener('input', syncOpenLabel);
 
   const removeBtn = document.createElement('button');
   removeBtn.type = 'button';
@@ -202,7 +216,16 @@ function buildLinkPanel(view: EditorView, target: LinkTarget, autoFocus: boolean
   openBtn.addEventListener('mousedown', (e) => {
     e.preventDefault();
     const url = input.value.trim();
-    if (!url || url.startsWith('#')) return; // in-doc anchors aren't browser-openable
+    if (!url) return;
+    // Якорь ведёт внутрь документа, и до этого кнопка на нём просто молчала:
+    // открыть его в браузере нельзя, а перейти по нему — можно, ровно как это
+    // делает ⌘-клик по самой ссылке.
+    if (isAnchor(url)) {
+      hidePanel();
+      view.focus();
+      navigateToHeading(view, url.slice(1));
+      return;
+    }
     import('@tauri-apps/plugin-shell')
       .then(({ open }) => open(url))
       .catch(() => {

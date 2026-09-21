@@ -5,7 +5,7 @@ import { languages } from '@codemirror/language-data';
 import { codeFolding, foldEffect } from '@codemirror/language';
 import { EditorView } from '@codemirror/view';
 import { Strikethrough, Table } from '@lezer/markdown';
-import { slugify, headingSlugsField, getHeadingPos, navigateToHeading } from './heading-slugs';
+import { slugify, headingSlugsField, getHeadingPos, navigateToHeading, isAnchor } from './heading-slugs';
 
 function makeState(doc: string): EditorState {
   return EditorState.create({
@@ -162,5 +162,26 @@ describe('navigateToHeading', () => {
     expect(calls[0].effects.length).toBeGreaterThanOrEqual(2);
     // sanity: index points at the heading we asked for
     expect(getHeadingPos(folded, 'inner')).toBe(innerPos);
+  });
+});
+
+/**
+ * Признак «ссылка внутрь документа». Живёт в одном месте на три обработчика:
+ * клик (`setup.ts`), ячейку таблицы (`preview/tables.ts`) и кнопку Open в
+ * инспекторе (`live-render/inspector.ts`) — она на якоре раньше молчала.
+ */
+describe('isAnchor', () => {
+  it('TreatsHashLinksAsInternal', () => {
+    expect(isAnchor('#heading')).toBe(true);
+    expect(isAnchor('#только-скилл-без-правки-конфига')).toBe(true);
+  });
+
+  // Не «нет http — значит своя»: без схемы бывают файловые ссылки и mailto,
+  // и приняв их за якоря, мы бы молча никуда не переходили вместо открытия.
+  it('DoesNotTreatSchemelessLinksAsInternal', () => {
+    for (const url of ['./notes.md', '../readme.md', 'notes.md', 'mailto:a@b.c', 'example.com']) {
+      expect(isAnchor(url), url).toBe(false);
+    }
+    expect(isAnchor('https://md-mini.com')).toBe(false);
   });
 });

@@ -20,7 +20,7 @@ import { tableSelectionSnapOut } from './preview/table-selection';
 import { hoverBlockMenu } from './hover-menu';
 import { markdownFoldService, headingFoldClick, headingFoldStatePlugin } from './folding';
 import { foldMemory } from './fold-memory';
-import { headingSlugsField, navigateToHeading } from './heading-slugs';
+import { headingSlugsField, isAnchor, navigateToHeading } from './heading-slugs';
 import { aiHighlightField, aiHighlightKeymap } from './ai-highlight';
 import { aiAskField } from './ai-ask';
 import { aiCommentAttention, aiCommentField } from './ai-comment';
@@ -155,7 +155,7 @@ export function createExtensions(): Extension[] {
         if (url) {
           event.preventDefault();
           event.stopPropagation();
-          if (url.startsWith('#')) {
+          if (isAnchor(url)) {
             navigateToHeading(view, url.slice(1));
             return true;
           }

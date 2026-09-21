@@ -29,7 +29,7 @@ import {
   endCellEditSession,
   setCellEditSession,
 } from '../cell-edit-session';
-import { navigateToHeading } from '../heading-slugs';
+import { isAnchor, navigateToHeading } from '../heading-slugs';
 import { makeWidgetTextSelectable } from '../widget-text-selection';
 import { parseInlineMarkdown } from './inline-tokens';
 import { visibleRangeForSource, sourceRangeForVisible } from '../live-render/cell-anchor';
@@ -580,7 +580,7 @@ export function routeLinkClick(
   view: EditorView,
   openExternal: (url: string) => void
 ): void {
-  if (url.startsWith('#')) {
+  if (isAnchor(url)) {
     navigateToHeading(view, url.slice(1));
   } else {
     openExternal(url);
