@@ -1,0 +1,108 @@
+/* «Фосфор» — своя, про терминал до появления цвета.
+ *
+ * Тёмная — люминофор P1 на чёрном стекле: зелёный текст, почти монохром, и
+ * единственный второй цвет — янтарь, тот самый люминофор P3, которым на
+ * соседних терминалах светилось всё остальное. Здесь он достался ссылкам и
+ * чекбоксам, то есть ровно тому, на что нажимают.
+ *
+ * Светлая — не «инверсия», а лист АЦПУ: зеленоватая бумага с широкой печатью,
+ * зелёные чернила и янтарь, погашенный до охры, чтобы держаться на белом.
+ *
+ * Обе половины набраны моноширинным в самом тексте — это единственная пара,
+ * где так, и в этом её смысл.
+ */
+
+:root[data-theme='phosphor-light'] {
+  --bg-base: #e9f0e4;
+  --bg-surface: #dce7d6;
+  --text-primary: #14301d;
+  --text-subtle: #3d5c46;
+  --text-muted: #6d8a76;
+  --highlight: #cbe0cd;
+  --color-heading: #0f5c2e;
+  --color-bold: #16643a;
+  --color-italic: #3a6b4c;
+  --color-link: #9a5b00;
+  --color-code-bg: #dce7d6;
+  --color-code-text: #14301d;
+  --color-selection: #cbe0cd;
+  --color-border: #cddcc6;
+  --color-cursor: #9a5b00;
+  --color-line-highlight: #e1ebdc;
+  --color-strikethrough: #6d8a76;
+  --color-blockquote-border: #6d8a76;
+  --color-hr: #cddcc6;
+  --color-list-marker: #3d5c46;
+  --color-checkbox: #9a5b00;
+  --color-table-border: #cddcc6;
+  --color-table-header-bg: #dce7d6;
+  --color-table-even-bg: #e4ecdf;
+  --color-glow: 15, 92, 46;
+  --ai-edit-bg: rgba(15, 92, 46, 0.12);
+  --ai-edit-shimmer: rgba(15, 92, 46, 0.26);
+  --ai-ask-bg: rgba(154, 91, 0, 0.08);
+  --ai-ask-border: rgba(154, 91, 0, 0.28);
+  --ai-ask-chip-bg: #e9f0e4;
+  --ai-ask-chip-hover-bg: rgba(154, 91, 0, 0.14);
+  --ai-ask-accent: #9a5b00;
+  --ai-ask-accent-text: #e9f0e4;
+  --bg-overlay: rgba(233, 240, 228, 0.75);
+  --border: #cddcc6;
+  --heading-tone-1: #0f5c2e;
+  --heading-tone-2: #175f34;
+  --heading-tone-3: #20613a;
+  --heading-tone-4: #2b6341;
+  --heading-tone-5: #376548;
+  --heading-tone-6: #43674f;
+  --font-text: 'JetBrains Mono', 'SF Mono', monospace;
+  --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+}
+
+:root[data-theme='phosphor-dark'] {
+  --bg-base: #061008;
+  --bg-surface: #0b1a10;
+  --text-primary: #8fe6a2;
+  --text-subtle: #5fa872;
+  --text-muted: #3f7150;
+  --highlight: #12402a;
+  --color-heading: #c9ffd8;
+  --color-bold: #d7ffe3;
+  --color-italic: #7fd8a0;
+  --color-link: #ffcf6b;
+  --color-code-bg: #0b1a10;
+  --color-code-text: #8fe6a2;
+  --color-selection: #12402a;
+  --color-border: #173d27;
+  --color-cursor: #8fe6a2;
+  --color-line-highlight: #0a1a0e;
+  --color-strikethrough: #3f7150;
+  --color-blockquote-border: #3f7150;
+  --color-hr: #173d27;
+  --color-list-marker: #5fa872;
+  --color-checkbox: #ffcf6b;
+  --color-table-border: #173d27;
+  --color-table-header-bg: #0b1a10;
+  --color-table-even-bg: #09170d;
+  --color-glow: 143, 230, 162;
+  --ai-edit-bg: rgba(143, 230, 162, 0.16);
+  --ai-edit-shimmer: rgba(143, 230, 162, 0.36);
+  --ai-ask-bg: rgba(255, 207, 107, 0.1);
+  --ai-ask-border: rgba(255, 207, 107, 0.3);
+  --ai-ask-chip-bg: rgba(255, 255, 255, 0.04);
+  --ai-ask-chip-hover-bg: rgba(255, 207, 107, 0.18);
+  --ai-ask-accent: #ffcf6b;
+  --ai-ask-accent-text: #061008;
+  --bg-overlay: rgba(6, 16, 8, 0.75);
+  --border: #173d27;
+  /* Единственный градиент здесь — h1, и он про сам экран: зелёный люминофор с
+   * янтарным отсветом соседнего. Последний stop равен --heading-tone-1. */
+  --heading-tone-1: #c9ffd8;
+  --heading-tone-2: #b6f2c8;
+  --heading-tone-3: #a3e4b8;
+  --heading-tone-4: #93d3a8;
+  --heading-tone-5: #83c098;
+  --heading-tone-6: #74ad89;
+  --heading-grad-1: linear-gradient(100deg, #ffcf6b 0%, #b8f0a8 38%, #c9ffd8 100%);
+  --font-text: 'JetBrains Mono', 'SF Mono', monospace;
+  --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+}

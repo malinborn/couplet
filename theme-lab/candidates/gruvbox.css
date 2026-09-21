@@ -1,0 +1,101 @@
+/* Gruvbox — Pavel Pertsev, 2012.
+ *
+ * Ретро-тёплая палитра: коричневая подложка вместо серой, землистые акценты
+ * низкой яркости. Светлая половина — не инверсия, а та же гамма на кремовом
+ * листе, поэтому пара держится вместе даже при переключении посреди работы.
+ *
+ * В md-mini это единственная тема с тёплым тёмным фоном: рядом с Rosé Pine
+ * (Default Dark) и Aurora, которые обе холодные, разница видна сразу.
+ */
+
+:root[data-theme='gruvbox-light'] {
+  --bg-base: #fbf1c7;
+  --bg-surface: #f2e5bc;
+  --text-primary: #3c3836;
+  --text-subtle: #665c54;
+  --text-muted: #928374;
+  --highlight: #ebdbb2;
+  --color-heading: #b57614;
+  --color-bold: #af3a03;
+  --color-italic: #8f3f71;
+  --color-link: #076678;
+  --color-code-bg: #f2e5bc;
+  --color-code-text: #3c3836;
+  --color-selection: #ebdbb2;
+  --color-border: #e5d5a8;
+  --color-cursor: #af3a03;
+  --color-line-highlight: #f7ebc0;
+  --color-strikethrough: #928374;
+  --color-blockquote-border: #427b58;
+  --color-hr: #e5d5a8;
+  --color-list-marker: #b57614;
+  --color-checkbox: #427b58;
+  --color-table-border: #e5d5a8;
+  --color-table-header-bg: #f2e5bc;
+  --color-table-even-bg: #f7ecc4;
+  --color-glow: 181, 118, 20;
+  --ai-edit-bg: rgba(66, 123, 88, 0.16);
+  --ai-edit-shimmer: rgba(121, 116, 14, 0.32);
+  --ai-ask-bg: rgba(7, 102, 120, 0.08);
+  --ai-ask-border: rgba(7, 102, 120, 0.28);
+  --ai-ask-chip-bg: #fbf1c7;
+  --ai-ask-chip-hover-bg: rgba(7, 102, 120, 0.14);
+  --ai-ask-accent: #076678;
+  --ai-ask-accent-text: #fbf1c7;
+  --bg-overlay: rgba(251, 241, 199, 0.75);
+  --border: #e5d5a8;
+  --heading-tone-1: #b57614;
+  --heading-tone-2: #a96f1c;
+  --heading-tone-3: #9d6924;
+  --heading-tone-4: #8e642c;
+  --heading-tone-5: #7d5f36;
+  --heading-tone-6: #6b5940;
+  --font-text: 'Inter', -apple-system, system-ui, sans-serif;
+  --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+}
+
+:root[data-theme='gruvbox-dark'] {
+  --bg-base: #282828;
+  --bg-surface: #3c3836;
+  --text-primary: #ebdbb2;
+  --text-subtle: #bdae93;
+  --text-muted: #928374;
+  --highlight: #504945;
+  --color-heading: #fabd2f;
+  --color-bold: #fe8019;
+  --color-italic: #d3869b;
+  --color-link: #83a598;
+  --color-code-bg: #3c3836;
+  --color-code-text: #ebdbb2;
+  --color-selection: #504945;
+  --color-border: #504945;
+  --color-cursor: #fe8019;
+  --color-line-highlight: #32302f;
+  --color-strikethrough: #928374;
+  --color-blockquote-border: #8ec07c;
+  --color-hr: #504945;
+  --color-list-marker: #d79921;
+  --color-checkbox: #8ec07c;
+  --color-table-border: #504945;
+  --color-table-header-bg: #3c3836;
+  --color-table-even-bg: #32302f;
+  --color-glow: 250, 189, 47;
+  --ai-edit-bg: rgba(142, 192, 124, 0.22);
+  --ai-edit-shimmer: rgba(184, 187, 38, 0.4);
+  --ai-ask-bg: rgba(131, 165, 152, 0.12);
+  --ai-ask-border: rgba(131, 165, 152, 0.32);
+  --ai-ask-chip-bg: rgba(255, 255, 255, 0.04);
+  --ai-ask-chip-hover-bg: rgba(131, 165, 152, 0.2);
+  --ai-ask-accent: #83a598;
+  --ai-ask-accent-text: #282828;
+  --bg-overlay: rgba(40, 40, 40, 0.75);
+  --border: #504945;
+  --heading-tone-1: #fabd2f;
+  --heading-tone-2: #eeb536;
+  --heading-tone-3: #e0ab3c;
+  --heading-tone-4: #cd9f42;
+  --heading-tone-5: #b79149;
+  --heading-tone-6: #a1834f;
+  --font-text: 'Inter', -apple-system, system-ui, sans-serif;
+  --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+}

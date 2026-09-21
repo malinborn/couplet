@@ -1,0 +1,254 @@
+/* Лаборатория тем.
+ *
+ * Показывает кандидатов на настоящем редакторе — тот же `createExtensions()`,
+ * что монтирует приложение, поэтому видно ровно то, что получится, а не макет.
+ * Палитры кандидатов лежат в `candidates/` в том же формате, что и боевые
+ * файлы в `src/lib/theme/`: понравившаяся переносится туда как есть.
+ *
+ * Страницу собирает dev-сервер vite (`/theme-lab.html`). В прод-сборку она не
+ * попадает: rollup берёт только `index.html`.
+ */
+
+import '../src/styles/editor.css';
+import '../src/styles/editor-metrics.css';
+
+// Уже выпущенные темы — чтобы кандидатов было с чем сравнивать.
+import '../src/lib/theme/light.css';
+import '../src/lib/theme/dark.css';
+import '../src/lib/theme/aurora-light.css';
+import '../src/lib/theme/aurora-dark.css';
+
+import './candidates/solarized.css';
+import './candidates/gruvbox.css';
+import './candidates/catppuccin.css';
+import './candidates/library.css';
+import './candidates/phosphor.css';
+
+import './lab.css';
+
+import { EditorState } from '@codemirror/state';
+import { EditorView } from '@codemirror/view';
+import { createExtensions } from '../src/lib/editor/setup';
+
+interface Family {
+  name: string;
+  note: string;
+  light: string;
+  dark: string;
+  shipped?: boolean;
+}
+
+const FAMILIES: Family[] = [
+  {
+    name: 'Default',
+    note: 'Выпущена. Светлая — камень и бумага, тёмная — Rosé Pine.',
+    light: 'light',
+    dark: 'dark',
+    shipped: true,
+  },
+  {
+    name: 'Aurora',
+    note: 'Выпущена. Фиолет, розовый и бирюза, градиенты в заголовках.',
+    light: 'aurora-light',
+    dark: 'aurora-dark',
+    shipped: true,
+  },
+  {
+    name: 'Solarized',
+    note: 'Классика 2011-го. Одна палитра в двух положениях: контраст держат акценты, а не яркость фона.',
+    light: 'solarized-light',
+    dark: 'solarized-dark',
+  },
+  {
+    name: 'Gruvbox',
+    note: 'Ретро-тёплая. Единственный тёплый тёмный фон — рядом с Rosé Pine и Aurora разница видна сразу.',
+    light: 'gruvbox-light',
+    dark: 'gruvbox-dark',
+  },
+  {
+    name: 'Catppuccin',
+    note: 'Latte и Mocha. Пастель с насыщенными акцентами; градиенты идут ей по палитре, а не поверх неё.',
+    light: 'catppuccin-light',
+    dark: 'catppuccin-dark',
+  },
+  {
+    name: 'Библиотека',
+    note: 'Своя. Читальный зал днём и вечером: бумага и чернила / каштан и латунь. С засечками в тексте.',
+    light: 'library-light',
+    dark: 'library-dark',
+  },
+  {
+    name: 'Фосфор',
+    note: 'Своя. Терминал до цвета: зелёный люминофор с янтарём / лист АЦПУ. Моноширинный в самом тексте.',
+    light: 'phosphor-light',
+    dark: 'phosphor-dark',
+  },
+];
+
+const SAMPLE = `# Заголовок первого уровня
+
+Обычный абзац, чтобы увидеть основной текст на подложке. В нём есть **жирное**,
+*курсив*, ~~зачёркнутое~~, \`инлайн-код\` и [ссылка](https://md-mini.com) — по ним
+и видно, как тема разводит акценты между собой.
+
+## Второй уровень
+
+### Третий уровень
+
+- [x] выполненная задача — серая и перечёркнутая
+- [x] выполненная с **жирным** и \`кодом\` внутри
+- [ ] ещё не сделана
+  - [ ] вложенная, не сделана
+- обычный пункт без чекбокса
+
+1. нумерованный пункт
+2. второй
+3. третий
+
+> Цитата: по ней видно цвет полосы слева и приглушённый текст.
+
+| Колонка | Значение | Комментарий |
+| --- | --- | --- |
+| Первая | 42 | строка таблицы |
+| Вторая | 17 | чётная строка |
+| Третья | 8 | и ещё одна |
+
+\`\`\`ts
+// Подсветка синтаксиса — отдельный слой поверх палитры.
+export function greet(name: string): string {
+  const times = 3;
+  return Array.from({ length: times }, () => \`hello, \${name}\`).join('\\n');
+}
+\`\`\`
+
+---
+
+Последний абзац, чтобы было куда поставить курсор и посмотреть на каретку,
+выделение и подсветку активной строки.
+`;
+
+function apply(theme: string): void {
+  document.documentElement.setAttribute('data-theme', theme);
+  const family = FAMILIES.find((f) => f.light === theme || f.dark === theme);
+  const mode = family && family.dark === theme ? 'тёмная' : 'светлая';
+  document.querySelector<HTMLElement>('#bar .title')!.textContent = family
+    ? `${family.name} — ${mode}`
+    : theme;
+  document.querySelector<HTMLElement>('#bar .id')!.textContent = `data-theme="${theme}"`;
+  for (const button of document.querySelectorAll<HTMLButtonElement>('.family-row button')) {
+    button.setAttribute('aria-pressed', String(button.dataset.theme === theme));
+  }
+  try {
+    localStorage.setItem('mdmini-theme-lab', theme);
+  } catch {
+    /* приватное окно — переживём */
+  }
+}
+
+/**
+ * Четыре цвета, по которым тему узнают, не открывая её. Читаются из самого
+ * стиля, а не дублируются здесь — иначе свотч и тема разъехались бы на первой
+ * же правке палитры.
+ *
+ * Тему приходится примерять на `<html>`: палитры объявлены как
+ * `:root[data-theme=…]`, и этот селектор не совпадёт ни с каким другим
+ * элементом, сколько ему ни выставляй атрибут. Цикл синхронный, до первой
+ * отрисовки, так что мигания не видно.
+ */
+function swatches(theme: string): string[] {
+  const root = document.documentElement;
+  const before = root.getAttribute('data-theme');
+  root.setAttribute('data-theme', theme);
+  const cs = getComputedStyle(root);
+  const out = ['--bg-base', '--text-primary', '--color-heading', '--color-checkbox'].map((v) =>
+    cs.getPropertyValue(v).trim()
+  );
+  if (before === null) root.removeAttribute('data-theme');
+  else root.setAttribute('data-theme', before);
+  return out;
+}
+
+function buildPicker(): void {
+  const picker = document.getElementById('picker')!;
+  for (const family of FAMILIES) {
+    const box = document.createElement('div');
+    box.className = 'family';
+
+    const name = document.createElement('div');
+    name.className = 'family-name';
+    name.textContent = family.shipped ? `${family.name} ·` : family.name;
+    box.appendChild(name);
+
+    const strip = document.createElement('div');
+    strip.className = 'swatches';
+    for (const theme of [family.light, family.dark]) {
+      for (const color of swatches(theme)) {
+        const chip = document.createElement('i');
+        chip.style.background = color;
+        strip.appendChild(chip);
+      }
+    }
+    box.appendChild(strip);
+
+    const note = document.createElement('div');
+    note.className = 'family-note';
+    note.textContent = family.note;
+    box.appendChild(note);
+
+    const row = document.createElement('div');
+    row.className = 'family-row';
+    for (const [label, theme] of [
+      ['Светлая', family.light],
+      ['Тёмная', family.dark],
+    ] as const) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = label;
+      button.dataset.theme = theme;
+      button.addEventListener('click', () => apply(theme));
+      row.appendChild(button);
+    }
+    box.appendChild(row);
+    picker.appendChild(box);
+  }
+}
+
+/** Порядок обхода стрелками: светлая и тёмная каждой семьи подряд. */
+const ORDER = FAMILIES.flatMap((f) => [f.light, f.dark]);
+
+function step(delta: number): void {
+  const current = document.documentElement.getAttribute('data-theme') ?? ORDER[0];
+  const index = ORDER.indexOf(current);
+  apply(ORDER[(index + delta + ORDER.length) % ORDER.length]);
+}
+
+function mountEditor(): void {
+  const parent = document.getElementById('editor')!;
+  const state = EditorState.create({
+    // Курсор в конце: `cursorInRange()` раскрывает разметку под кареткой, и на
+    // позиции 0 первая строка показала бы сырой markdown.
+    doc: SAMPLE,
+    selection: { anchor: SAMPLE.length },
+    extensions: [createExtensions()],
+  });
+  new EditorView({ state, parent });
+}
+
+buildPicker();
+mountEditor();
+
+let restored: string | null = null;
+try {
+  restored = localStorage.getItem('mdmini-theme-lab');
+} catch {
+  /* приватное окно */
+}
+apply(restored && ORDER.includes(restored) ? restored : 'solarized-light');
+
+document.addEventListener('keydown', (e) => {
+  // Стрелки работают, только когда фокус не в редакторе — иначе они двигали бы
+  // каретку, а не тему.
+  if (document.activeElement?.closest('.cm-editor')) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowRight') step(1);
+  else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') step(-1);
+});

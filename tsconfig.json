@@ -32,6 +32,7 @@
     "src/**/*.svelte",
     "vite.config.ts",
     "vite.config.site.ts",
-    "site/**/*.ts"
+    "site/**/*.ts",
+    "theme-lab/**/*.ts"
   ]
 }

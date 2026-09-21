@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>md-mini — лаборатория тем</title>
+    <link rel="stylesheet" href="/src/styles/global.css" />
+  </head>
+  <body>
+    <div id="lab">
+      <aside id="picker">
+        <h1>Темы</h1>
+        <p class="hint">
+          Настоящий редактор, не макет. Точкой отмечены уже выпущенные семьи.
+          Стрелки листают темы, когда фокус вне текста.
+        </p>
+      </aside>
+      <main id="stage">
+        <div id="bar">
+          <span class="title"></span>
+          <span class="id"></span>
+        </div>
+        <div id="editor"></div>
+      </main>
+    </div>
+    <script type="module" src="/theme-lab/main.ts"></script>
+  </body>
+</html>
