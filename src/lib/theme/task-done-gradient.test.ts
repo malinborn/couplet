@@ -38,10 +38,15 @@ describe('the ticked-task gradient', () => {
   // ticked item ends on — and the one a strict theme paints flat throughout.
   // Letting it drift makes the two themes disagree about what "done" looks
   // like at the end of a line, which no rendering test would call a failure.
+  //
+  // The flat tone is `--color-task-done` where a theme separates a done task
+  // from a correction, and `--color-strikethrough` where it does not — the
+  // same fallback chain `editor.css` resolves.
   it.each(AURORA)('%s ends its gradient on the flat tone', (theme) => {
     const grad = variable(theme, 'task-done-grad');
     expect(grad, `${theme} declares --task-done-grad`).not.toBeNull();
-    expect(lastStop(grad as string)).toBe(variable(theme, 'color-strikethrough'));
+    const flat = variable(theme, 'color-task-done') ?? variable(theme, 'color-strikethrough');
+    expect(lastStop(grad as string)).toBe(flat);
   });
 
   // Declaring it in a strict theme is how it would get a gradient by accident:

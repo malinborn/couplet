@@ -245,18 +245,28 @@
  * `text-decoration` needs no such help: it propagates to descendants and a
  * child cannot switch it off, so a nested `~~strikethrough~~` simply keeps its
  * own line on top of this one.
+ *
+ * Цвет берётся из `--color-task-done`, а не прямо из `--color-strikethrough`,
+ * хотя по умолчанию это одно и то же. Разделить пришлось, когда у «Блюпринта»
+ * красный закрепился за правкой: `~~вычеркнутое~~` — это правка и красным ему
+ * самое место, а выполненная задача — не ошибка, и красной она читалась бы
+ * как «удалено». Тема, которой такое различие не нужно, не объявляет ничего.
  */
 .cm-md-task-done,
 .cm-md-task-done
   :is(.cm-md-bold, .cm-md-italic, .cm-md-strikethrough, .cm-md-link, .cm-md-inline-code) {
-  color: var(--color-strikethrough);
+  color: var(--color-task-done, var(--color-strikethrough));
 }
 .cm-md-task-done {
   text-decoration: line-through;
-  text-decoration-color: var(--color-strikethrough);
+  /* Линия отдельной переменной от текста: «Блюпринт» чертит её красным
+   * карандашом правки поверх приглушённого текста — вычеркнули, но не
+   * ошиблись. Дефолт — цвет самого текста, то есть у всех остальных тем
+   * ничего не меняется. */
+  text-decoration-color: var(--color-task-done-line, var(--color-task-done, var(--color-strikethrough)));
 }
 .cm-md-task-done .cm-md-link {
-  text-decoration-color: var(--color-strikethrough);
+  text-decoration-color: var(--color-task-done-line, var(--color-task-done, var(--color-strikethrough)));
 }
 
 /* …and in the aurora themes the grey is a gradient instead of a flat tone.
@@ -274,15 +284,16 @@
  * wrapped item is its own span (see `checkedTextRanges`), so each gets its own
  * sweep rather than a slice of one.
  *
- * The last stop still has to equal `--color-strikethrough`: that is the colour
- * every item ends on, and the one a strict theme paints flat.
+ * The last stop still has to equal the flat tone (`--color-task-done`, and by
+ * default that is `--color-strikethrough`): that is the colour every item ends
+ * on, and the one a strict theme paints throughout.
  *
  * `text-decoration-color` is set above and is not `currentColor`, so the
  * line-through survives the transparent fill.
  */
 @supports ((-webkit-background-clip: text) or (background-clip: text)) {
   .cm-md-task-done {
-    background-color: var(--color-strikethrough);
+    background-color: var(--color-task-done, var(--color-strikethrough));
     background-image: var(--task-done-grad, none);
     background-repeat: no-repeat;
     background-size: 100% 100%;

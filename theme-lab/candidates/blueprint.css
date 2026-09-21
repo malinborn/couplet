@@ -8,7 +8,7 @@
  * Светлая — та же калька до засветки: тёплый полупрозрачный лист, линии
  * синим карандашом. В обеих половинах единственный тёплый цвет — красный
  * карандаш правки, и достаётся он ровно тому, что в документе меняют:
- * каретке и чекбоксам.
+ * каретке, чекбоксам, вычеркнутому тексту и линии поверх выполненной задачи.
  */
 
 :root[data-theme='blueprint-light'] {
@@ -28,7 +28,12 @@
   --color-border: #ded9c9;
   --color-cursor: #c0492b;
   --color-line-highlight: #efece1;
-  --color-strikethrough: #8b9cae;
+  /* Вычеркнутое — правка, а правку на чертеже ведут красным карандашом.
+   * Выполненная задача — не правка: её текст остаётся синевато-серым, но
+   * линия поверх него того же карандаша, которым на листе отмечают сделанное. */
+  --color-strikethrough: #c0492b;
+  --color-task-done: #8b9cae;
+  --color-task-done-line: #c0492b;
   --color-blockquote-border: #7f9dc0;
   --color-hr: #ded9c9;
   --color-list-marker: #6b83a0;
@@ -77,7 +82,10 @@
   --color-border: #1c4478;
   --color-cursor: #ff7a59;
   --color-line-highlight: #0e2f5a;
-  --color-strikethrough: #6c93bd;
+  /* См. светлую половину: правка красная, выполненная задача — нет. */
+  --color-strikethrough: #ff7a59;
+  --color-task-done: #6c93bd;
+  --color-task-done-line: #ff7a59;
   --color-blockquote-border: #7fd4ff;
   --color-hr: #1c4478;
   --color-list-marker: #6c93bd;
