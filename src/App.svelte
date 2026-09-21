@@ -76,6 +76,9 @@
   import './lib/theme/light.css';
   import './lib/theme/aurora-dark.css';
   import './lib/theme/aurora-light.css';
+  // Обе половины в одном файле — семья описана целиком в одном месте.
+  import './lib/theme/blueprint.css';
+  import './lib/theme/phosphor.css';
   import './styles/global.css';
   import './styles/editor.css';
 
@@ -1373,20 +1376,26 @@
         case 'toggle_line_glow':
           lineGlow.toggle();
           break;
-        case 'theme_light':
-          theme.preference = 'light';
+        case 'theme_family_classic':
+          theme.setFamily('classic');
           break;
-        case 'theme_dark':
-          theme.preference = 'dark';
+        case 'theme_family_aurora':
+          theme.setFamily('aurora');
           break;
-        case 'theme_aurora_light':
-          theme.preference = 'aurora-light';
+        case 'theme_family_blueprint':
+          theme.setFamily('blueprint');
           break;
-        case 'theme_aurora_dark':
-          theme.preference = 'aurora-dark';
+        case 'theme_family_phosphor':
+          theme.setFamily('phosphor');
+          break;
+        case 'theme_half_light':
+          theme.setHalf('light');
+          break;
+        case 'theme_half_dark':
+          theme.setHalf('dark');
           break;
         case 'theme_system':
-          theme.preference = 'system';
+          theme.toggleFollowSystem();
           break;
         case 'recent_files':
           showRecentFiles = true;
@@ -1411,7 +1420,7 @@
       // toggle leaves the submenu with nothing checked. Force a corrective
       // sync on every theme_* event, independent of whether the value changed.
       if (action.startsWith('theme_')) {
-        syncThemeMenu(theme.preference);
+        syncThemeMenu(theme.resolved, theme.followSystem);
       }
       // Same correction, for the Editor Engine submenu — re-clicking the
       // already-active engine (or toggling Cmd+E onto an unchanged value)
@@ -1543,10 +1552,12 @@
     reinitializeTheme();
   });
 
-  // Separate effect on purpose: it depends on `preference` (not `resolved`),
-  // and its first run on mount is the startup sync.
+  // Separate effect on purpose, and it reads `resolved` rather than the raw
+  // choice: with «система» отмеченной половину выбирает ОС, и галочка в меню
+  // должна стоять на той, что действительно на экране. Its first run on mount
+  // is the startup sync.
   $effect(() => {
-    syncThemeMenu(theme.preference);
+    syncThemeMenu(theme.resolved, theme.followSystem);
   });
 
   // Startup sync for the Editor Engine submenu + beta-cycle checkbox,

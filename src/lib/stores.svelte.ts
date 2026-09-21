@@ -1,9 +1,12 @@
 import {
   resolveTheme,
+  loadSelection,
+  concreteTheme,
   familyOf,
+  halfOf,
   isDarkTheme,
-  type ThemeSetting,
   type ThemeFamily,
+  type ThemeHalf,
   type ConcreteTheme,
 } from './theme-resolve';
 
@@ -34,28 +37,61 @@ function saveSetting(key: string, value: unknown): void {
 }
 
 export function createThemeStore() {
-  let preference = $state<ThemeSetting>(loadSetting('theme', 'system'));
-  let lastFamily = $state<ThemeFamily>(loadSetting('themeFamily', 'classic'));
+  // Одно состояние вместо прежней пары «preference + lastFamily»: конкретная
+  // тема помнит и семью, и половину, а галочка живёт отдельным ключом.
+  const initial = loadSelection(
+    loadSetting<unknown>('theme', null),
+    loadSetting<unknown>('themeFamily', null),
+    loadSetting<unknown>('themeSystem', null)
+  );
+  let theme = $state<ConcreteTheme>(initial.theme);
+  let followSystem = $state(initial.followSystem);
   let systemDark = $state(window.matchMedia('(prefers-color-scheme: dark)').matches);
 
-  const resolved = $derived<ConcreteTheme>(resolveTheme(preference, lastFamily, systemDark));
+  const resolved = $derived<ConcreteTheme>(resolveTheme({ theme, followSystem }, systemDark));
   const isDark = $derived(isDarkTheme(resolved));
 
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
     systemDark = e.matches;
   });
 
+  function persist(): void {
+    saveSetting('theme', theme);
+    saveSetting('themeSystem', followSystem);
+  }
+
   return {
-    get preference() {
-      return preference;
+    /** Что человек выбрал; с галочкой «система» может отличаться от `resolved`. */
+    get theme() {
+      return theme;
     },
-    set preference(v: ThemeSetting) {
-      preference = v;
-      saveSetting('theme', v);
-      if (v !== 'system') {
-        lastFamily = familyOf(v);
-        saveSetting('themeFamily', lastFamily);
-      }
+    get family() {
+      return familyOf(theme);
+    },
+    get half() {
+      return halfOf(theme);
+    },
+    get followSystem() {
+      return followSystem;
+    },
+    /** Семья меняется, половина остаётся — и с галочкой, и без неё. */
+    setFamily(family: ThemeFamily) {
+      theme = concreteTheme(family, halfOf(theme));
+      persist();
+    },
+    /**
+     * Явно выбранная половина снимает галочку: пользователь только что сказал,
+     * какую он хочет, и подчинять её системе прямо следом — значит не сделать
+     * то, о чём попросили.
+     */
+    setHalf(half: ThemeHalf) {
+      theme = concreteTheme(familyOf(theme), half);
+      followSystem = false;
+      persist();
+    },
+    toggleFollowSystem() {
+      followSystem = !followSystem;
+      persist();
     },
     get resolved() {
       return resolved;

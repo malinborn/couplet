@@ -49,9 +49,10 @@ pub async fn file_exists(path: String) -> bool {
 #[command]
 pub async fn sync_theme_menu(
     state: tauri::State<'_, crate::menu::ThemeMenuItems>,
-    preference: String,
+    resolved: String,
+    follow_system: bool,
 ) -> Result<(), String> {
-    state.sync(&preference);
+    state.sync(&resolved, follow_system);
     Ok(())
 }
 

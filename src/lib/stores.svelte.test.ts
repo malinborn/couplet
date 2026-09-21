@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { createEngineStore } from './stores.svelte';
+import { createEngineStore, createThemeStore } from './stores.svelte';
 
 /**
  * Node's built-in `localStorage` global only persists when the process is
@@ -161,5 +161,101 @@ describe('createEngineStore', () => {
       const store = createEngineStore();
       expect(store.value).toBe('live-preview');
     });
+  });
+});
+
+/**
+ * Позволяет тесту сыграть смену системной темы. Настоящий `matchMedia` в node
+ * отсутствует вовсе, а подменять сам store незачем: проверять надо ровно
+ * связку «ОС сказала → на экране сменилось», потому что чистая арифметика
+ * выбора уже покрыта в `theme-resolve.test.ts`.
+ */
+function installMatchMediaStub(dark: boolean): (value: boolean) => void {
+  const listeners: ((e: { matches: boolean }) => void)[] = [];
+  let matches = dark;
+  Object.defineProperty(globalThis, 'window', {
+    value: {
+      matchMedia: () => ({
+        get matches() {
+          return matches;
+        },
+        addEventListener: (_: string, fn: (e: { matches: boolean }) => void) => {
+          listeners.push(fn);
+        },
+      }),
+    },
+    configurable: true,
+  });
+  return (value: boolean) => {
+    matches = value;
+    for (const fn of listeners) fn({ matches: value });
+  };
+}
+
+describe('createThemeStore', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('FirstRun_FollowsSystemInClassic', () => {
+    installMatchMediaStub(true);
+    const store = createThemeStore();
+    expect(store.followSystem).toBe(true);
+    expect(store.resolved).toBe('dark');
+  });
+
+  // Ровно то, ради чего галочка и делалась: ОС переключилась — половина за ней,
+  // семья на месте.
+  it('SystemFlips_HalfFollows_FamilyStays', () => {
+    installLocalStorageStub();
+    localStorage.setItem('md-mini:theme', JSON.stringify('blueprint-light'));
+    localStorage.setItem('md-mini:themeSystem', JSON.stringify(true));
+    const setSystemDark = installMatchMediaStub(false);
+    const store = createThemeStore();
+    expect(store.resolved).toBe('blueprint-light');
+    setSystemDark(true);
+    expect(store.resolved).toBe('blueprint-dark');
+    expect(store.family).toBe('blueprint');
+  });
+
+  it('WithoutTheCheckbox_SystemIsIgnored', () => {
+    const setSystemDark = installMatchMediaStub(false);
+    const store = createThemeStore();
+    store.setHalf('light');
+    expect(store.followSystem).toBe(false);
+    setSystemDark(true);
+    expect(store.resolved).toBe('light');
+  });
+
+  it('SetFamily_KeepsHalfAndTheCheckbox', () => {
+    installMatchMediaStub(true);
+    const store = createThemeStore();
+    store.setHalf('dark');
+    store.setFamily('phosphor');
+    expect(store.resolved).toBe('phosphor-dark');
+    store.toggleFollowSystem();
+    expect(store.followSystem).toBe(true);
+    store.setFamily('aurora');
+    expect(store.family).toBe('aurora');
+    expect(store.followSystem).toBe(true);
+  });
+
+  it('PersistsBothKeys', () => {
+    installMatchMediaStub(false);
+    const store = createThemeStore();
+    store.setFamily('blueprint');
+    expect(JSON.parse(localStorage.getItem('md-mini:theme')!)).toBe('blueprint-light');
+    expect(JSON.parse(localStorage.getItem('md-mini:themeSystem')!)).toBe(true);
+  });
+
+  // Дефолт старого формата — `'system'` в самом ключе темы; так записано у
+  // всех, кто не трогал тему.
+  it('MigratesLegacySystemPreference', () => {
+    localStorage.setItem('md-mini:theme', JSON.stringify('system'));
+    localStorage.setItem('md-mini:themeFamily', JSON.stringify('aurora'));
+    installMatchMediaStub(true);
+    const store = createThemeStore();
+    expect(store.followSystem).toBe(true);
+    expect(store.resolved).toBe('aurora-dark');
   });
 });

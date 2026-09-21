@@ -1,9 +1,10 @@
 /* Лаборатория тем.
  *
- * Показывает кандидатов на настоящем редакторе — тот же `createExtensions()`,
- * что монтирует приложение, поэтому видно ровно то, что получится, а не макет.
- * Палитры кандидатов лежат в `candidates/` в том же формате, что и боевые
- * файлы в `src/lib/theme/`: понравившаяся переносится туда как есть.
+ * Показывает темы на настоящем редакторе — тот же `createExtensions()`, что
+ * монтирует приложение, поэтому видно ровно то, что получится, а не макет.
+ * Кандидат кладётся сюда отдельным файлом в том же формате, что и боевые
+ * палитры в `src/lib/theme/`, и переезжает туда как есть, если понравился;
+ * так уехали «Блюпринт» и «Фосфор», и сейчас стенд смотрит прямо на них.
  *
  * Страницу собирает dev-сервер vite (`/theme-lab.html`). В прод-сборку она не
  * попадает: rollup берёт только `index.html`.
@@ -12,16 +13,14 @@
 import '../src/styles/editor.css';
 import '../src/styles/editor-metrics.css';
 
-// Уже выпущенные темы — чтобы кандидатов было с чем сравнивать.
+// Все четыре выпущенные семьи; кандидатов сейчас нет, но стенд остаётся —
+// следующую тему проще сначала увидеть здесь, чем сразу собирать приложение.
 import '../src/lib/theme/light.css';
 import '../src/lib/theme/dark.css';
 import '../src/lib/theme/aurora-light.css';
 import '../src/lib/theme/aurora-dark.css';
-
-import './candidates/phosphor.css';
-import './candidates/blueprint.css';
-import './candidates/riso.css';
-import './candidates/pompeii.css';
+import '../src/lib/theme/blueprint.css';
+import '../src/lib/theme/phosphor.css';
 
 import './lab.css';
 
@@ -39,17 +38,24 @@ interface Family {
 
 const FAMILIES: Family[] = [
   {
-    name: 'Default',
-    note: 'Выпущена. Светлая — камень и бумага, тёмная — Rosé Pine.',
+    name: 'Classic',
+    note: 'Светлая — камень и бумага, тёмная — Rosé Pine. В меню звалась Default.',
     light: 'light',
     dark: 'dark',
     shipped: true,
   },
   {
     name: 'Aurora',
-    note: 'Выпущена. Фиолет, розовый и бирюза, градиенты в заголовках.',
+    note: 'Фиолет, розовый и бирюза, градиенты в заголовках.',
     light: 'aurora-light',
     dark: 'aurora-dark',
+    shipped: true,
+  },
+  {
+    name: 'Блюпринт',
+    note: 'Чертёж: цианотипия (белым по синему) / калька с синим карандашом. Красный — только правка: каретка, чекбоксы, вычеркнутое.',
+    light: 'blueprint-light',
+    dark: 'blueprint-dark',
     shipped: true,
   },
   {
@@ -57,24 +63,7 @@ const FAMILIES: Family[] = [
     note: 'Терминал до появления цвета: зелёный люминофор с янтарём / лист АЦПУ. Моноширинный в самом тексте.',
     light: 'phosphor-light',
     dark: 'phosphor-dark',
-  },
-  {
-    name: 'Блюпринт',
-    note: 'Чертёж: цианотипия (белым по синему) / калька с синим карандашом. Красный — только правка: каретка, чекбоксы, вычеркнутое.',
-    light: 'blueprint-light',
-    dark: 'blueprint-dark',
-  },
-  {
-    name: 'Ризограф',
-    note: 'Печать в два прогона: флуоресцентный розовый и синий, третьего цвета нет. h1 — место, где прогоны промахнулись.',
-    light: 'riso-light',
-    dark: 'riso-dark',
-  },
-  {
-    name: 'Помпеи',
-    note: 'Фреска: четыре земляных пигмента и один привозной. Синий один и только на ссылках. С засечками.',
-    light: 'pompeii-light',
-    dark: 'pompeii-dark',
+    shipped: true,
   },
 ];
 

@@ -4,23 +4,35 @@ use tauri::{
 };
 
 pub struct ThemeMenuItems {
-    pub light: CheckMenuItem<Wry>,
-    pub dark: CheckMenuItem<Wry>,
-    pub aurora_light: CheckMenuItem<Wry>,
-    pub aurora_dark: CheckMenuItem<Wry>,
+    pub families: Vec<(&'static str, CheckMenuItem<Wry>)>,
+    pub half_light: CheckMenuItem<Wry>,
+    pub half_dark: CheckMenuItem<Wry>,
     pub system: CheckMenuItem<Wry>,
 }
 
 impl ThemeMenuItems {
-    /// Single writer for the Theme checkmarks: checks exactly the item
-    /// matching the preference ("light" | "dark" | "aurora-light" |
-    /// "aurora-dark" | "system"), unchecks the rest.
-    pub fn sync(&self, preference: &str) {
-        let _ = self.light.set_checked(preference == "light");
-        let _ = self.dark.set_checked(preference == "dark");
-        let _ = self.aurora_light.set_checked(preference == "aurora-light");
-        let _ = self.aurora_dark.set_checked(preference == "aurora-dark");
-        let _ = self.system.set_checked(preference == "system");
+    /// Single writer for the Theme checkmarks.
+    ///
+    /// Меню состоит из трёх групп — семья, половина и галочка «система», —
+    /// поэтому сюда приходит уже разрешённая тема, а не выбор человека: с
+    /// включённой галочкой половину выбирает ОС, и отметка должна стоять на
+    /// той, что действительно на экране.
+    ///
+    /// Семья узнаётся по префиксу, а половина по суффиксу, потому что у
+    /// classic идентификатор без префикса вовсе (`light` / `dark`) — так он
+    /// записан в настройках у всех, кто уже пользуется приложением.
+    pub fn sync(&self, resolved: &str, follow_system: bool) {
+        let family = match resolved.rsplit_once('-') {
+            Some((prefix, _)) => prefix,
+            None => "classic",
+        };
+        for (name, item) in &self.families {
+            let _ = item.set_checked(*name == family);
+        }
+        let dark = resolved.ends_with("dark");
+        let _ = self.half_light.set_checked(!dark);
+        let _ = self.half_dark.set_checked(dark);
+        let _ = self.system.set_checked(follow_system);
     }
 }
 
@@ -181,21 +193,35 @@ pub fn build_menu(
         )
         .build()?;
 
-    // Labels only — the ids and the stored preference values stay `light` and
-    // `dark`, so a settings file written by an earlier version still resolves.
-    let theme_light = CheckMenuItemBuilder::with_id("theme_light", "Default Light").build(app)?;
-    let theme_dark = CheckMenuItemBuilder::with_id("theme_dark", "Default Dark").build(app)?;
-    let theme_aurora_light =
-        CheckMenuItemBuilder::with_id("theme_aurora_light", "Aurora Light").build(app)?;
-    let theme_aurora_dark =
-        CheckMenuItemBuilder::with_id("theme_aurora_dark", "Aurora Dark").build(app)?;
-    let theme_system = CheckMenuItemBuilder::with_id("theme_system", "System").build(app)?;
+    // Семья и половина — две независимые группы, а не восемь комбинаций:
+    // добавить тему теперь стоит один пункт, а не два, и «система» имеет на
+    // что влиять, не будучи при этом отдельным вариантом выбора.
+    //
+    // Идентификаторы пунктов — `theme_family_classic` и прочие; значения в
+    // настройках остались прежними (`light`, `dark`, `aurora-light`…), и
+    // «Classic» здесь — то же имя, которым эта семья зовётся в коде с самого
+    // начала (`ThemeFamily`), просто раньше в меню она была «Default».
+    let theme_family_classic =
+        CheckMenuItemBuilder::with_id("theme_family_classic", "Classic").build(app)?;
+    let theme_family_aurora =
+        CheckMenuItemBuilder::with_id("theme_family_aurora", "Aurora").build(app)?;
+    let theme_family_blueprint =
+        CheckMenuItemBuilder::with_id("theme_family_blueprint", "Blueprint").build(app)?;
+    let theme_family_phosphor =
+        CheckMenuItemBuilder::with_id("theme_family_phosphor", "Phosphor").build(app)?;
+    let theme_half_light = CheckMenuItemBuilder::with_id("theme_half_light", "Light").build(app)?;
+    let theme_half_dark = CheckMenuItemBuilder::with_id("theme_half_dark", "Dark").build(app)?;
+    let theme_system =
+        CheckMenuItemBuilder::with_id("theme_system", "Follow System").build(app)?;
 
     let theme_menu = SubmenuBuilder::new(app, "Theme")
-        .item(&theme_light)
-        .item(&theme_dark)
-        .item(&theme_aurora_light)
-        .item(&theme_aurora_dark)
+        .item(&theme_family_classic)
+        .item(&theme_family_aurora)
+        .item(&theme_family_blueprint)
+        .item(&theme_family_phosphor)
+        .separator()
+        .item(&theme_half_light)
+        .item(&theme_half_dark)
         .separator()
         .item(&theme_system)
         .build()?;
@@ -265,10 +291,14 @@ pub fn build_menu(
         .build()?;
 
     let theme_items = ThemeMenuItems {
-        light: theme_light,
-        dark: theme_dark,
-        aurora_light: theme_aurora_light,
-        aurora_dark: theme_aurora_dark,
+        families: vec![
+            ("classic", theme_family_classic),
+            ("aurora", theme_family_aurora),
+            ("blueprint", theme_family_blueprint),
+            ("phosphor", theme_family_phosphor),
+        ],
+        half_light: theme_half_light,
+        half_dark: theme_half_dark,
         system: theme_system,
     };
 

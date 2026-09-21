@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import type { ThemeSetting } from '../theme-resolve';
+import type { ConcreteTheme } from '../theme-resolve';
 import type { EditorEngine } from '../stores.svelte';
 import type { CommentThread } from '../comment-format';
 
@@ -16,9 +16,14 @@ export async function fileExists(path: string): Promise<boolean> {
   return invoke<boolean>('file_exists', { path });
 }
 
-/** Sets the Theme menu checkmarks; harmless no-op outside Tauri (browser dev). */
-export function syncThemeMenu(preference: ThemeSetting): void {
-  invoke('sync_theme_menu', { preference }).catch(() => {});
+/**
+ * Sets the Theme menu checkmarks; harmless no-op outside Tauri (browser dev).
+ *
+ * Берёт уже разрешённую тему, а не выбор человека: с галочкой «система»
+ * половину выбирает ОС, и в меню должна стоять галочка на той, что на экране.
+ */
+export function syncThemeMenu(resolved: ConcreteTheme, followSystem: boolean): void {
+  invoke('sync_theme_menu', { resolved, followSystem }).catch(() => {});
 }
 
 /** Sets the Editor Engine submenu checkmarks; harmless no-op outside Tauri. */
