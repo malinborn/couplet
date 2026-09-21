@@ -193,15 +193,17 @@ pub fn build_menu(
         )
         .build()?;
 
+    // Подписи, и только они: идентификаторы (`engine_live_preview`) и значения
+    // в настройках (`live-preview`) остались прежними — они записаны на диске
+    // у всех, кто уже пользуется приложением.
     let engine_raw = CheckMenuItemBuilder::with_id("engine_raw", "Raw").build(app)?;
     let engine_live_preview =
-        CheckMenuItemBuilder::with_id("engine_live_preview", "Live Preview").build(app)?;
+        CheckMenuItemBuilder::with_id("engine_live_preview", "Preview").build(app)?;
     let engine_live_render =
         CheckMenuItemBuilder::with_id("engine_live_render", "Live Render").build(app)?;
     let engine_submenu = SubmenuBuilder::new(app, "Editor Engine")
         .item(&engine_raw)
         .item(&engine_live_preview)
-        .separator()
         .item(&engine_live_render)
         .build()?;
 
