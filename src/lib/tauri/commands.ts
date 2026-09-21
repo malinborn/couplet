@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import type { ConcreteTheme } from '../theme-resolve';
+import type { ConcreteTheme, ThemeFamily, ThemeHalf } from '../theme-resolve';
 import type { EditorEngine } from '../stores.svelte';
 import type { CommentThread } from '../comment-format';
 
@@ -24,6 +24,26 @@ export async function fileExists(path: string): Promise<boolean> {
  */
 export function syncThemeMenu(resolved: ConcreteTheme, followSystem: boolean): void {
   invoke('sync_theme_menu', { resolved, followSystem }).catch(() => {});
+}
+
+/**
+ * Broadcasts a `/theme` commit to every window over the same `menu-event`
+ * path a native Theme-menu click already uses (`broadcast_theme` in
+ * commands.rs) — so `App.svelte`'s `menu-event` handler needs no changes at
+ * all to stay in sync. Harmless no-op outside Tauri (browser dev), like
+ * `syncThemeMenu`: the local theme is applied either way, which is what
+ * lets `/theme` be checked in `npm run dev`.
+ *
+ * A concrete theme needs both `family` and `half` — the native menu only
+ * ever changes one at a time, but a `/theme` commit changes both in one
+ * action. `followSystem` alone matches a "Follow System" click.
+ */
+export function broadcastTheme(payload: {
+  family?: ThemeFamily;
+  half?: ThemeHalf;
+  followSystem?: boolean;
+}): void {
+  invoke('broadcast_theme', payload).catch(() => {});
 }
 
 /** Sets the Editor Engine submenu checkmarks; harmless no-op outside Tauri. */

@@ -13,6 +13,8 @@ import { markdownKeybindings } from './keybindings';
 import { listContinuation } from './autocomplete';
 import { codeBlockExitKeymap } from './code-block-exit';
 import { slashCommands } from './slash-commands';
+import type { SlashAction } from './slash-actions';
+import { themeAction, themePickerExtensions, renderThemeSwatch, type ThemeControl } from './slash-theme';
 import { livePreviewPlugin } from './preview/plugin';
 import { tableModeField } from './preview/table-state';
 import { mermaidViewField } from './preview/mermaid-state';
@@ -44,7 +46,23 @@ export function openExternalUrl(url: string): Promise<void> {
     });
 }
 
-export function createExtensions(): Extension[] {
+/**
+ * Injected rather than imported: `createExtensions()` is called by both
+ * `Editor.svelte` and `site/demos/editor-demo.ts` (the md-mini.com landing's
+ * demo cards). A direct import of the app's theme store would pull
+ * `localStorage`/`matchMedia` onto the landing at module load time and give
+ * the demo editor the ability to repaint the whole page. Without
+ * `themeControl`, `/theme` does not appear in the slash menu at all — see
+ * `slash-theme.ts`.
+ */
+export interface EditorDeps {
+  themeControl?: ThemeControl;
+}
+
+export function createExtensions(deps: EditorDeps = {}): Extension[] {
+  const { themeControl } = deps;
+  const actions: SlashAction[] = themeControl ? [themeAction(themeControl)] : [];
+
   return [
     editorTheme,
     tableModeField,
@@ -63,8 +81,20 @@ export function createExtensions(): Extension[] {
     // exit from a fenced code block applies to every engine (#52).
     codeBlockExitKeymap,
     listContinuation(),
-    slashCommands(),
-    autocompletion(),
+    slashCommands(actions),
+    ...(themeControl ? themePickerExtensions(themeControl) : []),
+    autocompletion(
+      themeControl
+        ? {
+            // Icons default to position 20, the label to 50 — the swatch pair
+            // sits between them. Gated inside renderThemeSwatch on
+            // `completion.type`, since `addToOptions` is global to this one
+            // `autocompletion()` call and would otherwise run for every
+            // completion in the app, including language ones.
+            addToOptions: [{ render: renderThemeSwatch, position: 30 }],
+          }
+        : {}
+    ),
     markdownKeybindings(),
     history(),
     closeBrackets(),

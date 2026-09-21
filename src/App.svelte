@@ -3,7 +3,9 @@
   import Editor from './lib/editor/Editor.svelte';
   import type { EditorHandle } from './lib/editor/Editor.svelte';
   import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createFileState, createRecentFilesStore } from './lib/stores.svelte';
-  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type PendingOpen } from './lib/tauri/commands';
+  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, broadcastTheme, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type PendingOpen } from './lib/tauri/commands';
+  import { concreteTheme, familyOf, halfOf } from './lib/theme-resolve';
+  import type { ThemeChoice, ThemeControl } from './lib/editor/slash-theme';
   import {
     onMenuEvent,
     onOpenFile,
@@ -84,6 +86,51 @@
 
   const theme = createThemeStore();
   const engine = createEngineStore();
+
+  /**
+   * Bridges the `/theme` slash command (which cannot import the theme store
+   * directly — see `EditorDeps` in `lib/editor/setup.ts`) to it.
+   *
+   * `commit` mirrors what a native Theme-menu click already does in this
+   * file's `menu-event` handler below: write the choice, correct the native
+   * menu's checkmarks, and broadcast to every other window over the same
+   * `menu-event` path (`broadcast_theme` in commands.rs), so two windows
+   * never end up on different themes after the picker closes.
+   */
+  const themeControl: ThemeControl = {
+    get current() {
+      return theme.resolved;
+    },
+    get followSystem() {
+      return theme.followSystem;
+    },
+    preview(choice: ThemeChoice | null) {
+      if (choice === null) {
+        theme.setPreview(null);
+      } else if (choice === 'system') {
+        // "System" itself has no fixed look; preview what committing it
+        // would resolve to right now — current family, OS-preferred half.
+        theme.setPreview(concreteTheme(theme.family, theme.systemDark ? 'dark' : 'light'));
+      } else {
+        theme.setPreview(choice);
+      }
+    },
+    commit(choice: ThemeChoice) {
+      theme.setPreview(null);
+      if (choice === 'system') {
+        theme.setFollowSystem(true);
+      } else {
+        theme.setFamily(familyOf(choice));
+        theme.setHalf(halfOf(choice));
+      }
+      syncThemeMenu(theme.resolved, theme.followSystem);
+      broadcastTheme(
+        choice === 'system'
+          ? { followSystem: true }
+          : { family: familyOf(choice), half: halfOf(choice) }
+      );
+    },
+  };
 
   const zoom = createZoomStore();
   const lineGlow = createLineGlowStore();
@@ -1717,6 +1764,7 @@
     onAiHighlightVisibilityChange={handleAiHighlightVisibilityChange}
     onJsonOffer={() => toasts.push({ kind: 'json-offer' })}
     onJsonOfferWithdrawn={() => toasts.dismissKind('json-offer')}
+    {themeControl}
   />
 </main>
 

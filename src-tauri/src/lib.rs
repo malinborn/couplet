@@ -128,6 +128,7 @@ pub fn run() {
             commands::sync_theme_menu,
             commands::sync_engine_menu,
             commands::sync_ocd_alignment_menu,
+            commands::broadcast_theme,
         ])
         .setup(|app| {
             // FIRST, before anything touches disk: decide which data directory this
