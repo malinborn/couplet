@@ -232,59 +232,171 @@ pub fn ai_open_getting_started(app: AppHandle) {
     }
 }
 
-/// Content for the "Getting Started" menu item — static, bundled at compile time.
-pub(crate) fn getting_started_doc() -> &'static str {
-    GETTING_STARTED_MD
+/// Content for the "Connect Your AI" menu item.
+///
+/// Заменил собой четыре документа: «Getting Started», «Connect via CLI»,
+/// «Connect via MCP» и «Teach your AI». Каждый из них объяснял свою часть и
+/// оставлял человеку работу по сборке — владелец, собирая себе, в итоге делал
+/// из них солянку вручную. Здесь вместо объяснения выдаётся промпт: агент сам
+/// регистрирует MCP, пишет скилл и добавляет короткий абзац в главный конфиг.
+///
+/// Тело скилла — это `MCP_AGENT_SNIPPET` и `AGENT_SNIPPET` дословно, поэтому
+/// промпт не может разойтись с тем, что печатает `mdmini agent`.
+///
+/// Внешний забор — четыре бэктика: внутри промпта есть свои тройные блоки.
+pub(crate) fn connect_doc() -> String {
+    let mut d = String::new();
+
+    d.push_str(
+        r#"# Connect Your AI
+
+Одно действие: отдайте агенту промпт ниже. Дальше он всё сделает сам.
+
+Промпт делает четыре вещи:
+
+1. **Регистрирует md-mini как MCP-сервер** — тогда `show` / `edit` / `ask` /
+   `question` / `answer` становятся обычными инструментами агента, которые он
+   видит сам и которым не нужен сниппет в инструкциях.
+2. **Создаёт скилл `mdmini`** — всё знание о том, как пользоваться этими
+   инструментами хорошо, лежит в нём. Скилл грузится только когда понадобился,
+   поэтому он ничего не стоит, пока не нужен.
+3. **Добавляет короткий абзац в главный конфиг агента** (`~/.claude/CLAUDE.md`
+   или его аналог) — только про то, *когда* звать md-mini и что перед этим
+   надо загрузить скилл. Всё остальное знание остаётся в скилле.
+4. **Задаёт порядок: MCP, а если не вышло — CLI.** Агенту прямо сказано:
+   умеешь MCP — работай через MCP; не умеешь, не зарегистрировался или он
+   молчит — те же действия доступны через `mdmini` в терминале.
+
+Если главный конфиг трогать не хочется —
+[есть второй промпт, только со скиллом](#только-скилл-без-правки-конфига)
+(⌘-клик: обычный клик в md-mini ставит каретку, чтобы текст ссылки можно было
+править).
+
+## Промпт
+
+Скопируйте целиком и отдайте агенту.
+
+````
+"#,
+    );
+
+    d.push_str(PROMPT_INTRO);
+    d.push_str(
+        r#"
+3. Append the block between the CONFIG markers below to my main config file
+   (`~/.claude/CLAUDE.md`, or this harness's equivalent). That block and
+   nothing else: the file is read on every run, so it stays short on purpose.
+   If a block like it is already there, replace it rather than adding a second.
+"#,
+    );
+    d.push_str(PROMPT_VERIFY);
+    d.push_str(&prompt_payload());
+    d.push_str(
+        r#"
+
+--- CONFIG ---
+"#,
+    );
+    d.push_str(CONFIG_BLOCK);
+    d.push_str(
+        r#"
+--- CONFIG END ---
+````
+
+## Только скилл, без правки конфига
+
+Тот же промпт, но главный конфиг он не трогает. Цена — агент не узнает сам,
+что пора звать md-mini: скилл придётся звать вручную (`/mdmini` или «используй
+скилл mdmini»). Поэтому для гладкой работы мы всё же советуем первый вариант.
+
+````
+"#,
+    );
+    d.push_str(PROMPT_INTRO);
+    d.push_str(
+        r#"
+3. Do not touch my main config file (`~/.claude/CLAUDE.md`, or this harness's
+   equivalent) at all, and do not create one.
+"#,
+    );
+    d.push_str(PROMPT_VERIFY);
+    d.push_str(&prompt_payload());
+    d.push_str(
+        r#"
+````
+
+## Где лежит главный конфиг
+
+Промпт выше знает эти места сам; список здесь на случай, если агент спросит.
+
+"#,
+    );
+    d.push_str(crate::ai_socket::INSTRUCTION_FILE_LOCATIONS);
+    d.push('\n');
+    d
 }
 
-/// Content for the "Connect AI via CLI" menu item — composed from
-/// `ai_socket::AGENT_SNIPPET`/`INSTRUCTION_FILE_LOCATIONS` so the menu doc and
-/// `mdmini agent`'s own output can never drift apart.
-pub(crate) fn connect_cli_doc() -> String {
+/// Первые два шага обоих промптов — они одинаковы; различается только третий.
+const PROMPT_INTRO: &str = r#"Set up md-mini (`mdmini`) for me. Do the steps in order, then tell me in one
+short paragraph what you changed and what you skipped.
+
+1. Register md-mini over MCP, if your harness supports MCP at all.
+   Claude Code: `claude mcp add --scope user mdmini -- mdmini mcp`
+   Other clients: add `"mdmini": {"command": "mdmini", "args": ["mcp"]}` to
+   their `mcpServers` config.
+   If your harness has no MCP support, skip this step and say so — everything
+   below still works through the CLI.
+
+2. Create the skill file `~/.claude/skills/mdmini/SKILL.md` (create the
+   directories if needed; for a non-Claude harness use its own skill location).
+   Its frontmatter is exactly:
+
+   ---
+   name: mdmini
+   description: Use when the user should read something with their own eyes, when a file or report needs to be shown, when asking a question about a document they already have open, or when replying to comments they left in one. Covers the MCP tools (show/edit/ask/question/answer) and the CLI fallback.
+   ---
+
+   Its body is everything between the SKILL markers below, verbatim.
+"#;
+
+/// Последний шаг обоих промптов.
+const PROMPT_VERIFY: &str = r#"
+4. Check your work: `mdmini --version` prints a version, and the skill file
+   exists. If `mdmini` is not on PATH, stop and tell me — do not install
+   anything yourself and do not guess a path.
+
+Rule to carry into the skill and the config: prefer the MCP tools when they
+are available, and fall back to the `mdmini` CLI when MCP is not registered,
+not supported, or a call fails. Same capabilities either way.
+"#;
+
+/// Тело скилла — оба сниппета дословно, поэтому промпт не может разойтись с
+/// тем, что печатает `mdmini agent` и `mdmini agent --mcp`.
+fn prompt_payload() -> String {
     format!(
-        "# Connect AI via CLI\n\n\
-Give an AI agent with shell access — Claude Code and similar — direct access to your open documents: it can jump you to a spot, push edits into the live buffer, and ask you questions with buttons in the document itself.\n\n\
-Paste the block below into your agent's instruction file. Common locations:\n\n\
-{}\n\n\
----\n\n\
-{}\n\n\
-`mdmini agent` prints this same block, any time you need it again.\n",
-        crate::ai_socket::INSTRUCTION_FILE_LOCATIONS,
+        "\n--- SKILL ---\n\n{}\n\nIf MCP is unavailable, unregistered, or failing, the same capabilities are on the command line:\n\n{}\n\n--- SKILL END ---\n",
+        crate::ai_socket::MCP_AGENT_SNIPPET,
         crate::ai_socket::AGENT_SNIPPET,
     )
 }
 
-/// Content for the "Connect AI via MCP" menu item.
-pub(crate) fn connect_mcp_doc() -> String {
-    "# Connect AI via MCP\n\n\
-Register md-mini as an MCP server and its show/edit/ask tools become available to any MCP-speaking agent — no instruction-file snippet required, the tools describe themselves.\n\n\
-For Claude Code:\n\n\
-```bash\n\
-claude mcp add --scope user mdmini -- mdmini mcp\n\
-```\n\n\
-For other MCP clients, add this to your `mcpServers` config:\n\n\
-```json\n\
-{\n  \"mcpServers\": {\n    \"mdmini\": {\n      \"command\": \"mdmini\",\n      \"args\": [\"mcp\"]\n    }\n  }\n}\n\
-```\n\n\
-That's the whole connection — the tools are self-describing. For a short note on how your agent should *use* them well, see \"Teach your AI md-mini\" in the AI menu.\n"
-        .to_string()
-}
+/// Всё, что попадает в главный конфиг. Намеренно короткое: этот файл читается
+/// при каждом запуске агента, поэтому знание живёт в скилле, а здесь — только
+/// повод его загрузить.
+const CONFIG_BLOCK: &str = r#"
+## md-mini
 
-/// Content for the "Teach your AI md-mini" menu item — composed from
-/// `ai_socket::MCP_AGENT_SNIPPET`/`INSTRUCTION_FILE_LOCATIONS`, same discipline
-/// as `connect_cli_doc`.
-pub(crate) fn teach_doc() -> String {
-    format!(
-        "# Teach Your AI md-mini\n\n\
-Connecting md-mini over MCP is enough for an agent to call show/edit/ask — but a short usage note in its instructions makes it noticeably better at knowing *when* to reach for them. Paste the block below into your agent's instruction file. Common locations:\n\n\
-{}\n\n\
----\n\n\
-{}\n\n\
-`mdmini agent --mcp` prints this same block. A CLI-connected agent gets the equivalent guidance built into what `mdmini agent` prints.\n",
-        crate::ai_socket::INSTRUCTION_FILE_LOCATIONS,
-        crate::ai_socket::MCP_AGENT_SNIPPET,
-    )
-}
+`mdmini` is the local editor the user reads in. Reach for it when they should
+see something with their own eyes — a report, plan, spec or review you just
+wrote; when they say "show me"; when the question is about a document they
+already have open; when a mermaid diagram is involved; or when they left
+comments in a document for you. Load the `mdmini` skill before using it.
+
+Prefer the MCP tools (`show`, `edit`, `ask`, `question`, `answer`). If MCP is
+not registered, not supported by this harness, or a call fails, use the
+`mdmini` CLI instead — the skill documents both. Skip it for short answers and
+throwaway files.
+"#;
 
 /// Content for the "AI Playbook" menu item — static, bundled at compile time.
 pub(crate) fn playbook_doc() -> &'static str {
@@ -336,25 +448,48 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    // --- Connect Your AI ----------------------------------------------------
+
     #[test]
-    fn connect_cli_doc_contains_agent_snippet() {
-        let doc = connect_cli_doc();
-        assert!(doc.starts_with("# Connect AI via CLI"));
-        assert!(doc.contains("## md-mini AI interface"));
+    fn connect_doc_carries_both_snippets_verbatim() {
+        let doc = connect_doc();
+        assert!(doc.starts_with("# Connect Your AI"));
+        // Смысл документа в том, что тело скилла — это те же сниппеты, что
+        // печатает CLI. Пересказ здесь разойдётся с ними на первой же правке.
+        assert!(doc.contains(crate::ai_socket::MCP_AGENT_SNIPPET));
+        assert!(doc.contains(crate::ai_socket::AGENT_SNIPPET));
     }
 
     #[test]
-    fn connect_mcp_doc_contains_registration_commands() {
-        let doc = connect_mcp_doc();
-        assert!(doc.starts_with("# Connect AI via MCP"));
-        assert!(doc.contains("claude mcp add --scope user mdmini -- mdmini mcp"));
+    fn connect_doc_has_both_prompts_and_the_link_between_them() {
+        let doc = connect_doc();
+        // Два промпта — два забора из четырёх бэктиков, открывающий и
+        // закрывающий у каждого.
+        assert_eq!(doc.matches("````").count(), 4);
+        // Ссылка ведёт к заголовку второго промпта: слаг считается так же,
+        // как `slugify` во фронтенде (нижний регистр, пробелы в дефисы,
+        // пунктуация выброшена).
+        assert!(doc.contains("(#только-скилл-без-правки-конфига)"));
+        assert!(doc.contains("## Только скилл, без правки конфига"));
     }
 
     #[test]
-    fn teach_doc_contains_mcp_snippet() {
-        let doc = teach_doc();
-        assert!(doc.starts_with("# Teach Your AI md-mini"));
-        assert!(doc.contains("## md-mini via MCP — how to use it well"));
+    fn connect_doc_tells_the_agent_mcp_first_then_cli() {
+        let doc = connect_doc();
+        assert!(doc.contains("prefer the MCP tools"));
+        assert!(doc.contains("fall back to the `mdmini` CLI"));
+    }
+
+    #[test]
+    fn config_block_stays_short() {
+        // Он попадает в файл, который читается при каждом запуске агента.
+        // Порог с запасом: дело не в точном числе, а в том, чтобы сюда не
+        // переехал скилл.
+        assert!(
+            CONFIG_BLOCK.lines().count() < 20,
+            "config block grew to {} lines",
+            CONFIG_BLOCK.lines().count()
+        );
     }
 
     #[test]
@@ -368,22 +503,43 @@ mod tests {
 
     #[test]
     fn getting_started_doc_maps_the_ai_menu() {
-        let doc = getting_started_doc();
+        let doc = GETTING_STARTED_MD;
         assert!(doc.starts_with("# Getting Started with AI in md-mini"));
-        // The menu map is the point of the document; losing it would leave a
-        // setup guide that never says where any of this lives.
+        // Карта меню — смысл этого документа: без неё остаётся руководство,
+        // которое не говорит, где всё это лежит.
         assert!(doc.contains("## Where this lives"));
-        for item in [
-            "Getting Started",
-            "Connect AI via CLI",
-            "Connect AI via MCP",
-            "Teach your AI md-mini",
-            "AI Playbook",
-        ] {
-            assert!(doc.contains(item), "menu map is missing {:?}", item);
+
+        // Список пунктов берётся из самого меню, а не переписывается сюда
+        // руками. Ровно этот дрейф и случился, когда четыре пункта заменили
+        // одним: документ продолжал рисовать старую схему, а тест —
+        // проверять её же, и оба молчали.
+        for label in ai_menu_labels() {
+            assert!(
+                doc.contains(&label),
+                "menu map is missing {:?}; AI menu and getting-started-ai.md have drifted",
+                label
+            );
         }
-        assert!(doc.contains("claude mcp add --scope user mdmini -- mdmini mcp"));
     }
+
+    /// Подписи пунктов меню AI, вытащенные из `menu.rs`.
+    fn ai_menu_labels() -> Vec<String> {
+        const MENU_RS: &str = include_str!("menu.rs");
+        let mut out = Vec::new();
+        for rest in MENU_RS.split("with_id(\"ai_").skip(1) {
+            // …"ai_connect", "Connect Your AI")… — нужна вторая строка.
+            let Some(after_id) = rest.split_once("\", \"") else {
+                continue;
+            };
+            let Some((label, _)) = after_id.1.split_once('"') else {
+                continue;
+            };
+            out.push(label.to_string());
+        }
+        assert!(!out.is_empty(), "no AI menu items found in menu.rs");
+        out
+    }
+
 
     #[test]
     fn welcome_doc_also_points_at_the_ai_menu() {

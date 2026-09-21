@@ -222,8 +222,12 @@ pub fn build_menu(
         .item(&engine_submenu)
         .separator()
         .item(
+            // `Equal`, а не `Plus`: muda разбирает ускорители по кодам клавиш
+            // (`Minus`, `Digit0`, `Equal`), а `Plus` кодом не является — пункт
+            // оставался без клавиши вовсе, и по нему было видно, что чего-то
+            // не хватает, только в сравнении с соседним Zoom Out.
             &MenuItemBuilder::with_id("zoom_in", "Zoom In")
-                .accelerator("CmdOrCtrl+Plus")
+                .accelerator("CmdOrCtrl+Equal")
                 .build(app)?,
         )
         .item(
@@ -292,19 +296,14 @@ pub fn build_menu(
     // "Getting Started" is deliberately first and deliberately named the same
     // thing the startup nudge says out loud — a user who half-remembers the
     // toast a month later scans this menu for that exact phrase.
+    // Один пункт вместо четырёх («Getting Started», «Connect via CLI»,
+    // «Connect via MCP», «Teach your AI»). Каждый из них объяснял свою часть и
+    // оставлял сборку человеку — владелец, подключая себе, в итоге составлял
+    // из них солянку вручную. Теперь документ выдаёт промпт, а сборку делает
+    // агент: см. `onboarding::connect_doc`.
     let ai_menu = SubmenuBuilder::new(app, "AI")
         .item(
-            &MenuItemBuilder::with_id("ai_getting_started", "Getting Started").build(app)?,
-        )
-        .separator()
-        .item(
-            &MenuItemBuilder::with_id("ai_connect_cli", "Connect AI via CLI").build(app)?,
-        )
-        .item(
-            &MenuItemBuilder::with_id("ai_connect_mcp", "Connect AI via MCP").build(app)?,
-        )
-        .item(
-            &MenuItemBuilder::with_id("ai_teach", "Teach your AI md-mini").build(app)?,
+            &MenuItemBuilder::with_id("ai_connect", "Connect Your AI").build(app)?,
         )
         .separator()
         // The one item here that *does* something to the open document rather

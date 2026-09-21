@@ -10,10 +10,7 @@ Everything about this is in the **AI** menu, in the menu bar. Nothing here is on
 
 ```
 AI
-├── Getting Started               ← this document
-├── Connect AI via CLI            ← snippet to paste into CLAUDE.md / AGENTS.md
-├── Connect AI via MCP            ← one command for Claude Code
-├── Teach your AI md-mini         ← how your agent should use it well
+├── Connect Your AI               ← one prompt; your agent does the setup
 ├── Comment on Selection          ← ⇧⌘M — ask your agent about a fragment
 ├── Connect Agent to Doc Questions ← copies the prompt that starts it watching
 └── AI Playbook                   ← what to actually do with it
@@ -23,23 +20,9 @@ You never have to remember a command. You only have to remember the menu.
 
 ## Connect in a minute
 
-Pick whichever matches your agent. Both end up at the same place.
+Open **Connect Your AI** and hand the prompt in it to your agent. It registers md-mini over MCP, writes itself a skill on how to use it well, and adds one short paragraph to your main config saying when to reach for md-mini. There is a second prompt in the same document for the case where you would rather it left your main config alone.
 
-### Claude Code — one command
-
-```bash
-claude mcp add --scope user mdmini -- mdmini mcp
-```
-
-That's the whole setup. The tools describe themselves, so no instruction-file snippet is required.
-
-### Any agent with a shell
-
-```bash
-mdmini agent
-```
-
-Paste what it prints into your agent's instruction file — `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.cursor/rules`, `.github/copilot-instructions.md`.
+The agent is told to prefer MCP and fall back to the `mdmini` CLI if MCP is unavailable — the capabilities are the same either way.
 
 ## Check that it worked
 
@@ -47,7 +30,7 @@ Ask your agent, in its own chat:
 
 > Open this file in mdmini and highlight the first heading.
 
-A window should come to the front with the heading pulsing. If nothing happens, **Connect AI via CLI** and **Connect AI via MCP** in the AI menu have the exact snippets again.
+A window should come to the front with the heading pulsing. If nothing happens, **Connect Your AI** in the AI menu has the prompt again — and `mdmini agent` prints the same instructions in the terminal.
 
 ## What your agent can do
 

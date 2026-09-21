@@ -36,7 +36,7 @@ export const NATIVE_MENU_ACCELERATORS: readonly NativeMenuAccelerator[] = [
   { id: 'find', accelerator: 'CmdOrCtrl+F' },
   { id: 'format_json', accelerator: 'CmdOrCtrl+Shift+J' },
   { id: 'toggle_mode', accelerator: 'CmdOrCtrl+E' },
-  { id: 'zoom_in', accelerator: 'CmdOrCtrl+Plus' },
+  { id: 'zoom_in', accelerator: 'CmdOrCtrl+Equal' },
   { id: 'zoom_out', accelerator: 'CmdOrCtrl+Minus' },
   { id: 'zoom_reset', accelerator: 'CmdOrCtrl+0' },
   { id: 'ai_comment', accelerator: 'CmdOrCtrl+Shift+M' },

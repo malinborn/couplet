@@ -191,33 +191,11 @@ pub fn run() {
                 // AI menu — each item (re)writes its doc into app_data_dir() with
                 // fresh content and opens it in a new window, so it always reflects
                 // the current snippets rather than a stale cached copy.
-                if id == "ai_getting_started" {
-                    if let Err(e) = onboarding::open_bundled_doc(
-                        &app_handle,
-                        "ai-getting-started.md",
-                        onboarding::getting_started_doc(),
-                    ) {
-                        eprintln!("AI menu: {}", e);
-                    }
-                    return;
-                }
-                if id == "ai_connect_cli" {
-                    let content = onboarding::connect_cli_doc();
-                    if let Err(e) = onboarding::open_bundled_doc(&app_handle, "ai-connect-cli.md", &content) {
-                        eprintln!("AI menu: {}", e);
-                    }
-                    return;
-                }
-                if id == "ai_connect_mcp" {
-                    let content = onboarding::connect_mcp_doc();
-                    if let Err(e) = onboarding::open_bundled_doc(&app_handle, "ai-connect-mcp.md", &content) {
-                        eprintln!("AI menu: {}", e);
-                    }
-                    return;
-                }
-                if id == "ai_teach" {
-                    let content = onboarding::teach_doc();
-                    if let Err(e) = onboarding::open_bundled_doc(&app_handle, "ai-teach.md", &content) {
+                if id == "ai_connect" {
+                    let content = onboarding::connect_doc();
+                    if let Err(e) =
+                        onboarding::open_bundled_doc(&app_handle, "ai-connect.md", &content)
+                    {
                         eprintln!("AI menu: {}", e);
                     }
                     return;
