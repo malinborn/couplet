@@ -181,8 +181,10 @@ pub fn build_menu(
         )
         .build()?;
 
-    let theme_light = CheckMenuItemBuilder::with_id("theme_light", "Light").build(app)?;
-    let theme_dark = CheckMenuItemBuilder::with_id("theme_dark", "Dark").build(app)?;
+    // Labels only — the ids and the stored preference values stay `light` and
+    // `dark`, so a settings file written by an earlier version still resolves.
+    let theme_light = CheckMenuItemBuilder::with_id("theme_light", "Default Light").build(app)?;
+    let theme_dark = CheckMenuItemBuilder::with_id("theme_dark", "Default Dark").build(app)?;
     let theme_aurora_light =
         CheckMenuItemBuilder::with_id("theme_aurora_light", "Aurora Light").build(app)?;
     let theme_aurora_dark =
