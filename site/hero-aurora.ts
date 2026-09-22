@@ -108,19 +108,40 @@ void main() {
 
   float structure = mix(band * 0.45, band, rays);
 
+  // Peak spikes: the owner's ask after seeing the approved base live —
+  // "sometimes there were taller peaks that wander along the band and
+  // shimmer, and where two peaks meet they overlap translucently, only
+  // through that shimmer, not a blob". A single low-frequency noise column
+  // (function of x and a slow, independent time drift) is thresholded
+  // narrowly so only ~1-3 disjoint stretches of x are "peaking" at once;
+  // being a smoothstep over that noise, each one already fades smoothly in
+  // as the field crosses the band and back out again — a living peak with
+  // its own rise and fall, not a hard on/off flag — and the same field
+  // slowly shifts the affected x positions over time, i.e. the peaks
+  // wander along the curtain. Everywhere peakMask is ~0 this is a no-op:
+  // the base approved look is untouched.
+  float peakField = fbm(vec2(x * 0.85 + drift * 0.22, drift * 0.4 + 5.0));
+  float peakMask = smoothstep(0.60, 0.80, peakField);
+
   // Vertical energy: a hard-ish cutoff near the bottom edge, a fade
   // climbing toward the top that settles out before the very top of the
   // hero — the physical brightest-at-the-base profile, with the diffuse
   // high-altitude glow given a real ceiling rather than reaching the nav.
-  // Owner asked for the light to read "a bit longer" after seeing this
-  // commit live — only the top of skyFade's range moved (0.80 -> 0.90),
-  // so the glow persists somewhat further up before fading out. Thickness
-  // and groundCut (the bottom edge) are untouched on purpose.
+  // The approved base moved skyFade's top from 0.80 to 0.90; peakMask now
+  // pushes it further still (up to 1.25) ONLY at the rare x columns that
+  // are currently peaking, so a peak is exactly "this stretch of the
+  // curtain reaches higher than the rest right now" — no separate height
+  // field, just a taller ceiling for the same falloff. Thickness and
+  // groundCut (the bottom edge) stay untouched everywhere, peak or not.
   float groundCut = smoothstep(0.03, 0.17, uv.y);
-  float skyFade = 1.0 - smoothstep(0.22, 0.90, uv.y);
+  float skyTop = mix(0.90, 1.25, peakMask);
+  float skyFade = 1.0 - smoothstep(0.22, skyTop, uv.y);
   float vertical = groundCut * skyFade;
 
-  float intensity = structure * vertical;
+  // A peaking column also runs a touch brighter, not just taller — modest
+  // (up to +12%) so it reads as one continuous phenomenon intensifying,
+  // not a separate bright blob switching on.
+  float intensity = structure * vertical * mix(1.0, 1.12, peakMask);
 
   vec3 nitrogenPink = vec3(0.902, 0.310, 0.580);
   vec3 highViolet = vec3(0.514, 0.345, 0.937);
