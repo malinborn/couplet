@@ -80,10 +80,10 @@ td.l span { display: block; font-weight: 400; font-size: 11.5px; opacity: .55; w
 На 32 и 16 справа — тот же знак без свечений.</p>
 <div class="scroll"><table id="sizes"></table></div>
 
-<h2>Самые маленькие · 2/3 фон + 1/3 курсор, амперсанд на всю ячейку</h2>
-<p class="sub">Плитка делится вертикально: слева две трети <code>--bg-base</code>, справа треть цветом курсора по тому же правилу
-(сплошной, родной градиент aurora или градиент там, где курсор совпадает с текстом). Амперсанд — курсивный, на всю ячейку,
-четыре начертания на выбор. Для каждого: крупное превью 128, затем реальные 32 и 16 pt.</p>
+<h2>Самые маленькие · Playfair Italic 800 + толстый курсор</h2>
+<p class="sub">Геометрия основной иконки: знак поверх курсора, центр курсора на месте (x 545, как в дизайне), меняется только толщина.
+В дизайне курсор 114 из 1024; здесь 150, 190 и 230. Свечения убраны — на 16 pt они размывают силуэт. Цвет курсора по принятому правилу.
+Слева для сравнения — основная иконка на том же размере.</p>
 <div class="scroll"><table id="mini"></table></div>
 
 <h2>Дизайн ↔ токены · 160px</h2>
@@ -201,26 +201,28 @@ Object.keys(K).forEach(function (k) {
   ct.appendChild(tr);
 });
 
-var GL = [['gA','Playfair Italic 500'],['gB','Playfair Italic 800'],['gC','Merriweather Bold Italic'],['gD','Inter Bold Italic']];
-function mini(size, k, g) {
+var CW = [150, 190, 230];
+function thick(size, k, w) {
   var d = K[k];
-  var band = d.solid ? d.a : 'linear-gradient(180deg,' + d.a + ' 0%,' + d.b + ' 100%)';
-  var sh = T[k].sq.match(/inset[^,]+,/)[0].replace(/,$/, '');
+  var cur = d.solid ? d.a : 'linear-gradient(180deg,' + d.a + ' 0%,' + d.b + ' 100%)';
+  var sh = T[k].sq.match(/box-shadow:[^;]+;/)[0];
   var el = document.createElement('span');
   el.className = 'ic'; el.style.width = el.style.height = size + 'px';
-  el.innerHTML = '<span class="m" style="transform:scale(' + (size / 1024) + ')"><span class="sq" style="background:' + d.bg + '; box-shadow:' + sh +
-    ', 0 20px 50px rgba(0,0,0,.18);"><span class="band" style="background:' + band + '"></span><span class="mamp ' + g + '" style="color:' + d.amp + '">&amp;</span></span></span>';
+  el.innerHTML = '<span class="m" style="transform:scale(' + (size / 1024) + ')"><span class="sq" style="background:' + d.bg + '; ' + sh +
+    '"><span class="cur" style="background:' + cur + '; width:' + w + 'px; border-radius:' + (w / 2) + 'px; left:' + (545 - w / 2) +
+    'px;"></span><span class="amp" style="font-family:PF8,serif; font-weight:800; color:' + d.amp + '">&amp;</span></span></span>';
   return el;
 }
 var mt = document.getElementById('mini');
-var mh = '<tr><th class="l">тема</th>';
-GL.forEach(function (g) { mh += '<th colspan="3">' + g[1] + '</th>'; });
+var mh = '<tr><th class="l">тема</th><th colspan="2">основная</th>';
+CW.forEach(function (w) { mh += '<th colspan="3">курсор ' + w + '</th>'; });
 mt.innerHTML = mh + '</tr>';
 Object.keys(K).forEach(function (k) {
   var tr = document.createElement('tr');
   tr.innerHTML = '<td class="l">' + k + '</td>';
-  GL.forEach(function (g) { [96, 32, 16].forEach(function (s) {
-    var td = document.createElement('td'); td.appendChild(mini(s, k, g[0])); tr.appendChild(td); }); });
+  [32, 16].forEach(function (s) { var td = document.createElement('td'); td.appendChild(icon(s, ALL[k])); tr.appendChild(td); });
+  CW.forEach(function (w) { [128, 32, 16].forEach(function (s) {
+    var td = document.createElement('td'); td.appendChild(thick(s, k, w)); tr.appendChild(td); }); });
   mt.appendChild(tr);
 });
 document.getElementById('t').addEventListener('click', function () { document.body.classList.toggle('dark'); });
