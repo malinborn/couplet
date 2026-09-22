@@ -244,20 +244,37 @@ code { font-family: var(--font-mono); }
    below. Dark theme never gets either class, so `.hero-aurora-field` keeps
    rendering exactly as before there — this is additive to the dark-theme
    styling, not a rewrite of it. */
+/* Both need their OWN horizontal fade — `.hero-aurora`'s mask (vertical
+   only) does apply to them since CSS mask/compositing covers a whole
+   painted subtree, but `.hero-aurora-field`'s horizontal left/right fade is
+   declared on that element alone, and the canvas/fallback are its SIBLINGS
+   (children of `.hero-aurora`, not of `.hero-aurora-field`), so without
+   this they never got any horizontal feather — the hard vertical seams an
+   early version showed at each edge were exactly this: the shader's own
+   content ending in a straight cut at the canvas's true left/right edge. */
 .hero-aurora-canvas {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   display: none;
+  mask-image: linear-gradient(to right,
+    transparent 0%, #000 4%, #000 96%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to right,
+    transparent 0%, #000 4%, #000 96%, transparent 100%);
 }
 .hero-aurora-fallback {
   position: absolute;
   inset: 0;
   display: none;
-  /* A single frozen "curtain": green base along the bottom edge, climbing
-     through pink into violet near the top, banded (not smooth) so it still
-     reads as structure rather than a flat wash. */
+  mask-image: linear-gradient(to right,
+    transparent 0%, #000 4%, #000 96%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to right,
+    transparent 0%, #000 4%, #000 96%, transparent 100%);
+  /* A single frozen "curtain": green base through the upper-middle band,
+     climbing into pink/violet toward its own top, banded (not smooth) so
+     it still reads as structure rather than a flat wash. Positioned high —
+     behind the title/tagline — to match where the real shader sits. */
   background:
     repeating-linear-gradient(100deg,
       rgba(46, 230, 160, 0.20) 0%, rgba(46, 230, 160, 0.20) 6%,
@@ -265,11 +282,12 @@ code { font-family: var(--font-mono); }
       rgba(60, 240, 138, 0.16) 13%, rgba(60, 240, 138, 0.16) 18%,
       transparent 18%, transparent 27%),
     linear-gradient(to top,
-      rgba(60, 240, 138, 0.30) 0%,
-      rgba(60, 240, 138, 0.22) 16%,
-      rgba(230, 79, 148, 0.16) 58%,
-      rgba(131, 88, 239, 0.12) 84%,
-      transparent 96%);
+      transparent 0%,
+      rgba(60, 240, 138, 0.10) 30%,
+      rgba(60, 240, 138, 0.34) 52%,
+      rgba(230, 79, 148, 0.22) 70%,
+      rgba(131, 88, 239, 0.14) 84%,
+      transparent 98%);
 }
 .hero-aurora.is-realistic .hero-aurora-field,
 .hero-aurora.is-fallback .hero-aurora-field {
@@ -278,31 +296,19 @@ code { font-family: var(--font-mono); }
 .hero-aurora.is-realistic .hero-aurora-canvas { display: block; }
 .hero-aurora.is-fallback .hero-aurora-fallback { display: block; }
 
-/* A very soft light pool behind the hero copy, only while the realistic
-   shader is running — the shader's peak alpha (~0.85) can otherwise dip a
-   ray under "drive" or a pill below comfortable contrast. Deliberately not
-   a card/plate: it's a radial falloff, transparent well before its own
-   edge, so the aurora is still visible right behind the text, just dimmer
-   there than in the empty space around it. `.hero-content` already creates
-   its own stacking context (position:relative + z-index:1), so this
-   pseudo-element's z-index:-1 places it above `.hero-aurora` (z-index:0)
-   and below every real child of `.hero-content` — no extra class needed on
-   the content side. */
-.hero-aurora.is-realistic ~ .wrap .hero-content::before {
-  content: '';
-  position: absolute;
-  inset: -48px -72px;
-  z-index: -1;
-  pointer-events: none;
-  /* Measured: the alias note at the bottom of .hero-content sat outside the
-     first version's falloff (transparent by 78%) and dropped under 3:1
-     against a saturated green ray. Stops pushed out and the middle one
-     raised so coverage reaches the last line of copy, not just the title. */
-  background: radial-gradient(ellipse at center,
-    rgba(251, 251, 253, 0.65) 0%,
-    rgba(251, 251, 253, 0.48) 55%,
-    rgba(251, 251, 253, 0.22) 85%,
-    transparent 100%);
+/* Readability while the realistic shader runs, done per-element rather
+   than with a plate/vignette behind the whole block — a plate flattened
+   the aurora exactly where it's supposed to read as the main event (behind
+   the title). `.pill` and `.install-row--hero` already carry their own
+   translucent+blur chip (see those rules) regardless of theme; this is the
+   one addition, matched to the owner-approved screenshot: a soft light
+   text-shadow on the title and tagline only. */
+.hero-aurora.is-realistic ~ .wrap .hero-title,
+.hero-aurora.is-realistic ~ .wrap .hero-tagline {
+  text-shadow:
+    0 0 6px var(--bg), 0 0 6px var(--bg), 0 0 6px var(--bg),
+    0 0 14px var(--bg), 0 0 14px var(--bg),
+    0 0 28px var(--bg);
 }
 
 /* The AI-shimmer sweep that used to travel across the hero every 13s has

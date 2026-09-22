@@ -10,11 +10,21 @@
 // oxygen emission line) and fade upward into a diffuse high-altitude glow
 // tinted by nitrogen (pink/magenta) and higher-oxygen (violet) lines — the
 // fragment shader's vertical profile and color ramp follow that structure
-// rather than an arbitrary gradient. The green itself isn't one fixed tone
-// either: auroraGreen() picks a point in a small teal/cyan -> emerald ->
-// yellow-green family, drifting slowly by x and time, so the colour visibly
-// flows along the curtain instead of sitting still (owner's ask, added
-// after seeing the first version live).
+// rather than an arbitrary gradient.
+//
+// Explicit ribbon geometry, not a density field: for every column (x) each
+// curtain has exactly one bright edge position (an S-curve across the full
+// width, in NORMALIZED uv.x — never aspect-scaled, so the curve always
+// completes the same fraction of its shape on any viewport, 400px included).
+// Intensity is a function of vertical distance from that one curve — a
+// crisp threshold right at the edge, an exponential decay above it — which
+// is what makes it read as a ribbon instead of a density cloud. Two ribbons
+// (a bright upper one behind the title/tagline, a fainter lower one under
+// the install code) are drawn this way and composited by weighted colour
+// average. This is the version the owner approved live ("вот, чётко") —
+// do not swap it for a bloom/multi-hue variant without that same live
+// sign-off; two earlier attempts at "more" (a bloom halo, a flat colour
+// fill, a density-field redesign) were each rejected on sight.
 //
 // site/CLAUDE.md's `:root[data-theme]` warning is about *CSS* scoping
 // (global, can't nest under a demo card) — irrelevant here since theme
@@ -32,10 +42,6 @@ void main() {
 }
 `;
 
-// fbm-based curtain folds (low frequency, warps x) + a separate high-frequency
-// fbm sampled mostly along x for the thin vertical "rays" that run along
-// field lines inside each fold. No circles, no radial falloff anywhere —
-// every shape is built from noise stretched along one axis.
 const FRAGMENT_SRC = `
 precision highp float;
 uniform vec2 uResolution;
@@ -60,110 +66,81 @@ float noise(vec2 p) {
 
 float fbm(vec2 p) {
   float v = 0.0;
-  float amp = 0.55;
-  for (int i = 0; i < 5; i++) {
+  float amp = 0.5;
+  for (int i = 0; i < 4; i++) {
     v += amp * noise(p);
-    p *= 2.05;
-    amp *= 0.55;
+    p *= 2.1;
+    amp *= 0.5;
   }
   return v;
 }
 
-/* A hand-picked "aurora green family" (teal/cyan -> emerald -> yellow-
-   green) — no blue sky, no rainbow. h wraps 0..1; the two triangle-mix legs
-   make a continuous cycle, so a slowly drifting h reads as colour actually
-   flowing rather than snapping between fixed tones. */
-vec3 auroraGreen(float h) {
-  vec3 teal = vec3(0.106, 0.816, 0.788);
-  vec3 emerald = vec3(0.086, 0.847, 0.475);
-  vec3 yellowGreen = vec3(0.612, 0.882, 0.298);
-  float p = fract(h);
-  if (p < 0.5) return mix(teal, emerald, p * 2.0);
-  return mix(emerald, yellowGreen, (p - 0.5) * 2.0);
+/* One curtain's bright edge as a function of x (S-curve + organic wobble),
+   and the intensity of a fragment relative to that edge. localHeight is
+   written out (>=0 above the bright edge) so the caller can also gate ray
+   visibility and the colour ramp off the SAME curtain-relative coordinate —
+   using absolute screen Y for any of that puts pink at a fixed screen
+   height regardless of where a curtain's own base actually sits. */
+float ribbon(vec2 uv, float t, float baseY, float ampY, float phase,
+             float thickness, float foldFreq, out float localHeight) {
+  float curve = sin(uv.x * 6.2831853 * 0.62 + phase + t * 0.06) * ampY;
+  float wobble = (fbm(vec2(uv.x * foldFreq + phase * 3.0 + t * 0.10, phase)) - 0.5) * ampY * 0.7;
+  float centerY = baseY + curve + wobble;
+  float bottom = centerY - thickness * 0.5;
+  localHeight = uv.y - bottom;
+  float edge = smoothstep(-0.010, 0.004, localHeight); // crisp: ~0.014 of hero height
+  float decay = exp(-max(localHeight, 0.0) * (2.2 / thickness));
+  return edge * decay;
 }
 
 void main() {
   vec2 uv = gl_FragCoord.xy / uResolution.xy;
-  float aspect = max(uResolution.x / uResolution.y, 0.6);
-  float drift = uTime * 0.015;
+  float t = uTime;
 
-  // Curtain fold: a slow, large undulation across x, leaning with height
-  // rather than running perfectly vertical — real curtains billow, they
-  // don't hang flat.
-  float foldN = fbm(vec2(uv.x * 1.6 * aspect + drift, uv.y * 0.6 - drift * 0.4));
-  float x = uv.x * aspect + (foldN - 0.5) * 0.55;
+  float h1, h2;
+  float baseA = ribbon(uv, t, 0.66, 0.11, 0.7, 0.30, 2.0, h1);
+  float baseB = ribbon(uv, t, 0.27, 0.08, 3.1, 0.22, 2.6, h2);
 
-  // Curtain density: several loose bands across the width (frequency tuned
-  // so the field never collapses to one lit patch on one side and dead
-  // space everywhere else), independent of the ray detail below.
-  float band = fbm(vec2(x * 1.7 + drift * 0.6, uv.y * 0.35));
-  band = smoothstep(0.22, 0.72, band);
+  // Rays: high x-frequency streaks, gated by proximity to each curtain's own
+  // edge so they're crisp right at the base and taper into the smoother
+  // decay glow above rather than running the full height as solid needles.
+  // Floor kept high so the edge itself reads as a solid, saturated line
+  // independent of ray texture — rays are a boost on top of that, not the
+  // only thing putting colour on screen.
+  float rayNoiseA = fbm(vec2(uv.x * 34.0 + sin(t * 0.35) * 0.4, t * 0.12));
+  float raysA = pow(clamp(rayNoiseA, 0.0, 1.0), 2.6);
+  float rayVisA = exp(-max(h1, 0.0) * (3.6 / 0.30));
+  float structA = baseA * mix(0.65, 1.7, raysA * rayVisA);
 
-  // Rays along field lines: high x-frequency, low y-frequency, with a slow
-  // shimmer so individual streaks brighten and dim rather than animating as
-  // a solid sheet. A softer power than a true needle-thin ray keeps texture
-  // visible across most of a band instead of only in rare bright threads.
-  float rayField = fbm(vec2(x * 9.0 + sin(drift * 3.0) * 0.6, uv.y * 1.4 + drift * 1.6));
-  float rays = pow(clamp(rayField, 0.0, 1.0), 2.4);
+  float rayNoiseB = fbm(vec2(uv.x * 28.0 + cos(t * 0.28) * 0.4, t * 0.09 + 5.0));
+  float raysB = pow(clamp(rayNoiseB, 0.0, 1.0), 2.4);
+  float rayVisB = exp(-max(h2, 0.0) * (3.6 / 0.22));
+  float structB = baseB * mix(0.65, 1.6, raysB * rayVisB);
 
-  float structure = mix(band * 0.45, band, rays);
+  // Ripple: a slow shimmer travelling along each curtain's own length.
+  structA *= 0.85 + 0.15 * sin(uv.x * 16.0 - t * 1.4 + 0.7);
+  structB *= (0.85 + 0.15 * sin(uv.x * 13.0 - t * 1.1 + 3.1)) * 0.6; // stays visibly fainter — depth, not a second lead
 
-  // Peak spikes: the owner's ask after seeing the approved base live —
-  // "sometimes there were taller peaks that wander along the band and
-  // shimmer, and where two peaks meet they overlap translucently, only
-  // through that shimmer, not a blob". A single low-frequency noise column
-  // (function of x and a slow, independent time drift) is thresholded
-  // narrowly so only ~1-3 disjoint stretches of x are "peaking" at once;
-  // being a smoothstep over that noise, each one already fades smoothly in
-  // as the field crosses the band and back out again — a living peak with
-  // its own rise and fall, not a hard on/off flag — and the same field
-  // slowly shifts the affected x positions over time, i.e. the peaks
-  // wander along the curtain. Everywhere peakMask is ~0 this is a no-op:
-  // the base approved look is untouched.
-  float peakField = fbm(vec2(x * 0.85 + drift * 0.22, drift * 0.4 + 5.0));
-  float peakMask = smoothstep(0.60, 0.80, peakField);
-
-  // Vertical energy: a hard-ish cutoff near the bottom edge, a fade
-  // climbing toward the top that settles out before the very top of the
-  // hero — the physical brightest-at-the-base profile, with the diffuse
-  // high-altitude glow given a real ceiling rather than reaching the nav.
-  // The approved base moved skyFade's top from 0.80 to 0.90; peakMask now
-  // pushes it further still (up to 1.25) ONLY at the rare x columns that
-  // are currently peaking, so a peak is exactly "this stretch of the
-  // curtain reaches higher than the rest right now" — no separate height
-  // field, just a taller ceiling for the same falloff. Thickness and
-  // groundCut (the bottom edge) stay untouched everywhere, peak or not.
-  float groundCut = smoothstep(0.03, 0.17, uv.y);
-  float skyTop = mix(0.90, 1.25, peakMask);
-  float skyFade = 1.0 - smoothstep(0.22, skyTop, uv.y);
-  float vertical = groundCut * skyFade;
-
-  // A peaking column also runs a touch brighter, not just taller — modest
-  // (up to +12%) so it reads as one continuous phenomenon intensifying,
-  // not a separate bright blob switching on.
-  float intensity = structure * vertical * mix(1.0, 1.12, peakMask);
-
+  vec3 oxygenLow = vec3(0.235, 0.941, 0.541);   /* #3cf08a */
+  vec3 oxygenHigh = vec3(0.180, 0.902, 0.627);  /* #2ee6a0 */
   vec3 nitrogenPink = vec3(0.902, 0.310, 0.580);
   vec3 highViolet = vec3(0.514, 0.345, 0.937);
 
-  // Green carries the bulk of the visible band; pink/violet are an accent
-  // near its upper edge only, not a second dominant colour — the climb
-  // thresholds are deliberately late so most of what's on screen reads
-  // as green before any magenta enters the mix.
-  //
-  // Owner's second ask: the green itself should visibly flow rather than
-  // sit at one fixed tone — auroraGreen() below is a small hand-picked
-  // palette (teal/cyan -> emerald -> yellow-green, all natural aurora
-  // hues, no blue sky and no rainbow) and hueN drifts slowly along x AND
-  // time, so neighbouring folds land on different greens and the same
-  // point in x shifts hue as the seconds pass.
-  float hueN = fbm(vec2(x * 1.1 + drift * 1.3, drift * 0.9)) + 0.12 * sin(x * 2.2 - drift * 2.0);
-  vec3 base = auroraGreen(hueN);
-  float climb = clamp(uv.y * 1.55, 0.0, 1.0);
-  vec3 col = mix(base, nitrogenPink, smoothstep(0.54, 0.86, climb));
-  col = mix(col, highViolet, smoothstep(0.86, 1.0, climb));
+  // Colour ramp keyed off each curtain's OWN local height above its own
+  // edge (not absolute screen Y) — green dominates near the base, pink/
+  // violet only enter near the top of that curtain's own glow.
+  float climbA = clamp(h1 / 0.30, 0.0, 1.0);
+  vec3 colA = mix(oxygenLow, oxygenHigh, noise(vec2(uv.x * 4.0, t * 0.2)));
+  colA = mix(colA, nitrogenPink, smoothstep(0.42, 0.80, climbA));
+  colA = mix(colA, highViolet, smoothstep(0.80, 1.0, climbA));
 
-  float alpha = clamp(intensity * 1.7, 0.0, 0.85);
+  float climbB = clamp(h2 / 0.22, 0.0, 1.0);
+  vec3 colB = mix(oxygenLow, oxygenHigh, noise(vec2(uv.x * 4.0 + 7.0, t * 0.2)));
+  colB = mix(colB, nitrogenPink, smoothstep(0.55, 0.90, climbB));
+
+  float total = structA + structB + 1e-4;
+  vec3 col = (colA * structA + colB * structB) / total;
+  float alpha = clamp((structA + structB) * 0.92, 0.0, 0.9);
   gl_FragColor = vec4(col, alpha);
 }
 `;
@@ -227,13 +204,24 @@ export function initHeroAurora(): HeroAurora | null {
   let uTime: WebGLUniformLocation | null = null;
   let webglLost = false;
 
+  // preserveDrawingBuffer:true — without it, a screenshot taken between a
+  // draw and the browser's implicit post-composite clear of a non-preserved
+  // WebGL buffer can capture a near-empty canvas (measured: Playwright/CDP
+  // screenshots of this canvas came back pale until this was set). Cheap at
+  // this canvas's size and capped frame rate.
   try {
-    gl = canvas.getContext('webgl', { alpha: true, premultipliedAlpha: false, antialias: false }) as WebGLRenderingContext | null;
+    gl = canvas.getContext('webgl', {
+      alpha: true,
+      premultipliedAlpha: false,
+      antialias: false,
+      preserveDrawingBuffer: true,
+    }) as WebGLRenderingContext | null;
     if (!gl) {
       gl = canvas.getContext('experimental-webgl', {
         alpha: true,
         premultipliedAlpha: false,
         antialias: false,
+        preserveDrawingBuffer: true,
       }) as WebGLRenderingContext | null;
     }
   } catch {
