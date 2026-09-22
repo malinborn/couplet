@@ -105,7 +105,7 @@ async function checkEditDemo(page: Page): Promise<void> {
   await gotoSlide(page, 1);
   try {
     // The edit slide performs a whole sequence before the highlight lands: the
-    // terminal types a command, the agent's mdmini call appears, then the new
+    // terminal types a command, the agent's couplet call appears, then the new
     // paragraph types itself in character by character. Budget for the full
     // performance, not just a render.
     await page.waitForSelector('.demo[data-demo="edit"] .cm-ai-edit-line', { timeout: 30000 });
@@ -281,7 +281,7 @@ async function checkThemeScreenshots(browser: Browser): Promise<void> {
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     const page = await context.newPage();
     await page.goto(`${BASE_URL}/`, { waitUntil: 'load' });
-    await page.evaluate((t) => localStorage.setItem('mdmini-site:theme', t), theme);
+    await page.evaluate((t) => localStorage.setItem('couplet-site:theme', t), theme);
     await page.reload({ waitUntil: 'load' });
     await page.waitForTimeout(500);
 

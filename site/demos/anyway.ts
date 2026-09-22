@@ -2,7 +2,7 @@ import { prefersReducedMotion } from './editor-demo';
 
 /**
  * "It can be used any way." (carousel slide 4) — a looping, three-act mock of
- * how mdmini launches: a terminal batch, a Dock launch, and a Dock-drop.
+ * how couplet launches: a terminal batch, a Dock launch, and a Dock-drop.
  *
  * Everything here is decorative chrome, not a real editor: the actual
  * rendering engine is on display elsewhere in the carousel (point/edit/ask/
@@ -26,7 +26,7 @@ import { prefersReducedMotion } from './editor-demo';
  */
 
 const FILES = ['README.md', 'CLAUDE.md', 'auth_spec.md'] as const;
-const COMMAND = `mdmini ${FILES.join(' ')}`;
+const COMMAND = `couplet ${FILES.join(' ')}`;
 
 const DESIGN_W = 380;
 const DESIGN_H = 400;
@@ -91,7 +91,7 @@ const TEMPLATE = `
             <span class="anyway-dot anyway-dot--red"></span>
             <span class="anyway-dot anyway-dot--yellow"></span>
             <span class="anyway-dot anyway-dot--green"></span>
-            <span class="anyway-wintitle">${file} — md-mini</span>
+            <span class="anyway-wintitle">${file} — couplet</span>
           </div>
           <div class="anyway-winbody">
             <span class="anyway-skel anyway-skel--head"></span>
@@ -107,7 +107,7 @@ const TEMPLATE = `
             <span class="anyway-dot anyway-dot--red"></span>
             <span class="anyway-dot anyway-dot--yellow"></span>
             <span class="anyway-dot anyway-dot--green"></span>
-            <span class="anyway-wintitle">Untitled — md-mini</span>
+            <span class="anyway-wintitle">Untitled — couplet</span>
           </div>
           <div class="anyway-winbody">
             <span class="anyway-skel anyway-skel--head"></span>

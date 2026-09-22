@@ -67,14 +67,14 @@ Confirm the build is **reproducible** and matches the tag in \`CHANGELOG.md\`. A
 | Notarize | CI | pending |
 
 \`\`\`bash
-npm run build:dev && open dist/md-mini-dev.app
+npm run build:dev && open dist/couplet-dev.app
 \`\`\`
 
 ---
 
 ## Once it's out the door
 
-The rollout is *gradual*, never **instant**, and it is ~~definitely not~~ absolutely not something we push on a Friday. Watch the crash rate in \`metrics.dashboard\`, and keep the [release notes](https://github.com/malinborn/mdmini/releases) open in a second window.
+The rollout is *gradual*, never **instant**, and it is ~~definitely not~~ absolutely not something we push on a Friday. Watch the crash rate in \`metrics.dashboard\`, and keep the [release notes](https://github.com/malinborn/couplet/releases) open in a second window.
 
 1. Announce the build
 2. Watch the first hour of crash reports
@@ -97,7 +97,7 @@ ${MERMAID_DIAGRAM}
 
 ## While you wait
 
-Drop this file on the Dock icon and it opens in its own window, same for a folder full of them. Quit and relaunch and every window comes back where you left it, caret included. Edit it from another terminal and mdmini notices, reloading without asking — nothing here was saved on purpose, it already was. Dark got old an hour ago; one keypress and it's light again.
+Drop this file on the Dock icon and it opens in its own window, same for a folder full of them. Quit and relaunch and every window comes back where you left it, caret included. Edit it from another terminal and couplet notices, reloading without asking — nothing here was saved on purpose, it already was. Dark got old an hour ago; one keypress and it's light again.
 
 ---`,
 };
@@ -105,11 +105,11 @@ Drop this file on the Dock icon and it opens in its own window, same for a folde
 const ENV_ACT: Act = {
   filename: '.env',
   kind: 'env',
-  body: `# mdmini — local dev
+  body: `# couplet — local dev
 
 NODE_ENV=development
 PORT=4173
-DATABASE_URL=postgres://localhost:5432/mdmini
+DATABASE_URL=postgres://localhost:5432/couplet
 
 # third-party
 STRIPE_SECRET_KEY=example-value-not-a-real-key
@@ -128,13 +128,13 @@ const SHELL_ACT: Act = {
   body: `# ~/.zshrc
 
 export PATH="$HOME/bin:$PATH"
-export EDITOR="mdmini"
+export EDITOR="couplet"
 
 export OPENAI_API_KEY="example-value-not-a-real-key"
 
 alias gs="git status"
 alias ll="ls -lah"
-alias md="mdmini"
+alias md="couplet"
 
 function mkcd() {
   mkdir -p "$1" && cd "$1"
@@ -220,7 +220,7 @@ function findDemoNameEl(container: HTMLElement): HTMLElement | null {
 }
 
 function setTitle(el: HTMLElement | null, filename: string): void {
-  if (el) el.textContent = `${filename} — md-mini`;
+  if (el) el.textContent = `${filename} — couplet`;
 }
 
 interface Lane {

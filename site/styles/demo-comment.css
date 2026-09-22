@@ -90,7 +90,7 @@
 
 /* Fixed height with the transcript scrolling inside, rather than a stack of
    pre-reserved rows (demo-edit.css's shape): this transcript grows by seven
-   rows across the loop and the `[mdmini]` wake-up line wraps, so reserving
+   rows across the loop and the `[couplet]` wake-up line wraps, so reserving
    every row up front would need either a much taller panel or a truncation of
    the one line carrying the most meaning. What actually has to stay constant
    is the panel's own box, and it does. */

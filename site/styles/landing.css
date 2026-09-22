@@ -1,4 +1,4 @@
-/* mdmini landing page — converted 1:1 from the Claude Design "mdmini Landing v2"
+/* couplet landing page — converted 1:1 from the Claude Design "couplet Landing v2"
    template into real semantic markup + real CSS classes. Tokens are keyed to the
    same [data-theme] attribute the app itself uses, so one attribute on <html>
    themes the page chrome and every embedded live editor together. */
@@ -607,10 +607,10 @@ code { font-family: var(--font-mono); }
 }
 
 /* ── Hero marker reveal ──
-   The h1's real text is just "mdmini" (see index.html) — the leading "#"
+   The h1's real text is just "couplet" (see index.html) — the leading "#"
    is generated content (::before), never a DOM text node. That's what keeps
    this a genuine, crawlable <h1> with no hidden duplicate: a text-only
-   reader of the served HTML sees exactly "mdmini", the same as before this
+   reader of the served HTML sees exactly "couplet", the same as before this
    feature existed. The marker is positioned absolutely, outside the h1's own
    box (`.hero-title` is the positioning context) — it never occupies flow
    width, so it can't reserve a permanent gap once it fades, and the h1's
@@ -785,7 +785,7 @@ code { font-family: var(--font-mono); }
 }
 
 /* The command is marked up with the editor's own .tok-* classes, so it carries
-   mdmini's real syntax colours in both themes. Only the shell prompt is ours —
+   couplet's real syntax colours in both themes. Only the shell prompt is ours —
    it isn't part of the command, so it stays quiet. */
 .install-prompt { color: var(--muted); }
 
@@ -834,7 +834,7 @@ code { font-family: var(--font-mono); }
   overflow: hidden;
   width: 100%;
   max-width: 100%;
-  /* A demo card is a crop of a real mdmini window: it must always read
+  /* A demo card is a crop of a real couplet window: it must always read
      left-aligned regardless of the slide it sits in. The showcase slide
      (`.slide--showcase`) sets `text-align: center` on itself for its own
      centred copy, and without this reset that alignment inherits straight
@@ -856,7 +856,7 @@ code { font-family: var(--font-mono); }
 .dot.yellow { background: #febc2e; }
 .dot.green { background: #28c840; }
 
-/* A real mdmini window puts the traffic lights at the far left and the
+/* A real couplet window puts the traffic lights at the far left and the
    title immediately after them in the system UI font — not centred, and
    not monospace (that was this card's own invention, not the app's). */
 .demo-name {
@@ -1461,7 +1461,7 @@ code { font-family: var(--font-mono); }
    Tints are kept low-alpha over the page background so text contrast survives
    in both themes, and the embedded editors are deliberately left alone: they
    carry the app's own `--color-selection`, so a demo selects exactly like
-   mdmini does. */
+   couplet does. */
 ::selection { background: color-mix(in srgb, #7068d5 32%, transparent); }
 
 .hero ::selection,
