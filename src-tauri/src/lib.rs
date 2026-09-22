@@ -68,16 +68,24 @@ pub fn run() {
     // re-generated at the `.build()` call below, so both this and `.build()`
     // see the exact same identifier/product name.
     //
-    // No-op today: `migration.rs`'s legacy-identity table only matches a
-    // renamed product/identifier, not the current one. It activates on its
-    // own the moment `tauri.conf.json` / `tauri.dev.conf.json` are renamed.
+    // No-op today: `migration.rs`'s rename table only matches a renamed
+    // product/identifier, not the current one. It activates on its own the
+    // moment `tauri.conf.json` / `tauri.dev.conf.json` are renamed.
+    //
+    // `migrate_app_data_dir_real` returns the product name THIS launch
+    // should actually use for `paths::init` below — the current name
+    // normally, or the legacy one if migration did not complete this launch
+    // (see `migration.rs`'s doc comment: using the current name unconditionally
+    // would let this same launch immediately create an empty directory under
+    // it, permanently stranding the old data because the next launch would
+    // then see "new already has data" and never retry).
     let context = tauri::generate_context!();
     let product_name = context
         .config()
         .product_name
         .as_deref()
-        .unwrap_or("md-mini");
-    migration::migrate_app_data_dir_real(product_name);
+        .unwrap_or(paths::FALLBACK_PRODUCT_NAME);
+    let effective_product_name = migration::migrate_app_data_dir_real(product_name);
     migration::migrate_webkit_profile_real(&context.config().identifier);
 
     // `mut` is only needed by the `mcp-bridge` registration below; without that
@@ -159,11 +167,18 @@ pub fn run() {
             commands::sync_ocd_alignment_menu,
             i18n::resolved_language,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             // FIRST, before anything touches disk: decide which data directory this
             // build owns. A dev build must never share `recovery/` or `session.json`
             // with an installed release one.
-            paths::init(app.config().product_name.as_deref().unwrap_or("md-mini"));
+            //
+            // Uses `effective_product_name` (computed above, before the
+            // builder even started) rather than reading `app.config()` again
+            // here: they usually agree, but when this launch's app-data-dir
+            // migration failed or was deferred, `effective_product_name` is
+            // the LEGACY name on purpose — see the comment where it is
+            // computed.
+            paths::init(&effective_product_name);
 
             // Locale resolution: stored preference -> system locale -> "en".
             // Must run before `menu::build_menu` — the menu's labels come from

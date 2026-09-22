@@ -22,147 +22,285 @@
 //!    origin, because each identifier's `WebsiteData/Default/salt` was
 //!    generated independently. So the `<hash>` name is meaningless on its
 //!    own — copying only the `LocalStorage` leaf across identifiers would
-//!    leave the new identifier's (different) salt unable to derive that same
-//!    hash, and WebKit would never look there. The whole `<identifier>/`
-//!    directory must move as one unit, `salt` included, so the salt-to-hash
-//!    relationship that already exists on disk stays consistent under the
-//!    new identifier too.
+//!    leave the new identifier's own (different) salt unable to re-derive
+//!    that same hash, and WebKit would never look there. The whole
+//!    `<identifier>/` directory must move as one unit, `salt` included, so
+//!    the salt-to-hash relationship that already exists on disk stays
+//!    consistent under the new identifier too.
 //!
-//! This module is a no-op today: every `LEGACY_IDENTITIES` entry's own name
-//! equals the current one, so `legacy_for_*` finds nothing to migrate *from*.
-//! It activates automatically the moment `tauri.conf.json` /
-//! `tauri.dev.conf.json` are renamed to something new — nothing else needs
-//! to change, and this file's logic never hardcodes the new name.
+//! ## Matching: exact `from -> to`, never a suffix guess
 //!
-//! **Ordering matters more than usual here.** The WebKit migration must run
-//! before the FIRST webview window is created, not merely before our own
-//! `.setup()` closure: Tauri's internal `app::setup()` builds every window
-//! listed in `tauri.conf.json` — which creates the WKWebView, which creates
-//! its on-disk profile — as the very first step of `Builder::build()`,
-//! before the user-supplied setup closure is ever invoked (see
-//! `tauri-2.10.3/src/app.rs`, the private `fn setup<R: Runtime>` called from
-//! `build()`: it loops over `app.config().app.windows` and only *then* calls
-//! `app.setup.take()`). So both migrations run in `run()` itself, before
+//! [`RENAMES`] lists every approved rename as an exact `(from, to)` pair for
+//! both the product name and the identifier. A build's CURRENT name is
+//! matched by exact equality against a row's `to_*` field — never by
+//! stripping/checking a `-dev`/`.dev` suffix. A suffix guess would treat any
+//! unrecognised dev-flavoured name (`couplet-beta`, `md-mini-test`, a
+//! throwaway identifier picked for a manual test) as eligible to receive
+//! production data, silently stranding it in a directory the real release
+//! build would never look at again — an earlier version of this module did
+//! exactly that and it was wrong. This module is a no-op today — no row's
+//! `to_*` equals `"md-mini"` / `"md-mini-dev"` / `"com.md-mini.app"` /
+//! `"com.md-mini.dev"`, the CURRENT names — and activates the moment
+//! `tauri.conf.json` / `tauri.dev.conf.json` are renamed to the approved
+//! `couplet` names.
+//!
+//! Matching against `to_*` (rather than "not equal to any known name") is
+//! also what makes a THIRD generation safe later: a future row
+//! `{ from: "couplet", to: "<next name>" }` is found by matching `to ==
+//! current`, independent of how many earlier rows exist — it can never be
+//! confused with the `md-mini -> couplet` row two generations back. See the
+//! `matches_the_immediate_predecessor_across_three_generations` test.
+//!
+//! ## Never losing the race between two processes (or two migration
+//! attempts within one)
+//!
+//! `migrate_dir` never populates `new` incrementally: a copy lands in a
+//! private, per-attempt staging directory first
+//! (`<new's parent>/.<new's name>.migrating-<pid>-<seq>`) and `new` itself
+//! only ever comes into existence via ONE atomic `rename` — either the
+//! direct `old -> new` rename, or `staging -> new` once the staged copy is
+//! complete. A failure at any point removes only the staging directory
+//! (never `old`, never `new`) via [`StagingCleanup`], a `Drop` guard, so a
+//! losing racer's cleanup can never delete data a *different*, faster
+//! attempt already finished moving into `new`. [`MigrationLock`] adds a
+//! best-effort cross-process `flock` on top so two attempts do not even run
+//! concurrently in the first place — but the staged-commit design is what
+//! actually guarantees safety; the lock only avoids wasted duplicate work
+//! and shrinks the (already-safe) race window further.
+//!
+//! A rename that fails with `NotFound` gets special handling: `old`
+//! vanishing between our own `exists()` check and the `rename` call means
+//! something else already acted on it, and the safe response is to
+//! re-examine state rather than blindly fall into a copy (which could try to
+//! read from a source that is no longer there, or no longer complete).
+//!
+//! ## A failed or deferred migration must not create an empty `new`
+//!
+//! If `migrate_app_data_dir` fails (or is deferred — see the follow-up
+//! commit that adds a running-legacy-instance check), the rest of `run()`
+//! still starts up normally and, within THIS SAME launch, writes
+//! `session.json`, `onboarding-version` and other files into whatever
+//! `paths::app_data_dir()` currently resolves to. If that resolution used
+//! the CURRENT (new) product name unconditionally, a failed migration would
+//! be immediately overwritten by an empty-but-now-populated `new` directory,
+//! and the NEXT launch would see "`new` already has data" and skip migration
+//! forever — silently stranding the old data. `migrate_app_data_dir_real`
+//! therefore returns the product name `run()` should actually use THIS
+//! launch: the current name normally, or the LEGACY name when migration did
+//! not complete, so nothing gets created under the new name until a later
+//! launch actually succeeds.
+//!
+//! The WebKit migration cannot be given the same escape hatch: unlike
+//! `paths::app_data_dir()` (our own code, parameterised by name), the WebKit
+//! profile location is derived by the OS/WebKit from the process's actual
+//! `CFBundleIdentifier`, which is fixed at build time — there is no "use the
+//! legacy identifier's WebKit dir this launch" available to us, short of
+//! reconfiguring `WKWebView`'s data store (out of scope: a much larger,
+//! riskier change). The first webview window is created immediately after
+//! this migration runs regardless of its outcome, and WebKit populates a
+//! fresh profile (at minimum `WebsiteData/Default/salt`) for the current
+//! identifier the moment it does — so a FAILED WebKit migration's retry
+//! window is, in the worst case, exactly one launch. This is accepted as a
+//! bounded, low-stakes risk: this app's `localStorage` holds only
+//! re-derivable preferences (theme, recent files, an onboarding hint flag),
+//! never unsaved document content — that risk is fully closed by the
+//! app-data-dir fallback above, which is where anything the user would
+//! actually miss lives.
+//!
+//! ## Ordering
+//!
+//! The WebKit migration must run before the FIRST webview window is
+//! created, not merely before our own `.setup()` closure: Tauri's internal
+//! `app::setup()` builds every window listed in `tauri.conf.json` — which
+//! creates the WKWebView, which creates its on-disk profile — as the very
+//! first step of `Builder::build()`, before the user-supplied setup closure
+//! is ever invoked (see `tauri-2.10.3/src/app.rs`, the private
+//! `fn setup<R: Runtime>` called from `build()`: it loops over
+//! `app.config().app.windows` and only *then* calls `app.setup.take()`). So
+//! both migrations run in `run()` itself, before
 //! `Builder::default()...build(context)` — well before `paths::init`, which
 //! stays the first statement inside `.setup()` for everything that follows.
 //!
+//! ## What is, and is not, proven by the tests in this file
+//!
 //! Each migration function here is a thin real-filesystem wrapper around a
-//! pure(-ish) core that takes its base directory as a parameter, so tests run
-//! against a temp directory instead of `~/Library`. **What those tests do and
-//! do not prove:** they confirm the copy-the-whole-directory, no-overwrite,
-//! idempotent, dev/release-isolated behaviour on a plain filesystem tree that
-//! happens to have the same shape as a real WebKit profile (verified against
-//! a real one — see the doc comment above). They do NOT start a WKWebView, so
-//! they cannot confirm WebKit actually re-derives the same `<hash>` from a
-//! copied `salt` and finds the migrated `localstorage.sqlite3` at runtime.
-//! That needs a live check: build twice with `npm run build:dev`, once with
-//! `tauri.dev.conf.json`'s `identifier` temporarily changed to a throwaway
-//! value (e.g. `com.md-mini.migrationtest`), confirm the app runs and set a
-//! value that lands in `localStorage` (e.g. toggle the theme), quit, restore
-//! `identifier` back and add a fabricated legacy entry pointing at the
-//! throwaway one, launch again, and confirm the value survived. Not run here.
+//! pure(-ish) core that takes its base directory as a parameter, so tests
+//! run against a temp directory instead of `~/Library`. They confirm the
+//! copy-the-whole-directory, no-overwrite, idempotent, never-partial,
+//! race-safe, dev/release-isolated behaviour on a plain filesystem tree
+//! shaped like a real WebKit profile (confirmed against a real one — see
+//! above). They do NOT start a WKWebView, so they cannot confirm WebKit
+//! actually re-derives the same `<hash>` from a copied `salt` and finds the
+//! migrated `localstorage.sqlite3` at runtime. That needs a live check —
+//! see [`DEBUG_TEST_RENAMES`] below for how to do that WITHOUT risking a
+//! throwaway identifier being treated as a real migration target.
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::os::unix::io::AsRawFd;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Marker left inside a migrated-from directory once its contents are safely
-/// in the new location. Its presence means "do not migrate again" and its
-/// content tells a human poking around the old directory where things went.
+/// in the new location. Its presence means "do not migrate again" — but only
+/// while its content still points at the CURRENT destination; see
+/// `marker_points_to`.
 const MOVED_MARKER: &str = "MOVED_TO";
 
-/// One generation of (product name, bundle identifier) this app has shipped
-/// under. `dev` keeps the dev and release migrations from ever crossing:
-/// `md-mini-dev` must migrate into the new dev name, never the release one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LegacyIdentity {
-    product_name: &'static str,
-    identifier: &'static str,
-    dev: bool,
+/// One approved rename: `from_*` is the exact previous productName/identifier;
+/// `to_*` is what it became. Matching is always exact equality against
+/// `to_*` — see the module doc comment for why.
+#[derive(Debug, Clone, Copy)]
+struct Rename {
+    from_product_name: &'static str,
+    to_product_name: &'static str,
+    from_identifier: &'static str,
+    to_identifier: &'static str,
 }
 
-/// Every name/identifier this app has shipped under. Add an entry here — and
-/// only here — the next time the product is renamed again; nothing in
-/// `paths.rs` or this module's matching logic needs to change.
-const LEGACY_IDENTITIES: &[LegacyIdentity] = &[
-    LegacyIdentity {
-        product_name: "md-mini",
-        identifier: "com.md-mini.app",
-        dev: false,
+/// Every approved rename this app has gone through. Add a row here — and
+/// only here, never touch the matching functions — for the next rename. A
+/// third generation (`couplet` -> something else) is just another row whose
+/// `from_*` equals THIS row's `to_*`.
+const RENAMES: &[Rename] = &[
+    Rename {
+        from_product_name: "md-mini",
+        to_product_name: "couplet",
+        from_identifier: "com.md-mini.app",
+        to_identifier: "pro.couplet.app",
     },
-    LegacyIdentity {
-        product_name: "md-mini-dev",
-        identifier: "com.md-mini.dev",
-        dev: true,
+    Rename {
+        from_product_name: "md-mini-dev",
+        to_product_name: "couplet-dev",
+        from_identifier: "com.md-mini.dev",
+        to_identifier: "pro.couplet.dev",
     },
 ];
 
+/// Extra rows consulted ONLY in a debug build (`#[cfg(debug_assertions)]` —
+/// compiled out entirely from `cargo build --release` / `tauri build`, so
+/// this can never ship, with or without remembering to revert it by hand).
+/// Empty by default. To verify the WebKit salt/hash mechanism end to end
+/// against a real WKWebView (unit tests below cannot do this — see the
+/// module doc comment): temporarily add a row here with a throwaway
+/// `to_identifier` (e.g. `com.md-mini.migrationtest`) and a `from_identifier`
+/// you actually control test data for, build with `npm run build:dev` after
+/// pointing `tauri.dev.conf.json`'s `identifier` at that throwaway value,
+/// launch, set something that lands in `localStorage` (e.g. toggle the
+/// theme), quit, point `identifier` back, launch again, and confirm the
+/// value survived. Remove the row (and revert `tauri.dev.conf.json`) once
+/// done — being debug-only means a forgotten row can never reach a release,
+/// but a stray row here still isn't real configuration.
+#[cfg(debug_assertions)]
+const DEBUG_TEST_RENAMES: &[Rename] = &[];
+
+fn rename_matching_product_name<'a>(table: &'a [Rename], current: &str) -> Option<&'a Rename> {
+    table.iter().find(|r| r.to_product_name == current)
+}
+
+fn rename_matching_identifier<'a>(table: &'a [Rename], current: &str) -> Option<&'a Rename> {
+    table.iter().find(|r| r.to_identifier == current)
+}
+
+fn rename_for_product_name(current: &str) -> Option<&'static Rename> {
+    if let Some(r) = rename_matching_product_name(RENAMES, current) {
+        return Some(r);
+    }
+    #[cfg(debug_assertions)]
+    if let Some(r) = rename_matching_product_name(DEBUG_TEST_RENAMES, current) {
+        return Some(r);
+    }
+    None
+}
+
+fn rename_for_identifier(current: &str) -> Option<&'static Rename> {
+    if let Some(r) = rename_matching_identifier(RENAMES, current) {
+        return Some(r);
+    }
+    #[cfg(debug_assertions)]
+    if let Some(r) = rename_matching_identifier(DEBUG_TEST_RENAMES, current) {
+        return Some(r);
+    }
+    None
+}
+
 /// Product names this app has previously shipped under. `paths.rs`'s own
 /// regression test checks the current release name against this, so it
-/// keeps failing if a future rename ever drops today's name from
-/// `LEGACY_IDENTITIES` without giving it somewhere to migrate to first —
-/// which would silently strand every existing install's `recovery/` and
-/// `session/` data. Test-only: nothing at runtime needs the full list by
-/// name, only `legacy_for_product_name`'s lookup.
+/// keeps failing if a future rename ever drops today's name from `RENAMES`
+/// without giving it somewhere to migrate to first — which would silently
+/// strand every existing install's `recovery/` and `session/` data.
 #[cfg(test)]
 pub(crate) fn known_legacy_product_names() -> impl Iterator<Item = &'static str> {
-    LEGACY_IDENTITIES.iter().map(|l| l.product_name)
+    RENAMES.iter().map(|r| r.from_product_name)
 }
 
-/// A dev build's product name carries a `-dev` suffix (`tauri.dev.conf.json`
-/// sets `md-mini` -> `md-mini-dev`); its identifier carries a `.dev` suffix
-/// (`com.md-mini.app` -> `com.md-mini.dev`). Both conventions already exist
-/// in this repo — this just reads them back to classify the *current* build,
-/// so dev never migrates from or into a release directory.
-fn is_dev_product_name(name: &str) -> bool {
-    name.trim().ends_with("-dev")
-}
+type Logger<'a> = dyn Fn(&str) + 'a;
 
-fn is_dev_identifier(id: &str) -> bool {
-    id.trim().ends_with(".dev")
-}
-
-/// The legacy identity the current product name should migrate data FROM, or
-/// `None` when the current name already matches every entry it could match
-/// (today's no-op state) or matches no known generation at all (an
-/// unrecognised build flavour — nothing to guess at, so nothing migrates).
-fn legacy_for_product_name(current: &str) -> Option<&'static LegacyIdentity> {
-    let dev = is_dev_product_name(current);
-    LEGACY_IDENTITIES
-        .iter()
-        .find(|l| l.dev == dev && l.product_name != current)
-}
-
-fn legacy_for_identifier(current: &str) -> Option<&'static LegacyIdentity> {
-    let dev = is_dev_identifier(current);
-    LEGACY_IDENTITIES
-        .iter()
-        .find(|l| l.dev == dev && l.identifier != current)
+/// What `migrate_dir` actually did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MigrationOutcome {
+    /// Nothing to do: no rename matches the current name, migration already
+    /// completed (marker points at `new`), or `new` already has data.
+    NoOp,
+    /// Moved/copied `old` into `new` this call.
+    Migrated,
+    /// Attempted and did not complete — `old` is untouched, `new` was never
+    /// populated (a partial attempt only ever exists in a staging directory,
+    /// which was removed). Safe, and expected, to retry on the next launch.
+    Failed,
 }
 
 /// Where a migration's bytes are allowed to move.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Strategy {
-    /// Try an atomic `rename` first (fast, and the whole directory simply
-    /// disappears from the old location); fall back to a recursive copy,
-    /// leaving the old directory fully intact, if the rename fails — e.g. a
-    /// different volume, which is possible but unlikely for two sibling
-    /// directories under the same `~/Library/Application Support/`.
+    /// Try an atomic `rename` of `old` itself first (fast, and the whole
+    /// directory simply disappears from the old location); fall back to a
+    /// staged copy if that fails for a reason other than `old` having
+    /// already vanished.
     PreferRename,
-    /// Never rename — always copy, and never touch the old directory's
-    /// contents. Used for the WebKit profile: unlike the app-data directory,
-    /// this one is not solely owned by this process's Rust code, and nothing
-    /// here can prove WebKit itself has no lingering reference to the old
-    /// path at the moment this runs (it runs before any webview exists in
-    /// *this* process, but a previous run's WebKit process is not something
-    /// this code can reason about).
+    /// Never rename `old` itself — always copy (via staging), and never
+    /// touch `old`'s contents. Used for the WebKit profile: unlike the
+    /// app-data directory, this one is not solely owned by this process's
+    /// Rust code.
     CopyOnly,
 }
 
-type Logger<'a> = dyn Fn(&str) + 'a;
+/// True when the marker in `old` exists AND its recorded destination is
+/// EXACTLY `expected_new`. A marker pointing somewhere else — a leftover
+/// from an earlier, different rename generation, or manual tampering — must
+/// NOT be read as "already migrated to where we need it now": that would
+/// silently skip a migration that still needs to happen.
+fn marker_points_to(old: &Path, expected_new: &Path) -> bool {
+    match fs::read_to_string(old.join(MOVED_MARKER)) {
+        Ok(content) => content
+            .lines()
+            .next()
+            .map(|line| Path::new(line) == expected_new)
+            .unwrap_or(false),
+        Err(_) => false,
+    }
+}
 
-fn is_marked_migrated(dir: &Path) -> bool {
-    dir.join(MOVED_MARKER).exists()
+fn write_marker(old: &Path, new: &Path, log: &Logger) {
+    let marker = old.join(MOVED_MARKER);
+    let content = format!(
+        "{}\n\n\
+         This directory's contents were moved to the path on the first line \
+         above. A future launch treats this directory as already migrated \
+         only while that line still matches where the app currently expects \
+         its data to be — if the product is renamed again, this directory \
+         becomes eligible to migrate once more, into wherever that next \
+         rename points. It is safe to delete this directory once you've \
+         confirmed the location above has everything you expect.\n",
+        new.display(),
+    );
+    if let Err(e) = fs::write(&marker, content) {
+        log(&format!(
+            "migration: could not write marker in {}: {}",
+            old.display(),
+            e
+        ));
+    }
 }
 
 /// True when `dir` is safe to migrate into: it doesn't exist yet, or it
@@ -179,24 +317,6 @@ fn dir_is_absent_or_empty(dir: &Path) -> bool {
     match fs::read_dir(dir) {
         Ok(mut entries) => entries.next().is_none(),
         Err(_) => false,
-    }
-}
-
-fn write_marker(old: &Path, new: &Path, log: &Logger) {
-    let marker = old.join(MOVED_MARKER);
-    let content = format!(
-        "This directory's contents were moved to:\n{}\n\n\
-         A future launch will not migrate again because this file exists. \
-         It is safe to delete this directory once you've confirmed the new \
-         location has everything you expect.\n",
-        new.display(),
-    );
-    if let Err(e) = fs::write(&marker, content) {
-        log(&format!(
-            "migration: could not write marker in {}: {}",
-            old.display(),
-            e
-        ));
     }
 }
 
@@ -222,23 +342,74 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
     Ok(())
 }
 
+static STAGING_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// A private, per-attempt staging path: `<new's parent>/.<new's
+/// name>.migrating-<pid>-<seq>`. Nothing else in this codebase, or in a
+/// concurrent attempt (pid differs) or an earlier attempt in the same
+/// process (seq differs), can ever be confused for this path — which is
+/// exactly what makes it safe for a failure handler to unconditionally
+/// `remove_dir_all` it: that path is never anything OTHER than this
+/// attempt's own half-finished work.
+fn staging_path_for(new: &Path) -> Option<PathBuf> {
+    let parent = new.parent()?;
+    let name = new.file_name()?;
+    let seq = STAGING_SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut staging_name = std::ffi::OsString::from(".");
+    staging_name.push(name);
+    staging_name.push(format!(".migrating-{}-{}", std::process::id(), seq));
+    Some(parent.join(staging_name))
+}
+
+/// Removes its `path` on `Drop` unless [`disarm`](Self::disarm) was called —
+/// i.e. "clean up my own staging directory unless I successfully committed
+/// it". Because `path` is always a [`staging_path_for`] path, this can never
+/// remove `old` or `new` themselves — see the module doc comment's C1
+/// section for why that property is the entire point.
+struct StagingCleanup<'a> {
+    path: &'a Path,
+    armed: std::cell::Cell<bool>,
+}
+
+impl<'a> StagingCleanup<'a> {
+    fn new(path: &'a Path) -> Self {
+        Self {
+            path,
+            armed: std::cell::Cell::new(true),
+        }
+    }
+
+    fn disarm(&self) {
+        self.armed.set(false);
+    }
+}
+
+impl Drop for StagingCleanup<'_> {
+    fn drop(&mut self) {
+        if self.armed.get() {
+            let _ = fs::remove_dir_all(self.path);
+        }
+    }
+}
+
 /// The shared core: migrate `old` into `new` under `strategy`, logging every
-/// decision and never losing data on any failure path.
+/// decision. See the module doc comment for the full race-safety argument;
+/// in short:
 ///
-/// - No-op if `old` was already marked migrated, or does not exist.
-/// - No-op (data stays in `old`, nothing written to `new`) if `new` already
-///   holds anything — never overwrite existing data.
-/// - On a copy failure (rename fallback or `CopyOnly`), any partial `new` is
-///   removed and the marker is NOT written: a half-copied directory must not
-///   look "already migrated" to a future launch, or to `paths::app_data_dir`
-///   lazily creating an empty `new` on first use. Data stays exactly where it
-///   was, in `old`, and the next launch retries the copy from scratch.
-fn migrate_dir(old: &Path, new: &Path, label: &str, strategy: Strategy, log: &Logger) {
-    if is_marked_migrated(old) {
-        return;
+/// - No-op if the marker in `old` already points at `new`, or `old` does not
+///   exist.
+/// - No-op (data stays in `old`, `new` untouched) if `new` already holds
+///   anything — never overwrite existing data.
+/// - `new` is populated by exactly ONE atomic `rename` — either directly
+///   (`PreferRename`'s happy path) or by committing a fully-written staging
+///   directory. Any failure before that point removes only the staging
+///   directory; `old` and `new` are never touched by a failure path.
+fn migrate_dir(old: &Path, new: &Path, label: &str, strategy: Strategy, log: &Logger) -> MigrationOutcome {
+    if marker_points_to(old, new) {
+        return MigrationOutcome::NoOp;
     }
     if !old.exists() {
-        return;
+        return MigrationOutcome::NoOp;
     }
     if !dir_is_absent_or_empty(new) {
         log(&format!(
@@ -246,13 +417,15 @@ fn migrate_dir(old: &Path, new: &Path, label: &str, strategy: Strategy, log: &Lo
             new.display(),
             old.display()
         ));
-        return;
+        return MigrationOutcome::NoOp;
     }
 
     if strategy == Strategy::PreferRename {
         if let Some(parent) = new.parent() {
             let _ = fs::create_dir_all(parent);
         }
+        #[cfg(test)]
+        testing::run_before_first_rename_hook();
         match fs::rename(old, new) {
             Ok(()) => {
                 log(&format!(
@@ -273,73 +446,178 @@ fn migrate_dir(old: &Path, new: &Path, label: &str, strategy: Strategy, log: &Lo
                         old.display()
                     ));
                 }
-                return;
+                return MigrationOutcome::Migrated;
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                // `old` vanished between our `exists()` check above and this
+                // `rename` call — C1. Re-examine rather than falling into a
+                // copy, which could read a source that is now gone, or
+                // already only partially there. Whatever happened, there is
+                // nothing safe left for THIS attempt to do.
+                log(&format!(
+                    "migration: {label} — source vanished mid-attempt (likely another process finished it first); rechecking instead of copying"
+                ));
+                return MigrationOutcome::NoOp;
             }
             Err(e) => {
                 log(&format!(
-                    "migration: {label} — rename failed ({e}), falling back to copy"
+                    "migration: {label} — rename failed ({e}), falling back to a staged copy"
                 ));
             }
         }
     }
 
-    match copy_dir_recursive(old, new) {
+    let Some(staging) = staging_path_for(new) else {
+        log(&format!(
+            "migration: {label} — {} has no parent/file name, cannot stage a copy",
+            new.display()
+        ));
+        return MigrationOutcome::Failed;
+    };
+    let cleanup = StagingCleanup::new(&staging);
+
+    if let Err(e) = copy_dir_recursive(old, &staging) {
+        log(&format!(
+            "migration: {label} — copy failed ({e}); leaving data in {} untouched, will retry on next launch",
+            old.display()
+        ));
+        return MigrationOutcome::Failed; // `cleanup` removes `staging` on drop
+    }
+
+    // Re-check immediately before committing: closes the window even beyond
+    // what the cross-process lock covers (the lock is best-effort — see
+    // `MigrationLock`), and is what the C1 race test exercises directly via
+    // `testing::before_commit`.
+    #[cfg(test)]
+    testing::run_before_commit_hook();
+    if !dir_is_absent_or_empty(new) {
+        log(&format!(
+            "migration: {label} — {} gained data while copying, discarding the staged copy",
+            new.display()
+        ));
+        return MigrationOutcome::NoOp; // `cleanup` removes `staging` on drop
+    }
+
+    match fs::rename(&staging, new) {
         Ok(()) => {
+            cleanup.disarm();
+            write_marker(old, new, log);
             log(&format!(
                 "migration: {label} — copied {} -> {}",
                 old.display(),
                 new.display()
             ));
-            write_marker(old, new, log);
+            MigrationOutcome::Migrated
         }
         Err(e) => {
             log(&format!(
-                "migration: {label} — copy failed ({e}); leaving data in {} untouched, \
-                 will retry on next launch",
+                "migration: {label} — could not commit the staged copy ({e}); leaving data in {} untouched, will retry",
                 old.display()
             ));
-            // A partially written `new` must not survive: it would look like
-            // finished, empty (or worse, truncated) data rather than the
-            // "nothing happened yet" state that makes a retry safe.
-            let _ = fs::remove_dir_all(new);
+            MigrationOutcome::Failed // `cleanup` removes `staging` on drop
         }
     }
 }
 
-/// Migrates `<base>/<legacy product name>` into `<base>/<dir_name(current)>`.
-/// `base` stands in for `dirs::data_dir()` — a parameter so tests run against
-/// a tempdir. Goes through `paths::dir_name` for the destination so this
-/// agrees with `paths::app_data_dir` on unusual-name fallback behaviour.
-pub fn migrate_app_data_dir(base: &Path, current_product_name: &str, log: &Logger) {
-    let Some(legacy) = legacy_for_product_name(current_product_name) else {
-        return;
+/// Migrates `<base>/<rename.from_product_name>` into
+/// `<base>/<dir_name(current)>`. `base` stands in for `dirs::data_dir()` — a
+/// parameter so tests run against a tempdir. Goes through `paths::dir_name`
+/// for the destination so this agrees with `paths::app_data_dir` on
+/// unusual-name fallback behaviour.
+pub(crate) fn migrate_app_data_dir(base: &Path, current_product_name: &str, log: &Logger) -> MigrationOutcome {
+    let Some(rename) = rename_for_product_name(current_product_name) else {
+        return MigrationOutcome::NoOp;
     };
-    let old_dir = base.join(legacy.product_name);
+    let old_dir = base.join(rename.from_product_name);
     let new_dir = base.join(crate::paths::dir_name(current_product_name));
-    migrate_dir(&old_dir, &new_dir, "app data directory", Strategy::PreferRename, log);
+    migrate_dir(&old_dir, &new_dir, "app data directory", Strategy::PreferRename, log)
 }
 
-/// Migrates `<webkit_base>/<legacy identifier>` into
+/// Migrates `<webkit_base>/<rename.from_identifier>` into
 /// `<webkit_base>/<current identifier>` — the WHOLE WKWebView profile
-/// directory for one bundle identifier, not just its `WebsiteData` child.
-///
-/// This has to be the whole directory, and it has to move as one unit: the
-/// `WebsiteData/Default/<hash>/...` leaf that holds `localstorage.sqlite3`
-/// gets its `<hash>` name from `WebsiteData/Default/salt` plus the origin —
-/// copying the leaf without its salt would leave the new identifier's own
-/// (different) salt unable to re-derive that hash, so WebKit would never
-/// find the data. See the module doc comment for how this was confirmed
-/// against a real profile.
-///
-/// `webkit_base` stands in for `~/Library/WebKit` — a parameter so tests run
-/// against a temp directory.
-pub fn migrate_webkit_profile(webkit_base: &Path, current_identifier: &str, log: &Logger) {
-    let Some(legacy) = legacy_for_identifier(current_identifier) else {
-        return;
+/// directory for one bundle identifier, not just its `WebsiteData` child (see
+/// the module doc comment's salt/hash explanation for why it has to be the
+/// whole directory). `webkit_base` stands in for `~/Library/WebKit` — a
+/// parameter so tests run against a temp directory.
+pub(crate) fn migrate_webkit_profile(webkit_base: &Path, current_identifier: &str, log: &Logger) -> MigrationOutcome {
+    let Some(rename) = rename_for_identifier(current_identifier) else {
+        return MigrationOutcome::NoOp;
     };
-    let old_dir = webkit_base.join(legacy.identifier);
+    let old_dir = webkit_base.join(rename.from_identifier);
     let new_dir = webkit_base.join(current_identifier);
-    migrate_dir(&old_dir, &new_dir, "WebKit profile", Strategy::CopyOnly, log);
+    migrate_dir(&old_dir, &new_dir, "WebKit profile", Strategy::CopyOnly, log)
+}
+
+/// Best-effort cross-process mutex over migration work, via `flock` on a
+/// fixed, well-known file — not product/identifier-specific, so a release
+/// and a dev build attempting migration at the same moment also serialize,
+/// and two near-simultaneous launches of the SAME renamed build do too. This
+/// is the scenario H3 names: nothing before `Builder::build()` has enforced
+/// single-instance yet, so a double-launch can reach `run()` (and therefore
+/// this migration) twice.
+///
+/// This is defense in depth, not the only thing preventing data loss — see
+/// the module doc comment's C1 section: the staged-copy-then-atomic-rename
+/// design in `migrate_dir` is what actually makes a lost race safe, even for
+/// a process that never acquires this lock at all. Acquisition is therefore
+/// best-effort: a failure to open or lock the file is logged and migration
+/// proceeds unlocked rather than blocking startup. Waiting is bounded to 5
+/// seconds for the same reason — a wedged holder must not hang every future
+/// launch forever.
+struct MigrationLock {
+    _file: fs::File,
+}
+
+impl MigrationLock {
+    fn lock_path() -> PathBuf {
+        std::env::temp_dir().join("md-mini-rebrand-migration.lock")
+    }
+
+    fn acquire(log: &Logger) -> Option<Self> {
+        let path = Self::lock_path();
+        // `truncate(false)`: this file's content is never read, only used as
+        // an `flock` handle, so there is nothing to gain from clearing it —
+        // spelled out explicitly rather than relying on the (false) default.
+        let file = match fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+        {
+            Ok(f) => f,
+            Err(e) => {
+                log(&format!(
+                    "migration: could not open lock file {}: {} — proceeding unlocked",
+                    path.display(),
+                    e
+                ));
+                return None;
+            }
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            // SAFETY: `file`'s fd is valid for this call and stays open for
+            // as long as the returned guard (which owns `file`) is alive.
+            let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+            if rc == 0 {
+                return Some(Self { _file: file });
+            }
+            if std::time::Instant::now() >= deadline {
+                log("migration: timed out waiting for the migration lock, proceeding unlocked");
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+}
+
+impl Drop for MigrationLock {
+    fn drop(&mut self) {
+        // SAFETY: `_file`'s fd is still open — `Drop` runs before it closes.
+        unsafe {
+            libc::flock(self._file.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -347,33 +625,118 @@ pub fn migrate_webkit_profile(webkit_base: &Path, current_identifier: &str, log:
 // exercised without touching `~/Library` lives in the functions above.
 // ---------------------------------------------------------------------------
 
-/// Real entry point for the app-data-dir migration. Errors are logged and
-/// swallowed — a failed migration must never stop the app from starting; the
-/// worst case is the user's data stays exactly where the old build left it,
-/// waiting for a retry on the next launch.
-pub fn migrate_app_data_dir_real(current_product_name: &str) {
+/// Real entry point for the app-data-dir migration. Returns the product name
+/// `run()` should actually use THIS launch: `current_product_name` normally,
+/// or the legacy name if migration did not complete — see the module doc
+/// comment's "must not create an empty `new`" section for why that matters.
+/// Errors are logged and swallowed — a failed migration must never stop the
+/// app from starting.
+pub(crate) fn migrate_app_data_dir_real(current_product_name: &str) -> String {
+    let log = |msg: &str| eprintln!("{msg}");
+    let _lock = MigrationLock::acquire(&log);
+
     let Some(base) = dirs::data_dir() else {
-        eprintln!("migration: could not determine the application data directory, skipping");
-        return;
+        log("migration: could not determine the application data directory, skipping");
+        return current_product_name.to_string();
     };
-    migrate_app_data_dir(&base, current_product_name, &|msg| eprintln!("{msg}"));
+
+    match migrate_app_data_dir(&base, current_product_name, &log) {
+        MigrationOutcome::Failed => match rename_for_product_name(current_product_name) {
+            Some(rename) => {
+                log(&format!(
+                    "migration: app data directory migration did not complete this launch — using the legacy directory \"{}\" so the data stays reachable and a retry stays possible next launch",
+                    rename.from_product_name
+                ));
+                rename.from_product_name.to_string()
+            }
+            None => current_product_name.to_string(),
+        },
+        MigrationOutcome::NoOp | MigrationOutcome::Migrated => current_product_name.to_string(),
+    }
 }
 
 /// Real entry point for the WebKit profile migration. Must be called before
 /// the first webview window is created — see the module doc comment for why
-/// that means "before `Builder::build()`", not "before `.setup()`".
-pub fn migrate_webkit_profile_real(current_identifier: &str) {
+/// that means "before `Builder::build()`", not "before `.setup()`". Unlike
+/// the app-data-dir migration, there is no legacy-fallback return value here
+/// — see the module doc comment for why that escape hatch does not exist for
+/// WebKit's profile location.
+pub(crate) fn migrate_webkit_profile_real(current_identifier: &str) {
+    let log = |msg: &str| eprintln!("{msg}");
+    let _lock = MigrationLock::acquire(&log);
+
     let Some(home) = dirs::home_dir() else {
-        eprintln!("migration: could not determine the home directory, skipping WebKit profile migration");
+        log("migration: could not determine the home directory, skipping WebKit profile migration");
         return;
     };
     let webkit_base = home.join("Library").join("WebKit");
-    migrate_webkit_profile(&webkit_base, current_identifier, &|msg| eprintln!("{msg}"));
+    let _ = migrate_webkit_profile(&webkit_base, current_identifier, &log);
+}
+
+#[cfg(test)]
+pub(crate) mod testing {
+    //! Deterministic hook points for exercising race windows that are
+    //! otherwise only reachable via genuine multi-process/multi-thread
+    //! timing. Mirrors the pattern already established in
+    //! `atomic_write::testing` for the same reason: thread-local, so tests
+    //! running in parallel cannot see each other's hooks, and cleared by a
+    //! `Drop` guard so one test cannot leak its hook into the next.
+    use std::cell::RefCell;
+
+    type Hook = Box<dyn Fn()>;
+
+    thread_local! {
+        static BEFORE_FIRST_RENAME: RefCell<Option<Hook>> = const { RefCell::new(None) };
+        static BEFORE_COMMIT: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn run_before_first_rename_hook() {
+        run(&BEFORE_FIRST_RENAME);
+    }
+
+    pub(crate) fn run_before_commit_hook() {
+        run(&BEFORE_COMMIT);
+    }
+
+    fn run(cell: &'static std::thread::LocalKey<RefCell<Option<Hook>>>) {
+        let hook = cell.with(|slot| slot.borrow_mut().take());
+        if let Some(hook) = hook {
+            hook();
+            cell.with(|slot| *slot.borrow_mut() = Some(hook));
+        }
+    }
+
+    #[must_use]
+    pub(crate) struct HookGuard(&'static std::thread::LocalKey<RefCell<Option<Hook>>>);
+
+    impl Drop for HookGuard {
+        fn drop(&mut self) {
+            self.0.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+
+    /// Runs right after `migrate_dir` decides it will attempt the FIRST
+    /// (direct, `PreferRename`) `fs::rename(old, new)` — lets a test make
+    /// `old` vanish right before that call, to exercise the `NotFound`
+    /// recheck path deterministically instead of needing a genuine race.
+    pub(crate) fn before_first_rename<F: Fn() + 'static>(hook: F) -> HookGuard {
+        BEFORE_FIRST_RENAME.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+        HookGuard(&BEFORE_FIRST_RENAME)
+    }
+
+    /// Runs with the staged copy fully written and the final
+    /// `staging -> new` commit not yet issued — lets a test populate `new`
+    /// from "another attempt" right in the C1 race window.
+    pub(crate) fn before_commit<F: Fn() + 'static>(hook: F) -> HookGuard {
+        BEFORE_COMMIT.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+        HookGuard(&BEFORE_COMMIT)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::{Arc, Mutex};
 
     fn collecting_logger() -> (Arc<Mutex<Vec<String>>>, Box<Logger<'static>>) {
@@ -390,66 +753,122 @@ mod tests {
         fs::write(path, content).unwrap();
     }
 
-    // --- legacy matching -----------------------------------------------------
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "md-mini-migtest-{}-{}-{}",
+            tag,
+            std::process::id(),
+            STAGING_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Any entry directly under `parent` whose name matches the
+    /// `staging_path_for` naming scheme (`.<name>.migrating-<pid>-<seq>`).
+    fn staging_leftovers(parent: &Path) -> Vec<PathBuf> {
+        let Ok(entries) = fs::read_dir(parent) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with('.') && n.contains(".migrating-"))
+            })
+            .collect()
+    }
+
+    // --- exact from -> to matching (H4, M5) -----------------------------------
 
     #[test]
-    fn no_op_when_current_name_matches_a_legacy_entry_exactly() {
-        // Today's state: nothing has been renamed yet.
-        assert!(legacy_for_product_name("md-mini").is_none());
-        assert!(legacy_for_product_name("md-mini-dev").is_none());
-        assert!(legacy_for_identifier("com.md-mini.app").is_none());
-        assert!(legacy_for_identifier("com.md-mini.dev").is_none());
+    fn no_op_when_current_name_matches_a_known_from_or_is_otherwise_unrenamed() {
+        // Today's state: nothing has been renamed yet, so the current names
+        // ARE the `from_*` values, not any row's `to_*`.
+        assert!(rename_for_product_name("md-mini").is_none());
+        assert!(rename_for_product_name("md-mini-dev").is_none());
+        assert!(rename_for_identifier("com.md-mini.app").is_none());
+        assert!(rename_for_identifier("com.md-mini.dev").is_none());
     }
 
     #[test]
-    fn finds_the_release_legacy_after_a_rename() {
-        let legacy = legacy_for_product_name("couplet").expect("should find md-mini");
-        assert_eq!(legacy.product_name, "md-mini");
-        assert!(!legacy.dev);
+    fn finds_the_release_rename() {
+        let rename = rename_for_product_name("couplet").expect("should find the md-mini row");
+        assert_eq!(rename.from_product_name, "md-mini");
+        assert_eq!(rename.from_identifier, "com.md-mini.app");
+
+        let by_id = rename_for_identifier("pro.couplet.app").expect("should find it by identifier too");
+        assert_eq!(by_id.from_identifier, "com.md-mini.app");
     }
 
     #[test]
-    fn finds_the_dev_legacy_after_a_rename() {
-        let legacy = legacy_for_product_name("couplet-dev").expect("should find md-mini-dev");
-        assert_eq!(legacy.product_name, "md-mini-dev");
-        assert!(legacy.dev);
+    fn finds_the_dev_rename() {
+        let rename = rename_for_product_name("couplet-dev").expect("should find the md-mini-dev row");
+        assert_eq!(rename.from_product_name, "md-mini-dev");
+        assert_eq!(rename.from_identifier, "com.md-mini.dev");
     }
 
     #[test]
     fn dev_and_release_never_cross() {
-        // A dev build must never be offered the release legacy directory, or
-        // vice versa — that would merge two users' worth of state.
-        let release_legacy = legacy_for_product_name("couplet").unwrap();
-        let dev_legacy = legacy_for_product_name("couplet-dev").unwrap();
-        assert_ne!(release_legacy.product_name, dev_legacy.product_name);
-        assert!(!release_legacy.dev);
-        assert!(dev_legacy.dev);
-
-        let release_id = legacy_for_identifier("com.couplet.app").unwrap();
-        let dev_id = legacy_for_identifier("com.couplet.dev").unwrap();
-        assert_ne!(release_id.identifier, dev_id.identifier);
+        let release = rename_for_product_name("couplet").unwrap();
+        let dev = rename_for_product_name("couplet-dev").unwrap();
+        assert_ne!(release.from_product_name, dev.from_product_name);
+        assert_ne!(release.from_identifier, dev.from_identifier);
     }
 
-    // Note on what is deliberately NOT tested here: there is no
-    // "unrecognised name matches nothing" case. Any current name that is not
-    // itself a known legacy name of the same dev/release flavour is treated
-    // as "the product was just renamed to this" and matched against that
-    // flavour's legacy entry — that IS the mechanism that makes migration
-    // activate automatically on a rename without this module ever learning
-    // the new name. `no_op_when_current_name_matches_a_legacy_entry_exactly`
-    // above is the only case where matching correctly finds nothing.
+    #[test]
+    fn an_unrecognised_name_migrates_nothing_however_dev_flavoured_it_looks() {
+        // H4's exact concern: a name that merely LOOKS like a dev build of
+        // the new product (or an old throwaway test identifier) must not be
+        // treated as eligible to receive production data.
+        assert!(rename_for_product_name("couplet-beta").is_none());
+        assert!(rename_for_product_name("md-mini-test").is_none());
+        assert!(rename_for_identifier("com.md-mini.migrationtest").is_none());
+        assert!(rename_for_identifier("pro.couplet.beta").is_none());
+    }
+
+    #[test]
+    fn matches_the_immediate_predecessor_across_three_generations() {
+        // M5: a hypothetical third generation (`couplet` -> `X`) must not
+        // get confused with the two-generations-back row (`md-mini` ->
+        // `couplet`) — exact `to`-matching walks one hop at a time
+        // regardless of how many rows exist or what order they're in.
+        let chain = [
+            Rename {
+                from_product_name: "md-mini",
+                to_product_name: "couplet",
+                from_identifier: "com.md-mini.app",
+                to_identifier: "pro.couplet.app",
+            },
+            Rename {
+                from_product_name: "couplet",
+                to_product_name: "X",
+                from_identifier: "pro.couplet.app",
+                to_identifier: "com.x.app",
+            },
+        ];
+
+        let hop1 = rename_matching_product_name(&chain, "couplet").expect("first hop");
+        assert_eq!(hop1.from_product_name, "md-mini");
+
+        let hop2 = rename_matching_product_name(&chain, "X").expect("second hop");
+        assert_eq!(hop2.from_product_name, "couplet");
+        assert_ne!(hop2.from_product_name, "md-mini", "must not skip straight to the oldest generation");
+    }
 
     // --- migrate_app_data_dir -------------------------------------------------
 
     #[test]
     fn app_data_dir_is_a_no_op_when_names_match() {
-        let dir = std::env::temp_dir().join(format!("md-mini-migtest-noop-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("noop");
         write(&dir.join("md-mini").join("session.json"), "{}");
 
         let (log, logger) = collecting_logger();
-        migrate_app_data_dir(&dir, "md-mini", &logger);
+        let outcome = migrate_app_data_dir(&dir, "md-mini", &logger);
 
+        assert_eq!(outcome, MigrationOutcome::NoOp);
         assert!(dir.join("md-mini").join("session.json").exists());
         assert!(!dir.join("couplet").exists());
         assert!(log.lock().unwrap().is_empty(), "no-op must not log anything");
@@ -458,14 +877,14 @@ mod tests {
 
     #[test]
     fn app_data_dir_moves_into_an_empty_new_directory() {
-        let dir = std::env::temp_dir().join(format!("md-mini-migtest-move-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("move");
         write(&dir.join("md-mini").join("session.json"), "{\"windows\":[]}");
         write(&dir.join("md-mini").join("recovery").join("draft.md"), "unsaved work");
 
         let (_log, logger) = collecting_logger();
-        migrate_app_data_dir(&dir, "couplet", &logger);
+        let outcome = migrate_app_data_dir(&dir, "couplet", &logger);
 
+        assert_eq!(outcome, MigrationOutcome::Migrated);
         assert_eq!(
             fs::read_to_string(dir.join("couplet").join("session.json")).unwrap(),
             "{\"windows\":[]}"
@@ -483,14 +902,14 @@ mod tests {
 
     #[test]
     fn app_data_dir_never_overwrites_a_non_empty_new_directory() {
-        let dir = std::env::temp_dir().join(format!("md-mini-migtest-nooverwrite-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("nooverwrite");
         write(&dir.join("md-mini").join("session.json"), "old unsaved work");
         write(&dir.join("couplet").join("session.json"), "already has real couplet data");
 
         let (log, logger) = collecting_logger();
-        migrate_app_data_dir(&dir, "couplet", &logger);
+        let outcome = migrate_app_data_dir(&dir, "couplet", &logger);
 
+        assert_eq!(outcome, MigrationOutcome::NoOp);
         assert_eq!(
             fs::read_to_string(dir.join("couplet").join("session.json")).unwrap(),
             "already has real couplet data",
@@ -507,20 +926,34 @@ mod tests {
     }
 
     #[test]
+    fn app_data_dir_treats_a_partial_new_directory_as_occupied() {
+        // Even a single stray file in `new` must block migration — a
+        // half-populated `new` from any source is indistinguishable from
+        // "someone already put something here" and must never be papered
+        // over by writing more into it.
+        let dir = scratch("partial-new");
+        write(&dir.join("md-mini").join("recovery").join("draft.md"), "unsaved work");
+        write(&dir.join("couplet").join("stray.txt"), "not from us");
+
+        let (_log, logger) = collecting_logger();
+        let outcome = migrate_app_data_dir(&dir, "couplet", &logger);
+
+        assert_eq!(outcome, MigrationOutcome::NoOp);
+        assert!(!dir.join("couplet").join("recovery").exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn app_data_dir_migration_is_idempotent() {
-        let dir = std::env::temp_dir().join(format!("md-mini-migtest-idempotent-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("idempotent");
         write(&dir.join("md-mini").join("session.json"), "{}");
 
         let (_log, logger) = collecting_logger();
-        migrate_app_data_dir(&dir, "couplet", &logger);
+        assert_eq!(migrate_app_data_dir(&dir, "couplet", &logger), MigrationOutcome::Migrated);
         let after_first = fs::read_to_string(dir.join("couplet").join("session.json")).unwrap();
 
-        // Simulate a second launch: nothing about the old marker directory or
-        // the new data should change, and a second run must not error or
-        // duplicate anything.
         let (_log2, logger2) = collecting_logger();
-        migrate_app_data_dir(&dir, "couplet", &logger2);
+        assert_eq!(migrate_app_data_dir(&dir, "couplet", &logger2), MigrationOutcome::NoOp);
 
         assert_eq!(
             fs::read_to_string(dir.join("couplet").join("session.json")).unwrap(),
@@ -531,8 +964,7 @@ mod tests {
 
     #[test]
     fn dev_and_release_app_data_dirs_do_not_cross() {
-        let dir = std::env::temp_dir().join(format!("md-mini-migtest-devcross-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("devcross");
         write(&dir.join("md-mini").join("session.json"), "release data");
         write(&dir.join("md-mini-dev").join("session.json"), "dev data");
 
@@ -553,31 +985,171 @@ mod tests {
     }
 
     #[test]
-    fn app_data_dir_falls_back_to_copy_when_rename_is_impossible() {
-        // A directory cannot be renamed onto a path that is itself inside a
-        // read-only parent... simulating a genuine cross-device failure is
-        // impractical in a unit test, so this exercises the fallback branch
-        // directly through `migrate_dir`'s copy path by pointing `new_dir`'s
-        // parent at a location `fs::rename` will refuse: a file where a
-        // directory is expected. `fs::rename` errors when the destination's
-        // parent has a non-directory in the way of a component; here we
-        // instead confirm the copy path is reached and reproduces the data,
-        // and that the original is left intact — the fallback contract that
-        // matters, independent of what triggers it.
-        let dir = std::env::temp_dir().join(format!("md-mini-migtest-copyfallback-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+    fn a_marker_pointing_at_a_different_destination_is_not_treated_as_done() {
+        let dir = scratch("marker-elsewhere");
         let old = dir.join("md-mini");
-        write(&old.join("session.json"), "{}");
+        write(
+            &old.join(MOVED_MARKER),
+            &format!("{}\n\nstale, from an earlier generation", dir.join("somewhere-else").display()),
+        );
+        write(&old.join("session.json"), "real data still here");
         let new = dir.join("couplet");
 
         let (_log, logger) = collecting_logger();
-        // Exercise the shared core directly with CopyOnly, the same fallback
-        // codepath PreferRename lands in after a failed rename.
-        migrate_dir(&old, &new, "test", Strategy::CopyOnly, &logger);
+        let outcome = migrate_dir(&old, &new, "test", Strategy::CopyOnly, &logger);
 
-        assert_eq!(fs::read_to_string(new.join("session.json")).unwrap(), "{}");
-        assert!(old.join("session.json").exists(), "copy must not remove the source");
+        assert_eq!(outcome, MigrationOutcome::Migrated, "a stale marker must not block a real migration");
+        assert_eq!(fs::read_to_string(new.join("session.json")).unwrap(), "real data still here");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn marked_directory_is_never_touched_again() {
+        let dir = scratch("marked");
+        let old = dir.join("md-mini");
+        write(&old.join(MOVED_MARKER), dir.join("couplet").to_str().unwrap());
+        write(&old.join("stray-file.txt"), "should not move");
+
+        let (log, logger) = collecting_logger();
+        let outcome = migrate_app_data_dir(&dir, "couplet", &logger);
+
+        assert_eq!(outcome, MigrationOutcome::NoOp);
+        assert!(!dir.join("couplet").exists());
+        assert!(log.lock().unwrap().is_empty());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- rename fallback and failure handling (C1, H2) ------------------------
+
+    #[test]
+    fn falls_back_to_a_staged_copy_on_a_genuine_rename_failure() {
+        // A real EACCES, not a simulated one: `rename` needs write
+        // permission on the SOURCE's parent to unlink the entry, so
+        // chmod-555-ing `old`'s parent (leaving `old` itself untouched and
+        // readable) makes the direct rename fail for a real OS reason while
+        // still allowing the copy fallback (which only needs READ on `old`,
+        // and writes under a completely different, normally-permissioned
+        // parent) to succeed.
+        let dir = scratch("rename-eacces");
+        let old_parent = dir.join("old_parent");
+        let old = old_parent.join("md-mini");
+        write(&old.join("session.json"), "precious data");
+        let new = dir.join("new_parent").join("couplet");
+
+        fs::set_permissions(&old_parent, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let (log, logger) = collecting_logger();
+        let outcome = migrate_dir(&old, &new, "test", Strategy::PreferRename, &logger);
+
+        // Restore permissions before any assertion can panic and skip it.
+        fs::set_permissions(&old_parent, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(outcome, MigrationOutcome::Migrated);
+        assert_eq!(fs::read_to_string(new.join("session.json")).unwrap(), "precious data");
+        assert!(old.join("session.json").exists(), "copy fallback must not remove the source");
         assert!(old.join(MOVED_MARKER).exists());
+        assert!(log.lock().unwrap().iter().any(|m| m.contains("falling back to a staged copy")));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_partial_copy_failure_leaves_no_staging_directory_and_no_marker() {
+        // A real EACCES on a read, not a simulated failure: chmod 000 on one
+        // file partway through the tree makes `copy_dir_recursive` fail
+        // reading it, after some other files already copied successfully
+        // into the (private, per-attempt) staging directory.
+        let dir = scratch("partial-copy");
+        let old = dir.join("com.md-mini.app");
+        write(&old.join("a.txt"), "copies fine");
+        write(&old.join("b.txt"), "never gets read");
+        fs::set_permissions(&old.join("b.txt"), fs::Permissions::from_mode(0o000)).unwrap();
+        let new = dir.join("com.couplet.app");
+
+        let (log, logger) = collecting_logger();
+        let outcome = migrate_dir(&old, &new, "test", Strategy::CopyOnly, &logger);
+
+        // Running as root (some CI/sandbox setups) ignores file mode bits,
+        // so guard the assertion on what actually happened.
+        if outcome == MigrationOutcome::Migrated {
+            eprintln!("skipping strict assertions: this process can read 0o000 files (likely running as root)");
+            fs::remove_dir_all(&dir).ok();
+            return;
+        }
+
+        assert_eq!(outcome, MigrationOutcome::Failed);
+        assert!(!new.exists(), "no partial destination should remain");
+        assert!(old.join("a.txt").exists(), "source must be untouched after a failed copy");
+        assert!(!old.join(MOVED_MARKER).exists(), "a failed migration must not be marked done");
+        assert!(
+            staging_leftovers(&dir).is_empty(),
+            "the Drop-guard must have removed the staging directory"
+        );
+        assert!(log.lock().unwrap().iter().any(|m| m.contains("copy failed")));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_source_vanishing_right_before_the_first_rename_is_a_no_op_not_a_copy() {
+        // Deterministic version of the C1 rename-ENOENT scenario: another
+        // actor finishes the SAME migration (renames `old` away and leaves
+        // just the marker) in the instant between our own `exists()` check
+        // and our `rename` call.
+        let dir = scratch("enoent-recheck");
+        let old = dir.join("md-mini");
+        write(&old.join("session.json"), "will be gone by the time we rename");
+        let new = dir.join("couplet");
+        let new_for_hook = new.clone();
+        let old_for_hook = old.clone();
+
+        let guard = testing::before_first_rename(move || {
+            fs::remove_dir_all(&old_for_hook).unwrap();
+            fs::create_dir_all(&new_for_hook).unwrap();
+            fs::write(new_for_hook.join("session.json"), "the real, already-migrated data").unwrap();
+        });
+
+        let (log, logger) = collecting_logger();
+        let outcome = migrate_dir(&old, &new, "test", Strategy::PreferRename, &logger);
+        drop(guard);
+
+        assert_eq!(outcome, MigrationOutcome::NoOp);
+        assert_eq!(
+            fs::read_to_string(new.join("session.json")).unwrap(),
+            "the real, already-migrated data",
+            "must not have been overwritten or removed"
+        );
+        assert!(log.lock().unwrap().iter().any(|m| m.contains("vanished")));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn concurrent_migration_that_commits_first_wins_and_this_attempt_backs_off() {
+        // The C1 race, reproduced deterministically: this attempt finishes
+        // copying into its OWN staging directory, and right before it would
+        // commit, "another process" finishes first and populates `new` with
+        // the real data. This attempt's pre-commit recheck must see that and
+        // back off WITHOUT touching `new` — the exact bug (`remove_dir_all`
+        // on a path that wasn't ours) this fix closes.
+        let dir = scratch("race");
+        let old = dir.join("com.md-mini.app");
+        write(&old.join("f.txt"), "the real data");
+        let new = dir.join("com.couplet.app");
+        let new_for_hook = new.clone();
+
+        let guard = testing::before_commit(move || {
+            fs::create_dir_all(&new_for_hook).unwrap();
+            fs::write(new_for_hook.join("f.txt"), "the real data").unwrap();
+        });
+
+        let (_log, logger) = collecting_logger();
+        let outcome = migrate_dir(&old, &new, "test", Strategy::CopyOnly, &logger);
+        drop(guard);
+
+        assert_eq!(outcome, MigrationOutcome::NoOp);
+        assert_eq!(fs::read_to_string(new.join("f.txt")).unwrap(), "the real data");
+        assert!(
+            staging_leftovers(&dir).is_empty(),
+            "the losing attempt's staging directory must still be cleaned up"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -585,25 +1157,21 @@ mod tests {
 
     #[test]
     fn webkit_profile_is_a_no_op_when_identifiers_match() {
-        let dir = std::env::temp_dir().join(format!("md-mini-migtest-wk-noop-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        write(
-            &dir.join("com.md-mini.app").join("WebsiteData").join("marker.txt"),
-            "x",
-        );
+        let dir = scratch("wk-noop");
+        write(&dir.join("com.md-mini.app").join("WebsiteData").join("marker.txt"), "x");
 
         let (log, logger) = collecting_logger();
-        migrate_webkit_profile(&dir, "com.md-mini.app", &logger);
+        let outcome = migrate_webkit_profile(&dir, "com.md-mini.app", &logger);
 
-        assert!(!dir.join("com.couplet.app").exists());
+        assert_eq!(outcome, MigrationOutcome::NoOp);
+        assert!(!dir.join("pro.couplet.app").exists());
         assert!(log.lock().unwrap().is_empty());
         fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn webkit_profile_copies_and_leaves_the_old_profile_intact() {
-        let dir = std::env::temp_dir().join(format!("md-mini-migtest-wk-copy-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("wk-copy");
         let ls_dir = dir
             .join("com.md-mini.app")
             .join("WebsiteData")
@@ -614,10 +1182,11 @@ mod tests {
         write(&ls_dir.join("localstorage.sqlite3"), "sqlite-bytes");
 
         let (_log, logger) = collecting_logger();
-        migrate_webkit_profile(&dir, "com.couplet.app", &logger);
+        let outcome = migrate_webkit_profile(&dir, "pro.couplet.app", &logger);
 
+        assert_eq!(outcome, MigrationOutcome::Migrated);
         let new_ls = dir
-            .join("com.couplet.app")
+            .join("pro.couplet.app")
             .join("WebsiteData")
             .join("Default")
             .join("h1")
@@ -625,24 +1194,14 @@ mod tests {
             .join("LocalStorage")
             .join("localstorage.sqlite3");
         assert_eq!(fs::read_to_string(&new_ls).unwrap(), "sqlite-bytes");
-        // CopyOnly: the old profile must still be there, untouched (aside
-        // from the marker), because copy — never move — is the rule here.
-        assert!(ls_dir.join("localstorage.sqlite3").exists());
-        // The marker lives at the identifier-directory level, since that is
-        // what got migrated as a unit (not just its WebsiteData child).
+        assert!(ls_dir.join("localstorage.sqlite3").exists(), "CopyOnly must never touch the source");
         assert!(dir.join("com.md-mini.app").join(MOVED_MARKER).exists());
         fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn webkit_profile_copy_keeps_salt_paired_with_its_hash_directory() {
-        // The concern this guards: WebsiteData/Default/<hash> is only
-        // meaningful together with the salt that produced it
-        // (WebsiteData/Default/salt). Migrating the identifier directory as
-        // one unit must carry both, unmodified, to the new identifier —
-        // never regenerate or drop the salt, never move the hash dir alone.
-        let dir = std::env::temp_dir().join(format!("md-mini-migtest-wk-salt-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("wk-salt");
         let default_dir = dir.join("com.md-mini.app").join("WebsiteData").join("Default");
         write(&default_dir.join("salt"), "the-real-salt-bytes");
         write(
@@ -655,14 +1214,10 @@ mod tests {
         );
 
         let (_log, logger) = collecting_logger();
-        migrate_webkit_profile(&dir, "com.couplet.app", &logger);
+        migrate_webkit_profile(&dir, "pro.couplet.app", &logger);
 
-        let new_default = dir.join("com.couplet.app").join("WebsiteData").join("Default");
-        assert_eq!(
-            fs::read_to_string(new_default.join("salt")).unwrap(),
-            "the-real-salt-bytes",
-            "salt must travel byte-for-byte, unmodified"
-        );
+        let new_default = dir.join("pro.couplet.app").join("WebsiteData").join("Default");
+        assert_eq!(fs::read_to_string(new_default.join("salt")).unwrap(), "the-real-salt-bytes");
         assert_eq!(
             fs::read_to_string(
                 new_default
@@ -672,31 +1227,26 @@ mod tests {
                     .join("localstorage.sqlite3")
             )
             .unwrap(),
-            "the-real-localstorage-bytes",
-            "the hash directory name must be preserved exactly — it only \
-             resolves against the salt that travelled alongside it"
+            "the-real-localstorage-bytes"
         );
         fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn webkit_profile_never_overwrites_existing_new_profile_data() {
-        let dir = std::env::temp_dir().join(format!("md-mini-migtest-wk-nooverwrite-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("wk-nooverwrite");
+        write(&dir.join("com.md-mini.app").join("WebsiteData").join("f.txt"), "old");
         write(
-            &dir.join("com.md-mini.app").join("WebsiteData").join("f.txt"),
-            "old",
-        );
-        write(
-            &dir.join("com.couplet.app").join("WebsiteData").join("f.txt"),
+            &dir.join("pro.couplet.app").join("WebsiteData").join("f.txt"),
             "already real couplet localStorage",
         );
 
         let (_log, logger) = collecting_logger();
-        migrate_webkit_profile(&dir, "com.couplet.app", &logger);
+        let outcome = migrate_webkit_profile(&dir, "pro.couplet.app", &logger);
 
+        assert_eq!(outcome, MigrationOutcome::NoOp);
         assert_eq!(
-            fs::read_to_string(dir.join("com.couplet.app").join("WebsiteData").join("f.txt")).unwrap(),
+            fs::read_to_string(dir.join("pro.couplet.app").join("WebsiteData").join("f.txt")).unwrap(),
             "already real couplet localStorage"
         );
         fs::remove_dir_all(&dir).ok();
@@ -704,20 +1254,17 @@ mod tests {
 
     #[test]
     fn webkit_profile_migration_is_idempotent() {
-        let dir = std::env::temp_dir().join(format!("md-mini-migtest-wk-idempotent-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        write(
-            &dir.join("com.md-mini.app").join("WebsiteData").join("f.txt"),
-            "x",
-        );
+        let dir = scratch("wk-idempotent");
+        write(&dir.join("com.md-mini.app").join("WebsiteData").join("f.txt"), "x");
 
         let (_l1, logger1) = collecting_logger();
-        migrate_webkit_profile(&dir, "com.couplet.app", &logger1);
+        migrate_webkit_profile(&dir, "pro.couplet.app", &logger1);
         let (_l2, logger2) = collecting_logger();
-        migrate_webkit_profile(&dir, "com.couplet.app", &logger2);
+        let second = migrate_webkit_profile(&dir, "pro.couplet.app", &logger2);
 
+        assert_eq!(second, MigrationOutcome::NoOp);
         assert_eq!(
-            fs::read_to_string(dir.join("com.couplet.app").join("WebsiteData").join("f.txt")).unwrap(),
+            fs::read_to_string(dir.join("pro.couplet.app").join("WebsiteData").join("f.txt")).unwrap(),
             "x"
         );
         fs::remove_dir_all(&dir).ok();
@@ -725,78 +1272,23 @@ mod tests {
 
     #[test]
     fn webkit_dev_and_release_profiles_do_not_cross() {
-        let dir = std::env::temp_dir().join(format!("md-mini-migtest-wk-devcross-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        write(
-            &dir.join("com.md-mini.app").join("WebsiteData").join("f.txt"),
-            "release",
-        );
-        write(
-            &dir.join("com.md-mini.dev").join("WebsiteData").join("f.txt"),
-            "dev",
-        );
+        let dir = scratch("wk-devcross");
+        write(&dir.join("com.md-mini.app").join("WebsiteData").join("f.txt"), "release");
+        write(&dir.join("com.md-mini.dev").join("WebsiteData").join("f.txt"), "dev");
 
         let (_l1, logger1) = collecting_logger();
-        migrate_webkit_profile(&dir, "com.couplet.app", &logger1);
+        migrate_webkit_profile(&dir, "pro.couplet.app", &logger1);
         let (_l2, logger2) = collecting_logger();
-        migrate_webkit_profile(&dir, "com.couplet.dev", &logger2);
+        migrate_webkit_profile(&dir, "pro.couplet.dev", &logger2);
 
         assert_eq!(
-            fs::read_to_string(dir.join("com.couplet.app").join("WebsiteData").join("f.txt")).unwrap(),
+            fs::read_to_string(dir.join("pro.couplet.app").join("WebsiteData").join("f.txt")).unwrap(),
             "release"
         );
         assert_eq!(
-            fs::read_to_string(dir.join("com.couplet.dev").join("WebsiteData").join("f.txt")).unwrap(),
+            fs::read_to_string(dir.join("pro.couplet.dev").join("WebsiteData").join("f.txt")).unwrap(),
             "dev"
         );
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    // --- failure handling -------------------------------------------------------
-
-    #[test]
-    fn a_failed_copy_does_not_leave_an_empty_new_dir_masquerading_as_migrated() {
-        // Force a copy failure by making the *destination's parent* a file
-        // instead of a directory, so `create_dir_all` for `new` fails partway.
-        let dir = std::env::temp_dir().join(format!("md-mini-migtest-copyfail-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let old = dir.join("md-mini");
-        write(&old.join("session.json"), "precious data");
-        // `new`'s parent path component is a plain file, so creating
-        // `new` (a directory under it) must fail.
-        let blocker = dir.join("blocked-parent");
-        fs::write(&blocker, "not a directory").unwrap();
-        let new = blocker.join("couplet");
-
-        let (log, logger) = collecting_logger();
-        migrate_dir(&old, &new, "test", Strategy::CopyOnly, &logger);
-
-        assert!(!new.exists(), "no partial/empty destination should remain");
-        assert!(
-            old.join("session.json").exists(),
-            "source data must be untouched after a failed copy"
-        );
-        assert!(
-            !old.join(MOVED_MARKER).exists(),
-            "a failed migration must not be marked as done"
-        );
-        assert!(log.lock().unwrap().iter().any(|m| m.contains("copy failed")));
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn marked_directory_is_never_touched_again() {
-        let dir = std::env::temp_dir().join(format!("md-mini-migtest-marked-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let old = dir.join("md-mini");
-        write(&old.join(MOVED_MARKER), "moved elsewhere already");
-        write(&old.join("stray-file.txt"), "should not move");
-
-        let (log, logger) = collecting_logger();
-        migrate_app_data_dir(&dir, "couplet", &logger);
-
-        assert!(!dir.join("couplet").exists());
-        assert!(log.lock().unwrap().is_empty());
         fs::remove_dir_all(&dir).ok();
     }
 }

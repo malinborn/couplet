@@ -12,7 +12,7 @@
 //! returns — on purpose, and that is no longer a data-loss risk by itself:
 //! `migration.rs` runs before anything in this module is first touched and
 //! moves an existing installation's directory across to the new name, as
-//! long as the old name is still listed in its `LEGACY_IDENTITIES`. This
+//! long as the old name is still listed in its `RENAMES` table. This
 //! module's own job stays exactly what it always was — name the *current*
 //! directory, never move anything — `migration.rs` is where a rename's
 //! continuity is guaranteed.
@@ -21,7 +21,16 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-const FALLBACK_DIR: &str = "md-mini";
+/// The name every callsite falls back to when `tauri.conf.json`'s
+/// `product_name` is somehow absent — `Option<String>` on the config type,
+/// even though this app always sets it. Also the release build's actual
+/// product name today, which is why the two callers of this constant outside
+/// this module (`lib.rs`, deciding what `context.config().product_name`
+/// defaults to before `paths::init`/`migration::migrate_app_data_dir_real`
+/// ever run) and `dir_name`'s own error path all share the exact same
+/// literal instead of each spelling `"md-mini"` out separately.
+pub(crate) const FALLBACK_PRODUCT_NAME: &str = "md-mini";
+const FALLBACK_DIR: &str = FALLBACK_PRODUCT_NAME;
 
 static APP_DIR_NAME: OnceLock<String> = OnceLock::new();
 
@@ -73,8 +82,8 @@ mod tests {
         // "md-mini" — today's release name, and therefore the directory name
         // every currently-installed user's `recovery/` and `session/` already
         // sit under — stays listed as a migration source. Dropping it from
-        // `migration::LEGACY_IDENTITIES` on a future rename, without adding it
-        // first, would silently strand every existing install.
+        // `migration::RENAMES` on a future rename, without adding it first,
+        // would silently strand every existing install.
         assert!(
             crate::migration::known_legacy_product_names().any(|n| n == "md-mini"),
             "\"md-mini\" must stay listed in migration.rs so existing installs are not stranded by a rename"
