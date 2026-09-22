@@ -3,6 +3,7 @@ import {
   createEngineStore,
   createThemeStore,
   createOcdAlignmentStore,
+  createZoomStore,
 } from './stores.svelte';
 
 /**
@@ -265,5 +266,38 @@ describe('createThemeStore', () => {
     const store = createThemeStore();
     expect(store.followSystem).toBe(true);
     expect(store.resolved).toBe('aurora-dark');
+  });
+});
+
+describe('createZoomStore', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('FirstRun_IsOneHundredPercent', () => {
+    expect(createZoomStore().level).toBe(1);
+  });
+
+  it('StepsAndPersists', () => {
+    const store = createZoomStore();
+    store.zoomIn();
+    store.zoomIn();
+    expect(store.level).toBe(1.2);
+    expect(JSON.parse(localStorage.getItem('md-mini:zoomLevel')!)).toBe(1.2);
+    expect(createZoomStore().level).toBe(1.2);
+  });
+
+  it('ResetReturnsToOneHundredPercent', () => {
+    const store = createZoomStore();
+    store.zoomOut();
+    store.reset();
+    expect(store.level).toBe(1);
+  });
+
+  // Настройка приходит из localStorage: там может лежать значение вне границ —
+  // от прошлой версии или от чужой руки — и в setZoom оно уйти не должно.
+  it('LoadsAnOutOfRangeSettingClamped', () => {
+    localStorage.setItem('md-mini:zoomLevel', JSON.stringify(9));
+    expect(createZoomStore().level).toBe(2);
   });
 });
