@@ -86,7 +86,7 @@ pub fn run() {
         .as_deref()
         .unwrap_or(paths::FALLBACK_PRODUCT_NAME);
     let effective_product_name = migration::migrate_app_data_dir_real(product_name);
-    migration::migrate_webkit_profile_real(&context.config().identifier);
+    migration::migrate_webkit_profile_real(product_name, &context.config().identifier);
 
     // `mut` is only needed by the `mcp-bridge` registration below; without that
     // feature the builder is never reassigned.

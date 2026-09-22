@@ -136,7 +136,7 @@
 //! throwaway identifier being treated as a real migration target.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -788,6 +788,63 @@ impl Drop for MigrationLock {
 }
 
 // ---------------------------------------------------------------------------
+// Logging. `eprintln!` alone is invisible for a bundled `.app` — nothing
+// reads its stderr, so a migration failure would leave no trace anyone could
+// ever find (M6). Every migration log line therefore also goes to
+// `~/Library/Logs/<product>/migration.log`, the same convention macOS apps
+// generally use for their own logs — falling back to `eprintln!` only if the
+// file itself cannot be opened (never the reason migration itself fails).
+//
+// NOT implemented here: surfacing a failure as an in-app toast. Migration
+// runs before `Builder::build()`, before any window/webview/frontend exists,
+// so there is no toast channel available at the point this logs. The path to
+// add one later: stash the outcome in a `tauri::State` (a `MigrationNotice`
+// alongside `SessionState`/`UpdateState` in `lib.rs`), add an IPC command
+// (`migration_notice() -> Option<String>`, next to `pending_update`'s
+// pattern in `updater.rs`) the frontend polls once on mount, and a new toast
+// kind in `toasts.svelte.ts` (`migration-error`, alongside `comment-error`)
+// to render it. Out of scope here: it is frontend work with its own review
+// surface, not a migration-correctness fix.
+// ---------------------------------------------------------------------------
+
+fn log_path_under(home: &Path, product_name: &str) -> PathBuf {
+    home.join("Library")
+        .join("Logs")
+        .join(crate::paths::dir_name(product_name))
+        .join("migration.log")
+}
+
+fn now_epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Appends one line to `path`, creating its parent directories if needed.
+fn append_log_line(path: &Path, msg: &str) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = fs::OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(file, "[{}] {}", now_epoch_secs(), msg)
+}
+
+/// A logger that appends to `~/Library/Logs/<product_name>/migration.log`,
+/// falling back to `eprintln!` if the file can't be written.
+/// `product_name` should be the CURRENT build's raw name — the log's
+/// location stays the same regardless of which product name this particular
+/// launch's migration ends up telling `run()` to use.
+fn file_logger(product_name: &str) -> impl Fn(&str) {
+    let path = log_path_under(&dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")), product_name);
+    move |msg: &str| {
+        if append_log_line(&path, msg).is_err() {
+            eprintln!("{msg}");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Real-filesystem entry points. Thin on purpose: everything that can be
 // exercised without touching `~/Library` lives in the functions above.
 // ---------------------------------------------------------------------------
@@ -799,7 +856,7 @@ impl Drop for MigrationLock {
 /// Errors are logged and swallowed — a failed migration must never stop the
 /// app from starting.
 pub(crate) fn migrate_app_data_dir_real(current_product_name: &str) -> String {
-    let log = |msg: &str| eprintln!("{msg}");
+    let log = file_logger(current_product_name);
     let _lock = MigrationLock::acquire(&log);
 
     let Some(base) = dirs::data_dir() else {
@@ -829,9 +886,12 @@ pub(crate) fn migrate_app_data_dir_real(current_product_name: &str) -> String {
 /// that means "before `Builder::build()`", not "before `.setup()`". Unlike
 /// the app-data-dir migration, there is no legacy-fallback return value here
 /// — see the module doc comment for why that escape hatch does not exist for
-/// WebKit's profile location.
-pub(crate) fn migrate_webkit_profile_real(current_identifier: &str) {
-    let log = |msg: &str| eprintln!("{msg}");
+/// WebKit's profile location. `current_product_name` is used ONLY to pick
+/// the log file's location (`~/Library/Logs/<product_name>/migration.log`,
+/// shared with `migrate_app_data_dir_real`'s log) — WebKit's own directory
+/// naming is entirely `current_identifier`.
+pub(crate) fn migrate_webkit_profile_real(current_product_name: &str, current_identifier: &str) {
+    let log = file_logger(current_product_name);
     let _lock = MigrationLock::acquire(&log);
 
     let Some(home) = dirs::home_dir() else {
@@ -1628,6 +1688,41 @@ mod tests {
 
         assert!(!new.exists());
         assert!(log.lock().unwrap().is_empty());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- M6: file logging -------------------------------------------------
+
+    #[test]
+    fn log_path_follows_the_apple_logs_convention_named_after_the_product() {
+        let home = PathBuf::from("/Users/someone");
+        assert_eq!(
+            log_path_under(&home, "couplet"),
+            PathBuf::from("/Users/someone/Library/Logs/couplet/migration.log")
+        );
+        // Goes through `paths::dir_name`, so it inherits the same
+        // unusual-name fallback `paths::app_data_dir` uses.
+        assert_eq!(
+            log_path_under(&home, "../escape"),
+            PathBuf::from("/Users/someone/Library/Logs/md-mini/migration.log")
+        );
+    }
+
+    #[test]
+    fn append_log_line_creates_parent_directories_and_appends() {
+        let dir = scratch("log-append");
+        let path = dir.join("Logs").join("couplet").join("migration.log");
+
+        append_log_line(&path, "first line").unwrap();
+        append_log_line(&path, "second line").unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("first line"));
+        assert!(content.contains("second line"));
+        assert!(
+            content.lines().next().unwrap().starts_with('['),
+            "each line should carry a timestamp prefix"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 }
