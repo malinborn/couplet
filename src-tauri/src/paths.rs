@@ -7,7 +7,15 @@
 //! `session.json` in the same place for both, and running `npm run dev:app` would
 //! quietly overwrite the real app's files.
 //!
-//! The release name stays `md-mini`, so existing installs keep their data.
+//! A product rename (changing `productName` in `tauri.conf.json` /
+//! `tauri.dev.conf.json`) therefore changes the directory this module
+//! returns — on purpose, and that is no longer a data-loss risk by itself:
+//! `migration.rs` runs before anything in this module is first touched and
+//! moves an existing installation's directory across to the new name, as
+//! long as the old name is still listed in its `LEGACY_IDENTITIES`. This
+//! module's own job stays exactly what it always was — name the *current*
+//! directory, never move anything — `migration.rs` is where a rename's
+//! continuity is guaranteed.
 
 use std::fs;
 use std::path::PathBuf;
@@ -56,8 +64,21 @@ mod tests {
     }
 
     #[test]
-    fn release_name_is_unchanged_so_existing_installs_keep_their_data() {
-        assert_eq!(dir_name("md-mini"), FALLBACK_DIR);
+    fn release_name_is_still_a_recognised_migration_source() {
+        // Before `migration.rs` existed, this test asserted `dir_name("md-mini")
+        // == FALLBACK_DIR` — i.e. that the release name never changes. That
+        // guarantee no longer holds by design: a rename is expected to change
+        // it, and `migration.rs` is what keeps an existing install's data
+        // reachable across that change. What must still never regress is that
+        // "md-mini" — today's release name, and therefore the directory name
+        // every currently-installed user's `recovery/` and `session/` already
+        // sit under — stays listed as a migration source. Dropping it from
+        // `migration::LEGACY_IDENTITIES` on a future rename, without adding it
+        // first, would silently strand every existing install.
+        assert!(
+            crate::migration::known_legacy_product_names().any(|n| n == "md-mini"),
+            "\"md-mini\" must stay listed in migration.rs so existing installs are not stranded by a rename"
+        );
     }
 
     #[test]

@@ -16,6 +16,7 @@ mod i18n;
 mod locale;
 pub mod mcp_server;
 mod menu;
+mod migration;
 mod onboarding;
 mod paths;
 mod preferences;
@@ -54,6 +55,31 @@ fn toggle_value(app: &tauri::AppHandle, id: &str) -> Option<bool> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Rebrand data migration — deliberately the very first thing `run()`
+    // does, before `tauri::Builder::default()` even starts. This is not
+    // merely "early": `Builder::build()` creates every window listed in
+    // `tauri.conf.json` (see `migration.rs`'s module doc for the exact call
+    // site in the `tauri` crate) as its first internal step, before our own
+    // `.setup()` closure ever runs — and creating the "main" window is what
+    // creates its WKWebView, which is what creates
+    // `~/Library/WebKit/<identifier>/`. There is no hook between "window
+    // exists" and "our code runs" that comes early enough, so this has to sit
+    // above the builder entirely. The context is read from here rather than
+    // re-generated at the `.build()` call below, so both this and `.build()`
+    // see the exact same identifier/product name.
+    //
+    // No-op today: `migration.rs`'s legacy-identity table only matches a
+    // renamed product/identifier, not the current one. It activates on its
+    // own the moment `tauri.conf.json` / `tauri.dev.conf.json` are renamed.
+    let context = tauri::generate_context!();
+    let product_name = context
+        .config()
+        .product_name
+        .as_deref()
+        .unwrap_or("md-mini");
+    migration::migrate_app_data_dir_real(product_name);
+    migration::migrate_webkit_profile_real(&context.config().identifier);
+
     // `mut` is only needed by the `mcp-bridge` registration below; without that
     // feature the builder is never reassigned.
     #[cfg_attr(not(feature = "mcp-bridge"), allow(unused_mut))]
@@ -406,7 +432,7 @@ pub fn run() {
         });
 
     let app = builder
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application");
 
     app.run(|_app_handle, event| {
