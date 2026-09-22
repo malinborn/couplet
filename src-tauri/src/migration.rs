@@ -329,20 +329,37 @@ fn dir_is_absent_or_empty(dir: &Path) -> bool {
 /// Recursively copies `src` into `dst`, creating `dst` if needed. Symlinks
 /// are recreated as symlinks (pointing at the same target) rather than
 /// dereferenced, so a link that escapes the tree is not silently inlined.
-fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
+fn copy_dir_recursive(src: &Path, dst: &Path, log: &Logger) -> io::Result<()> {
     fs::create_dir_all(dst)?;
+    // Best-effort: a directory's own mode is worth preserving (a `0700`
+    // `recovery/` staying `0700` in the new location, say), but failing to
+    // set it must not fail the whole copy — the CONTENT is what matters most.
+    if let Ok(meta) = fs::metadata(src) {
+        let _ = fs::set_permissions(dst, meta.permissions());
+    }
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
         let target = dst.join(entry.file_name());
         if file_type.is_dir() {
-            copy_dir_recursive(&entry.path(), &target)?;
+            copy_dir_recursive(&entry.path(), &target, log)?;
         } else if file_type.is_symlink() {
             let link_target = fs::read_link(entry.path())?;
             #[cfg(unix)]
             std::os::unix::fs::symlink(&link_target, &target)?;
-        } else {
+        } else if file_type.is_file() {
             fs::copy(entry.path(), &target)?;
+        } else {
+            // A socket, FIFO, or char/block device — `fs::copy` cannot copy
+            // one of these anyway (it calls `open`, which blocks or fails on
+            // most of them), and none of them are ever real user data inside
+            // an app-data or WebKit profile directory. Skip it rather than
+            // fail the ENTIRE migration over a file nothing downstream could
+            // use even if the copy somehow succeeded.
+            log(&format!(
+                "migration: skipping non-regular file {} (socket/FIFO/device) while copying",
+                entry.path().display()
+            ));
         }
     }
     Ok(())
@@ -621,7 +638,7 @@ fn migrate_dir(old: &Path, new: &Path, label: &str, strategy: Strategy, log: &Lo
     };
     let cleanup = StagingCleanup::new(&staging);
 
-    if let Err(e) = copy_dir_recursive(old, &staging) {
+    if let Err(e) = copy_dir_recursive(old, &staging, log) {
         log(&format!(
             "migration: {label} — copy failed ({e}); leaving data in {} untouched, will retry on next launch",
             old.display()
@@ -1723,6 +1740,45 @@ mod tests {
             content.lines().next().unwrap().starts_with('['),
             "each line should carry a timestamp prefix"
         );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- L10: special files and directory permissions --------------------
+
+    #[test]
+    fn copy_skips_sockets_and_fifos_instead_of_failing_the_whole_migration() {
+        let dir = scratch("special-files");
+        let old = dir.join("md-mini");
+        write(&old.join("normal.txt"), "regular file");
+        let fifo_path = old.join("weird.fifo");
+        let fifo_c = std::ffi::CString::new(fifo_path.to_str().unwrap()).unwrap();
+        let rc = unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) };
+        assert_eq!(rc, 0, "test setup: could not create a FIFO to migrate around");
+        let new = dir.join("couplet");
+
+        let (log, logger) = collecting_logger();
+        let outcome = migrate_dir(&old, &new, "test", Strategy::CopyOnly, &logger);
+
+        assert_eq!(outcome, MigrationOutcome::Migrated, "a stray FIFO must not sink the whole migration");
+        assert_eq!(fs::read_to_string(new.join("normal.txt")).unwrap(), "regular file");
+        assert!(!new.join("weird.fifo").exists(), "the FIFO itself is not copyable and must be skipped");
+        assert!(log.lock().unwrap().iter().any(|m| m.contains("skipping non-regular file")));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn copy_preserves_a_subdirectorys_mode() {
+        let dir = scratch("dir-mode");
+        let old = dir.join("md-mini");
+        write(&old.join("recovery").join("draft.md"), "unsaved");
+        fs::set_permissions(&old.join("recovery"), fs::Permissions::from_mode(0o700)).unwrap();
+        let new = dir.join("couplet");
+
+        let (_log, logger) = collecting_logger();
+        migrate_dir(&old, &new, "test", Strategy::CopyOnly, &logger);
+
+        let mode = fs::metadata(new.join("recovery")).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "the recovery/ subdirectory's own mode should have been preserved");
         fs::remove_dir_all(&dir).ok();
     }
 }
