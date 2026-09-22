@@ -232,6 +232,79 @@ code { font-family: var(--font-mono); }
   50% { opacity: 1; }
 }
 
+/* ── Realistic daylight aurora (light theme only, hero-aurora.ts) ──
+   The owner's deliberate joke: a real-looking aurora curtain, at noon, on a
+   light background. `.hero-aurora-canvas` is a WebGL shader (fbm folds +
+   vertical ray noise, oxygen-green base fading through nitrogen pink to
+   high-altitude violet); `.hero-aurora-fallback` is a static CSS stand-in
+   for browsers/contexts without WebGL. Both REPLACE `.hero-aurora-field`
+   for the light theme rather than layering on top of it — hero-aurora.ts
+   toggles `.is-realistic` / `.is-fallback` on `.hero-aurora-field`'s parent
+   (`.hero-aurora`) and hides the blob field via the sibling selectors
+   below. Dark theme never gets either class, so `.hero-aurora-field` keeps
+   rendering exactly as before there — this is additive to the dark-theme
+   styling, not a rewrite of it. */
+.hero-aurora-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: none;
+}
+.hero-aurora-fallback {
+  position: absolute;
+  inset: 0;
+  display: none;
+  /* A single frozen "curtain": green base along the bottom edge, climbing
+     through pink into violet near the top, banded (not smooth) so it still
+     reads as structure rather than a flat wash. */
+  background:
+    repeating-linear-gradient(100deg,
+      rgba(46, 230, 160, 0.20) 0%, rgba(46, 230, 160, 0.20) 6%,
+      transparent 6%, transparent 13%,
+      rgba(60, 240, 138, 0.16) 13%, rgba(60, 240, 138, 0.16) 18%,
+      transparent 18%, transparent 27%),
+    linear-gradient(to top,
+      rgba(60, 240, 138, 0.30) 0%,
+      rgba(60, 240, 138, 0.22) 16%,
+      rgba(230, 79, 148, 0.16) 58%,
+      rgba(131, 88, 239, 0.12) 84%,
+      transparent 96%);
+}
+.hero-aurora.is-realistic .hero-aurora-field,
+.hero-aurora.is-fallback .hero-aurora-field {
+  display: none;
+}
+.hero-aurora.is-realistic .hero-aurora-canvas { display: block; }
+.hero-aurora.is-fallback .hero-aurora-fallback { display: block; }
+
+/* A very soft light pool behind the hero copy, only while the realistic
+   shader is running — the shader's peak alpha (~0.85) can otherwise dip a
+   ray under "drive" or a pill below comfortable contrast. Deliberately not
+   a card/plate: it's a radial falloff, transparent well before its own
+   edge, so the aurora is still visible right behind the text, just dimmer
+   there than in the empty space around it. `.hero-content` already creates
+   its own stacking context (position:relative + z-index:1), so this
+   pseudo-element's z-index:-1 places it above `.hero-aurora` (z-index:0)
+   and below every real child of `.hero-content` — no extra class needed on
+   the content side. */
+.hero-aurora.is-realistic ~ .wrap .hero-content::before {
+  content: '';
+  position: absolute;
+  inset: -48px -72px;
+  z-index: -1;
+  pointer-events: none;
+  /* Measured: the alias note at the bottom of .hero-content sat outside the
+     first version's falloff (transparent by 78%) and dropped under 3:1
+     against a saturated green ray. Stops pushed out and the middle one
+     raised so coverage reaches the last line of copy, not just the title. */
+  background: radial-gradient(ellipse at center,
+    rgba(251, 251, 253, 0.65) 0%,
+    rgba(251, 251, 253, 0.48) 55%,
+    rgba(251, 251, 253, 0.22) 85%,
+    transparent 100%);
+}
+
 /* The AI-shimmer sweep that used to travel across the hero every 13s has
    been removed entirely (element and CSS) — it turned out to be the single
    biggest contributor to the box reading as a rectangle: a plain horizontal

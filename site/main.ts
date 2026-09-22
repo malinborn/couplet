@@ -26,6 +26,8 @@ import './styles/demo-comment.css';
 import './styles/demo-anyway.css';
 import './styles/demo-showcase.css';
 
+import { initHeroAurora } from './hero-aurora';
+
 const THEME_KEY = 'couplet-site:theme';
 const INSTALL_CMD = 'brew tap malinborn/mdmini && brew trust malinborn/mdmini && brew install --cask mdmini';
 
@@ -64,6 +66,11 @@ function setupThemeToggle(): void {
   const label = button?.querySelector<HTMLElement>('.theme-toggle-label');
   if (!button || !label) return;
 
+  // Realistic hero aurora: light theme only (see site/hero-aurora.ts for
+  // why — the joke is a daylight aurora, not a themed decoration). Started
+  // here so it appears/disappears the moment the theme flips, no reload.
+  const heroAurora = initHeroAurora();
+
   function render(mode: ThemeMode): void {
     const dark = mode === 'auto' ? systemPrefersDark() : mode === 'dark';
     document.documentElement.setAttribute('data-theme', dark ? 'aurora-dark' : 'aurora-light');
@@ -71,6 +78,7 @@ function setupThemeToggle(): void {
     label!.textContent = text;
     button!.setAttribute('aria-label', `Theme: ${text.toLowerCase()} (click to change)`);
     reinitializeEmbeddedMermaidTheme();
+    heroAurora?.setLight(!dark);
   }
 
   button.addEventListener('click', () => {

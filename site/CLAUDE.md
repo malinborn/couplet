@@ -154,10 +154,16 @@ hard way and is invisible until it bites.
   underneath (600–1000px at that width) with small bright cores on top is what makes
   colour actually shift. The wash palette spans only ~70° of hue, which caps how dramatic
   that shift can get.
-- **Compositor-only, always.** Animate `transform`, `opacity` and `background-position`.
-  `filter: blur()` values must be static so the blur rasterizes once; animating `filter`
-  (including `hue-rotate`) re-filters every frame. No canvas, no rAF loop, no SVG
-  turbulence.
+- **Compositor-only, always — except the one deliberate exception.** The CSS blob field
+  (`.hero-aurora-field`, dark theme and the light-theme no-WebGL fallback) still animates
+  `transform`, `opacity` and `background-position` only, with static `filter: blur()`, per
+  the rule above. Light theme's *realistic* aurora (`site/hero-aurora.ts`, owner-requested
+  "aurora at noon" gag) is the intentional exception: a WebGL fragment shader on a canvas,
+  driven by a capped-FPS `requestAnimationFrame` loop. It REPLACES the blob field for
+  light theme (toggled via `.is-realistic`/`.is-fallback` on `.hero-aurora`), never layers
+  on top of it, and is paused by `IntersectionObserver` + `visibilitychange` + a DPR cap —
+  read the file header before touching either the shader or the rest of this section's
+  rules, since they were written before this exception existed.
 - **A full-bleed layer needs `overflow: hidden` on the hero**, or blurred children add to
   page `scrollWidth`. Check for horizontal overflow at 360, 390, 1280 **and** 2000 —
   wide viewports are where this shows.
