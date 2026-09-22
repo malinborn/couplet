@@ -32,3 +32,6 @@ vite.config.ts.timestamp-*
 .claude/*
 !.claude/skills/
 !.claude/agents/
+
+# Built icon stand (scripts/build-icon-design-stand.sh); reference copy is tag couplet-icon-final
+/couplet-icon-design-stand.html

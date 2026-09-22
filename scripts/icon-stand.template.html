@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>couplet — иконка</title>
+<style>
+@font-face { font-family: 'Playfair Display'; font-style: italic; font-weight: 500; font-display: block;
+  src: url(data:font/woff;base64,__PF__) format('woff'); }
+@font-face { font-family: 'PF8'; font-style: italic; font-weight: 800; font-display: block;
+  src: url(data:font/woff;base64,__PF8__) format('woff'); }
+@font-face { font-family: 'MW'; font-style: italic; font-weight: 700; font-display: block;
+  src: url(data:font/woff2;base64,__MW__) format('woff2'); }
+@font-face { font-family: 'INI'; font-style: italic; font-weight: 700; font-display: block;
+  src: url(data:font/woff2;base64,__INI__) format('woff2'); }
+* { box-sizing: border-box; }
+body { margin: 0; background: #ececf0; font-family: 'Helvetica Neue', Helvetica, sans-serif;
+  color: #1c1c22; padding: 44px 48px 90px; }
+body.dark { background: #111116; color: #e9e9f0; }
+h1 { font-family: 'Playfair Display', serif; font-style: italic; font-weight: 500; font-size: 34px; margin: 0 0 8px; }
+p.sub { font-size: 13.5px; line-height: 1.6; opacity: .65; max-width: 900px; margin: 0 0 4px; }
+h2 { font-size: 11.5px; letter-spacing: .14em; text-transform: uppercase; opacity: .45;
+  margin: 46px 0 18px; font-weight: 700; }
+button { font: inherit; font-size: 13px; padding: 7px 15px; border-radius: 8px; cursor: pointer;
+  border: 1px solid rgba(128,128,128,.38); background: transparent; color: inherit; margin: 20px 8px 0 0; }
+code { font-family: ui-monospace, SFMono-Regular, monospace; font-size: .92em;
+  background: rgba(128,128,128,.14); padding: 1px 5px; border-radius: 4px; }
+
+/* Master: exact geometry of couplet-icons.dc.html, a 1024 canvas scaled by transform. */
+.ic { position: relative; flex: none; display: inline-block; vertical-align: middle; }
+.ic .m { position: absolute; left: 0; top: 0; width: 1024px; height: 1024px;
+  transform-origin: 0 0; display: flex; align-items: center; justify-content: center; }
+.ic .sq { width: 824px; height: 824px; border-radius: 185px; position: relative; overflow: hidden;
+  display: flex; align-items: center; justify-content: center; }
+.ic .cur { position: absolute; left: 488px; top: 114px; width: 114px; height: 595px; border-radius: 57px; }
+.ic .amp { position: relative; font-family: 'Playfair Display', serif; font-weight: 500; font-style: italic;
+  font-size: 671px; line-height: 1; margin: 0 69px 38px 0; }
+/* small-size simplifications */
+.ic.flat .cur, .ic.flat .amp { box-shadow: none !important; text-shadow: none !important; }
+.ic.nocur .cur { display: none; }
+.ic.noamp .amp { display: none; }
+.ic.noamp .cur { left: 355px; top: 114px; width: 114px; }
+.ic.bold .cur { width: 150px; border-radius: 75px; left: 480px; }
+.ic.bold .amp { font-size: 740px; margin-right: 50px; }
+
+/* mini: 2/3 tile, 1/3 caret band, glyph across the whole cell */
+.ic .band { position: absolute; right: 0; top: 0; width: 33.334%; height: 100%; }
+.ic .mamp { position: relative; z-index: 1; line-height: 1; font-style: italic; }
+.gA { font-family: 'Playfair Display', serif; font-weight: 500; font-size: 980px; margin: 0 0 90px 0; }
+.gB { font-family: 'PF8', serif; font-weight: 800; font-size: 960px; margin: 0 0 90px 0; }
+.gC { font-family: 'MW', serif; font-weight: 700; font-size: 860px; margin: 0 0 40px 0; }
+.gD { font-family: 'INI', sans-serif; font-weight: 700; font-size: 900px; margin: 0 0 30px 0; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 26px 24px; }
+.cell .name { font-size: 13px; font-weight: 600; margin-top: 6px; }
+.cell .note { font-size: 11.5px; opacity: .55; margin-top: 3px; line-height: 1.45; }
+.scroll { overflow-x: auto; }
+table { border-collapse: separate; border-spacing: 26px 10px; margin-left: -26px; }
+th { font-size: 11px; font-weight: 600; opacity: .5; text-align: center; }
+th.l, td.l { text-align: left; }
+td { text-align: center; vertical-align: middle; }
+td.l { font-size: 13px; font-weight: 600; white-space: nowrap; }
+td.l span { display: block; font-weight: 400; font-size: 11.5px; opacity: .55; white-space: normal; max-width: 280px; margin-top: 2px; }
+.tip { font-size: 12px; opacity: .55; margin-top: 8px; }
+</style></head>
+<body>
+<h1>couplet — иконка</h1>
+<p class="sub">Основа — <code>design_handoff_couplet_icon/couplet-icons.dc.html</code>: холст 1024,
+сквиркл 824 с радиусом 185, Playfair Display Italic 500, курсор 114×595 (радиус 57, слева 488, сверху 114),
+знак поверх курсора. Каждая иконка — тот же мастер, уменьшенный трансформом, поэтому прозрачные поля
+по гайдлайнам macOS сохраняются на любом размере. Шрифт вшит, сеть не нужна.</p>
+<button id="t" type="button">Тёмный фон страницы</button>
+
+<h2>Основная иконка · 256px</h2>
+<p class="sub">Одна версия на все размеры: Playfair Display Italic 800, знак и курсор вместе ×1.25 от центра плитки, курсор 114,
+верх на 20 ниже, чем в дизайне, длина 555 (из 595); вся группа сдвинута на 12 вправо, чтобы знак не срезался скруглением. Свечения — где они были в дизайне, плюс у градиентных курсоров. Цвета из токенов: плитка <code>--bg-base</code> (aurora-light — <code>--bg-image</code>),
+знак <code>--color-heading</code>, курсор <code>--color-cursor</code>; где курсор совпадает с цветом текста — градиент
+«акцент → второй тон»; у aurora — родной градиент <code>--color-caret-top/bottom</code>. <code>default</code> — цвета из дизайна.</p>
+<div class="grid" id="all"></div>
+
+<h2>Размеры · 128 / 64 / 32 / 16 pt</h2>
+<p class="sub">16 pt — Finder списком, «Открыть с помощью»; 32 pt — Spotlight, «Свойства»; 48–128 pt — Dock, Cmd+Tab.
+Смотрите при масштабе 100% (Cmd+0).</p>
+<div class="scroll"><table id="sizes"></table></div>
+
+<h2>Подстройка длины курсора снизу</h2>
+<p class="sub">Верх курсора зафиксирован (на 20 ниже, чем в дизайне), укорачивается только низ. Длина в досмасштабных единицах:
+0 — 595 (было); 1 — 570; 2 — 555 (в основной сетке); 3 — 535.</p>
+<div class="scroll"><table id="tune"></table></div>
+
+<script>
+// Styles copied verbatim from couplet-icons.dc.html.
+var T = {
+  'default': { note: 'тема по умолчанию',
+    sq: 'background:linear-gradient(135deg,#6F5BD8 0%,#7FD6C2 100%); box-shadow:inset 0 0 0 4px rgba(255,255,255,.14), 0 20px 50px rgba(40,30,90,.3);',
+    cur: 'background:linear-gradient(180deg,#FF8ADF 0%,#6BE0FF 100%); box-shadow:0 0 84px rgba(255,138,223,.7), 0 0 168px rgba(107,224,255,.45);',
+    amp: 'color:#fff; text-shadow:0 15px 84px rgba(25,12,70,.28);' },
+  'classic-light': {
+    sq: 'background:#fafaf9; box-shadow:inset 0 0 0 4px rgba(0,0,0,.06), 0 20px 50px rgba(28,25,23,.2);',
+    cur: 'background:#2563eb;', amp: 'color:#1c1917;' },
+  'classic-dark': {
+    sq: 'background:#1b1a2a; box-shadow:inset 0 0 0 4px rgba(255,255,255,.08), 0 20px 50px rgba(0,0,0,.4);',
+    cur: 'background:#c9a6f2;',
+    amp: 'margin:0 -45px 38px 0; padding-right:114px; background:linear-gradient(120deg,#f07fb0 0%,#8fd3e8 55%,#b59cf0 100%); -webkit-background-clip:text; background-clip:text; color:transparent;' },
+  'aurora-light': {
+    sq: 'background:linear-gradient(160deg,#f7f5fd 0%,#eef7f4 100%); box-shadow:inset 0 0 0 4px rgba(0,0,0,.05), 0 20px 50px rgba(40,30,90,.2);',
+    cur: 'background:linear-gradient(180deg,#f78cc7 0%,#7edff2 100%); box-shadow:0 0 68px rgba(247,140,199,.45);',
+    amp: 'color:#5b4bc4;' },
+  'aurora-dark': {
+    sq: 'background:#171629; box-shadow:inset 0 0 0 4px rgba(255,255,255,.08), 0 20px 50px rgba(0,0,0,.4);',
+    cur: 'background:linear-gradient(180deg,#f78cc7 0%,#7edff2 100%); box-shadow:0 0 84px rgba(247,140,199,.6), 0 0 168px rgba(143,159,245,.45);',
+    amp: 'color:#e4e4f2;' },
+  'blueprint-light': {
+    sq: 'background:#f4f4ef; box-shadow:inset 0 0 0 4px rgba(0,0,0,.06), 0 20px 50px rgba(30,50,100,.2);',
+    cur: 'background:#d9452f;', amp: 'color:#2b55a8;' },
+  'blueprint-dark': {
+    sq: 'background:#0f3d8f; box-shadow:inset 0 0 0 4px rgba(255,255,255,.1), 0 20px 50px rgba(10,30,80,.45);',
+    cur: 'background:#e8503a;', amp: 'color:#f1f5ff;' },
+  'phosphor-light': {
+    sq: 'background:#edf1e0; box-shadow:inset 0 0 0 4px rgba(0,0,0,.06), 0 20px 50px rgba(40,70,30,.2);',
+    cur: 'background:#b8860b;', amp: 'color:#1f6b3a;' },
+  'phosphor-dark': {
+    sq: 'background:#090c09; box-shadow:inset 0 0 0 4px rgba(255,255,255,.06), 0 20px 50px rgba(0,0,0,.45);',
+    cur: 'background:#ffb000; box-shadow:0 0 84px rgba(255,176,0,.55);',
+    amp: 'color:#4ade80; text-shadow:0 0 68px rgba(74,222,128,.55);' }
+};
+var B = {
+  'backlog-coral': {
+    sq: 'background:linear-gradient(135deg,#E8563F 0%,#F4A57C 100%); box-shadow:inset 0 0 0 4px rgba(255,255,255,.14), 0 20px 50px rgba(120,40,20,.3);',
+    cur: 'background:#1F1B2E;', amp: 'color:#F7F1E6;' },
+  'backlog-paper': {
+    sq: 'background:#F3EDE2; box-shadow:inset 0 0 0 4px rgba(0,0,0,.05), 0 20px 50px rgba(60,40,20,.2);',
+    cur: 'background:#E8563F;', amp: 'color:#1F1B2E;' },
+  'backlog-ink': {
+    sq: 'background:#1F1B2E; box-shadow:inset 0 0 0 4px rgba(255,255,255,.08), 0 20px 50px rgba(0,0,0,.45);',
+    cur: 'background:linear-gradient(180deg,#FF8A6A 0%,#E8563F 50%,#C13E7B 100%); box-shadow:0 0 100px rgba(232,86,63,.55);',
+    amp: 'color:#F3EDE2;' }
+};
+
+function icon(size, t, cls) {
+  var el = document.createElement('span');
+  el.className = 'ic' + (cls ? ' ' + cls : '');
+  el.style.width = el.style.height = size + 'px';
+  el.innerHTML = '<span class="m" style="transform:scale(' + (size / 1024) + ')"><span class="sq" style="' + t.sq +
+    '"><span class="cur" style="' + t.cur + '"></span><span class="amp" style="' + t.amp + '">&amp;</span></span></span>';
+  return el;
+}
+function rgba(hex, a) { var n = parseInt(hex.slice(1), 16); return 'rgba(' + (n >> 16) + ',' + (n >> 8 & 255) + ',' + (n & 255) + ',' + a + ')'; }
+
+// Token-driven palette.
+var K = {
+  'default':         { bg:'linear-gradient(135deg,#6F5BD8 0%,#7FD6C2 100%)', amp:'#ffffff', a:'#FF8ADF', b:'#6BE0FF', src:'цвета из дизайна', glow:[.7,.45], ampSh:'0 15px 84px rgba(25,12,70,.28)' },
+  'classic-light':   { bg:'#fafaf9', amp:'#292524', a:'#2563eb', b:'#7c3aed', src:'курсор = текст → --color-link → --color-glow', glow:[.45,.28] },
+  'classic-dark':    { bg:'#191724', amp:'#c4a7e7', a:'#9ccfd8', b:'#eb6f92', src:'курсор = текст → --color-link → --heading-grad-1[0]', glow:[.6,.4] },
+  'aurora-light':    { bg:'linear-gradient(150deg,#e7edea 0%,#efeeec 55%,#f6efe7 100%)', amp:'#5566ec', a:'#e0509f', b:'#2bb3d9', src:'--color-caret-top → --color-caret-bottom', glow:[.45,0] },
+  'aurora-dark':     { bg:'#171629', amp:'#8f9ff5', a:'#f78cc7', b:'#7edff2', src:'--color-caret-top → --color-caret-bottom', glow:[.6,.45], glowB:'#8f9ff5' },
+  'blueprint-light': { bg:'#f4f2e9', amp:'#123a7a', a:'#c0492b', solid:true, src:'--color-cursor' },
+  'blueprint-dark':  { bg:'#0c2b52', amp:'#ffffff', a:'#ff7a59', solid:true, src:'--color-cursor' },
+  'phosphor-light':  { bg:'#e9f0e4', amp:'#0f5c2e', a:'#9a5b00', solid:true, src:'--color-cursor' },
+  'phosphor-dark':   { bg:'#061008', amp:'#c9ffd8', a:'#ffcf6b', b:'#7fd8a0', src:'курсор = текст → --color-link → --color-italic', glow:[.55,.35], ampSh:'0 0 68px rgba(143,230,162,.55)' }
+};
+// caret geometry in the 824 squircle, before the ×1.25 group scale
+var CARET = { 0:[134, 595], 1:[134, 570], 2:[134, 555], 3:[134, 535] };
+var MAIN = 2, SC = 1.25, CW = 114, DX = 12;  // DX: whole group shifted right so the glyph ink is centred (22|47 → 34|34)
+function main(size, k, v) {
+  var d = K[k], g = CARET[v === undefined ? MAIN : v], w = CW / SC;
+  var cur = d.solid ? d.a : 'linear-gradient(180deg,' + d.a + ' 0%,' + d.b + ' 100%)';
+  var sh = (T[k] || T['default']).sq.match(/box-shadow:[^;]+;/)[0];
+  var el = document.createElement('span');
+  el.className = 'ic'; el.style.width = el.style.height = size + 'px';
+  el.innerHTML = '<span class="m" style="transform:scale(' + (size / 1024) + ')"><span class="sq" style="background:' + d.bg + '; ' + sh +
+    '"><span style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; transform:translateX(' + DX + 'px) scale(' + SC + ');">' +
+    '<span class="cur" style="background:' + cur + '; ' + glowCss(d) + ' width:' + w + 'px; border-radius:' + (w / 2) + 'px; left:' + (545 - w / 2) +
+    'px; top:' + g[0] + 'px; height:' + g[1] + 'px;"></span>' +
+    '<span class="amp" style="font-family:PF8,serif; font-weight:800; color:' + d.amp + ';' + (d.ampSh ? ' text-shadow:' + d.ampSh + ';' : '') + '">&amp;</span></span></span></span>';
+  return el;
+}
+function glowCss(d) {
+  if (!d.glow) return '';
+  var sh = '0 0 84px ' + rgba(d.a, d.glow[0]);
+  if (d.glow[1]) sh += ', 0 0 168px ' + rgba(d.glowB || d.b, d.glow[1]);
+  return 'box-shadow:' + sh + ';';
+}
+var gAll = document.getElementById('all');
+Object.keys(K).forEach(function (k) {
+  var c = document.createElement('div'); c.className = 'cell';
+  c.appendChild(main(256, k));
+  var d = K[k];
+  c.insertAdjacentHTML('beforeend', '<div class="name">' + k + '</div><div class="note"><code>' + d.a + '</code>' +
+    (d.solid ? '' : ' → <code>' + d.b + '</code>') + '<br>' + d.src + '</div>');
+  gAll.appendChild(c);
+});
+var st = document.getElementById('sizes');
+st.innerHTML = '<tr><th class="l">тема</th><th>128</th><th>64</th><th>32</th><th>16</th></tr>';
+Object.keys(K).forEach(function (k) {
+  var tr = document.createElement('tr'); tr.innerHTML = '<td class="l">' + k + '</td>';
+  [128, 64, 32, 16].forEach(function (s) { var td = document.createElement('td'); td.appendChild(main(s, k)); tr.appendChild(td); });
+  st.appendChild(tr);
+});
+var tt = document.getElementById('tune');
+var th = '<tr><th class="l">тема</th>';
+[0, 1, 2, 3].forEach(function (v) { th += '<th colspan="2">' + v + (v === MAIN ? ' · основной' : '') + '</th>'; });
+tt.innerHTML = th + '</tr>';
+Object.keys(K).forEach(function (k) {
+  var tr = document.createElement('tr'); tr.innerHTML = '<td class="l">' + k + '</td>';
+  [0, 1, 2, 3].forEach(function (v) { [128, 32].forEach(function (s) {
+    var td = document.createElement('td'); td.appendChild(main(s, k, v)); tr.appendChild(td); }); });
+  tt.appendChild(tr);
+});
+document.getElementById('t').addEventListener('click', function () { document.body.classList.toggle('dark'); });
+</script>
+</body></html>
