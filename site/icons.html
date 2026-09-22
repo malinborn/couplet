@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>couplet — иконка по темам</title>
+<link rel="stylesheet" href="/styles/fonts.css" />
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: Inter, system-ui, sans-serif;
+    background: #f7f7f8; color: #16161a;
+    margin: 0; padding: 40px 48px 80px;
+  }
+  body[data-page='dark'] { background: #0e0e12; color: #e9e9ef; }
+  h1 { font-family: Merriweather, Georgia, serif; font-weight: 400; font-size: 27px; margin: 0 0 6px; }
+  .sub { font-size: 13.5px; opacity: .6; margin: 0 0 8px; max-width: 760px; line-height: 1.55; }
+  .bar { display: flex; gap: 10px; margin: 22px 0 34px; }
+  button {
+    font: inherit; font-size: 13px; padding: 7px 14px; border-radius: 8px; cursor: pointer;
+    border: 1px solid rgba(128,128,128,.35); background: transparent; color: inherit;
+  }
+  button[aria-pressed='true'] { background: rgba(128,128,128,.18); }
+  h2 { font-size: 12px; letter-spacing: .13em; text-transform: uppercase; opacity: .45; margin: 34px 0 16px; font-weight: 700; }
+
+  .grid { display: grid; grid-template-columns: repeat(4, max-content); gap: 30px 34px; }
+  .cell { text-align: center; }
+  .cell .name { font-size: 11.5px; opacity: .6; margin-top: 9px; font-family: ui-monospace, monospace; }
+
+  /* ── the icon: a fixed silhouette, only the palette changes ── */
+  .icon {
+    --size: 128px;
+    width: var(--size); height: var(--size);
+    border-radius: calc(var(--size) * 0.225);
+    background: var(--tile);
+    position: relative; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 1px 2px rgba(0,0,0,.14), 0 8px 22px rgba(0,0,0,.10);
+  }
+  /* caret sits BEHIND the ampersand, exactly as in the reference */
+  .icon .caret {
+    position: absolute;
+    width: calc(var(--size) * 0.135);
+    height: calc(var(--size) * 0.64);
+    border-radius: calc(var(--size) * 0.0675);
+    background: var(--caret);
+    left: 64%; top: 49%; transform: translate(-50%, -50%);
+    z-index: 0;
+  }
+  .icon .amp {
+    position: relative; z-index: 1;
+    font-family: Merriweather, Georgia, serif;
+    font-style: italic; font-weight: 700;
+    font-size: calc(var(--size) * 0.72);
+    line-height: 1;
+    color: var(--amp);
+    background: var(--ampGrad, none);
+    -webkit-background-clip: var(--ampClip, border-box);
+    background-clip: var(--ampClip, border-box);
+    -webkit-text-fill-color: var(--ampFill, currentColor);
+    margin-right: calc(var(--size) * 0.22);
+    margin-top: calc(var(--size) * -0.04);
+  }
+  .small .icon { --size: 32px; box-shadow: 0 1px 2px rgba(0,0,0,.18); }
+  .smallrow { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
+  /* `hidden` sets display:none at the same specificity as .smallrow's
+     display:flex, so source order would otherwise let the row show through. */
+  .smallrow[hidden] { display: none; }
+
+  .refbox { display: flex; gap: 28px; align-items: center; margin-bottom: 8px; }
+  .refbox img { width: 128px; height: 128px; }
+  .refnote { font-size: 13px; line-height: 1.6; opacity: .72; max-width: 460px; }
+</style>
+</head>
+<body data-page="light">
+
+<h1>couplet — иконка следует за темой</h1>
+<p class="sub">Силуэт зафиксирован: амперсанд и каретка за ним. Меняются только плитка, цвет амперсанда, цвет каретки и наличие градиента — всё берётся из токенов соответствующей темы в <code>src/lib/theme/</code>.</p>
+
+<div class="bar">
+  <button id="pagetheme" type="button" aria-pressed="false">Тёмный фон страницы</button>
+  <button id="sizetoggle" type="button" aria-pressed="false">Показать в 32px (размер в Dock мелким)</button>
+</div>
+
+<h2>Твой исходник рядом с генерацией</h2>
+<div class="refbox">
+  <img src="/ref-icon.png" alt="reference icon" />
+  <div id="refpair"></div>
+  <p class="refnote">Слева — твой исходник. Справа — <code>blueprint-light</code>, собранный из токенов темы. Палитра совпадает почти один в один: ты нарисовал существующую тему, не подозревая об этом. Отличается только глиф: у тебя каллиграфический амперсанд с завитком, здесь — курсивный Merriweather, который уже лежит в бандле приложения.</p>
+</div>
+
+<h2>Все восемь тем</h2>
+<div class="grid" id="grid"></div>
+
+<h2 id="smallhead" hidden>В 32px</h2>
+<div class="smallrow small" id="smallgrid" hidden></div>
+
+<script type="module">
+// Значения взяты дословно из src/lib/theme/*.css.
+// amp  = --color-heading   (заголовочный тон темы)
+// car  = --color-cursor, кроме тем, где курсор совпадает с текстом —
+//        там берётся --color-link, иначе каретка сливается с амперсандом.
+const THEMES = [
+  { id: 'light',           tile: '#fafaf9', amp: '#292524', car: '#2563eb', carFrom: '--color-link' },
+  { id: 'dark',            tile: '#191724', amp: '#c4a7e7', car: '#9ccfd8', carFrom: '--color-link' },
+  { id: 'aurora-light',    tile: '#efeeec', amp: '#5566ec', car: '#e0509f',
+    grad: 'linear-gradient(100deg, #d6438f 0%, #7f5ce0 32%, #12849f 64%, #5566ec 100%)' },
+  { id: 'aurora-dark',     tile: '#171629', amp: '#8f9ff5', car: '#f78cc7',
+    grad: 'linear-gradient(100deg, #f78cc7 0%, #b48cf0 30%, #7edff2 62%, #8f9ff5 100%)' },
+  { id: 'blueprint-light', tile: '#f4f2e9', amp: '#123a7a', car: '#c0492b' },
+  { id: 'blueprint-dark',  tile: '#0c2b52', amp: '#ffffff', car: '#ff7a59' },
+  { id: 'phosphor-light',  tile: '#e9f0e4', amp: '#0f5c2e', car: '#9a5b00' },
+  { id: 'phosphor-dark',   tile: '#061008', amp: '#c9ffd8', car: '#ffcf6b',
+    grad: 'linear-gradient(100deg, #ffcf6b 0%, #b8f0a8 38%, #c9ffd8 100%)' },
+];
+
+function makeIcon(t, withGrad) {
+  const el = document.createElement('span');
+  el.className = 'icon';
+  el.style.setProperty('--tile', t.tile);
+  el.style.setProperty('--amp', t.amp);
+  el.style.setProperty('--caret', t.car);
+  if (withGrad && t.grad) {
+    el.style.setProperty('--ampGrad', t.grad);
+    el.style.setProperty('--ampClip', 'text');
+    el.style.setProperty('--ampFill', 'transparent');
+  }
+  el.innerHTML = '<span class="caret"></span><span class="amp">&amp;</span>';
+  return el;
+}
+
+const grid = document.getElementById('grid');
+for (const t of THEMES) {
+  const cell = document.createElement('div');
+  cell.className = 'cell';
+  cell.appendChild(makeIcon(t, true));
+  const n = document.createElement('div');
+  n.className = 'name';
+  n.textContent = t.id + (t.grad ? ' · градиент' : '');
+  cell.appendChild(n);
+  grid.appendChild(cell);
+}
+
+document.getElementById('refpair').appendChild(
+  makeIcon(THEMES.find(t => t.id === 'blueprint-light'), false)
+);
+
+const smallGrid = document.getElementById('smallgrid');
+for (const t of THEMES) smallGrid.appendChild(makeIcon(t, true));
+
+document.getElementById('pagetheme').addEventListener('click', e => {
+  const on = document.body.dataset.page !== 'dark';
+  document.body.dataset.page = on ? 'dark' : 'light';
+  e.currentTarget.setAttribute('aria-pressed', String(on));
+});
+document.getElementById('sizetoggle').addEventListener('click', e => {
+  const on = smallGrid.hidden;
+  smallGrid.hidden = !on;
+  document.getElementById('smallhead').hidden = !on;
+  e.currentTarget.setAttribute('aria-pressed', String(on));
+});
+</script>
+</body>
+</html>
