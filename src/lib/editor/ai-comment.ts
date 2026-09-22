@@ -9,6 +9,7 @@ import {
 } from '@codemirror/view';
 import { quotePreview, splitThread, type CommentThread } from '../comment-format';
 import { makeWidgetTextSelectable } from './widget-text-selection';
+import { t } from '../i18n';
 
 /**
  * What a comment widget can ask the app to do. Carried on the `addAiComment`
@@ -154,14 +155,29 @@ export const removeAiComment = StateEffect.define<string>();
 /** Removes every comment widget — used when the sidecar file is reloaded wholesale. */
 export const clearAiComments = StateEffect.define<null>();
 
-const STATUS_LABEL: Record<CommentThread['status'], string> = {
-  open: 'waiting for agent',
-  // Says the true thing even when the countdown next to it is not running —
-  // after a reload, or once the card has been rebuilt for another reason.
-  paused: 'not sent yet',
-  answered: 'answered',
-  resolved: 'resolved',
-};
+/**
+ * A function, not a module-level table: this module is imported through
+ * `App.svelte`'s static graph, which is evaluated before `main.ts` installs
+ * the catalog (`installCatalog` runs after `mount()`'s dependencies, not
+ * before them). A `Record` built at module scope would freeze in whatever
+ * language happened to be active at import time — normally none yet, so
+ * every key. Called from `toDOM()`, well after boot.
+ */
+function statusLabel(status: CommentThread['status']): string {
+  // 'paused' says the true thing even when the countdown next to it is not
+  // running — after a reload, or once the card has been rebuilt for another
+  // reason.
+  switch (status) {
+    case 'open':
+      return t('editor.ai_comment.status.open');
+    case 'paused':
+      return t('editor.ai_comment.status.paused');
+    case 'answered':
+      return t('editor.ai_comment.status.answered');
+    case 'resolved':
+      return t('editor.ai_comment.status.resolved');
+  }
+}
 
 /**
  * Class on the countdown label and the "send now" button while there is no
@@ -175,8 +191,15 @@ export const COMMENT_IDLE = 'cm-ai-comment-idle';
  */
 export const COMMENT_SEND_LABEL = 'cm-ai-comment-send-label';
 
-/** What the send-now button says while a pause is running. */
-export const COMMENT_SEND_TEXT = 'send now';
+/**
+ * What the send-now button says while a pause is running. A function, for
+ * the same reason `statusLabel` above is: this module's exports are read by
+ * both this file and `App.svelte`, at module-evaluation time in the latter's
+ * case, which is before `main.ts` installs the catalog.
+ */
+export function commentSendText(): string {
+  return t('editor.ai_comment.send_now');
+}
 
 /**
  * Class on the button between "it fired" and "the card was rebuilt". Visible
@@ -193,7 +216,9 @@ export const COMMENT_SENDING = 'cm-ai-comment-sending';
  * happened". This covers the second in between, where a button that simply
  * vanished under the pointer would read as a misclick.
  */
-export const COMMENT_SENDING_TEXT = 'sending…';
+export function commentSendingText(): string {
+  return t('editor.ai_comment.sending');
+}
 
 export class CommentWidget extends WidgetType {
   constructor(readonly spec: CommentSpec) {
@@ -250,8 +275,8 @@ export class CommentWidget extends WidgetType {
     const head = document.createElement('div');
     head.className = 'cm-ai-comment-head';
     head.textContent = orphaned
-      ? `${thread.id} · anchor lost`
-      : `${thread.id} · ${STATUS_LABEL[thread.status]}`;
+      ? `${thread.id} · ${t('editor.ai_comment.anchor_lost')}`
+      : `${thread.id} · ${statusLabel(thread.status)}`;
 
     // The quoted fragment, right-aligned in the header. With several cards
     // stacked under one paragraph, the id and status alone do not say which
@@ -296,7 +321,9 @@ export class CommentWidget extends WidgetType {
     const input = document.createElement('textarea');
     input.className = 'cm-ai-comment-input';
     input.rows = 1;
-    input.placeholder = frozen.length ? 'Reply — saved as you type' : 'Comment — saved as you type';
+    input.placeholder = frozen.length
+      ? t('editor.ai_comment.placeholder_reply')
+      : t('editor.ai_comment.placeholder_comment');
     input.value = this.spec.draft ?? editable;
     // Lets the app find this box by thread after a rebuild.
     input.setAttribute('data-comment-input', thread.id);
@@ -386,10 +413,10 @@ export class CommentWidget extends WidgetType {
     // rebuilding the widget. A rebuild is what replaces the textarea, and
     // replacing a textarea once a second (which is what a countdown held in
     // state would do) drops the caret and kills IME composition mid-word.
-    const sendNow = button(COMMENT_SEND_TEXT, () => actions.sendNow(thread.id));
+    const sendNow = button(commentSendText(), () => actions.sendNow(thread.id));
     sendNow.className = `cm-ai-comment-button cm-ai-comment-send-now ${COMMENT_IDLE}`;
     sendNow.setAttribute('data-comment-send-now', thread.id);
-    sendNow.title = 'Hand this comment to the agent now, without waiting out the pause';
+    sendNow.title = t('editor.ai_comment.send_now_title');
 
     // The countdown lives *inside* the button (#61). Next to it, at the far
     // edge of the card, the number stated a fact ("sending in 13s") while the
@@ -404,7 +431,7 @@ export class CommentWidget extends WidgetType {
     sendNow.textContent = '';
     const sendLabel = document.createElement('span');
     sendLabel.className = COMMENT_SEND_LABEL;
-    sendLabel.textContent = COMMENT_SEND_TEXT;
+    sendLabel.textContent = commentSendText();
     sendNow.appendChild(sendLabel);
 
     const countdown = document.createElement('span');
@@ -413,21 +440,21 @@ export class CommentWidget extends WidgetType {
     sendNow.appendChild(countdown);
 
     button(
-      'send to agent',
+      t('editor.ai_comment.send_to_agent'),
       () => {
         // Whatever is in the box is part of what the agent is being handed,
         // so it has to be in the file before the prompt leaves.
         actions.flush(thread.id);
         actions.handoff(thread.id);
       },
-      'paste it into your agent'
+      t('editor.ai_comment.paste_confirm')
     );
     const answer = frozen[frozen.length - 1];
     if (thread.status === 'answered' && answer) {
-      button('insert into text', () => actions.insertIntoText(thread.id, answer.text));
+      button(t('editor.ai_comment.insert_into_text'), () => actions.insertIntoText(thread.id, answer.text));
     }
     if (thread.status !== 'resolved') {
-      button('resolve', () => actions.resolve(thread.id));
+      button(t('editor.ai_comment.resolve'), () => actions.resolve(thread.id));
     }
 
     // Autosave is invisible, and invisible saving is exactly what people did

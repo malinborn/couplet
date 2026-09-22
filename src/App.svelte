@@ -12,6 +12,8 @@
     onSessionRestored,
     onUpdateAvailable,
     onUpdateDismissed,
+    onCheckUpdatesRequested,
+    onLanguageChangeFailed,
     onAiCommand,
     onCommentsChanged,
     type AiCommandPayload,
@@ -56,9 +58,9 @@
     CommentWidget,
     COMMENT_IDLE,
     COMMENT_SEND_LABEL,
-    COMMENT_SEND_TEXT,
     COMMENT_SENDING,
-    COMMENT_SENDING_TEXT,
+    commentSendText,
+    commentSendingText,
     type CommentActions,
   } from './lib/editor/ai-comment';
   import {
@@ -73,6 +75,7 @@
   } from './lib/comment-format';
   import { buildBindPrompt } from './lib/ai-bind';
   import { applyJsonOffer, formatJsonCommand } from './lib/editor/json-paste';
+  import { t } from './lib/i18n';
   import './lib/theme/dark.css';
   import './lib/theme/light.css';
   import './lib/theme/aurora-dark.css';
@@ -235,7 +238,7 @@
   async function handleSaveAs(): Promise<void> {
     const name = fileState.filePath
       ? fileState.filePath.split('/').pop()
-      : 'Untitled.md';
+      : t('ui.untitled_filename');
     const path = await showSaveDialog(name);
     if (!path) return;
     fileState.filePath = path;
@@ -364,8 +367,8 @@
     } else {
       // Ask user
       const reload = await ask(
-        'The file has been modified externally. Reload and lose your changes?',
-        { title: 'External Change', kind: 'warning' }
+        t('dialog.external_change.message'),
+        { title: t('dialog.external_change.title'), kind: 'warning' }
       );
       if (reload) {
         try {
@@ -477,7 +480,7 @@
         button.classList.remove(COMMENT_SENDING);
         (button as HTMLButtonElement).disabled = false;
         const verb = button.querySelector(`.${COMMENT_SEND_LABEL}`);
-        if (verb) verb.textContent = COMMENT_SEND_TEXT;
+        if (verb) verb.textContent = commentSendText();
       }
     }
     if (!commentCountdowns.size && commentTicker !== null) {
@@ -522,7 +525,7 @@
       button.classList.toggle(COMMENT_IDLE, !sending);
       button.classList.toggle(COMMENT_SENDING, sending);
       (button as HTMLButtonElement).disabled = sending;
-      if (verb) verb.textContent = sending ? COMMENT_SENDING_TEXT : COMMENT_SEND_TEXT;
+      if (verb) verb.textContent = sending ? commentSendingText() : commentSendText();
     }
     if (!commentCountdowns.size && commentTicker !== null) {
       clearInterval(commentTicker);
@@ -656,9 +659,10 @@
     const card = view?.dom.querySelector(`[data-comment-thread="${CSS.escape(id)}"]`);
     const label = card?.querySelector('.cm-ai-comment-saved');
     if (!label) return;
-    label.textContent = 'saved';
+    const savedText = t('editor.ai_comment.saved_label');
+    label.textContent = savedText;
     setTimeout(() => {
-      if (label.textContent === 'saved') label.textContent = '';
+      if (label.textContent === savedText) label.textContent = '';
     }, 2500);
   }
 
@@ -1518,8 +1522,30 @@
       toasts.push({ kind: 'update', latest: info.latest, current: info.current, highlight: info.highlight });
     });
 
+    // Manual "Check for Updates…" (#82). Routed to exactly one window — see
+    // `onCheckUpdatesRequested`'s doc comment — and, unlike the automatic
+    // poll above, always answers: found piggybacks on the `update` toast via
+    // `report_update`'s `force` flag (handled by `onUpdateAvailable` above,
+    // no extra code needed here), already-latest and network-failure get
+    // their own toasts since the automatic checker never surfaces those.
+    const unlistenCheckUpdatesRequested = onCheckUpdatesRequested(() => {
+      void import('./lib/updater').then(async ({ checkForUpdatesManually }) => {
+        const result = await checkForUpdatesManually();
+        if (result === 'none') toasts.push({ kind: 'update-none' });
+        else if (result === 'error') toasts.push({ kind: 'update-check-failed' });
+      });
+    });
+
     const unlistenUpdateDismissed = onUpdateDismissed(() => {
       toasts.dismissKind('update');
+    });
+
+    // Surfaces a language change that failed to persist (#see finding in
+    // i18n code review) — this app already decided silent write failures
+    // need a toast (`save-error`, `comment-error`); a language pick that
+    // silently does nothing is the same failure shape.
+    const unlistenLanguageChangeFailed = onLanguageChangeFailed((message) => {
+      toasts.push({ kind: 'language-error', message });
     });
 
     // Offer the previous session, but only in the window that exists at launch —
@@ -1573,7 +1599,9 @@
       unlistenDragDrop.then((fn) => fn());
       unlistenSessionRestored.then((fn) => fn());
       unlistenUpdateAvailable.then((fn) => fn());
+      unlistenCheckUpdatesRequested.then((fn) => fn());
       unlistenUpdateDismissed.then((fn) => fn());
+      unlistenLanguageChangeFailed.then((fn) => fn());
       window.removeEventListener('blur', handleWindowBlur);
       if (autoSaveTimer !== null) clearTimeout(autoSaveTimer);
       if (recoveryInterval !== null) clearInterval(recoveryInterval);

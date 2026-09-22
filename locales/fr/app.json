@@ -1,0 +1,140 @@
+{
+  "toast.dismiss": "Ignorer",
+
+  "toast.save_error.headline": "Impossible d'enregistrer {fileName}",
+  "toast.save_error.instruction": "Vos modifications sont toujours là — corrigez la cause, puis appuyez sur",
+
+  "toast.comment_error.headline": "Impossible d'enregistrer les commentaires sur {fileName}",
+  "toast.comment_error.instruction": "Ce que vous avez saisi est toujours dans le champ — corrigez la cause, puis continuez à écrire",
+
+  "toast.language_error.headline": "Impossible de changer la langue",
+
+  "toast.update.headline": "mdmini {latest} disponible",
+  "toast.update.current": "vous avez la v{current}",
+  "toast.update.copy_title": "Cliquer pour copier",
+  "toast.update.copied": "Copié !",
+
+  "toast.update_none.message": "Vous avez déjà la dernière version",
+  "toast.update_check_failed.message": "Impossible de vérifier les mises à jour — vérifiez votre connexion",
+
+  "toast.session.windows.one": "{count} fenêtre de votre dernière session",
+  "toast.session.windows.few": "{count} fenêtres de votre dernière session",
+  "toast.session.windows.many": "{count} fenêtres de votre dernière session",
+  "toast.session.windows.other": "{count} fenêtres de votre dernière session",
+  "toast.session.reopen_prefix": "Appuyez sur",
+  "toast.session.reopen_suffix": "pour rouvrir",
+
+  "toast.ai_nudge.message": "<strong>Votre IA peut piloter md-mini</strong> <span class=\"md-toast-dim\">— voir le menu <strong>IA</strong></span>",
+  "toast.ai_nudge.action": "Prise en main",
+
+  "toast.themes_nudge.message": "<strong>md-mini a des thèmes</strong> <span class=\"md-toast-dim\">— quatre dans le menu <strong>Thème</strong></span>",
+
+  "toast.json_offer.message": "<strong>Cela ressemble à du JSON</strong> <span class=\"md-toast-dim\">— le développer ?</span>",
+  "toast.json_offer.action": "Formater",
+  "toast.json_offer.or": "ou",
+
+  "toast.ai_bind_copied.saved": "<strong>Prompt copié</strong> <span class=\"md-toast-dim\">— envoyez-le à votre agent IA pour qu'il se connecte à ce fichier</span>",
+  "toast.ai_bind_copied.unsaved": "<strong>Enregistrez d'abord le fichier</strong> <span class=\"md-toast-dim\">— un agent a besoin d'un chemin pour l'ouvrir</span>",
+
+  "toast.ai_watch_copied.saved": "<strong>Commande watch copiée</strong> <span class=\"md-toast-dim\">— collez-la dans la session de votre agent</span>",
+  "toast.ai_watch_copied.unsaved": "<strong>Enregistrez d'abord le fichier</strong> <span class=\"md-toast-dim\">— un document non enregistré n'a pas de chemin à surveiller</span>",
+
+  "toast.ai_first_use.message": "<strong>C'était votre IA</strong> <span class=\"md-toast-dim\">— md-mini est connecté</span>",
+  "toast.ai_first_use.more": "Plus dans le menu <strong>IA</strong> → Prise en main",
+
+  "editor.ai_comment.status.open": "en attente de l'agent",
+  "editor.ai_comment.status.paused": "pas encore envoyé",
+  "editor.ai_comment.status.answered": "répondu",
+  "editor.ai_comment.status.resolved": "résolu",
+  "editor.ai_comment.anchor_lost": "ancre perdue",
+  "editor.ai_comment.placeholder_reply": "Réponse — enregistrée au fil de la saisie",
+  "editor.ai_comment.placeholder_comment": "Commentaire — enregistré au fil de la saisie",
+  "editor.ai_comment.send_now": "envoyer maintenant",
+  "editor.ai_comment.sending": "envoi…",
+  "editor.ai_comment.send_now_title": "Transmettre ce commentaire à l'agent maintenant, sans attendre la pause",
+  "editor.ai_comment.send_to_agent": "envoyer à l'agent",
+  "editor.ai_comment.paste_confirm": "collez-le dans la session de votre agent",
+  "editor.ai_comment.insert_into_text": "insérer dans le texte",
+  "editor.ai_comment.resolve": "résoudre",
+  "editor.ai_comment.saved_label": "enregistré",
+
+  "editor.ai_ask.dismiss": "Ignorer",
+  "editor.ai_ask.multi_hint": " (sélectionnez-en, puis OK)",
+  "editor.ai_ask.placeholder": "Votre propre réponse…",
+  "editor.ai_ask.ok": "OK",
+
+  "editor.inspector.link_group": "Lien",
+  "editor.inspector.link_url": "URL du lien",
+  "editor.inspector.open": "Ouvrir",
+  "editor.inspector.jump_to_heading": "Aller au titre",
+  "editor.inspector.open_in_browser": "Ouvrir le lien dans le navigateur",
+  "editor.inspector.remove_link": "Supprimer le lien",
+  "editor.inspector.code_language_group": "Langage du bloc de code",
+  "editor.inspector.plain_text": "Texte brut",
+
+  "editor.selection_toolbar.group_label": "Mise en forme du texte",
+  "editor.selection_toolbar.bold": "Gras",
+  "editor.selection_toolbar.italic": "Italique",
+  "editor.selection_toolbar.strikethrough": "Barré",
+  "editor.selection_toolbar.code": "Code",
+  "editor.selection_toolbar.comment": "Commenter la sélection",
+  "editor.selection_toolbar.comment_tooltip": "Commentaire",
+  "editor.selection_toolbar.link": "Lien",
+
+  "editor.mermaid.zoom_out": "Zoom arrière",
+  "editor.mermaid.zoom_in": "Zoom avant",
+  "editor.mermaid.fit": "Ajuster le diagramme",
+  "editor.mermaid.resize_hint": "Faites glisser pour redimensionner, double-cliquez pour réinitialiser",
+  "editor.mermaid.rendering": "Rendu du diagramme…",
+
+  "editor.tables.toggle_mode": "Basculer retour à la ligne / pleine largeur",
+  "editor.tables.new_column": "Colonne",
+  "editor.tables.hotkeys_title": "Raccourcis clavier du tableau",
+
+  "editor.table_keys.col_next": "Colonne à droite",
+  "editor.table_keys.col_prev": "Colonne à gauche",
+  "editor.table_keys.col_prev_note": "Reste dans la ligne — ne change jamais de ligne",
+  "editor.table_keys.row_next": "Ligne suivante, même colonne",
+  "editor.table_keys.row_next_note": "Sur la dernière ligne : sort du tableau",
+  "editor.table_keys.break": "Retour à la ligne dans la cellule",
+  "editor.table_keys.commit": "Appliquer la modification",
+  "editor.table_keys.new_row": "Nouvelle ligne en dessous",
+  "editor.table_keys.cancel": "Annuler la modification",
+
+  "editor.block_templates.h1": "Titre 1",
+  "editor.block_templates.h2": "Titre 2",
+  "editor.block_templates.h3": "Titre 3",
+  "editor.block_templates.h4": "Titre 4",
+  "editor.block_templates.h5": "Titre 5",
+  "editor.block_templates.h6": "Titre 6",
+  "editor.block_templates.ul": "Liste à puces",
+  "editor.block_templates.ol": "Liste numérotée",
+  "editor.block_templates.task": "Case à cocher",
+  "editor.block_templates.code": "Bloc de code",
+  "editor.block_templates.table": "Tableau",
+  "editor.block_templates.quote": "Citation",
+  "editor.block_templates.hr": "Ligne horizontale",
+  "editor.block_templates.table_column": "Colonne {n}",
+
+  "editor.hover_menu.insert_block": "Insérer un bloc",
+
+  "editor.env.empty_value": "VIDE",
+
+  "ui.copy": "Copier",
+  "ui.copied": "Copié !",
+  "ui.untitled": "Sans titre",
+  "ui.untitled_filename": "Sans titre.md",
+  "ui.window_title": "{name} — {product}",
+
+  "ui.recent_files.title": "Fichiers récents",
+  "ui.recent_files.close": "Fermer",
+  "ui.recent_files.empty": "Aucun fichier récent.",
+
+  "ui.ai_bind.tooltip": "Copier un prompt qui connecte ce fichier à votre agent IA",
+  "ui.ai_bind.label": "Connecter à un agent IA",
+
+  "ui.ai_hint.text": "masquer la surbrillance des modifications IA",
+
+  "dialog.external_change.title": "Modification externe",
+  "dialog.external_change.message": "Le fichier a été modifié de l'extérieur. Recharger et perdre vos modifications ?"
+}

@@ -12,6 +12,7 @@ import {
   type ViewportController,
 } from './mermaid-viewport';
 import { getMermaidView, setMermaidView } from './mermaid-state';
+import { t } from '../../i18n';
 
 // -- Types --
 
@@ -273,7 +274,7 @@ class MermaidWidget extends WidgetType {
     if (!this.svg && !this.error) {
       const placeholder = document.createElement('div');
       placeholder.className = 'cm-md-mermaid-placeholder';
-      placeholder.textContent = 'Rendering diagram...';
+      placeholder.textContent = t('editor.mermaid.rendering');
       container.appendChild(placeholder);
     }
 

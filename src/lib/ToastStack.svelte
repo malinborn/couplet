@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ToastEntry, ToastStore } from './toasts.svelte';
+  import { t, plural } from './i18n';
 
   let {
     store,
@@ -53,7 +54,8 @@
       <div
         class="md-toast"
         class:md-toast-alarm={toast.payload.kind === 'save-error' ||
-          toast.payload.kind === 'comment-error'}
+          toast.payload.kind === 'comment-error' ||
+          toast.payload.kind === 'language-error'}
       >
         {#if toast.payload.kind === 'save-error'}
           <!-- Names the file and quotes the OS, because the two questions this
@@ -62,10 +64,10 @@
                that went away). It carries no action of its own: the next
                successful save withdraws it. -->
           <span class="md-toast-text">
-            <strong>Could not save {toast.payload.fileName}</strong>
+            <strong>{t('toast.save_error.headline', { fileName: toast.payload.fileName })}</strong>
           </span>
           <span class="md-toast-highlight">{toast.payload.message}</span>
-          <span class="md-toast-dim">Your edits are still here — fix the cause, then press <kbd>⌘S</kbd></span>
+          <span class="md-toast-dim">{t('toast.save_error.instruction')} <kbd>⌘S</kbd></span>
         {:else if toast.payload.kind === 'comment-error'}
           <!-- Deliberately not the document's wording: ⌘S would save the
                document and leave the comment exactly where it is. The text the
@@ -73,106 +75,122 @@
                the write, so the instruction is to fix the cause and keep
                typing. The message quotes the OS and names the sidecar. -->
           <span class="md-toast-text">
-            <strong>Could not save comments on {toast.payload.fileName}</strong>
+            <strong>{t('toast.comment_error.headline', { fileName: toast.payload.fileName })}</strong>
           </span>
           <span class="md-toast-highlight">{toast.payload.message}</span>
-          <span class="md-toast-dim">What you typed is still in the box — fix the cause, then keep typing</span>
+          <span class="md-toast-dim">{t('toast.comment_error.instruction')}</span>
+        {:else if toast.payload.kind === 'language-error'}
+          <!-- Deliberately not the document's save-error wording: this is a
+               menu action, not a document write, and pressing ⌘S would do
+               nothing for it. Names the failure and quotes the OS, same as
+               save-error, because the cause is usually actionable
+               (permissions, a full disk). No retry affordance: clicking the
+               language item again is the retry. -->
+          <span class="md-toast-text">
+            <strong>{t('toast.language_error.headline')}</strong>
+          </span>
+          <span class="md-toast-highlight">{toast.payload.message}</span>
         {:else if toast.payload.kind === 'update'}
           <span class="md-toast-text">
-            <strong>mdmini {toast.payload.latest}</strong> available
-            <span class="md-toast-dim">(you have v{toast.payload.current})</span>
+            <strong>{t('toast.update.headline', { latest: toast.payload.latest })}</strong>
+            <span class="md-toast-dim">({t('toast.update.current', { current: toast.payload.current })})</span>
           </span>
           <!-- What the release actually brings. A version number on its own
-               never told anyone why to upgrade. -->
+               never told anyone why to upgrade. Not translated — it is the
+               release's own note, pulled verbatim from GitHub. -->
           {#if toast.payload.highlight}
             <span class="md-toast-highlight">{toast.payload.highlight}</span>
           {/if}
-          <button class="md-toast-cmd" title="Click to copy" onclick={copyBrewCommand}>
-            {copied ? 'Copied!' : BREW_CMD}
+          <button class="md-toast-cmd" title={t('toast.update.copy_title')} onclick={copyBrewCommand}>
+            {copied ? t('toast.update.copied') : BREW_CMD}
           </button>
+        {:else if toast.payload.kind === 'update-none'}
+          <!-- Answers a manual "Check for Updates…" click (#82) — the automatic
+               checker stays silent on this outcome, but a click always gets a
+               reply. -->
+          <span class="md-toast-text">{t('toast.update_none.message')}</span>
+        {:else if toast.payload.kind === 'update-check-failed'}
+          <span class="md-toast-text">{t('toast.update_check_failed.message')}</span>
         {:else if toast.payload.kind === 'session'}
+          <!-- One message, not a number in its own <strong> plus a hand-rolled
+               ternary for the word after it — the ternary was correct for
+               English only, and pluralized text can't be assembled from two
+               translated halves in every language's word order anyway. -->
           <span class="md-toast-text">
-            <strong>{toast.payload.count}</strong>
-            {toast.payload.count === 1 ? 'window' : 'windows'} from your last session
+            <strong>{plural(toast.payload.count, 'toast.session.windows')}</strong>
           </span>
-          <span class="md-toast-dim">Press <kbd>⇧⌘T</kbd> to reopen</span>
+          <span class="md-toast-dim">
+            {t('toast.session.reopen_prefix')} <kbd>⇧⌘T</kbd> {t('toast.session.reopen_suffix')}
+          </span>
         {:else if toast.payload.kind === 'ai-nudge'}
           <!-- The menu is named in the body text, not only on the button: a
-               dismissed toast still delivers the one fact worth keeping. -->
-          <span class="md-toast-text">
-            <strong>Your AI can drive md-mini</strong>
-            <span class="md-toast-dim">— see the <strong>AI</strong> menu</span>
-          </span>
+               dismissed toast still delivers the one fact worth keeping.
+               One `t()` call for the whole sentence — see the class doc on
+               `toasts.svelte.ts` for why a per-node translation would produce
+               ungrammatical results in languages with a different clause
+               order. The catalog value carries its own <strong>/<span> markup —
+               this is `{@html}`, so never pass params to this key: an
+               interpolated value would render as raw HTML, not text. See the
+               allowlist test in `i18n.test.ts` (`HTML_KEYS`), which is what
+               actually enforces this across every locale. -->
+          <span class="md-toast-text">{@html t('toast.ai_nudge.message')}</span>
           <button
             class="md-toast-cmd md-toast-action"
             onclick={() => openGettingStarted(toast)}
           >
-            Getting Started
+            {t('toast.ai_nudge.action')}
           </button>
         {:else if toast.payload.kind === 'themes-nudge'}
           <!-- Меню названо в тексте, а не на кнопке: закрытый тост всё равно
-               должен оставить единственный факт, ради которого он был. -->
-          <span class="md-toast-text">
-            <strong>md-mini has themes</strong>
-            <span class="md-toast-dim">
-              — four of them in the <strong>Theme</strong> menu
-            </span>
-          </span>
+               должен оставить единственный факт, ради которого он был.
+               `{@html}` — never add a param to this key; see the note on the
+               `ai-nudge` branch above. -->
+          <span class="md-toast-text">{@html t('toast.themes_nudge.message')}</span>
         {:else if toast.payload.kind === 'json-offer'}
           <!-- The offer, not the act. Nothing has changed in the document at
                this point and nothing will until this button is clicked — a
-               false positive costs exactly one ignored toast. -->
-          <span class="md-toast-text">
-            <strong>That looks like JSON</strong>
-            <span class="md-toast-dim">— expand it?</span>
-          </span>
+               false positive costs exactly one ignored toast.
+               `{@html}` — never add a param to this key; see the note on the
+               `ai-nudge` branch above. -->
+          <span class="md-toast-text">{@html t('toast.json_offer.message')}</span>
           <button
             class="md-toast-cmd md-toast-action"
             onclick={() => { onFormatJson?.(); dismiss(toast); }}
           >
-            Format
+            {t('toast.json_offer.action')}
           </button>
-          <span class="md-toast-dim">or <kbd>⇧⌘J</kbd></span>
+          <span class="md-toast-dim">{t('toast.json_offer.or')} <kbd>⇧⌘J</kbd></span>
         {:else if toast.payload.kind === 'ai-bind-copied'}
           <!-- Same shape as the watch notice below, and for the same reason:
                the clipboard write is invisible, and the copy is only half the
-               action — the prompt still has to reach an agent. -->
+               action — the prompt still has to reach an agent.
+               Both branches render `{@html}` — never add a param to either
+               key; see the note on the `ai-nudge` branch above. -->
           {#if toast.payload.saved}
-            <span class="md-toast-text">
-              <strong>Prompt copied</strong>
-              <span class="md-toast-dim">— send it to your AI agent to connect it to this file</span>
-            </span>
+            <span class="md-toast-text">{@html t('toast.ai_bind_copied.saved')}</span>
           {:else}
-            <span class="md-toast-text">
-              <strong>Save the file first</strong>
-              <span class="md-toast-dim">— an agent needs a path to open</span>
-            </span>
+            <span class="md-toast-text">{@html t('toast.ai_bind_copied.unsaved')}</span>
           {/if}
         {:else if toast.payload.kind === 'ai-watch-copied'}
           <!-- Says what to do next, not just that a copy happened: the
                clipboard is only half the action — the prompt still has to be
-               pasted into an agent session. -->
+               pasted into an agent session.
+               Both branches render `{@html}` — never add a param to either
+               key; see the note on the `ai-nudge` branch above. -->
           {#if toast.payload.saved}
-            <span class="md-toast-text">
-              <strong>Watch command copied</strong>
-              <span class="md-toast-dim">— paste it into your agent's session</span>
-            </span>
+            <span class="md-toast-text">{@html t('toast.ai_watch_copied.saved')}</span>
           {:else}
-            <span class="md-toast-text">
-              <strong>Save the file first</strong>
-              <span class="md-toast-dim">— an unsaved document has no path to watch</span>
-            </span>
+            <span class="md-toast-text">{@html t('toast.ai_watch_copied.unsaved')}</span>
           {/if}
         {:else}
-          <span class="md-toast-text">
-            <strong>That was your AI</strong>
-            <span class="md-toast-dim">— md-mini is connected</span>
-          </span>
-          <span class="md-toast-dim">More in the <strong>AI</strong> menu → Getting Started</span>
+          <!-- `{@html}` on both spans — never add a param to either key; see
+               the note on the `ai-nudge` branch above. -->
+          <span class="md-toast-text">{@html t('toast.ai_first_use.message')}</span>
+          <span class="md-toast-dim">{@html t('toast.ai_first_use.more')}</span>
         {/if}
         <button
           class="md-toast-close"
-          title="Dismiss"
+          title={t('toast.dismiss')}
           onclick={() => dismiss(toast)}
         >✕</button>
       </div>

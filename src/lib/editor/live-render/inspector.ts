@@ -14,6 +14,7 @@ import {
 } from './inspector-model';
 import { openInspectorFor } from './effects';
 import { isAnchor, navigateToHeading } from '../heading-slugs';
+import { t } from '../../i18n';
 import '../../../styles/live-render-inspector.css';
 
 /**
@@ -161,19 +162,19 @@ function buildLinkPanel(view: EditorView, target: LinkTarget, autoFocus: boolean
   const panel = document.createElement('div');
   panel.className = 'cm-inspector-panel cm-inspector-panel-link';
   panel.setAttribute('role', 'group');
-  panel.setAttribute('aria-label', 'Link');
+  panel.setAttribute('aria-label', t('editor.inspector.link_group'));
 
   const input = document.createElement('input');
   input.type = 'text';
   input.className = 'cm-inspector-input';
   input.placeholder = 'https://…';
-  input.setAttribute('aria-label', 'Link URL');
+  input.setAttribute('aria-label', t('editor.inspector.link_url'));
   input.value = view.state.doc.sliceString(target.url.from, target.url.to);
 
   const openBtn = document.createElement('button');
   openBtn.type = 'button';
   openBtn.className = 'cm-inspector-btn';
-  openBtn.textContent = 'Open';
+  openBtn.textContent = t('editor.inspector.open');
 
   /**
    * Подпись зависит от того, куда ведёт ссылка: у якоря «открыть в браузере»
@@ -183,7 +184,7 @@ function buildLinkPanel(view: EditorView, target: LinkTarget, autoFocus: boolean
   function syncOpenLabel(): void {
     openBtn.setAttribute(
       'aria-label',
-      isAnchor(input.value) ? 'Jump to the heading' : 'Open link in browser'
+      isAnchor(input.value) ? t('editor.inspector.jump_to_heading') : t('editor.inspector.open_in_browser')
     );
   }
   syncOpenLabel();
@@ -192,8 +193,8 @@ function buildLinkPanel(view: EditorView, target: LinkTarget, autoFocus: boolean
   const removeBtn = document.createElement('button');
   removeBtn.type = 'button';
   removeBtn.className = 'cm-inspector-btn cm-inspector-btn-danger';
-  removeBtn.textContent = 'Remove link';
-  removeBtn.setAttribute('aria-label', 'Remove link');
+  removeBtn.textContent = t('editor.inspector.remove_link');
+  removeBtn.setAttribute('aria-label', t('editor.inspector.remove_link'));
 
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
@@ -261,16 +262,18 @@ function buildFencePanel(view: EditorView, target: FenceTarget): HTMLElement {
   const panel = document.createElement('div');
   panel.className = 'cm-inspector-panel cm-inspector-panel-fence';
   panel.setAttribute('role', 'group');
-  panel.setAttribute('aria-label', 'Code block language');
+  panel.setAttribute('aria-label', t('editor.inspector.code_language_group'));
 
   const select = document.createElement('select');
   select.className = 'cm-inspector-select';
-  select.setAttribute('aria-label', 'Code block language');
+  select.setAttribute('aria-label', t('editor.inspector.code_language_group'));
 
   const currentLang = view.state.doc.sliceString(target.lang.from, target.lang.to);
   const normalizedCurrent = currentLang.trim().toLowerCase();
 
-  const options: { value: string; label: string }[] = [{ value: '', label: 'Plain text' }];
+  const options: { value: string; label: string }[] = [
+    { value: '', label: t('editor.inspector.plain_text') },
+  ];
   let matchedValue: string | null = normalizedCurrent === '' ? '' : null;
   for (const opt of LANGUAGE_OPTIONS) {
     options.push(opt);

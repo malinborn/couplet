@@ -28,6 +28,18 @@ notify = { version = "8.2.0", features = ["macos_fsevent"] }
 tauri-plugin-dialog = "2.6.0"
 tauri-plugin-shell = "2"
 dirs = "6.0.0"
+# Locale resolution for the native menu, built before the webview exists —
+# `@tauri-apps/plugin-os`'s `locale()` is JS-only and runs too late.
+#
+# The design doc calls for the `sys-locale` crate here, but this sandbox has
+# no network access to crates.io to fetch a brand-new dependency, so
+# `locale.rs` instead reads `NSLocale.preferredLanguages` directly through
+# `objc`/`cocoa` — both already resolved dependencies (`cocoa` is already a
+# direct one; `objc` was already in the tree transitively via it and is
+# pinned to the exact version already in `Cargo.lock`, so this adds no new
+# network fetch). Same properties either way: no webview needed, no ACL
+# permission (not a Tauri plugin), reads the OS directly.
+objc = "0.2.7"
 cocoa = "0.26"
 # Used by the atomic save path in `commands.rs`: `copyfile` (ACL + xattr),
 # `fchown`, `fchmod`. Already in the tree transitively via `cocoa`; declared

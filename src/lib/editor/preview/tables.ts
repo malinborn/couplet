@@ -39,6 +39,7 @@ import {
   COMMENT_ANCHOR_CLASS,
   type CommentAnchorSpan,
 } from '../ai-comment';
+import { t } from '../../i18n';
 
 /** Class of the per-cell nested editing host that carries the cell's text. */
 export const CELL_TEXT_CLASS = 'cm-md-table-celltext';
@@ -136,7 +137,7 @@ function deleteRow(view: EditorView, ctx: TableContext, dataRowIndex: number): v
 
 function addColumn(view: EditorView, ctx: TableContext): void {
   const grid = tableToGrid(ctx);
-  grid[0].push('New');
+  grid[0].push(t('editor.tables.new_column'));
   for (let i = 1; i < grid.length; i++) {
     grid[i].push('-');
   }
@@ -1534,7 +1535,7 @@ function buildHeaderCtrlCell(view: EditorView, ctx: TableContext): HTMLElement {
   const toggleBtn = mkBtn('⇔', 'cm-md-table-btn-toggle', () => {
     view.dispatch({ effects: toggleTableMode.of({ pos: ctx.nodeFrom }) });
   });
-  toggleBtn.title = 'Toggle wrap / full width';
+  toggleBtn.title = t('editor.tables.toggle_mode');
   cellEl.appendChild(toggleBtn);
 
   // ⓘ — the cell-editing keys, rendered from the list the key handler resolves

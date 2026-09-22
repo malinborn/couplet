@@ -2,7 +2,8 @@ import { computePosition, flip, offset } from '@floating-ui/dom';
 import { GutterMarker, gutter } from '@codemirror/view';
 import type { EditorView, BlockInfo } from '@codemirror/view';
 import type { Extension } from '@codemirror/state';
-import { blockTemplates, type BlockTemplate } from './block-templates';
+import { blockTemplates, resolveTemplateInsert, type BlockTemplate } from './block-templates';
+import { t } from '../i18n';
 
 let activePopup: HTMLElement | null = null;
 let activeView: EditorView | null = null;
@@ -36,7 +37,7 @@ function showPopup(button: HTMLElement, view: EditorView, linePos: number): void
 
     const labelSpan = document.createElement('span');
     labelSpan.className = 'cm-hover-menu-item-label';
-    labelSpan.textContent = tpl.label;
+    labelSpan.textContent = t(tpl.labelKey);
 
     const detailSpan = document.createElement('span');
     detailSpan.className = 'cm-hover-menu-item-detail';
@@ -78,16 +79,14 @@ function applyCommand(view: EditorView, linePos: number, cmd: BlockTemplate): vo
   const lineText = line.text;
 
   // If line is empty, replace it; otherwise prepend the insert text
-  let insertText: string;
+  const insertText = resolveTemplateInsert(cmd);
   let from: number;
   let to: number;
 
   if (lineText.trim() === '') {
-    insertText = cmd.insert;
     from = line.from;
     to = line.to;
   } else {
-    insertText = cmd.insert;
     from = line.from;
     to = line.from;
   }
@@ -117,7 +116,7 @@ class BlockMenuMarker extends GutterMarker {
     btn.type = 'button';
     btn.className = 'cm-hover-menu-btn';
     btn.textContent = '+';
-    btn.setAttribute('aria-label', 'Insert block');
+    btn.setAttribute('aria-label', t('editor.hover_menu.insert_block'));
 
     btn.addEventListener('click', (e) => {
       e.stopPropagation();

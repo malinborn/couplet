@@ -28,6 +28,7 @@ import {
   type CellEditSession,
 } from '../cell-edit-session';
 import { attachHotkeyTooltips, type TooltipHost } from './toolbar-tooltip';
+import { t } from '../../i18n';
 import '../../../styles/live-render.css';
 
 /**
@@ -242,7 +243,14 @@ function currentTarget(view: EditorView): ToolbarTarget | null {
 interface FormatButtonSpec {
   kind: InlineFormatKind;
   label: string;
-  ariaLabel: string;
+  /**
+   * An i18n key, not literal text — this array is module-level, evaluated
+   * before `main.ts` installs the catalog, so a literal string here would
+   * freeze in whatever language happened to be active at import time
+   * (normally none yet). Resolved with `t()` at the point of use, in
+   * `buildPopup`, which runs well after boot.
+   */
+  ariaLabelKey: string;
   cssClass: string;
 }
 
@@ -255,18 +263,28 @@ interface FormatButtonSpec {
 const KEY_FOR_FORMAT = new Map(INLINE_FORMAT_BINDINGS.map((b) => [b.kind as string, b.key]));
 
 const FORMAT_BUTTONS: FormatButtonSpec[] = [
-  { kind: 'strong', label: 'B', ariaLabel: 'Bold', cssClass: 'cm-selection-toolbar-btn-bold' },
-  { kind: 'emphasis', label: 'I', ariaLabel: 'Italic', cssClass: 'cm-selection-toolbar-btn-italic' },
+  {
+    kind: 'strong',
+    label: 'B',
+    ariaLabelKey: 'editor.selection_toolbar.bold',
+    cssClass: 'cm-selection-toolbar-btn-bold',
+  },
+  {
+    kind: 'emphasis',
+    label: 'I',
+    ariaLabelKey: 'editor.selection_toolbar.italic',
+    cssClass: 'cm-selection-toolbar-btn-italic',
+  },
   {
     kind: 'strikethrough',
     label: 'S',
-    ariaLabel: 'Strikethrough',
+    ariaLabelKey: 'editor.selection_toolbar.strikethrough',
     cssClass: 'cm-selection-toolbar-btn-strike',
   },
   {
     kind: 'inlineCode',
     label: '</>',
-    ariaLabel: 'Code',
+    ariaLabelKey: 'editor.selection_toolbar.code',
     cssClass: 'cm-selection-toolbar-btn-code',
   },
 ];
@@ -355,7 +373,7 @@ function buildPopup(view: EditorView, kind: ToolbarKind): HTMLElement {
   popup.className = 'cm-selection-toolbar-popup';
   if (kind !== 'doc') popup.classList.add('cm-selection-toolbar-popup-widget');
   popup.setAttribute('role', 'toolbar');
-  popup.setAttribute('aria-label', 'Text formatting');
+  popup.setAttribute('aria-label', t('editor.selection_toolbar.group_label'));
   activeButtons = [];
 
   // Both kinds get the format buttons. A widget selection has no document
@@ -366,7 +384,7 @@ function buildPopup(view: EditorView, kind: ToolbarKind): HTMLElement {
   for (const spec of FORMAT_BUTTONS) {
     const btn = makeButton(
       spec.label,
-      spec.ariaLabel,
+      t(spec.ariaLabelKey),
       spec.cssClass,
       spec.kind,
       fromKeymap(KEY_FOR_FORMAT.get(spec.kind))
@@ -415,12 +433,12 @@ function buildPopup(view: EditorView, kind: ToolbarKind): HTMLElement {
     commentBtn.type = 'button';
     commentBtn.className = 'cm-selection-toolbar-btn cm-selection-toolbar-btn-comment';
     commentBtn.textContent = '💬';
-    commentBtn.setAttribute('aria-label', 'Comment on selection');
+    commentBtn.setAttribute('aria-label', t('editor.selection_toolbar.comment'));
     // The one key on this row declared in the native menu rather than in the
     // keymap, which is why the tooltip read "Comment" with no key at all while
     // ⌘⇧M worked (#59).
     const commentShortcut = fromNativeMenu('ai_comment');
-    commentBtn.dataset.tooltip = tooltipText('Comment', commentShortcut);
+    commentBtn.dataset.tooltip = tooltipText(t('editor.selection_toolbar.comment_tooltip'), commentShortcut);
     if (commentShortcut) commentBtn.setAttribute('aria-keyshortcuts', commentShortcut.aria);
     commentBtn.addEventListener('mousedown', (e) => {
       // Same preventDefault reason as the format buttons: the selection must
@@ -465,7 +483,8 @@ function buildPopup(view: EditorView, kind: ToolbarKind): HTMLElement {
   // inspector a rect-based reference, the way `positionPopup` already has one,
   // is the fix; it is a change to the inspector, not to this button.
   if (kind === 'doc') {
-    const linkBtn = makeButton('Link', 'Link', 'cm-selection-toolbar-btn-link', 'link');
+    const linkLabel = t('editor.selection_toolbar.link');
+    const linkBtn = makeButton(linkLabel, linkLabel, 'cm-selection-toolbar-btn-link', 'link');
     linkBtn.addEventListener('mousedown', (e) => {
       e.preventDefault();
       toggleLink(view);

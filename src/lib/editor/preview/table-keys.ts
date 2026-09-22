@@ -43,14 +43,29 @@ export interface CellBinding {
   /** CM6-style key spec — the notation `hotkeyLabel()` renders. */
   key: string;
   action: CellAction;
-  /** The cheatsheet's right-hand column. */
-  description: string;
   /**
-   * A second line under the description, for a key whose behaviour has an edge
-   * worth naming. Kept on the binding rather than in the sheet so it cannot
-   * describe a key that no longer exists.
+   * i18n key for the cheatsheet's right-hand column — not literal text.
+   * `TABLE_CELL_BINDINGS` below is module-level, evaluated before `main.ts`
+   * installs the catalog, so a literal string here would freeze in whatever
+   * language happened to be active at import time (normally none yet).
+   * Resolved with `t()` in `table-hotkey-sheet.ts`'s `buildSheet()`, which
+   * runs on hover/focus, well after boot. `matchCellBinding` never reads
+   * this field, so retexting it changes no behaviour.
+   *
+   * Named `descriptionKey`, not `description` — a bare `description` reads
+   * as text at the call site, and `selection-toolbar.ts` / `block-templates.ts`
+   * already made the same rename (`ariaLabelKey`, `labelKey`) for the same
+   * reason.
    */
-  note?: string;
+  descriptionKey: string;
+  /**
+   * i18n key for a second line under the description, for a key whose
+   * behaviour has an edge worth naming. Kept on the binding rather than in
+   * the sheet so it cannot describe a key that no longer exists.
+   *
+   * Named `noteKey` for the same reason `descriptionKey` is not `description`.
+   */
+  noteKey?: string;
 }
 
 /**
@@ -59,23 +74,23 @@ export interface CellBinding {
  * two candidates.
  */
 export const TABLE_CELL_BINDINGS: readonly CellBinding[] = [
-  { key: 'Tab', action: 'col-next', description: 'Column to the right' },
+  { key: 'Tab', action: 'col-next', descriptionKey: 'editor.table_keys.col_next' },
   {
     key: 'Shift-Tab',
     action: 'col-prev',
-    description: 'Column to the left',
-    note: 'Wraps inside the row — never changes row',
+    descriptionKey: 'editor.table_keys.col_prev',
+    noteKey: 'editor.table_keys.col_prev_note',
   },
   {
     key: 'Enter',
     action: 'row-next',
-    description: 'Next row, same column',
-    note: 'On the last row: leaves the table',
+    descriptionKey: 'editor.table_keys.row_next',
+    noteKey: 'editor.table_keys.row_next_note',
   },
-  { key: 'Shift-Enter', action: 'break', description: 'Line break inside the cell' },
-  { key: 'Mod-Enter', action: 'commit', description: 'Apply the edit' },
-  { key: 'Mod-Shift-Enter', action: 'new-row', description: 'New row below' },
-  { key: 'Escape', action: 'cancel', description: 'Discard the edit' },
+  { key: 'Shift-Enter', action: 'break', descriptionKey: 'editor.table_keys.break' },
+  { key: 'Mod-Enter', action: 'commit', descriptionKey: 'editor.table_keys.commit' },
+  { key: 'Mod-Shift-Enter', action: 'new-row', descriptionKey: 'editor.table_keys.new_row' },
+  { key: 'Escape', action: 'cancel', descriptionKey: 'editor.table_keys.cancel' },
 ];
 
 /** The parts of a `KeyboardEvent` a binding can depend on. */

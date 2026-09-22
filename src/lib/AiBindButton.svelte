@@ -32,14 +32,16 @@
    * it measured is one frame stale.
    */
 
+  import { t } from './i18n';
+
   let { onclick }: { onclick: () => void } = $props();
 </script>
 
 <button
   class="ai-bind-button"
   type="button"
-  title="Copy a prompt that connects this file to your AI agent"
-  aria-label="Copy a prompt that connects this file to your AI agent"
+  title={t('ui.ai_bind.tooltip')}
+  aria-label={t('ui.ai_bind.tooltip')}
   {onclick}
 >
   <!--
@@ -47,7 +49,7 @@
     screen at rest is its trailing edge — with the glyph leading, the resting
     sliver showed the tail of the word "agent" and nothing else.
   -->
-  <span class="ai-bind-label">Connect to AI agent</span>
+  <span class="ai-bind-label">{t('ui.ai_bind.label')}</span>
   <span class="ai-bind-glyph" aria-hidden="true">✦</span>
 </button>
 

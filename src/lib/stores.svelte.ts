@@ -9,6 +9,7 @@ import {
   type ThemeHalf,
   type ConcreteTheme,
 } from './theme-resolve';
+import { t } from './i18n';
 import { applyWindowZoom, clampZoom, stepZoom } from './window-zoom';
 
 /**
@@ -309,8 +310,8 @@ export function createFileState() {
       lastSavedAt = v;
     },
     get title() {
-      const name = filePath ? filePath.split('/').pop() : 'Untitled';
-      return `${isDirty ? '\u25cf ' : ''}${name} \u2014 ${productName}`;
+      const name = filePath ? filePath.split('/').pop() : t('ui.untitled');
+      return `${isDirty ? '\u25cf ' : ''}${t('ui.window_title', { name, product: productName })}`;
     },
   };
 }
