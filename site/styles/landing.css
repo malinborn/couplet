@@ -806,6 +806,15 @@ code { font-family: var(--font-mono); }
 }
 .hero-secondary-link:hover { color: var(--link); text-decoration: none; }
 
+.hero-alias-note {
+  margin: 14px 0 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--muted);
+  max-width: 480px;
+}
+.hero-alias-note code { font-size: 0.95em; }
+
 .copy-btn {
   flex: none;
   font-family: var(--font-body);

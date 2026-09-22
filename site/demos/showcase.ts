@@ -128,13 +128,13 @@ const SHELL_ACT: Act = {
   body: `# ~/.zshrc
 
 export PATH="$HOME/bin:$PATH"
-export EDITOR="mdmini"
+export EDITOR="couplet"
 
 export OPENAI_API_KEY="example-value-not-a-real-key"
 
 alias gs="git status"
 alias ll="ls -lah"
-alias md="mdmini"
+alias md="couplet"
 
 function mkcd() {
   mkdir -p "$1" && cd "$1"

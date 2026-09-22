@@ -47,20 +47,20 @@ Page the on-call engineer if the rollback itself fails.
 `;
 
 // The chrome panel above the editor window: a small macOS-style terminal
-// that types a plausible agent invocation, then a line of real `mdmini`
-// tool traffic (see docs/ai-interface.md — `cat new.md | mdmini edit
+// that types a plausible agent invocation, then a line of real `couplet`
+// tool traffic (see docs/ai-interface.md — `cat new.md | couplet edit
 // <file> [--show]` is the documented CLI shape, verbatim apart from the
 // filename), then the tool's own JSON response contract
 // (`{"ok":true,"changed_lines":[[a,b]]}`).
 //
 // Two different actors type here, and the markup says so: the `$` line is
 // the human, genuinely typing `claude "..."` into their own shell. The
-// `mdmini edit` line right after it is the agent's own tool call, not a
+// `couplet edit` line right after it is the agent's own tool call, not a
 // second thing the person typed — it carries an explicit "agent" tag (see
 // buildTerminal below) and a connector in demo-edit.css so it reads as a
 // hand-off, not a continuation of the same prompt.
 const COMMAND_TEXT = 'claude "tighten rollback wording in runbook.md"';
-const TOOL_INVOCATION = 'cat new.md | mdmini edit runbook.md --show';
+const TOOL_INVOCATION = 'cat new.md | couplet edit runbook.md --show';
 const TERMINAL_TITLE = 'agent — zsh';
 
 // Per-phase pacing for one loop. Deliberately paced like a real exchange:
@@ -141,7 +141,7 @@ function showToolLine(terminal: TerminalDom): void {
 
 /**
  * Converts a `Replacement` (character offsets in `resultDoc`) into the
- * 1-based inclusive line span `mdmini edit`'s real JSON response reports as
+ * 1-based inclusive line span `couplet edit`'s real JSON response reports as
  * `changed_lines` (see docs/ai-interface.md's response contract).
  */
 function changedLineRange(repl: Replacement, resultDoc: string): [number, number] {
@@ -181,7 +181,7 @@ export function mount(container: HTMLElement): void {
 
   if (prefersReducedMotion()) {
     // Static final state: the real diff, applied in one shot, highlighted
-    // exactly like a genuine `mdmini edit` would leave it — no typing, no
+    // exactly like a genuine `couplet edit` would leave it — no typing, no
     // loop. The terminal (if present) is rendered already "done" for the
     // same reason: no animation, but the whole story is still legible.
     const repl = computeReplacement(before, after);

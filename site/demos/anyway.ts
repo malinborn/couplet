@@ -26,7 +26,7 @@ import { prefersReducedMotion } from './editor-demo';
  */
 
 const FILES = ['README.md', 'CLAUDE.md', 'auth_spec.md'] as const;
-const COMMAND = `mdmini ${FILES.join(' ')}`;
+const COMMAND = `couplet ${FILES.join(' ')}`;
 
 const DESIGN_W = 380;
 const DESIGN_H = 400;
