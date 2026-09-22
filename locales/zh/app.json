@@ -124,7 +124,7 @@
   "ui.copied": "已复制！",
   "ui.untitled": "无标题",
   "ui.untitled_filename": "无标题.md",
-  "ui.window_title": "{name} — md-mini",
+  "ui.window_title": "{name} — {product}",
 
   "ui.recent_files.title": "最近的文件",
   "ui.recent_files.close": "关闭",

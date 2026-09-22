@@ -124,7 +124,7 @@
   "ui.copied": "Kopiert!",
   "ui.untitled": "Unbenannt",
   "ui.untitled_filename": "Unbenannt.md",
-  "ui.window_title": "{name} — md-mini",
+  "ui.window_title": "{name} — {product}",
 
   "ui.recent_files.title": "Zuletzt verwendet",
   "ui.recent_files.close": "Schließen",
