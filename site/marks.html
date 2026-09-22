@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>couplet — brand mark concepts</title>
+<link rel="stylesheet" href="/styles/fonts.css" />
+<link rel="stylesheet" href="/styles/landing.css" />
+<style>
+  body { font-family: var(--font-ui, system-ui); background: var(--bg); color: var(--text); margin: 0; padding: 44px 48px; }
+  h1 { font-family: var(--font-display); font-size: 26px; margin: 0 0 4px; font-weight: 400; }
+  .sub { font-size: 13px; opacity: .55; margin: 0 0 34px; max-width: 720px; line-height: 1.5; }
+  .row { display: flex; align-items: center; gap: 30px; padding: 22px 0; border-bottom: 1px solid rgba(128,128,128,.2); }
+  .row:last-child { border-bottom: 0; }
+  .tag { width: 18px; font-size: 13px; opacity: .45; font-weight: 700; }
+  .brandline { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 17px; width: 170px; }
+  .note { flex: 1; font-size: 13px; line-height: 1.55; opacity: .68; max-width: 430px; }
+
+  /* container mirrors .brand-mark exactly, scaled by --s */
+  .m {
+    --s: 1;
+    width: calc(26px * var(--s)); height: calc(26px * var(--s));
+    border-radius: calc(7px * var(--s));
+    background: var(--brand-gradient);
+    display: flex; align-items: center; justify-content: center;
+    flex: none;
+  }
+  .m i { display: block; background: #fff; border-radius: calc(1px * var(--s)); }
+  .m .car { background: var(--caret-gradient); }
+  /* declared AFTER .m so it wins on equal specificity — same trap as the
+     reduced-motion ordering note in site/CLAUDE.md */
+  .m.big { --s: 3.4; }
+
+  .m--a { flex-direction: column; gap: calc(3.5px * var(--s)); }
+  .m--a .l1 { width: calc(12px * var(--s)); height: calc(2px * var(--s)); }
+  .m--a .r2 { display: flex; align-items: center; gap: calc(1.5px * var(--s)); }
+  .m--a .l2 { width: calc(7px * var(--s)); height: calc(2px * var(--s)); }
+  .m--a .car { width: calc(1.5px * var(--s)); height: calc(7px * var(--s)); border-radius: calc(1px * var(--s)); }
+
+  .m--b { flex-direction: column; gap: calc(3.5px * var(--s)); align-items: flex-start; padding-left: calc(6px * var(--s)); }
+  .m--b .l1 { width: calc(13px * var(--s)); height: calc(2px * var(--s)); }
+  .m--b .l2 { width: calc(9px * var(--s)); height: calc(2px * var(--s)); margin-left: calc(4px * var(--s)); background: var(--caret-gradient); }
+
+  .m--c { gap: calc(2px * var(--s)); }
+  .m--c .stack { display: flex; flex-direction: column; gap: calc(3.5px * var(--s)); }
+  .m--c .stack i { width: calc(11px * var(--s)); height: calc(2px * var(--s)); }
+  .m--c .brace {
+    width: calc(3.5px * var(--s)); height: calc(9.5px * var(--s));
+    border: calc(1.6px * var(--s)) solid #fff; border-left: 0;
+    border-radius: 0 calc(4px * var(--s)) calc(4px * var(--s)) 0;
+  }
+
+  .m--d { gap: calc(4px * var(--s)); }
+  .m--d .car { width: calc(2px * var(--s)); height: calc(12px * var(--s)); border-radius: calc(1px * var(--s)); }
+  .m--d .car--2 { background: #fff; }
+
+  .m--e { flex-direction: column; gap: calc(4px * var(--s)); }
+  .m--e i { width: calc(13px * var(--s)); height: calc(2.5px * var(--s)); }
+  .m--e .l2 { background: var(--caret-gradient); }
+</style>
+</head>
+<body>
+<h1>couplet — brand mark</h1>
+<p class="sub">Без букв — это снимает и сленговое совпадение, и вопрос к силуэту. Каждая марка построена на одном: couplet — это две строки. Слева крупно, справа в реальном размере навигации (26px).</p>
+<div id="rows"></div>
+
+<template id="tpl">
+  <div class="row">
+    <span class="tag"></span>
+    <span class="m big"></span>
+    <span class="brandline"><span class="m"></span> couplet</span>
+    <span class="note"></span>
+  </div>
+</template>
+
+<script type="module">
+const VARIANTS = [
+  ['a', '<i class="l1"></i><span class="r2"><i class="l2"></i><i class="car"></i></span>',
+       'Две строки, каретка дописывает вторую. Самое буквальное прочтение: двустишие, которое прямо сейчас пишут.'],
+  ['b', '<i class="l1"></i><i class="l2"></i>',
+       'Вторая строка — ответ на первую: сдвинута и окрашена градиентом каретки. Читается как реплика агента.'],
+  ['c', '<span class="stack"><i></i><i></i></span><span class="brace"></span>',
+       'Скоба, которой в стихосложении объединяют рифмующиеся строки. Точнее всех по смыслу, тише всех по форме.'],
+  ['d', '<i class="car"></i><i class="car car--2"></i>',
+       'Две каретки рядом: двое в одном документе. Минималистичнее всех, но рискует читаться как «пауза».'],
+  ['e', '<i class="l1"></i><i class="l2"></i>',
+       'Две равные строки — твоя и агента. Спокойное и симметричное, но ближе всего к знаку «равно».'],
+];
+const box = document.getElementById('rows');
+for (const [key, inner, note] of VARIANTS) {
+  const node = document.getElementById('tpl').content.cloneNode(true);
+  node.querySelector('.tag').textContent = key.toUpperCase();
+  node.querySelectorAll('.m').forEach(m => { m.classList.add('m--' + key); m.innerHTML = inner; });
+  node.querySelector('.note').textContent = note;
+  box.appendChild(node);
+}
+</script>
+</body>
+</html>

@@ -138,19 +138,25 @@ code { font-family: var(--font-mono); }
 }
 .brand:hover { color: var(--text); text-decoration: none; }
 
+/* The mark is the name: two lines with a caret writing the second one.
+   Deliberately letterless — a two-letter abbreviation of "couplet" reads as an
+   unrelated and unwanted acronym online, and no amount of styling fixes that. */
 .brand-mark {
   width: 26px;
   height: 26px;
   border-radius: 7px;
   background: var(--brand-gradient);
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 1px;
+  gap: 3.5px;
   flex: none;
 }
-.brand-mark-text { font-family: var(--font-display); font-size: 12px; color: #fff; letter-spacing: -0.5px; }
-.brand-caret { width: 1.5px; height: 12px; border-radius: 1px; background: var(--caret-gradient); }
+.brand-mark-line { width: 12px; height: 2px; border-radius: 1px; background: #fff; }
+.brand-mark-line--short { width: 7px; }
+.brand-mark-row { display: flex; align-items: center; gap: 1.5px; }
+.brand-caret { width: 1.5px; height: 7px; border-radius: 1px; background: var(--caret-gradient); }
 
 .nav-links {
   display: flex;
