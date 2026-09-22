@@ -73,20 +73,19 @@ pub fn run() {
     // moment `tauri.conf.json` / `tauri.dev.conf.json` are renamed.
     //
     // `migrate_all_real` may block on a native dialog (a matching-generation
-    // legacy build is running) or call `std::process::exit(0)` (the user
-    // chose to abandon this launch rather than wait) — see `migration.rs`'s
-    // module doc comment. It returns the product name THIS launch should
-    // actually use for `paths::init` below: the current name normally, or
-    // the legacy one if the app-data migration itself failed for a reason
-    // OTHER than a running legacy build (a genuine copy error) — safe
-    // specifically because nothing else is then running on that directory.
+    // legacy build is running, or a migration failed) and can
+    // `std::process::exit(0)` if the user chooses to abandon this launch
+    // rather than wait/retry — see `migration.rs`'s module doc comment. It
+    // never asks `run()` to use a different product name any more: on
+    // success (or a genuine no-op) the current name is always correct by
+    // the time it returns.
     let context = tauri::generate_context!();
     let product_name = context
         .config()
         .product_name
         .as_deref()
         .unwrap_or(paths::FALLBACK_PRODUCT_NAME);
-    let effective_product_name = migration::migrate_all_real(product_name, &context.config().identifier);
+    migration::migrate_all_real(product_name, &context.config().identifier);
 
     // `mut` is only needed by the `mcp-bridge` registration below; without that
     // feature the builder is never reassigned.
@@ -167,18 +166,11 @@ pub fn run() {
             commands::sync_ocd_alignment_menu,
             i18n::resolved_language,
         ])
-        .setup(move |app| {
+        .setup(|app| {
             // FIRST, before anything touches disk: decide which data directory this
             // build owns. A dev build must never share `recovery/` or `session.json`
             // with an installed release one.
-            //
-            // Uses `effective_product_name` (computed above, before the
-            // builder even started) rather than reading `app.config()` again
-            // here: they usually agree, but when this launch's app-data-dir
-            // migration failed or was deferred, `effective_product_name` is
-            // the LEGACY name on purpose — see the comment where it is
-            // computed.
-            paths::init(&effective_product_name);
+            paths::init(app.config().product_name.as_deref().unwrap_or(paths::FALLBACK_PRODUCT_NAME));
 
             // Locale resolution: stored preference -> system locale -> "en".
             // Must run before `menu::build_menu` — the menu's labels come from

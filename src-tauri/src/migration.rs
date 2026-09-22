@@ -89,61 +89,192 @@
 //! file in Finder was enough) — see the regression test
 //! `marker_match_wins_over_a_running_legacy_instance`.
 //!
-//! ## Resolving a running legacy build (N1, replaces the old "run on
+//! ## Resolving a running legacy build (N1, B1, replaces the old "run on
 //! legacy name" fallback)
 //!
 //! When [`Decision::LegacyRunning`] comes back, this process is not allowed
 //! to start on ANY data directory while that decision stands — not the new
 //! one (nothing has been migrated into it), and not the old one (that would
 //! be the exact two-processes-one-directory bug this section opened with).
-//! Instead, [`migrate_all_real`] blocks with a native `NSAlert`, before
-//! `Builder::build()` — before any Tauri window exists — offering to
-//! terminate the legacy build (`NSRunningApplication.terminate`, the same
-//! "please quit" request Cmd+Q sends; never `forceTerminate`) and wait up to
-//! 10 seconds, or to abandon this launch (`std::process::exit(0)`) instead.
-//! If termination does not complete in time, the dialog is shown again
-//! rather than proceeding on an assumption. This app is macOS-only, and
-//! `NSAlert.runModal` and `NSApplication.sharedApplication` both work
-//! without the full `NSApplicationMain`/event-loop machinery Tauri sets up
-//! later — `sharedApplication` lazily creates the singleton `NSApp` object
-//! on first call, and `runModal` pumps its own private run loop through
-//! that object; neither needs `-finishLaunching` or `-run` to have
-//! happened. (Evidence beyond documented Cocoa behaviour: `tao` 0.34 — the
-//! event-loop crate under `wry`/Tauri — only touches `NSApplication` inside
-//! `EventLoop::new()`, which `tauri::Builder::build()` calls internally;
-//! this migration runs strictly before that call, so there is no earlier
-//! `NSApp` state to conflict with. This reasoning is NOT the same as having
-//! run the dialog for real — see the "Manual verification" section handed
-//! back with this change for the two scenarios that still need an actual
-//! macOS session, and why `npm run dev:app`'s bare binary and `npm run
-//! build:dev`'s release profile are each unsuitable for one of them.)
+//! [`orchestrate`] blocks with a native alert, before `Builder::build()` —
+//! before any Tauri window exists — offering to terminate the legacy build
+//! (`NSRunningApplication.terminate`, the same "please quit" request Cmd+Q
+//! sends; never `forceTerminate`) and wait up to 10 seconds, or to abandon
+//! this launch instead.
 //!
-//! If the app-data migration itself fails for a reason OTHER than a running
-//! legacy build (a genuine copy error, checked via
-//! [`MigrationOutcome::Failed`]), this process uses the LEGACY product name
-//! for this one launch — safe specifically because nothing else is running
-//! on that directory at that point, so there is no second process to share
-//! it with; the paths.rs invariant this module leans on is about two LIVE
-//! processes, not about which name one lone process reads from.
+//! This is a `loop`, not a single attempt (B1): after a successful
+//! termination, `orchestrate` RE-EVALUATES both decisions before doing
+//! anything else, and loops back to the dialog (with different wording —
+//! "didn't quit, it may be waiting in an open dialog") if either is STILL
+//! `LegacyRunning` — the legacy build (or an agent's `mdmini`/MCP
+//! `allow_launch`) can restart it in the window between "confirmed gone"
+//! and "safe to migrate". The match on each decision after the loop is
+//! exhaustive, with no `_` arm: a `LegacyRunning` that somehow still reaches
+//! [`run_migration_with_retry`] is treated as an internal-error abort, never
+//! silently folded into "nothing to do".
 //!
-//! A failed WebKit migration has no equivalent fallback — WebKit's profile
-//! location is derived by the OS from the fixed `CFBundleIdentifier`, not
-//! something this code can redirect, and the first webview window is
-//! created immediately after this migration runs regardless of outcome. A
-//! failure there shows a second, different dialog — "Continue without
-//! settings" or "Quit" — rather than starting silently on a fresh, empty
-//! profile with no chance to retry.
+//! ## B2: a system alert, never `NSAlert`
 //!
-//! ## What is, and is not, proven by the automated tests in this file
+//! The dialog is `CFUserNotificationDisplayAlert`
+//! (`core-foundation-sys::user_notification`), deliberately NOT `NSAlert`.
+//! An earlier version of this code called
+//! `NSApplication.sharedApplication` to get an `NSApp` object for
+//! `NSAlert.runModal` to run through — reasoning that this only needs the
+//! shared instance to *exist*, not the full `NSApplicationMain` event loop.
+//! That reasoning was WRONG in a way that would have broken every session
+//! silently: `tao` 0.34.6 — the event-loop crate under `wry`/Tauri, which
+//! `tauri::Builder::build()` drives via `EventLoop::new()` later — creates
+//! its OWN `NSApplication` SUBCLASS there, and its own source
+//! (`platform_impl/macos/event_loop.rs`, around the `NSApp()` call) states
+//! outright that this "must be done before `NSApp()` is called anywhere
+//! else". Calling `sharedApplication` earlier, as the `NSAlert` version did,
+//! wins that race and hands `tao` a base-class `NSApplication` instead of
+//! its own — permanently losing `tao`'s `sendEvent:` override for the rest
+//! of the session (Cmd-modified key handling, device events), for every
+//! window the app ever opens. On top of that: the alert could end up drawn
+//! behind other windows before `-finishLaunching` runs, and an AppleEvent
+//! `odoc` (the `open` command's own mechanism) arriving in that window could
+//! be lost. `CFUserNotificationDisplayAlert` never touches `NSApplication`
+//! at all — the alert is drawn by a separate system process — so none of
+//! this can happen; there is no race to reason about instead of one that
+//! merely runs first.
 //!
-//! [`decide_migration`] and `evaluate`'s FS-state computation, the staged
-//! copy/rename mechanics, permission handling, the debug/release row
-//! filter, and orphan cleanup are all exercised on a real filesystem via a
-//! temp directory. What is NOT, and cannot be, exercised by `cargo test`:
-//! `NSAlert`/`NSRunningApplication` actually driving a second real process,
-//! and WebKit actually re-deriving a `<hash>` from a copied `salt` at
-//! runtime — both need a real macOS session and are documented as manual
-//! procedures instead.
+//! `CFUserNotificationDisplayAlert` supports up to three buttons and
+//! returns which one was chosen via an out-parameter, PLUS a `SInt32`
+//! status for the call itself. I4: [`DialogChoice`] collapses every outcome
+//! this code cannot positively identify as the (first) default or (second)
+//! alternate button — `kCFUserNotificationCancelResponse`, a timeout, a
+//! nonzero status from the call itself — into `CancelOrTimeout`, and every
+//! caller treats that exactly like an explicit "Quit". Nothing unrecognised
+//! is ever read as "proceed".
+//!
+//! ## I2/I3: no more fallback names, no more irreversible choices — Retry
+//! or Quit, always
+//!
+//! Both the app-data "use the legacy directory for one launch" fallback and
+//! the WebKit "continue without settings" choice are gone. Either one, kept
+//! as the only escape from a genuine [`MigrationOutcome::Failed`], reopened
+//! a version of N1's own problem: the legacy-name fallback could still
+//! collide with a legacy build (or a second `couplet` via `open -n`)
+//! starting up AFTER the check ran, and "continue without settings" was
+//! presented as an in-the-moment convenience while actually being
+//! permanent — WKWebView creates the fresh profile the instant the first
+//! window opens, so there is no "later" to retry into. Every `Failed`
+//! outcome — app-data or WebKit — now shows the same Retry/Quit alert
+//! (see [`run_migration_with_retry`]); Retry re-attempts `migrate_dir`
+//! immediately, Quit abandons the launch. Nothing is ever silently
+//! degraded, and nothing this process reads from is ever the OLD directory
+//! once it has decided to run under the new one.
+//!
+//! ## I5: the lock is never held across a dialog
+//!
+//! [`orchestrate`] and [`run_migration_with_retry`] both release
+//! [`MigrationEnv::release_lock`] immediately before showing any dialog and
+//! re-acquire only after it returns — a human can sit on either alert for
+//! an arbitrary amount of time, and another process legitimately
+//! attempting the same migration must not be blocked on `flock` for the
+//! whole wait. The staged-commit design (C1) is what actually makes this
+//! safe to do: `evaluate`/`decide_with`'s re-check right after re-acquiring
+//! is what closes the window this necessarily reopens, not the lock itself.
+//!
+//! ## I7: a short pause after the legacy build actually quits
+//!
+//! WebKit's `Networking`/`StorageProcess` helper processes can briefly
+//! outlive the main process they served — still holding `LocalStorage`'s
+//! `.sqlite3`/`-wal`/`-shm` open — so `MigrationEnv::terminate_and_wait`
+//! (the real implementation) sleeps briefly after confirming the main
+//! process is gone, before this code goes on to copy the WebKit profile.
+//! Fixed and short (not a poll loop): there is no stable, public identifier
+//! for "this specific helper, spawned by that specific main process" to
+//! poll for, and a fixed pause after a CONFIRMED-dead main process is a
+//! small, bounded cost compared to the alternative of guessing wrong and
+//! copying a live `-wal`.
+//!
+//! ## T2: the orchestration itself is dependency-injected and tested
+//!
+//! [`orchestrate`] takes an `&impl `[`MigrationEnv`] — `is_bundle_running`,
+//! the lock, both dialogs, terminate-and-wait, logging — so the loop/retry
+//! structure above (B1, I2/I3, I5) is exercised directly with a test double
+//! (`testing::MockEnv`) instead of only being reachable through a real
+//! dialog. `decide_migration` and `decide_with`'s FS-state computation, the
+//! staged copy/rename mechanics, permission handling, the debug/release row
+//! filter (N5), the production-identity refusal (B3), and orphan cleanup
+//! (I1) are all exercised separately, on a real filesystem via a temp
+//! directory.
+//!
+//! What is NOT, and cannot be, exercised by `cargo test`: a real
+//! `CFUserNotificationDisplayAlert` actually drawing on screen, a real
+//! `NSRunningApplication.terminate` actually quitting a second real
+//! process, and WebKit actually re-deriving a `<hash>` from a copied `salt`
+//! at runtime — all three need a real macOS session with real second
+//! processes and are documented as manual procedures below.
+//!
+//! ## B3: a debug build must never poison the production names either
+//!
+//! N5 keeps a debug build (`cargo build`, `tauri dev`) blind to a `dev:
+//! false` row when looking for something to migrate FROM — but that alone
+//! left a gap: `npm run tauri dev` with no `--config` reads
+//! `tauri.conf.json` directly, i.e. the PRODUCTION `productName`/
+//! `identifier`, and neither `paths::init` nor WKWebView know or care that
+//! this is "only" a debug run. Left unchecked, such a session would create
+//! `~/Library/Application Support/couplet/` and/or
+//! `~/Library/WebKit/pro.couplet.app/` as real, non-empty directories full
+//! of throwaway debug output — and the REAL release build, launched later,
+//! would see `Decision::NewAlreadyPopulated` for both and skip the owner's
+//! actual `md-mini` data forever. `refuse_debug_build_on_production_identity`
+//! runs before anything else in [`migrate_all_real`] and exits (`eprintln!`
+//! plus `std::process::exit(1)`) if this build is a debug build, the
+//! current name/identifier is exactly a `dev: false` row's production
+//! identity, AND real unmigrated legacy data actually exists — a machine
+//! with no installed `md-mini` at all has nothing to poison, so nothing to
+//! refuse.
+//!
+//! ## Manual verification (NOT run as part of this change)
+//!
+//! Two things cannot be proven by `cargo test` at all: WebKit's `<hash>`
+//! actually resolving from a copied `salt` at runtime, and the
+//! legacy-running dialog actually driving a second real process. Both need
+//! (a) a `debug_assertions` build, or `DEBUG_TEST_RENAMES` is compiled out,
+//! AND (b) a real, registered `.app` bundle — `NSRunningApplication` does
+//! not recognise a bare binary as an app at all, and a bare `tauri dev`
+//! process's WebKit profile is keyed by the BINARY'S NAME
+//! (`~/Library/WebKit/md-mini`), not by `identifier`, so it cannot exercise
+//! the identifier-keyed migration this is meant to verify either way.
+//! `npm run dev:app` (a bare binary) fails (a); `npm run build:dev` (a
+//! release bundle) fails (b). The one command with both properties:
+//! `tauri build --debug` (`-d`/`--debug`, confirmed via `tauri build
+//! --help`) — a debug-profile `.app`, built with `--config
+//! src-tauri/tauri.dev.conf.json` so it never touches `tauri.conf.json`.
+//! Use an isolated `CARGO_TARGET_DIR` for this — never the shared one — and
+//! only throwaway `-dev`-flavoured names: never `tauri.conf.json`,
+//! `com.md-mini.app`, `~/Library/Application Support/md-mini`, or real
+//! `md-mini-dev`/`com.md-mini.dev` data.
+//!
+//! **(a) WebKit salt/hash transfer.** Point `tauri.dev.conf.json` at a
+//! throwaway identity A, `tauri build --debug --config
+//! src-tauri/tauri.dev.conf.json`, launch the built `.app`'s binary
+//! DIRECTLY from a terminal (registers the bundle id), change something
+//! that lands in `localStorage` (e.g. the theme), quit. Confirm
+//! `~/Library/WebKit/<A's identifier>/WebsiteData/Default/salt` and a hash
+//! directory with `localstorage.sqlite3` exist. Add a temporary
+//! `DEBUG_TEST_RENAMES` row A -> B (`dev: true`), point
+//! `tauri.dev.conf.json` at B, rebuild, launch B's binary directly. Confirm
+//! the theme survived (WebKit re-derived the hash from the copied salt),
+//! B's `salt` is byte-for-byte A's, and A's WebKit directory is untouched
+//! (copy, not move). Revert `tauri.dev.conf.json` and the
+//! `DEBUG_TEST_RENAMES` row; delete both throwaway identities' directories
+//! under `~/Library/WebKit/` and `~/Library/Application Support/`.
+//!
+//! **(b) The legacy-running dialog.** Same setup, two throwaway identities
+//! C (legacy stand-in) and D (new stand-in) and a `DEBUG_TEST_RENAMES` row
+//! C -> D. Build and launch C's `.app` directly from a terminal, leave it
+//! running. Point `tauri.dev.conf.json` at D, rebuild, launch D's `.app`
+//! WHILE C IS STILL RUNNING. Confirm the alert appears with the "needs
+//! md-mini to quit" text; test both buttons on separate runs — "Quit
+//! md-mini and Continue" should terminate C within ~10s and let D proceed
+//! and migrate (confirm C's data landed under D's names, and C's directory
+//! now holds only the marker); "Quit couplet" should exit D immediately
+//! with neither directory touched. Revert and clean up as in (a).
 
 use std::fs;
 use std::io::{self, Write};
@@ -227,16 +358,18 @@ fn row_is_eligible(_dev: bool) -> bool {
 }
 
 /// Pure table lookup: the row whose `to_product_name` is exactly `current`,
-/// with NO debug/release filtering — used directly by the multi-generation
-/// test (M5) and to check a table's shape independent of which build is
-/// running the check. Test-only: production code always goes through
-/// `rename_for_product_name`'s eligibility filter instead.
-#[cfg_attr(not(test), allow(dead_code))]
+/// with NO debug/release filtering — used by the multi-generation test (M5),
+/// to check a table's shape independent of which build is running the
+/// check, and by `production_identity_row` (B3), which specifically needs
+/// to see a `dev: false` row regardless of the current build's own flavour.
+/// Genuinely unused in a plain (non-test) RELEASE build: `production_identity_row`,
+/// its only production caller, is itself only reachable from a debug build.
+#[cfg_attr(not(any(test, debug_assertions)), allow(dead_code))]
 fn rename_matching_product_name<'a>(table: &'a [Rename], current: &str) -> Option<&'a Rename> {
     table.iter().find(|r| r.to_product_name == current)
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(not(any(test, debug_assertions)), allow(dead_code))]
 fn rename_matching_identifier<'a>(table: &'a [Rename], current: &str) -> Option<&'a Rename> {
     table.iter().find(|r| r.to_identifier == current)
 }
@@ -467,7 +600,13 @@ impl Drop for StagingCleanup<'_> {
 /// (`kill(pid, 0) == ESRCH`) and removes them. Best-effort: a name that
 /// doesn't parse, or a pid this process cannot check, is left alone rather
 /// than guessed at.
-fn gc_orphaned_staging(parent: &Path, log: &Logger) {
+fn gc_orphaned_staging(new: &Path, log: &Logger) {
+    let Some(parent) = new.parent() else { return };
+    let Some(new_name) = new.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    let prefix = format!(".{new_name}.migrating-");
+
     let Ok(entries) = fs::read_dir(parent) else {
         return;
     };
@@ -475,9 +614,24 @@ fn gc_orphaned_staging(parent: &Path, log: &Logger) {
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        let Some(pid) = extract_staging_pid(&name) else {
+        let Some(rest) = name.strip_prefix(prefix.as_str()) else {
             continue;
         };
+        let Some(pid) = parse_staging_suffix(rest) else {
+            continue;
+        };
+
+        // I1: `symlink_metadata` never follows the final component, so a
+        // symlink is never mistaken for a real directory here even if it
+        // happens to point at one — `remove_dir_all` is only ever called
+        // below on something confirmed to be a real, non-symlink directory.
+        let Ok(meta) = fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        if !meta.is_dir() {
+            continue;
+        }
+
         if !process_is_alive(pid) {
             log(&format!(
                 "migration: removing orphaned staging directory {} (pid {pid} is gone)",
@@ -488,12 +642,18 @@ fn gc_orphaned_staging(parent: &Path, log: &Logger) {
     }
 }
 
-/// Parses the pid out of a `staging_path_for` name:
-/// `.<name>.migrating-<pid>-<seq>`.
-fn extract_staging_pid(file_name: &str) -> Option<libc::pid_t> {
-    let idx = file_name.find(".migrating-")?;
-    let rest = &file_name[idx + ".migrating-".len()..];
-    rest.split('-').next()?.parse().ok()
+/// Parses `<pid>-<seq>` (both purely numeric) from the remainder after the
+/// `.{new's file name}.migrating-` prefix `gc_orphaned_staging` already
+/// matched exactly. I1: this used to accept anything CONTAINING
+/// `.migrating-` anywhere in the whole (shared!) parent directory — this
+/// requires the full, exact prefix tied to THIS `new`, and both numeric
+/// fields, before a name is even considered.
+fn parse_staging_suffix(rest: &str) -> Option<libc::pid_t> {
+    let (pid_str, seq_str) = rest.split_once('-')?;
+    if seq_str.is_empty() || !seq_str.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    pid_str.parse().ok()
 }
 
 /// `kill(pid, 0)` sends no signal — it only checks whether `pid` could be
@@ -610,17 +770,101 @@ pub(crate) enum MigrationOutcome {
 
 /// Computes a [`Decision`] for the pair `(old, new)`, reading real
 /// filesystem state and — only when it could actually change the answer —
-/// asking whether `legacy_identifier` is running. The running-check is
-/// skipped whenever the marker already matches, `old` is absent, or `new`
-/// is already populated, since none of those branches of `decide_migration`
-/// consult it.
-fn evaluate(old: &Path, new: &Path, legacy_identifier: &str) -> Decision {
+/// calling `is_running`. The check is skipped whenever the marker already
+/// matches, `old` is absent, or `new` is already populated, since none of
+/// those branches of `decide_migration` consult it. Parameterised over
+/// `is_running` (rather than calling `is_bundle_running` directly) so
+/// [`orchestrate`] can supply [`MigrationEnv::is_bundle_running`] here too
+/// (T2) without duplicating this logic.
+fn decide_with(old: &Path, new: &Path, legacy_identifier: &str, is_running: &dyn Fn(&str) -> bool) -> Decision {
     let marker_matches = marker_points_to(old, new);
     let old_exists = old.exists();
     let new_populated = !dir_is_absent_or_empty(new);
-    let legacy_running = !marker_matches && old_exists && !new_populated && is_bundle_running(legacy_identifier);
+    let legacy_running = !marker_matches && old_exists && !new_populated && is_running(legacy_identifier);
     decide_migration(marker_matches, old_exists, new_populated, legacy_running)
 }
+
+/// Thin wrapper around [`decide_with`] using the real, process-global
+/// `is_bundle_running` — what every test in this file that isn't exercising
+/// [`orchestrate`] itself calls directly. Test-only: `migrate_all_real`
+/// builds a `RealEnv` and goes through `orchestrate`/`decide_with` instead.
+#[cfg_attr(not(test), allow(dead_code))]
+fn evaluate(old: &Path, new: &Path, legacy_identifier: &str) -> Decision {
+    decide_with(old, new, legacy_identifier, &is_bundle_running)
+}
+
+/// B3: is `current_product_name`/`current_identifier` exactly the
+/// PRODUCTION (`dev: false`) identity of some row? Pure — independent of
+/// build flavour or filesystem state. See the module doc comment's B3
+/// section. Genuinely unused in a plain (non-test) RELEASE build: its only
+/// caller, `refuse_debug_build_on_production_identity`, is a no-op there.
+#[cfg_attr(not(any(test, debug_assertions)), allow(dead_code))]
+fn production_identity_row(current_product_name: &str, current_identifier: &str) -> Option<&'static Rename> {
+    rename_matching_product_name(RENAMES, current_product_name)
+        .filter(|r| !r.dev)
+        .or_else(|| rename_matching_identifier(RENAMES, current_identifier).filter(|r| !r.dev))
+}
+
+/// Whether `row`'s legacy data is at risk of being silently poisoned by a
+/// debug run under the production names: real `old` data exists and has not
+/// already been migrated to THIS `new`. Parameterised by base dirs so tests
+/// run against a tempdir. Same release-build caveat as `production_identity_row`.
+#[cfg_attr(not(any(test, debug_assertions)), allow(dead_code))]
+fn debug_run_risks_real_data(
+    app_data_base: &Path,
+    webkit_base: &Path,
+    row: &Rename,
+    current_product_name: &str,
+    current_identifier: &str,
+) -> bool {
+    let app_data_risk = {
+        let old = app_data_base.join(row.from_product_name);
+        let new = app_data_base.join(crate::paths::dir_name(current_product_name));
+        old.exists() && !marker_points_to(&old, &new)
+    };
+    let webkit_risk = {
+        let old = webkit_base.join(row.from_identifier);
+        let new = webkit_base.join(current_identifier);
+        old.exists() && !marker_points_to(&old, &new)
+    };
+    app_data_risk || webkit_risk
+}
+
+/// B3: refuses to start (rather than silently creating throwaway debug
+/// output under the production names) — see the module doc comment. A
+/// no-op in a release build, and a no-op in a debug build whenever there is
+/// nothing real to poison (a fresh machine with no installed `md-mini`).
+#[cfg(debug_assertions)]
+fn refuse_debug_build_on_production_identity(current_product_name: &str, current_identifier: &str) {
+    let Some(row) = production_identity_row(current_product_name, current_identifier) else {
+        return;
+    };
+    let Some(app_data_base) = dirs::data_dir() else {
+        return;
+    };
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let webkit_base = home.join("Library").join("WebKit");
+
+    if debug_run_risks_real_data(&app_data_base, &webkit_base, row, current_product_name, current_identifier) {
+        eprintln!(
+            "migration: refusing to start — this debug build (`cargo build`/`tauri dev`) is \
+             running under the PRODUCTION name \"{current_product_name}\" / identifier \
+             \"{current_identifier}\". Continuing would create \
+             ~/Library/Application Support/{current_product_name}/ and/or \
+             ~/Library/WebKit/{current_identifier}/ as real, non-empty directories, which \
+             would make the actual release build think migration is already done (or \
+             blocked) and permanently skip the real md-mini data. Use `npm run dev:app` \
+             instead — it runs under its own separate identity (`md-mini-dev` / \
+             `com.md-mini.dev`)."
+        );
+        std::process::exit(1);
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn refuse_debug_build_on_production_identity(_current_product_name: &str, _current_identifier: &str) {}
 
 // ---------------------------------------------------------------------------
 // `NSRunningApplication` — is the legacy build alive right now?
@@ -714,55 +958,12 @@ fn is_bundle_running_real(_bundle_id: &str) -> bool {
     false
 }
 
-// ---------------------------------------------------------------------------
-// Resolving a running legacy build: a blocking native dialog, offering to
-// terminate it, before `Builder::build()` ever runs. See the module doc
-// comment's "Resolving a running legacy build" section.
-// ---------------------------------------------------------------------------
-
-/// Shows a blocking `NSAlert` with `buttons` (first is the default,
-/// highlighted button) and returns the 0-based index of the button chosen.
-#[cfg(target_os = "macos")]
-unsafe fn show_blocking_alert(message: &str, informative: &str, buttons: &[&str]) -> usize {
-    use cocoa::appkit::NSApplication;
-    use cocoa::base::{id, nil};
-    use cocoa::foundation::NSString;
-    use objc::{class, msg_send, sel, sel_impl};
-
-    let _pool = AutoreleasePool::new();
-    // Lazily creates the singleton `NSApp` if nothing has yet — `NSAlert`'s
-    // `runModal` needs it to exist, but not to have been `run`. See the
-    // module doc comment for the evidence this is safe ahead of Tauri's own
-    // (later) `NSApplication` setup.
-    let _: id = NSApplication::sharedApplication(nil);
-
-    let alert: id = msg_send![class!(NSAlert), alloc];
-    let alert: id = msg_send![alert, init];
-
-    let ns_message = NSString::alloc(nil).init_str(message);
-    let _: () = msg_send![alert, setMessageText: ns_message];
-    let _: () = msg_send![ns_message, release];
-
-    let ns_informative = NSString::alloc(nil).init_str(informative);
-    let _: () = msg_send![alert, setInformativeText: ns_informative];
-    let _: () = msg_send![ns_informative, release];
-
-    for button in buttons {
-        let ns_button = NSString::alloc(nil).init_str(button);
-        let _: id = msg_send![alert, addButtonWithTitle: ns_button];
-        let _: () = msg_send![ns_button, release];
-    }
-
-    // NSAlertFirstButtonReturn == 1000; each subsequent button return code
-    // is one higher.
-    let response: isize = msg_send![alert, runModal];
-    let _: () = msg_send![alert, release];
-    (response - 1000).max(0) as usize
-}
-
 /// Sends `terminate` (the "please quit" request, NOT `forceTerminate`) to
 /// every running instance of `bundle_id` other than this process, then polls
-/// up to `timeout` for them all to disappear.
+/// up to `timeout` for them all to disappear. I7: on success, sleeps briefly
+/// before returning — see the module doc comment's I7 section for why a
+/// confirmed-dead main process is not the same as its WebKit helper
+/// processes having released `LocalStorage` yet.
 #[cfg(target_os = "macos")]
 unsafe fn terminate_bundle_and_wait(bundle_id: &str, timeout: Duration) -> bool {
     use cocoa::base::{id, BOOL};
@@ -789,6 +990,7 @@ unsafe fn terminate_bundle_and_wait(bundle_id: &str, timeout: Duration) -> bool 
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if !is_bundle_running_real(bundle_id) {
+            std::thread::sleep(Duration::from_millis(750)); // I7
             return true;
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -801,62 +1003,180 @@ unsafe fn terminate_bundle_and_wait(_bundle_id: &str, _timeout: Duration) -> boo
     true
 }
 
-/// Blocks until `bundle_id` is no longer running or the user chooses to
-/// abandon this launch entirely. Loops back to the dialog if termination is
-/// requested but does not complete within 10 seconds, rather than either
-/// force-quitting or silently proceeding.
+// ---------------------------------------------------------------------------
+// B2: the blocking dialog, via `CFUserNotificationDisplayAlert` — never
+// `NSAlert`. See the module doc comment's B2 section for why.
+// ---------------------------------------------------------------------------
+
+/// How the user (or a timeout, or the call itself failing) resolved a
+/// dialog. I4: everything except the two positively-identified buttons
+/// collapses into `CancelOrTimeout`, and every caller treats that exactly
+/// like an explicit "Quit" — nothing unrecognised is ever read as "proceed".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DialogChoice {
+    /// The first (default) button.
+    Default,
+    /// The second (alternate) button.
+    Alternate,
+    /// Cancel, a timeout, or a failed/unrecognised call — always the safe
+    /// choice.
+    CancelOrTimeout,
+}
+
+/// How long a dialog waits for a response before treating it as
+/// `CancelOrTimeout` — generous, since a human may not be at the keyboard,
+/// but bounded so this can never hang a launch forever.
+const DIALOG_TIMEOUT_SECS: f64 = 300.0;
+
 #[cfg(target_os = "macos")]
-fn resolve_legacy_running(bundle_id: &str, log: &Logger) -> bool {
-    loop {
-        let choice = unsafe {
-            show_blocking_alert(
-                "couplet (formerly md-mini) needs md-mini to quit",
-                "To move your drafts and settings, md-mini needs to quit first. Nothing will be lost.",
-                &["Quit md-mini and Continue", "Quit"],
-            )
-        };
-        if choice != 0 {
-            log("migration: user chose to quit rather than wait for the legacy build to close");
-            return false;
-        }
-        log("migration: asking the legacy build to quit");
-        if unsafe { terminate_bundle_and_wait(bundle_id, Duration::from_secs(10)) } {
-            log("migration: legacy build quit, continuing");
-            return true;
-        }
-        log("migration: legacy build did not quit within 10s, asking again");
+fn show_system_alert(header: &str, message: &str, default_button: &str, alternate_button: &str) -> DialogChoice {
+    use core_foundation::base::TCFType;
+    use core_foundation::string::CFString;
+    use core_foundation_sys::user_notification::{
+        kCFUserNotificationAlternateResponse, kCFUserNotificationCautionAlertLevel,
+        kCFUserNotificationDefaultResponse, CFUserNotificationDisplayAlert,
+    };
+
+    let header_cf = CFString::new(header);
+    let message_cf = CFString::new(message);
+    let default_cf = CFString::new(default_button);
+    let alternate_cf = CFString::new(alternate_button);
+    let mut response_flags: core_foundation_sys::base::CFOptionFlags = 0;
+
+    // SAFETY: every `CFStringRef` passed in is kept alive by the `CFString`
+    // locals above (owned, `Drop`-released) for the whole blocking call; the
+    // icon/sound/localization-URL and third-button-title parameters are
+    // legitimately null per the API's own documented "omit to skip"
+    // contract; `response_flags` is a valid `&mut` for the duration.
+    let status = unsafe {
+        CFUserNotificationDisplayAlert(
+            DIALOG_TIMEOUT_SECS,
+            kCFUserNotificationCautionAlertLevel,
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            header_cf.as_concrete_TypeRef(),
+            message_cf.as_concrete_TypeRef(),
+            default_cf.as_concrete_TypeRef(),
+            alternate_cf.as_concrete_TypeRef(),
+            std::ptr::null(),
+            &mut response_flags,
+        )
+    };
+
+    if status != 0 {
+        return DialogChoice::CancelOrTimeout; // I4
+    }
+    if response_flags == kCFUserNotificationDefaultResponse {
+        DialogChoice::Default
+    } else if response_flags == kCFUserNotificationAlternateResponse {
+        DialogChoice::Alternate
+    } else {
+        DialogChoice::CancelOrTimeout // I4: Cancel, timeout, or anything else
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn resolve_legacy_running(_bundle_id: &str, _log: &Logger) -> bool {
-    true
+fn show_system_alert(_header: &str, _message: &str, _default_button: &str, _alternate_button: &str) -> DialogChoice {
+    DialogChoice::CancelOrTimeout
 }
 
-/// Shown when the WebKit migration itself failed (not because a legacy
-/// build was running — that is resolved before this can be reached).
-/// Returns whether to continue starting up anyway (losing this launch's
-/// settings, retried next launch) or to quit.
-#[cfg(target_os = "macos")]
-fn resolve_webkit_failure(log: &Logger) -> bool {
-    let choice = unsafe {
-        show_blocking_alert(
-            "couplet couldn't move your saved settings",
-            "Your theme and recent files couldn't be copied from md-mini. You can continue without them, or quit and try again later.",
-            &["Continue without settings", "Quit"],
+// ---------------------------------------------------------------------------
+// T2: `MigrationEnv` — everything `orchestrate` needs from the outside
+// world, injected so the whole decision-and-retry flow (B1, I2/I3, I5) is
+// testable without touching `~/Library`, showing a real dialog, or spawning
+// a real second process. `RealEnv` is the only non-test implementation.
+// ---------------------------------------------------------------------------
+
+pub(crate) trait MigrationEnv {
+    fn is_bundle_running(&self, bundle_id: &str) -> bool;
+    /// Acquires the cross-process lock (best-effort; see `MigrationLock`).
+    /// Idempotent: calling this while already held is a no-op.
+    fn acquire_lock(&self);
+    /// Releases the lock, if held. Idempotent.
+    fn release_lock(&self);
+    /// "A legacy build with a matching identity needs to quit" — `retry`
+    /// selects the wording for a second (or later) showing (I6): the first
+    /// asks it to quit, a retry acknowledges it apparently didn't and
+    /// suggests why (an open dialog on its side).
+    fn show_legacy_dialog(&self, retry: bool) -> DialogChoice;
+    /// "Migrating `label` failed" — Retry/Quit.
+    fn show_failure_dialog(&self, label: &str) -> DialogChoice;
+    /// Sends `terminate` to `bundle_id` and waits for it to actually quit.
+    fn terminate_and_wait(&self, bundle_id: &str) -> bool;
+    fn log(&self, msg: &str);
+}
+
+/// The real environment: `~/Library`, real `NSRunningApplication`/CF
+/// dialogs, a real cross-process `flock`.
+struct RealEnv {
+    lock: std::cell::RefCell<Option<MigrationLock>>,
+    log_path: PathBuf,
+}
+
+impl RealEnv {
+    fn new(current_product_name: &str) -> Self {
+        Self {
+            lock: std::cell::RefCell::new(None),
+            log_path: log_path_under(&dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")), current_product_name),
+        }
+    }
+}
+
+impl MigrationEnv for RealEnv {
+    fn is_bundle_running(&self, bundle_id: &str) -> bool {
+        is_bundle_running(bundle_id)
+    }
+
+    fn acquire_lock(&self) {
+        if self.lock.borrow().is_some() {
+            return;
+        }
+        let log = |m: &str| self.log(m);
+        *self.lock.borrow_mut() = MigrationLock::acquire(&log);
+    }
+
+    fn release_lock(&self) {
+        *self.lock.borrow_mut() = None;
+    }
+
+    fn show_legacy_dialog(&self, retry: bool) -> DialogChoice {
+        let (header, message) = if retry {
+            (
+                "md-mini didn't quit — it may be waiting in an open dialog",
+                "Switch to md-mini and save or dismiss anything open, or quit couplet instead.",
+            )
+        } else {
+            (
+                "couplet (formerly md-mini) needs md-mini to quit",
+                "To move your drafts and settings, md-mini needs to quit first. Nothing will be lost.",
+            )
+        };
+        show_system_alert(header, message, "Quit md-mini and Continue", "Quit couplet")
+    }
+
+    fn show_failure_dialog(&self, label: &str) -> DialogChoice {
+        show_system_alert(
+            "couplet couldn't finish moving your data",
+            &format!(
+                "Something went wrong migrating md-mini's {label}. Check \
+                 ~/Library/Logs/<product>/migration.log for details, then Retry, or quit and \
+                 try again later."
+            ),
+            "Retry",
+            "Quit couplet",
         )
-    };
-    let continue_anyway = choice == 0;
-    log(&format!(
-        "migration: WebKit migration failed; user chose to {}",
-        if continue_anyway { "continue without settings" } else { "quit" }
-    ));
-    continue_anyway
-}
+    }
 
-#[cfg(not(target_os = "macos"))]
-fn resolve_webkit_failure(_log: &Logger) -> bool {
-    true
+    fn terminate_and_wait(&self, bundle_id: &str) -> bool {
+        unsafe { terminate_bundle_and_wait(bundle_id, Duration::from_secs(10)) }
+    }
+
+    fn log(&self, msg: &str) {
+        if append_log_line(&self.log_path, msg).is_err() {
+            eprintln!("{msg}");
+        }
+    }
 }
 
 /// Best-effort cross-process mutex over migration work, via `flock` on a
@@ -956,139 +1276,219 @@ fn append_log_line(path: &Path, msg: &str) -> io::Result<()> {
     writeln!(file, "[{}] {}", now_epoch_secs(), msg)
 }
 
-fn file_logger(product_name: &str) -> impl Fn(&str) {
-    let path = log_path_under(&dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")), product_name);
-    move |msg: &str| {
-        if append_log_line(&path, msg).is_err() {
-            eprintln!("{msg}");
+// ---------------------------------------------------------------------------
+// T2: the orchestration itself, dependency-injected via `MigrationEnv`.
+// `orchestrate` and `run_migration_with_retry` are exercised directly by
+// tests with `testing::MockEnv`. `migrate_all_real` is the thin, untested
+// real-filesystem wrapper.
+// ---------------------------------------------------------------------------
+
+pub(crate) enum OrchestrateOutcome {
+    /// Proceed normally — nothing further to do.
+    Done,
+    /// The caller must `std::process::exit(0)` and start nothing.
+    Abort,
+}
+
+/// Runs one migration (app-data or WebKit) to completion. On
+/// [`MigrationOutcome::Failed`] shows `env.show_failure_dialog` (I2/I3) —
+/// `Default` retries `migrate_dir` immediately, anything else (I4) aborts.
+/// The lock is released before that dialog and re-acquired after (I5). A
+/// `Decision::LegacyRunning` reaching this function is an internal-error
+/// abort — `orchestrate`'s own loop is what is supposed to guarantee this
+/// never happens (B1).
+fn run_migration_with_retry(
+    env: &impl MigrationEnv,
+    old_new: Option<(&Path, &Path)>,
+    decision: Option<Decision>,
+    label: &str,
+    strategy: Strategy,
+) -> Result<MigrationOutcome, ()> {
+    let (Some((old, new)), Some(decision)) = (old_new, decision) else {
+        return Ok(MigrationOutcome::NoOp);
+    };
+    match decision {
+        Decision::AlreadyDone | Decision::NothingToMigrate => Ok(MigrationOutcome::NoOp),
+        Decision::NewAlreadyPopulated => {
+            env.log(&format!(
+                "migration: {label} — {} already has data, leaving {} in place",
+                new.display(),
+                old.display()
+            ));
+            Ok(MigrationOutcome::NoOp)
         }
+        Decision::LegacyRunning => {
+            env.log(&format!(
+                "migration: internal error — {label} still LegacyRunning after resolution; refusing to proceed"
+            ));
+            Err(())
+        }
+        Decision::Migrate => loop {
+            let log_fn = |m: &str| env.log(m);
+            let outcome = migrate_dir(old, new, label, strategy, &log_fn);
+            if outcome != MigrationOutcome::Failed {
+                return Ok(outcome);
+            }
+            env.release_lock(); // I5
+            let choice = env.show_failure_dialog(label);
+            let retry = choice == DialogChoice::Default; // I4
+            env.log(&format!(
+                "migration: {label} migration failed; user chose to {}",
+                if retry { "retry" } else { "quit" }
+            ));
+            if !retry {
+                return Err(());
+            }
+            env.acquire_lock();
+        },
     }
 }
 
-// ---------------------------------------------------------------------------
-// The real, top-level entry point. Not unit-tested directly — it touches
-// `~/Library`, `dirs::home_dir()`/`dirs::data_dir()`, and (on a running
-// legacy instance or a WebKit failure) a real native dialog. Everything it
-// composes (`evaluate`, `decide_migration`, `migrate_dir`,
-// `gc_orphaned_staging`) is tested on its own.
-// ---------------------------------------------------------------------------
+/// The full decision-and-retry flow: garbage-collects orphaned staging
+/// directories, resolves any running legacy build (looping — B1 — until
+/// neither side is `LegacyRunning` or the user abandons the launch), then
+/// runs both migrations, each with its own Retry/Quit on failure (I2/I3).
+/// `app_data`/`webkit` are `(old, new, legacy_identifier)` — `None` means
+/// no matching `Rename` row for that side.
+pub(crate) fn orchestrate(
+    env: &impl MigrationEnv,
+    app_data: Option<(&Path, &Path, &str)>,
+    webkit: Option<(&Path, &Path, &str)>,
+) -> OrchestrateOutcome {
+    env.acquire_lock();
+    if let Some((_, new, _)) = &app_data {
+        gc_orphaned_staging(new, &|m| env.log(m));
+    }
+    if let Some((_, new, _)) = &webkit {
+        gc_orphaned_staging(new, &|m| env.log(m));
+    }
 
-/// Runs both migrations, called once from `run()` before
-/// `tauri::Builder::default()...build()`. Returns the product name `run()`
-/// should use for `paths::init` this launch.
-pub(crate) fn migrate_all_real(current_product_name: &str, current_identifier: &str) -> String {
-    let log = file_logger(current_product_name);
+    let is_running = |id: &str| env.is_bundle_running(id);
+    let mut app_data_decision = app_data.map(|(old, new, id)| decide_with(old, new, id, &is_running));
+    let mut webkit_decision = webkit.map(|(old, new, id)| decide_with(old, new, id, &is_running));
+
+    let mut retry_dialog = false;
+    loop {
+        let legacy_running =
+            matches!(app_data_decision, Some(Decision::LegacyRunning)) || matches!(webkit_decision, Some(Decision::LegacyRunning));
+        if !legacy_running {
+            break;
+        }
+        let legacy_identifier = app_data
+            .map(|(_, _, id)| id)
+            .or_else(|| webkit.map(|(_, _, id)| id))
+            .expect("a LegacyRunning decision implies at least one matching row");
+
+        env.release_lock(); // I5: never hold the lock across a dialog
+        let choice = env.show_legacy_dialog(retry_dialog);
+        let proceed = match choice {
+            DialogChoice::Default => {
+                env.log("migration: asking the legacy build to quit");
+                if env.terminate_and_wait(legacy_identifier) {
+                    env.log("migration: legacy build quit");
+                    true
+                } else {
+                    env.log("migration: legacy build did not quit within the wait window");
+                    false
+                }
+            }
+            DialogChoice::Alternate | DialogChoice::CancelOrTimeout => false, // I4
+        };
+        if !proceed {
+            env.log("migration: abandoning this launch — the legacy build is still running");
+            return OrchestrateOutcome::Abort;
+        }
+        retry_dialog = true;
+        env.acquire_lock();
+        // B1: re-evaluate BOTH sides before doing anything else, and loop
+        // back to the top — if either is STILL `LegacyRunning` (it can
+        // restart in this exact window), the dialog is shown again with
+        // `retry_dialog = true`, never silently treated as resolved.
+        if let Some((old, new, id)) = &app_data {
+            app_data_decision = Some(decide_with(old, new, id, &is_running));
+        }
+        if let Some((old, new, id)) = &webkit {
+            webkit_decision = Some(decide_with(old, new, id, &is_running));
+        }
+    }
+
+    let app_data_outcome = match run_migration_with_retry(
+        env,
+        app_data.map(|(o, n, _)| (o, n)),
+        app_data_decision,
+        "app data directory",
+        Strategy::PreferRename,
+    ) {
+        Ok(o) => o,
+        Err(()) => {
+            env.release_lock();
+            return OrchestrateOutcome::Abort;
+        }
+    };
+    let webkit_outcome = match run_migration_with_retry(
+        env,
+        webkit.map(|(o, n, _)| (o, n)),
+        webkit_decision,
+        "WebKit profile",
+        Strategy::CopyOnly,
+    ) {
+        Ok(o) => o,
+        Err(()) => {
+            env.release_lock();
+            return OrchestrateOutcome::Abort;
+        }
+    };
+    let _ = (app_data_outcome, webkit_outcome); // I2/I3: no fallback name left to compute
+
+    env.release_lock();
+    OrchestrateOutcome::Done
+}
+
+/// Real, top-level entry point. Called once from `run()` before
+/// `tauri::Builder::default()...build()`. `std::process::exit(0)`s rather
+/// than returning if [`orchestrate`] decides this launch must not proceed.
+pub(crate) fn migrate_all_real(current_product_name: &str, current_identifier: &str) {
+    refuse_debug_build_on_production_identity(current_product_name, current_identifier); // B3
 
     let product_rename = rename_for_product_name(current_product_name);
     let identifier_rename = rename_for_identifier(current_identifier);
     if product_rename.is_none() && identifier_rename.is_none() {
-        return current_product_name.to_string();
+        return;
     }
 
-    let app_data_paths = product_rename.and_then(|r| {
-        dirs::data_dir().map(|base| {
-            (
-                r,
-                base.join(r.from_product_name),
-                base.join(crate::paths::dir_name(current_product_name)),
-            )
-        })
-    });
-    if product_rename.is_some() && app_data_paths.is_none() {
-        log("migration: could not determine the application data directory, skipping");
-    }
-
-    let webkit_paths = identifier_rename.and_then(|r| {
-        dirs::home_dir().map(|home| {
+    let app_data_paths: Option<(PathBuf, PathBuf, &'static str)> = match (product_rename, dirs::data_dir()) {
+        (Some(r), Some(base)) => Some((
+            base.join(r.from_product_name),
+            base.join(crate::paths::dir_name(current_product_name)),
+            r.from_identifier,
+        )),
+        (Some(_), None) => {
+            eprintln!("migration: could not determine the application data directory, skipping");
+            None
+        }
+        (None, _) => None,
+    };
+    let webkit_paths: Option<(PathBuf, PathBuf, &'static str)> = match (identifier_rename, dirs::home_dir()) {
+        (Some(r), Some(home)) => {
             let base = home.join("Library").join("WebKit");
-            (r, base.join(r.from_identifier), base.join(current_identifier))
-        })
-    });
-    if identifier_rename.is_some() && webkit_paths.is_none() {
-        log("migration: could not determine the home directory, skipping WebKit profile migration");
-    }
-
-    let mut app_data_decision = app_data_paths.as_ref().map(|(r, old, new)| evaluate(old, new, r.from_identifier));
-    let mut webkit_decision = webkit_paths.as_ref().map(|(r, old, new)| evaluate(old, new, r.from_identifier));
-
-    if matches!(app_data_decision, Some(Decision::LegacyRunning)) || matches!(webkit_decision, Some(Decision::LegacyRunning)) {
-        let legacy_identifier = app_data_paths
-            .as_ref()
-            .map(|(r, ..)| r.from_identifier)
-            .or_else(|| webkit_paths.as_ref().map(|(r, ..)| r.from_identifier))
-            .expect("a LegacyRunning decision implies at least one matching row");
-
-        if !resolve_legacy_running(legacy_identifier, &log) {
-            log("migration: abandoning this launch — the legacy build is still running");
-            std::process::exit(0);
+            Some((base.join(r.from_identifier), base.join(current_identifier), r.from_identifier))
         }
-        if let Some((r, old, new)) = &app_data_paths {
-            app_data_decision = Some(evaluate(old, new, r.from_identifier));
+        (Some(_), None) => {
+            eprintln!("migration: could not determine the home directory, skipping WebKit profile migration");
+            None
         }
-        if let Some((r, old, new)) = &webkit_paths {
-            webkit_decision = Some(evaluate(old, new, r.from_identifier));
-        }
-    }
-
-    let needs_lock = |d: &Option<Decision>| matches!(d, Some(dec) if *dec != Decision::AlreadyDone);
-    let _lock = if needs_lock(&app_data_decision) || needs_lock(&webkit_decision) {
-        let lock = MigrationLock::acquire(&log);
-        if let Some((_, _, new)) = &app_data_paths {
-            if let Some(parent) = new.parent() {
-                gc_orphaned_staging(parent, &log);
-            }
-        }
-        if let Some((_, _, new)) = &webkit_paths {
-            if let Some(parent) = new.parent() {
-                gc_orphaned_staging(parent, &log);
-            }
-        }
-        lock
-    } else {
-        None
+        (None, _) => None,
     };
 
-    let app_data_outcome = match (&app_data_paths, app_data_decision) {
-        (Some((_, old, new)), Some(Decision::Migrate)) => migrate_dir(old, new, "app data directory", Strategy::PreferRename, &log),
-        (Some((_, old, new)), Some(Decision::NewAlreadyPopulated)) => {
-            log(&format!(
-                "migration: app data directory — {} already has data, leaving {} in place",
-                new.display(),
-                old.display()
-            ));
-            MigrationOutcome::NoOp
-        }
-        _ => MigrationOutcome::NoOp,
-    };
-
-    let webkit_outcome = match (&webkit_paths, webkit_decision) {
-        (Some((_, old, new)), Some(Decision::Migrate)) => migrate_dir(old, new, "WebKit profile", Strategy::CopyOnly, &log),
-        (Some((_, old, new)), Some(Decision::NewAlreadyPopulated)) => {
-            log(&format!(
-                "migration: WebKit profile — {} already has data, leaving {} in place",
-                new.display(),
-                old.display()
-            ));
-            MigrationOutcome::NoOp
-        }
-        _ => MigrationOutcome::NoOp,
-    };
-
-    if webkit_outcome == MigrationOutcome::Failed && !resolve_webkit_failure(&log) {
+    let env = RealEnv::new(current_product_name);
+    let outcome = orchestrate(
+        &env,
+        app_data_paths.as_ref().map(|(o, n, id)| (o.as_path(), n.as_path(), *id)),
+        webkit_paths.as_ref().map(|(o, n, id)| (o.as_path(), n.as_path(), *id)),
+    );
+    if matches!(outcome, OrchestrateOutcome::Abort) {
         std::process::exit(0);
     }
-
-    if app_data_outcome == MigrationOutcome::Failed {
-        if let Some((r, ..)) = &app_data_paths {
-            log(&format!(
-                "migration: app data directory migration did not complete this launch — using the legacy directory \"{}\" for this one launch (nothing else is running on it) so a retry stays possible next launch",
-                r.from_product_name
-            ));
-            return r.from_product_name.to_string();
-        }
-    }
-
-    current_product_name.to_string()
 }
 
 #[cfg(test)]
@@ -1154,6 +1554,103 @@ pub(crate) mod testing {
     pub(crate) fn force_bundle_running(value: bool) -> BundleRunningGuard {
         FORCE_BUNDLE_RUNNING.with(|slot| *slot.borrow_mut() = Some(value));
         BundleRunningGuard
+    }
+
+    // --- T2: a scriptable `MigrationEnv` for testing `orchestrate` directly ---
+
+    use super::{DialogChoice, MigrationEnv};
+    use std::cell::Cell;
+    use std::collections::VecDeque;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum TerminateBehavior {
+        /// `terminate_and_wait` returns `false`; the legacy build stays
+        /// "running" no matter how many times this is tried.
+        Fails,
+        /// Returns `true`, and the legacy build is genuinely gone from then
+        /// on.
+        SucceedsAndStaysGone,
+        /// Returns `true` for the termination attempt itself, but the
+        /// legacy build is "running" again by the time anything re-checks —
+        /// B1's exact scenario (an agent's `mdmini`/MCP `allow_launch`, or
+        /// the user, relaunching it in that window).
+        SucceedsButRelaunches,
+    }
+
+    pub(crate) struct MockEnv {
+        pub(crate) is_running: Cell<bool>,
+        pub(crate) terminate_behavior: Cell<TerminateBehavior>,
+        pub(crate) legacy_dialog_choices: RefCell<VecDeque<DialogChoice>>,
+        pub(crate) failure_dialog_choices: RefCell<VecDeque<DialogChoice>>,
+        pub(crate) locked: Cell<bool>,
+        pub(crate) dialog_called_while_locked: Cell<bool>,
+        pub(crate) legacy_dialog_calls: Cell<u32>,
+        pub(crate) failure_dialog_calls: Cell<u32>,
+        pub(crate) terminate_calls: Cell<u32>,
+        pub(crate) log_lines: RefCell<Vec<String>>,
+    }
+
+    impl MockEnv {
+        pub(crate) fn new() -> Self {
+            Self {
+                is_running: Cell::new(false),
+                terminate_behavior: Cell::new(TerminateBehavior::SucceedsAndStaysGone),
+                legacy_dialog_choices: RefCell::new(VecDeque::new()),
+                failure_dialog_choices: RefCell::new(VecDeque::new()),
+                locked: Cell::new(false),
+                dialog_called_while_locked: Cell::new(false),
+                legacy_dialog_calls: Cell::new(0),
+                failure_dialog_calls: Cell::new(0),
+                terminate_calls: Cell::new(0),
+                log_lines: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl MigrationEnv for MockEnv {
+        fn is_bundle_running(&self, _bundle_id: &str) -> bool {
+            self.is_running.get()
+        }
+
+        fn acquire_lock(&self) {
+            self.locked.set(true);
+        }
+
+        fn release_lock(&self) {
+            self.locked.set(false);
+        }
+
+        fn show_legacy_dialog(&self, _retry: bool) -> DialogChoice {
+            self.legacy_dialog_calls.set(self.legacy_dialog_calls.get() + 1);
+            if self.locked.get() {
+                self.dialog_called_while_locked.set(true);
+            }
+            self.legacy_dialog_choices.borrow_mut().pop_front().unwrap_or(DialogChoice::CancelOrTimeout)
+        }
+
+        fn show_failure_dialog(&self, _label: &str) -> DialogChoice {
+            self.failure_dialog_calls.set(self.failure_dialog_calls.get() + 1);
+            if self.locked.get() {
+                self.dialog_called_while_locked.set(true);
+            }
+            self.failure_dialog_choices.borrow_mut().pop_front().unwrap_or(DialogChoice::CancelOrTimeout)
+        }
+
+        fn terminate_and_wait(&self, _bundle_id: &str) -> bool {
+            self.terminate_calls.set(self.terminate_calls.get() + 1);
+            match self.terminate_behavior.get() {
+                TerminateBehavior::Fails => false,
+                TerminateBehavior::SucceedsAndStaysGone => {
+                    self.is_running.set(false);
+                    true
+                }
+                TerminateBehavior::SucceedsButRelaunches => true, // `is_running` deliberately left true
+            }
+        }
+
+        fn log(&self, msg: &str) {
+            self.log_lines.borrow_mut().push(msg.to_string());
+        }
     }
 }
 
@@ -1256,6 +1753,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
+    // T1: this assertion is only true under `debug_assertions` — under
+    // `cargo test --release` the release row IS reachable (correctly: a
+    // release build legitimately needs it), so the test itself must not
+    // even compile-in for that profile, or it fails there on purpose.
     fn n5_a_release_row_is_invisible_under_a_debug_build() {
         // `cargo test` is itself a `debug_assertions` build, so this is the
         // real regression check, not a simulation: without the `dev` filter,
@@ -1278,6 +1780,52 @@ mod tests {
         let raw_by_id =
             rename_matching_identifier(RENAMES, "pro.couplet.app").expect("the row must still exist by identifier too");
         assert_eq!(raw_by_id.from_identifier, "com.md-mini.app");
+    }
+
+    // --- B3: a debug build must never poison the production names --------
+
+    #[test]
+    fn production_identity_row_matches_only_the_dev_false_row() {
+        assert!(production_identity_row("couplet", "pro.couplet.app").is_some());
+        assert!(production_identity_row("couplet-dev", "pro.couplet.dev").is_none(), "the dev row must not trigger this");
+        assert!(production_identity_row("something-else", "com.something.else").is_none());
+    }
+
+    #[test]
+    fn b3_flags_risk_when_real_legacy_data_exists_and_is_unmigrated() {
+        let dir = scratch("b3-risk");
+        let app_data_base = dir.join("AppSupport");
+        let webkit_base = dir.join("WebKit");
+        write(&app_data_base.join("md-mini").join("session.json"), "real data");
+        let row = production_identity_row("couplet", "pro.couplet.app").unwrap();
+
+        assert!(debug_run_risks_real_data(&app_data_base, &webkit_base, row, "couplet", "pro.couplet.app"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn b3_no_risk_when_nothing_legacy_exists() {
+        let dir = scratch("b3-norisk");
+        let app_data_base = dir.join("AppSupport");
+        let webkit_base = dir.join("WebKit");
+        let row = production_identity_row("couplet", "pro.couplet.app").unwrap();
+
+        assert!(!debug_run_risks_real_data(&app_data_base, &webkit_base, row, "couplet", "pro.couplet.app"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn b3_no_risk_once_already_migrated() {
+        let dir = scratch("b3-migrated");
+        let app_data_base = dir.join("AppSupport");
+        let webkit_base = dir.join("WebKit");
+        let old = app_data_base.join("md-mini");
+        let new = app_data_base.join("couplet");
+        write(&old.join(MOVED_MARKER), new.to_str().unwrap());
+        let row = production_identity_row("couplet", "pro.couplet.app").unwrap();
+
+        assert!(!debug_run_risks_real_data(&app_data_base, &webkit_base, row, "couplet", "pro.couplet.app"));
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1705,6 +2253,11 @@ mod tests {
         assert_eq!(fs::read_to_string(new.join("recovery").join("draft.md")).unwrap(), "unsaved");
         let mode = fs::metadata(new.join("recovery")).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o555, "the mode should still end up copied, just not until after the children are in place");
+        // T4: `new`'s copy of `recovery/` is ALSO 0o555 at this point — left
+        // as-is, `remove_dir_all` cannot delete `draft.md` inside it (no
+        // write bit) and `.ok()` would otherwise hide that, leaking a
+        // stubborn 0o555 directory in `/tmp` across every test run.
+        fs::set_permissions(&new.join("recovery"), fs::Permissions::from_mode(0o755)).unwrap();
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -1734,12 +2287,13 @@ mod tests {
     #[test]
     fn gc_removes_a_staging_directory_whose_pid_is_dead() {
         let dir = scratch("gc-dead");
+        let new = dir.join("couplet-dev");
         let dead_pid = 999_999; // astronomically unlikely to be a live pid
         let orphan = dir.join(format!(".couplet-dev.migrating-{dead_pid}-0"));
         write(&orphan.join("partial.txt"), "leftover");
 
         let (_log, logger) = collecting_logger();
-        gc_orphaned_staging(&dir, &logger);
+        gc_orphaned_staging(&new, &logger);
 
         assert!(!orphan.exists(), "an orphan from a dead pid must be removed");
         fs::remove_dir_all(&dir).ok();
@@ -1748,12 +2302,13 @@ mod tests {
     #[test]
     fn gc_leaves_a_staging_directory_whose_pid_is_alive() {
         let dir = scratch("gc-alive");
+        let new = dir.join("couplet-dev");
         let my_pid = std::process::id();
         let live = dir.join(format!(".couplet-dev.migrating-{my_pid}-0"));
         write(&live.join("still-copying.txt"), "in progress");
 
         let (_log, logger) = collecting_logger();
-        gc_orphaned_staging(&dir, &logger);
+        gc_orphaned_staging(&new, &logger);
 
         assert!(live.exists(), "a staging dir whose pid is still alive (this test process) must survive");
         fs::remove_dir_all(&dir).ok();
@@ -1762,12 +2317,58 @@ mod tests {
     #[test]
     fn gc_ignores_entries_that_do_not_look_like_staging_directories() {
         let dir = scratch("gc-unrelated");
+        let new = dir.join("couplet-dev");
         write(&dir.join("not-a-staging-dir").join("file.txt"), "unrelated");
 
         let (_log, logger) = collecting_logger();
-        gc_orphaned_staging(&dir, &logger);
+        gc_orphaned_staging(&new, &logger);
 
         assert!(dir.join("not-a-staging-dir").exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn gc_does_not_touch_an_unrelated_apps_directory_that_merely_contains_migrating() {
+        // I1: an earlier version matched any name CONTAINING ".migrating-"
+        // anywhere in the whole (shared!) parent directory
+        // (`~/Library/Application Support/`, `~/Library/WebKit/`) — this
+        // could in principle `remove_dir_all` some OTHER application's own
+        // directory. The exact prefix, tied to THIS `new`'s own name, must
+        // reject anything that merely superficially resembles the pattern.
+        let dir = scratch("gc-unrelated-app");
+        let new = dir.join("couplet-dev"); // our own `new`, unrelated name
+        let other_app = dir.join(".other-app.migrating-999999-0");
+        write(&other_app.join("their-file.txt"), "not ours");
+
+        let (_log, logger) = collecting_logger();
+        gc_orphaned_staging(&new, &logger);
+
+        assert!(
+            other_app.exists(),
+            "an unrelated app's directory must survive even though it superficially resembles our naming pattern"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn gc_never_follows_a_symlink_even_with_a_dead_pid_in_its_name() {
+        // I1: `symlink_metadata` (never following the final component) is
+        // what makes this safe regardless of what `fs::remove_dir_all`
+        // itself would do with a symlink — a symlink is rejected before
+        // `remove_dir_all` is ever called on it.
+        let dir = scratch("gc-symlink");
+        let new = dir.join("couplet-dev");
+        let real_target = dir.join("precious-real-directory");
+        fs::create_dir_all(&real_target).unwrap();
+        write(&real_target.join("keepme.txt"), "important");
+        let fake_staging = dir.join(".couplet-dev.migrating-999999-0"); // dead pid
+        std::os::unix::fs::symlink(&real_target, &fake_staging).unwrap();
+
+        let (_log, logger) = collecting_logger();
+        gc_orphaned_staging(&new, &logger);
+
+        assert!(fake_staging.exists(), "the symlink itself must be left alone");
+        assert!(real_target.join("keepme.txt").exists(), "must never follow the symlink to its real target");
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -1802,5 +2403,168 @@ mod tests {
     fn is_bundle_running_real_matches_a_real_process() {
         assert!(is_bundle_running_real("com.apple.finder"), "Finder should always be running on macOS");
         assert!(!is_bundle_running_real("com.md-mini.this-bundle-id-does-not-exist"));
+    }
+
+    // --- T2: orchestrate, dependency-injected via MigrationEnv --------------
+
+    #[test]
+    fn terminate_that_never_succeeds_eventually_aborts() {
+        // The legacy build simply never quits (`terminate_and_wait` always
+        // returns `false`) — distinct from the relaunch scenario below: here
+        // termination itself never succeeds even once.
+        let dir = scratch("t2-terminate-fails");
+        let old = dir.join("md-mini-dev");
+        let new = dir.join("couplet-dev");
+        write(&old.join("session.json"), "real data");
+
+        let env = testing::MockEnv::new();
+        env.is_running.set(true);
+        env.terminate_behavior.set(testing::TerminateBehavior::Fails);
+        env.legacy_dialog_choices.borrow_mut().push_back(DialogChoice::Default);
+
+        let outcome = orchestrate(&env, Some((&old, &new, "com.md-mini.dev")), None);
+
+        assert!(matches!(outcome, OrchestrateOutcome::Abort));
+        assert!(!new.exists());
+        assert_eq!(env.terminate_calls.get(), 1);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn legacy_running_after_resolve_never_starts_on_new() {
+        // B1: the legacy build "quits" (terminate_and_wait succeeds) but is
+        // running again by the time anything re-checks — the loop must show
+        // the dialog AGAIN (this time with `retry = true`) rather than
+        // proceeding as if it were gone, and eventually abandon rather than
+        // ever create `new`.
+        let dir = scratch("t2-b1");
+        let old = dir.join("md-mini-dev");
+        let new = dir.join("couplet-dev");
+        write(&old.join("session.json"), "real data");
+
+        let env = testing::MockEnv::new();
+        env.is_running.set(true);
+        env.terminate_behavior.set(testing::TerminateBehavior::SucceedsButRelaunches);
+        env.legacy_dialog_choices.borrow_mut().extend([DialogChoice::Default, DialogChoice::CancelOrTimeout]);
+
+        let outcome = orchestrate(&env, Some((&old, &new, "com.md-mini.dev")), None);
+
+        assert!(matches!(outcome, OrchestrateOutcome::Abort));
+        assert!(!new.exists(), "must never start on `new` while any resolution attempt leaves the legacy build running");
+        assert_eq!(env.legacy_dialog_calls.get(), 2, "must have looped back and shown the dialog again");
+        assert!(!env.locked.get(), "must not exit still holding the lock");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn legacy_dialog_default_button_migrates_once_it_actually_quits() {
+        let dir = scratch("t2-b1-success");
+        let old = dir.join("md-mini-dev");
+        let new = dir.join("couplet-dev");
+        write(&old.join("session.json"), "real data");
+
+        let env = testing::MockEnv::new();
+        env.is_running.set(true);
+        env.terminate_behavior.set(testing::TerminateBehavior::SucceedsAndStaysGone);
+        env.legacy_dialog_choices.borrow_mut().push_back(DialogChoice::Default);
+
+        let outcome = orchestrate(&env, Some((&old, &new, "com.md-mini.dev")), None);
+
+        assert!(matches!(outcome, OrchestrateOutcome::Done));
+        assert_eq!(fs::read_to_string(new.join("session.json")).unwrap(), "real data");
+        assert_eq!(env.legacy_dialog_calls.get(), 1);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unrecognised_dialog_response_means_quit() {
+        // I4: `CancelOrTimeout` on the VERY FIRST dialog call must abandon
+        // immediately — never call `terminate_and_wait`, never create `new`.
+        let dir = scratch("t2-i4");
+        let old = dir.join("md-mini-dev");
+        let new = dir.join("couplet-dev");
+        write(&old.join("session.json"), "real data");
+
+        let env = testing::MockEnv::new();
+        env.is_running.set(true);
+        env.legacy_dialog_choices.borrow_mut().push_back(DialogChoice::CancelOrTimeout);
+
+        let outcome = orchestrate(&env, Some((&old, &new, "com.md-mini.dev")), None);
+
+        assert!(matches!(outcome, OrchestrateOutcome::Abort));
+        assert!(!new.exists());
+        assert_eq!(env.terminate_calls.get(), 0, "an unrecognised response must never be read as \"quit md-mini\"");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn failed_migration_retries_then_quits_on_an_unrecognised_response() {
+        // I2/I3: a genuine, PERSISTENT copy failure (chmod 000 on a file
+        // inside `old`, real filesystem) — Retry re-attempts `migrate_dir`
+        // (observable as repeated failure-dialog calls, since the failure
+        // never actually clears), and the final unrecognised response
+        // aborts rather than silently falling back to any directory.
+        let dir = scratch("t2-i2i3");
+        let old = dir.join("com.md-mini.dev");
+        write(&old.join("a.txt"), "copies fine");
+        write(&old.join("b.txt"), "never gets read");
+        fs::set_permissions(&old.join("b.txt"), fs::Permissions::from_mode(0o000)).unwrap();
+        let new = dir.join("pro.couplet.dev");
+
+        let env = testing::MockEnv::new();
+        env.is_running.set(false);
+        env.failure_dialog_choices
+            .borrow_mut()
+            .extend([DialogChoice::Default, DialogChoice::Default, DialogChoice::CancelOrTimeout]);
+
+        let outcome = orchestrate(&env, None, Some((&old, &new, "com.md-mini.dev")));
+
+        if env.failure_dialog_calls.get() == 0 {
+            eprintln!("skipping strict assertions: this process can read 0o000 files (likely running as root)");
+            fs::remove_dir_all(&dir).ok();
+            return;
+        }
+
+        assert!(matches!(outcome, OrchestrateOutcome::Abort));
+        assert!(!new.exists());
+        assert_eq!(env.failure_dialog_calls.get(), 3, "two retries, then the unrecognised response that finally aborts");
+        assert!(!env.locked.get(), "must not exit still holding the lock");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn dialogs_are_never_shown_while_the_lock_is_held() {
+        // I5, directly: `MockEnv::show_legacy_dialog`/`show_failure_dialog`
+        // record whether `locked` was true at the moment they were called —
+        // covers both the legacy-running loop and the failure-retry loop in
+        // one run.
+        let dir = scratch("t2-i5");
+        let old_app = dir.join("md-mini-dev");
+        write(&old_app.join("session.json"), "real data");
+        let new_app = dir.join("couplet-dev");
+
+        let old_wk = dir.join("com.md-mini.dev");
+        write(&old_wk.join("secret.txt"), "never gets read");
+        fs::set_permissions(&old_wk.join("secret.txt"), fs::Permissions::from_mode(0o000)).unwrap();
+        let new_wk = dir.join("pro.couplet.dev");
+
+        let env = testing::MockEnv::new();
+        env.is_running.set(true);
+        env.terminate_behavior.set(testing::TerminateBehavior::SucceedsAndStaysGone);
+        env.legacy_dialog_choices.borrow_mut().push_back(DialogChoice::Default);
+        env.failure_dialog_choices.borrow_mut().push_back(DialogChoice::CancelOrTimeout);
+
+        let _ = orchestrate(
+            &env,
+            Some((&old_app, &new_app, "com.md-mini.dev")),
+            Some((&old_wk, &new_wk, "com.md-mini.dev")),
+        );
+
+        if env.failure_dialog_calls.get() == 0 {
+            eprintln!("skipping strict assertion: this process can read 0o000 files (likely running as root)");
+        } else {
+            assert!(!env.dialog_called_while_locked.get(), "a dialog must never be shown while the lock is held");
+        }
+        fs::remove_dir_all(&dir).ok();
     }
 }
