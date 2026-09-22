@@ -16,6 +16,12 @@ use crate::window;
 
 const MARKER_FILE: &str = "onboarding-version";
 
+/// Separator between the version and the language in the marker file, e.g.
+/// `1.3.0:ru`. Chosen over any other punctuation because neither a semver
+/// string nor a language code ever contains a colon, so `split_once(':')` is
+/// unambiguous in both directions.
+const MARKER_SEP: char = ':';
+
 const WELCOME_EN: &str = include_str!("../welcome.en.md");
 const WELCOME_ES: &str = include_str!("../welcome.es.md");
 const WELCOME_DE: &str = include_str!("../welcome.de.md");
@@ -57,12 +63,34 @@ const NUDGE_INTERVAL_SECS: u64 = 24 * 60 * 60;
 /// when it did — the welcome window already says everything the nudge would.
 static WELCOME_SHOWN_THIS_LAUNCH: AtomicBool = AtomicBool::new(false);
 
-/// True when the welcome window should be shown for `current` — the marker is
-/// absent (fresh install / fresh data dir) or names a different version.
-pub fn should_show(stored: Option<&str>, current: &str) -> bool {
+/// Split a stored marker into `(version, language)`. The language half is
+/// `None` for a legacy marker written before markers carried a language at
+/// all (every install that had already seen 1.3.0 or earlier) — a bare
+/// version with no `:` is not malformed, it is simply old.
+fn parse_marker(stored: &str) -> (&str, Option<&str>) {
+    match stored.split_once(MARKER_SEP) {
+        Some((version, lang)) if !lang.is_empty() => (version, Some(lang)),
+        _ => (stored, None),
+    }
+}
+
+/// True when the welcome window should be shown for `(current_version,
+/// current_lang)` — the marker is absent (fresh install / fresh data dir),
+/// names a different version, or names a different language.
+///
+/// A legacy marker (bare version, no language — `parse_marker` reads its
+/// language half as `None`) never equals `Some(current_lang)`, so it always
+/// re-shows once for the version it already claims to have shown, exactly
+/// like an unknown language should. The next `write_marker` upgrades it to
+/// the `version:lang` shape and this path is never taken again for that
+/// install.
+pub fn should_show(stored: Option<&str>, current_version: &str, current_lang: &str) -> bool {
     match stored {
         None => true,
-        Some(v) => v != current,
+        Some(v) => {
+            let (stored_version, stored_lang) = parse_marker(v);
+            stored_version != current_version || stored_lang != Some(current_lang)
+        }
     }
 }
 
@@ -72,8 +100,8 @@ fn read_marker(base_dir: &Path) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
-fn write_marker(base_dir: &Path, version: &str) -> std::io::Result<()> {
-    fs::write(base_dir.join(MARKER_FILE), version)
+fn write_marker(base_dir: &Path, version: &str, lang: &str) -> std::io::Result<()> {
+    fs::write(base_dir.join(MARKER_FILE), format!("{version}{MARKER_SEP}{lang}"))
 }
 
 /// Write `content` to `app_data_dir()/filename` (overwriting any previous
@@ -108,12 +136,17 @@ pub fn maybe_show(app: &AppHandle) {
         }
     };
 
+    let lang = crate::i18n::active_language();
+
     let stored = read_marker(&base_dir);
-    if !should_show(stored.as_deref(), &version) {
+    if !should_show(stored.as_deref(), &version, lang) {
         return;
     }
 
-    let lang = crate::i18n::active_language();
+    // The filename already carries `lang` (see `should_show`'s doc comment on
+    // why a language switch reaches this point), so writing it never
+    // overwrites a different language's welcome doc — each language gets its
+    // own file, and any previous one is simply left on disk.
     let filename = format!("welcome-{}-{}.md", version, lang);
     if let Err(e) = open_bundled_doc(app, &filename, welcome_doc(lang)) {
         eprintln!("onboarding: {}", e);
@@ -121,7 +154,7 @@ pub fn maybe_show(app: &AppHandle) {
     }
     WELCOME_SHOWN_THIS_LAUNCH.store(true, Ordering::SeqCst);
 
-    if let Err(e) = write_marker(&base_dir, &version) {
+    if let Err(e) = write_marker(&base_dir, &version, lang) {
         eprintln!("onboarding: failed to write marker: {}", e);
     }
 }
@@ -449,17 +482,43 @@ mod tests {
 
     #[test]
     fn should_show_when_no_marker() {
-        assert!(should_show(None, "1.0.0"));
+        assert!(should_show(None, "1.0.0", "en"));
     }
 
     #[test]
     fn should_not_show_when_same_version() {
-        assert!(!should_show(Some("1.0.0"), "1.0.0"));
+        assert!(!should_show(Some("1.0.0:en"), "1.0.0", "en"));
     }
 
     #[test]
     fn should_show_when_version_differs() {
-        assert!(should_show(Some("0.5.1"), "1.0.0"));
+        assert!(should_show(Some("0.5.1:en"), "1.0.0", "en"));
+    }
+
+    #[test]
+    fn should_show_when_same_version_but_language_differs() {
+        // The whole point of this change: a language switch alone, with no
+        // version bump, must still re-show the welcome window.
+        assert!(should_show(Some("1.0.0:en"), "1.0.0", "ru"));
+    }
+
+    #[test]
+    fn should_not_show_when_same_version_and_same_language() {
+        // The invariant most at risk from a careless refactor: an ordinary
+        // relaunch (same version, same language) must stay silent.
+        assert!(!should_show(Some("1.3.0:ru"), "1.3.0", "ru"));
+    }
+
+    #[test]
+    fn should_show_once_for_a_legacy_bare_version_marker() {
+        // Every install that already saw a version before markers carried a
+        // language wrote a bare version with no `:`. That must not panic or
+        // mis-parse — it reads as "shown for an unknown language" and
+        // re-shows once, regardless of which language is now active.
+        assert!(should_show(Some("1.3.0"), "1.3.0", "ru"));
+        assert!(should_show(Some("1.3.0"), "1.3.0", "en"));
+        // A version bump on top of a legacy marker still shows, same as ever.
+        assert!(should_show(Some("1.3.0"), "1.4.0", "en"));
     }
 
     fn temp_base_dir(tag: &str) -> std::path::PathBuf {
@@ -479,13 +538,33 @@ mod tests {
 
         assert_eq!(read_marker(&dir), None);
 
-        write_marker(&dir, "1.0.0").expect("write marker");
-        assert_eq!(read_marker(&dir).as_deref(), Some("1.0.0"));
+        write_marker(&dir, "1.0.0", "en").expect("write marker");
+        assert_eq!(read_marker(&dir).as_deref(), Some("1.0.0:en"));
 
-        write_marker(&dir, "1.1.0").expect("overwrite marker");
-        assert_eq!(read_marker(&dir).as_deref(), Some("1.1.0"));
+        write_marker(&dir, "1.1.0", "ru").expect("overwrite marker");
+        assert_eq!(read_marker(&dir).as_deref(), Some("1.1.0:ru"));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_marker_splits_version_and_language() {
+        assert_eq!(parse_marker("1.3.0:ru"), ("1.3.0", Some("ru")));
+    }
+
+    #[test]
+    fn parse_marker_treats_a_bare_version_as_unknown_language() {
+        assert_eq!(parse_marker("1.3.0"), ("1.3.0", None));
+    }
+
+    #[test]
+    fn parse_marker_treats_a_trailing_colon_as_unknown_language() {
+        // Defensive: a stray `1.3.0:` (empty language half) never produces
+        // `Some("")` — it falls back to "unknown language", same as a bare
+        // version. `write_marker` never produces this shape itself (`lang`
+        // is always one of `SUPPORTED_LANGUAGES`), so the exact version half
+        // here is not load-bearing, only that the language half is `None`.
+        assert_eq!(parse_marker("1.3.0:").1, None);
     }
 
     // --- slugify --------------------------------------------------------------
