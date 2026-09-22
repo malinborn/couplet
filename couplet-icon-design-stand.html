@@ -70,7 +70,7 @@ td.l span { display: block; font-weight: 400; font-size: 11.5px; opacity: .55; w
 
 <h2>Основная иконка · 256px</h2>
 <p class="sub">Одна версия на все размеры: Playfair Display Italic 800, знак и курсор вместе ×1.25 от центра плитки, курсор 114,
-сдвинут вниз на 20 (из 1024); вся группа сдвинута на 12 вправо, чтобы знак не срезался скруглением. Свечения — где они были в дизайне, плюс у градиентных курсоров. Цвета из токенов: плитка <code>--bg-base</code> (aurora-light — <code>--bg-image</code>),
+верх на 20 ниже, чем в дизайне, длина 555 (из 595); вся группа сдвинута на 12 вправо, чтобы знак не срезался скруглением. Свечения — где они были в дизайне, плюс у градиентных курсоров. Цвета из токенов: плитка <code>--bg-base</code> (aurora-light — <code>--bg-image</code>),
 знак <code>--color-heading</code>, курсор <code>--color-cursor</code>; где курсор совпадает с цветом текста — градиент
 «акцент → второй тон»; у aurora — родной градиент <code>--color-caret-top/bottom</code>. <code>default</code> — цвета из дизайна.</p>
 <div class="grid" id="all"></div>
@@ -80,10 +80,9 @@ td.l span { display: block; font-weight: 400; font-size: 11.5px; opacity: .55; w
 Смотрите при масштабе 100% (Cmd+0).</p>
 <div class="scroll"><table id="sizes"></table></div>
 
-<h2>Подстройка курсора «чуть пониже»</h2>
-<p class="sub">При ×1.25 низ курсора уже близко к краю плитки, поэтому простой сдвиг ограничен ~20. Остальные варианты опускают верх.
-0 — как в B; 1 — весь курсор на 20 ниже (в основной сетке); 2 — верх на 50 ниже, низ на месте (короче);
-3 — верх на 50 ниже, низ на 20 ниже.</p>
+<h2>Подстройка длины курсора снизу</h2>
+<p class="sub">Верх курсора зафиксирован (на 20 ниже, чем в дизайне), укорачивается только низ. Длина в досмасштабных единицах:
+0 — 595 (было); 1 — 570; 2 — 555 (в основной сетке); 3 — 535.</p>
 <div class="scroll"><table id="tune"></table></div>
 
 <script>
@@ -158,8 +157,8 @@ var K = {
   'phosphor-dark':   { bg:'#061008', amp:'#c9ffd8', a:'#ffcf6b', b:'#7fd8a0', src:'курсор = текст → --color-link → --color-italic', glow:[.55,.35], ampSh:'0 0 68px rgba(143,230,162,.55)' }
 };
 // caret geometry in the 824 squircle, before the ×1.25 group scale
-var CARET = { 0:[114, 595], 1:[134, 595], 2:[164, 545], 3:[164, 565] };
-var MAIN = 1, SC = 1.25, CW = 114, DX = 12;  // DX: whole group shifted right so the glyph ink is centred (22|47 → 34|34)
+var CARET = { 0:[134, 595], 1:[134, 570], 2:[134, 555], 3:[134, 535] };
+var MAIN = 2, SC = 1.25, CW = 114, DX = 12;  // DX: whole group shifted right so the glyph ink is centred (22|47 → 34|34)
 function main(size, k, v) {
   var d = K[k], g = CARET[v === undefined ? MAIN : v], w = CW / SC;
   var cur = d.solid ? d.a : 'linear-gradient(180deg,' + d.a + ' 0%,' + d.b + ' 100%)';
