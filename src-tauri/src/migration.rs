@@ -248,6 +248,12 @@ pub(crate) enum MigrationOutcome {
     /// populated (a partial attempt only ever exists in a staging directory,
     /// which was removed). Safe, and expected, to retry on the next launch.
     Failed,
+    /// Not attempted at all this launch: a legacy build with the matching
+    /// generation's bundle identifier is still running, so `old` (its
+    /// `recovery/`/`session/`, or its live WebKit profile with an open
+    /// `-wal`/`-shm`) may be read or written at any moment. `old` is
+    /// completely untouched. Safe, and expected, to retry next launch.
+    DeferredLegacyRunning,
 }
 
 /// Where a migration's bytes are allowed to move.
@@ -340,6 +346,145 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Copies `src` (file, directory, or symlink) into `dst` recursively,
+/// WITHOUT overwriting anything that already exists at `dst`. Returns how
+/// many files were newly copied. Used by `sweep_stray_files` — unlike
+/// `copy_dir_recursive` (used by the main migration, where `dst` is always
+/// freshly empty by construction), this one has to coexist with data that is
+/// already there.
+fn merge_into(src: &Path, dst: &Path) -> io::Result<u32> {
+    let meta = fs::symlink_metadata(src)?;
+    if meta.is_dir() {
+        fs::create_dir_all(dst)?;
+        let mut count = 0;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            count += merge_into(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+        Ok(count)
+    } else if meta.file_type().is_symlink() {
+        if dst.exists() {
+            Ok(0)
+        } else {
+            let link_target = fs::read_link(src)?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&link_target, dst)?;
+            Ok(1)
+        }
+    } else if dst.exists() {
+        Ok(0)
+    } else {
+        fs::copy(src, dst)?;
+        Ok(1)
+    }
+}
+
+/// Runs after every migration attempt that was not deferred: if a legacy
+/// build gets launched again AFTER migration already completed — a
+/// downgrade, a stale Dock/Spotlight entry, `open -a <old name>` from a
+/// script nobody updated — it has no idea a marker exists and will happily
+/// recreate `recovery/`/`session/` files (or WebKit localStorage writes)
+/// under `old`. This walks `old` for anything besides the marker and merges
+/// it into `new` via `merge_into` — never overwriting anything already
+/// there — so those files do not silently vanish. Only acts once
+/// `marker_points_to` confirms migration is actually done for `new`;
+/// otherwise `old` still holds the primary copy and this must not race
+/// `migrate_dir` above. Best-effort: a failure is logged, never fatal, and
+/// `old` itself is never removed from (copy, not move) — a legacy instance
+/// that resumes writing to `old` after this runs must not have its files
+/// vanish out from under it either. This is a partial mitigation, not a
+/// full fix, for a legacy build being launched repeatedly after migration —
+/// see the M7 note in the PR this landed in for what remains.
+fn sweep_stray_files(old: &Path, new: &Path, log: &Logger) {
+    if !marker_points_to(old, new) {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(old) else {
+        return;
+    };
+    let mut swept = 0u32;
+    for entry in entries.flatten() {
+        if entry.file_name() == MOVED_MARKER {
+            continue;
+        }
+        let src = entry.path();
+        let dst = new.join(entry.file_name());
+        match merge_into(&src, &dst) {
+            Ok(count) => swept += count,
+            Err(e) => log(&format!(
+                "migration: sweep could not merge {} into {}: {}",
+                src.display(),
+                dst.display(),
+                e
+            )),
+        }
+    }
+    if swept > 0 {
+        log(&format!(
+            "migration: swept {swept} file(s) a legacy build left behind in {} (after migration) into {}",
+            old.display(),
+            new.display()
+        ));
+    }
+}
+
+/// Whether a running process reports `bundle_id` as its `CFBundleIdentifier`
+/// — i.e. whether a legacy build (dev or release, matching the generation
+/// being migrated) is alive right now. Checked before touching `old`: a
+/// running legacy instance may be writing `recovery/`/`session/` files (app
+/// data) or holding an open sqlite `-wal`/`-shm` (WebKit profile) at any
+/// moment, and neither a `rename` out from under it nor a plain-`fs::copy`
+/// snapshot of a live sqlite file set is safe.
+// Tests must never depend on what is *actually* running on the machine that
+// happens to run `cargo test` (this repo's own dev machine typically DOES
+// have a real md-mini running) — so under `#[cfg(test)]` this reads only the
+// explicit `testing::force_bundle_running` override, defaulting to "nothing
+// is running" rather than falling through to `is_bundle_running_real`.
+#[cfg(not(test))]
+fn is_bundle_running(bundle_id: &str) -> bool {
+    is_bundle_running_real(bundle_id)
+}
+
+#[cfg(test)]
+fn is_bundle_running(_bundle_id: &str) -> bool {
+    testing::forced_bundle_running().unwrap_or(false)
+}
+
+// Genuinely unused under `cargo test` (the `#[cfg(test)]` `is_bundle_running`
+// above never calls it — see the comment there for why), never unused in a
+// real build.
+#[cfg(target_os = "macos")]
+#[cfg_attr(test, allow(dead_code))]
+fn is_bundle_running_real(bundle_id: &str) -> bool {
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::{NSArray, NSAutoreleasePool, NSString};
+    use objc::{class, msg_send, sel, sel_impl};
+
+    unsafe {
+        // Same autorelease-pool discipline as `locale::system_locale`: this
+        // can run before tao has created its own pool, and without one here
+        // the runtime leaks a warning on every launch. Everything we need
+        // (a `bool`) is copied out before the pool drains.
+        let pool = NSAutoreleasePool::new(nil);
+        let result = (|| {
+            let ns_bundle_id = NSString::alloc(nil).init_str(bundle_id);
+            let cls = class!(NSRunningApplication);
+            let apps: id = msg_send![cls, runningApplicationsWithBundleIdentifier: ns_bundle_id];
+            if apps.is_null() {
+                return false;
+            }
+            NSArray::count(apps) > 0
+        })();
+        pool.drain();
+        result
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_bundle_running_real(_bundle_id: &str) -> bool {
+    false
 }
 
 static STAGING_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -530,7 +675,18 @@ pub(crate) fn migrate_app_data_dir(base: &Path, current_product_name: &str, log:
     };
     let old_dir = base.join(rename.from_product_name);
     let new_dir = base.join(crate::paths::dir_name(current_product_name));
-    migrate_dir(&old_dir, &new_dir, "app data directory", Strategy::PreferRename, log)
+
+    if is_bundle_running(rename.from_identifier) {
+        log(&format!(
+            "migration: app data directory — {} is still running, deferring migration to the next launch",
+            rename.from_identifier
+        ));
+        return MigrationOutcome::DeferredLegacyRunning;
+    }
+
+    let outcome = migrate_dir(&old_dir, &new_dir, "app data directory", Strategy::PreferRename, log);
+    sweep_stray_files(&old_dir, &new_dir, log);
+    outcome
 }
 
 /// Migrates `<webkit_base>/<rename.from_identifier>` into
@@ -545,7 +701,18 @@ pub(crate) fn migrate_webkit_profile(webkit_base: &Path, current_identifier: &st
     };
     let old_dir = webkit_base.join(rename.from_identifier);
     let new_dir = webkit_base.join(current_identifier);
-    migrate_dir(&old_dir, &new_dir, "WebKit profile", Strategy::CopyOnly, log)
+
+    if is_bundle_running(rename.from_identifier) {
+        log(&format!(
+            "migration: WebKit profile — {} is still running (its sqlite -wal/-shm may be live), deferring migration to the next launch",
+            rename.from_identifier
+        ));
+        return MigrationOutcome::DeferredLegacyRunning;
+    }
+
+    let outcome = migrate_dir(&old_dir, &new_dir, "WebKit profile", Strategy::CopyOnly, log);
+    sweep_stray_files(&old_dir, &new_dir, log);
+    outcome
 }
 
 /// Best-effort cross-process mutex over migration work, via `flock` on a
@@ -641,16 +808,18 @@ pub(crate) fn migrate_app_data_dir_real(current_product_name: &str) -> String {
     };
 
     match migrate_app_data_dir(&base, current_product_name, &log) {
-        MigrationOutcome::Failed => match rename_for_product_name(current_product_name) {
-            Some(rename) => {
-                log(&format!(
-                    "migration: app data directory migration did not complete this launch — using the legacy directory \"{}\" so the data stays reachable and a retry stays possible next launch",
-                    rename.from_product_name
-                ));
-                rename.from_product_name.to_string()
+        MigrationOutcome::Failed | MigrationOutcome::DeferredLegacyRunning => {
+            match rename_for_product_name(current_product_name) {
+                Some(rename) => {
+                    log(&format!(
+                        "migration: app data directory migration did not complete this launch — using the legacy directory \"{}\" so the data stays reachable and a retry stays possible next launch",
+                        rename.from_product_name
+                    ));
+                    rename.from_product_name.to_string()
+                }
+                None => current_product_name.to_string(),
             }
-            None => current_product_name.to_string(),
-        },
+        }
         MigrationOutcome::NoOp | MigrationOutcome::Migrated => current_product_name.to_string(),
     }
 }
@@ -730,6 +899,31 @@ pub(crate) mod testing {
     pub(crate) fn before_commit<F: Fn() + 'static>(hook: F) -> HookGuard {
         BEFORE_COMMIT.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
         HookGuard(&BEFORE_COMMIT)
+    }
+
+    thread_local! {
+        static FORCE_BUNDLE_RUNNING: RefCell<Option<bool>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn forced_bundle_running() -> Option<bool> {
+        FORCE_BUNDLE_RUNNING.with(|slot| *slot.borrow())
+    }
+
+    #[must_use]
+    pub(crate) struct BundleRunningGuard;
+
+    impl Drop for BundleRunningGuard {
+        fn drop(&mut self) {
+            FORCE_BUNDLE_RUNNING.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+
+    /// Overrides `is_bundle_running`'s result for the current thread, so
+    /// tests can simulate "a legacy instance is alive" deterministically
+    /// without needing a real running process with a real bundle identifier.
+    pub(crate) fn force_bundle_running(value: bool) -> BundleRunningGuard {
+        FORCE_BUNDLE_RUNNING.with(|slot| *slot.borrow_mut() = Some(value));
+        BundleRunningGuard
     }
 }
 
@@ -1004,11 +1198,15 @@ mod tests {
     }
 
     #[test]
-    fn marked_directory_is_never_touched_again() {
+    fn marked_directory_with_nothing_else_in_it_is_a_silent_no_op() {
+        // A marker and NOTHING else beside it (the ordinary steady state
+        // after a clean migration) must not re-trigger `migrate_dir`, and
+        // there is nothing for the M7 sweep to find either — see
+        // `sweep_moves_files_a_relaunched_legacy_build_left_behind_after_migration`
+        // for the case where a stray file besides the marker IS present.
         let dir = scratch("marked");
         let old = dir.join("md-mini");
         write(&old.join(MOVED_MARKER), dir.join("couplet").to_str().unwrap());
-        write(&old.join("stray-file.txt"), "should not move");
 
         let (log, logger) = collecting_logger();
         let outcome = migrate_app_data_dir(&dir, "couplet", &logger);
@@ -1289,6 +1487,147 @@ mod tests {
             fs::read_to_string(dir.join("pro.couplet.dev").join("WebsiteData").join("f.txt")).unwrap(),
             "dev"
         );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- H3: a running legacy instance defers migration -----------------------
+
+    #[test]
+    fn app_data_dir_defers_while_the_legacy_build_is_still_running() {
+        let dir = scratch("running-defer");
+        write(&dir.join("md-mini").join("session.json"), "live, being written right now");
+
+        let guard = testing::force_bundle_running(true);
+        let (log, logger) = collecting_logger();
+        let outcome = migrate_app_data_dir(&dir, "couplet", &logger);
+        drop(guard);
+
+        assert_eq!(outcome, MigrationOutcome::DeferredLegacyRunning);
+        assert!(!dir.join("couplet").exists(), "must not touch new while old is live");
+        assert!(
+            dir.join("md-mini").join("session.json").exists(),
+            "must not touch old while the legacy build owns it"
+        );
+        assert!(!dir.join("md-mini").join(MOVED_MARKER).exists());
+        assert!(log.lock().unwrap().iter().any(|m| m.contains("still running")));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn app_data_dir_migrates_normally_once_the_legacy_build_is_not_running() {
+        let dir = scratch("not-running");
+        write(&dir.join("md-mini").join("session.json"), "{}");
+
+        let guard = testing::force_bundle_running(false);
+        let (_log, logger) = collecting_logger();
+        let outcome = migrate_app_data_dir(&dir, "couplet", &logger);
+        drop(guard);
+
+        assert_eq!(outcome, MigrationOutcome::Migrated);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn webkit_profile_defers_while_the_legacy_build_is_still_running() {
+        let dir = scratch("wk-running-defer");
+        write(
+            &dir.join("com.md-mini.app")
+                .join("WebsiteData")
+                .join("Default")
+                .join("h1")
+                .join("h1")
+                .join("LocalStorage")
+                .join("localstorage.sqlite3-wal"),
+            "live wal frames",
+        );
+
+        let guard = testing::force_bundle_running(true);
+        let (log, logger) = collecting_logger();
+        let outcome = migrate_webkit_profile(&dir, "pro.couplet.app", &logger);
+        drop(guard);
+
+        assert_eq!(outcome, MigrationOutcome::DeferredLegacyRunning);
+        assert!(!dir.join("pro.couplet.app").exists());
+        assert!(log.lock().unwrap().iter().any(|m| m.contains("still running")));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- M7: sweeping stray files left by a legacy relaunch --------------------
+
+    #[test]
+    fn sweep_moves_files_a_relaunched_legacy_build_left_behind_after_migration() {
+        let dir = scratch("sweep");
+        write(&dir.join("md-mini").join("session.json"), "{}");
+
+        let guard = testing::force_bundle_running(false);
+        let (_log, logger) = collecting_logger();
+        assert_eq!(migrate_app_data_dir(&dir, "couplet", &logger), MigrationOutcome::Migrated);
+
+        // Simulate the legacy build being launched again (a downgrade, a
+        // stale shortcut) and writing a fresh recovery snapshot into `old`,
+        // which now holds only the marker.
+        write(&dir.join("md-mini").join("recovery").join("crash.md"), "unsaved after the downgrade");
+
+        let (log2, logger2) = collecting_logger();
+        let outcome = migrate_app_data_dir(&dir, "couplet", &logger2);
+        drop(guard);
+
+        assert_eq!(outcome, MigrationOutcome::NoOp, "already migrated — sweep runs alongside, not instead");
+        assert_eq!(
+            fs::read_to_string(dir.join("couplet").join("recovery").join("crash.md")).unwrap(),
+            "unsaved after the downgrade",
+            "the sweep must have carried it into the new directory"
+        );
+        assert!(
+            dir.join("md-mini").join("recovery").join("crash.md").exists(),
+            "sweep copies, it does not move — a still-running legacy build must not lose the file out from under it"
+        );
+        assert!(log2.lock().unwrap().iter().any(|m| m.contains("swept")));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn sweep_never_overwrites_a_file_already_present_in_new() {
+        let dir = scratch("sweep-nooverwrite");
+        write(&dir.join("md-mini").join("session.json"), "{}");
+
+        let guard = testing::force_bundle_running(false);
+        let (_log, logger) = collecting_logger();
+        migrate_app_data_dir(&dir, "couplet", &logger);
+
+        // A file with the SAME name now exists in both: a fresh write the
+        // couplet build itself made, and a stray one the legacy relaunch
+        // left behind. The couplet-side copy must win.
+        write(&dir.join("couplet").join("onboarding-version"), "couplet's own value");
+        write(&dir.join("md-mini").join("onboarding-version"), "stale legacy value");
+
+        let (_log2, logger2) = collecting_logger();
+        migrate_app_data_dir(&dir, "couplet", &logger2);
+        drop(guard);
+
+        assert_eq!(
+            fs::read_to_string(dir.join("couplet").join("onboarding-version")).unwrap(),
+            "couplet's own value",
+            "sweep must never overwrite something already in the new directory"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn sweep_does_nothing_before_migration_has_actually_completed() {
+        // No marker yet (migration never ran, or is deferred) — the sweep
+        // must not race `migrate_dir` by copying pieces of `old` into `new`
+        // on its own.
+        let dir = scratch("sweep-premature");
+        let old = dir.join("md-mini");
+        write(&old.join("recovery").join("draft.md"), "should stay put");
+        let new = dir.join("couplet");
+
+        let (log, logger) = collecting_logger();
+        sweep_stray_files(&old, &new, &logger);
+
+        assert!(!new.exists());
+        assert!(log.lock().unwrap().is_empty());
         fs::remove_dir_all(&dir).ok();
     }
 }
