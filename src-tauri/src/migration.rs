@@ -38,19 +38,25 @@
 //! process, no shared directory, just this one process choosing where to
 //! read its own data from for one more launch.
 //!
-//! ## Matching: exact `from -> to`, never a suffix guess
+//! ## Matching: exact `from -> to`, never a suffix guess, and never in a
+//! debug build for a release row (N5)
 //!
 //! [`RENAMES`] lists every approved rename as an exact `(from, to)` pair,
 //! matched by exact equality against `to_*` — never a `-dev`/`.dev` suffix
 //! guess, which would treat any unrecognised dev-flavoured name as eligible
-//! to receive production data, and would confuse a two-generations-back name
-//! with the immediate predecessor once a third generation exists (see the
-//! `matches_the_immediate_predecessor_across_three_generations` test).
-//!
-//! **Not yet handled here:** a `debug_assertions` build (`cargo build`,
-//! `tauri dev`) can still match the RELEASE row — see N5, addressed in the
-//! commit that follows this one, which is why this paragraph exists at all
-//! rather than silently being correct from the start.
+//! to receive production data. Each row also carries `dev: bool`. In a
+//! `debug_assertions` build (`cargo build`, `tauri dev` — WITHOUT
+//! `--release`), only `dev: true` rows are ever matched, full stop. This is
+//! what makes `npm run tauri dev` (no `--config`, so it reads
+//! `tauri.conf.json` — the PRODUCTION config, per this repo's own
+//! `CLAUDE.md`) safe after `tauri.conf.json` is renamed: the resulting
+//! `current_product_name` would be `"couplet"`, which only the RELEASE
+//! (`dev: false`) row's `to_product_name` matches — and that row is
+//! invisible to a debug build. Without this, the very first routine
+//! `tauri dev` run after the rename would treat the owner's real, installed
+//! `md-mini` data as fair game. A release build (`tauri build`, with or
+//! without `tauri.dev.conf.json`) has no such restriction — `npm run
+//! build:dev` legitimately needs the dev row to still work.
 //!
 //! ## Never losing the race between two processes (or two migration
 //! attempts within one) — C1
@@ -154,17 +160,15 @@ const MOVED_MARKER: &str = "MOVED_TO";
 
 /// One approved rename: `from_*` is the exact previous productName/identifier;
 /// `to_*` is what it became. Matching is always exact equality against
-/// `to_*`. `dev` marks a DEV build's rename (`md-mini-dev` -> `couplet-dev`) —
-/// not yet consulted by the matching functions in this commit; see N5.
+/// `to_*`. `dev` marks a DEV build's rename (`md-mini-dev` -> `couplet-dev`);
+/// see the module doc comment's N5 section for why a `dev: false` row is
+/// invisible to a `debug_assertions` build.
 #[derive(Debug, Clone, Copy)]
 struct Rename {
     from_product_name: &'static str,
     to_product_name: &'static str,
     from_identifier: &'static str,
     to_identifier: &'static str,
-    // Not yet consulted outside tests in this commit — wired up in the one
-    // that follows (N5).
-    #[cfg_attr(not(test), allow(dead_code))]
     dev: bool,
 }
 
@@ -191,7 +195,9 @@ const RENAMES: &[Rename] = &[
 
 /// Extra rows consulted ONLY in a debug build (`#[cfg(debug_assertions)]` —
 /// compiled out entirely from a release build, so this can never ship even
-/// if a row is left in place by accident). Empty by default. See the "Manual
+/// if a row is left in place by accident). Empty by default. Every row added
+/// here MUST set `dev: true` — a debug build never matches a `dev: false`
+/// row regardless of which table it came from (see N5). See the "Manual
 /// verification" procedure handed back with this change for how to use this
 /// safely, without ever touching `com.md-mini.app` / `~/Library/Application
 /// Support/md-mini` / real `md-mini-dev` data.
@@ -206,6 +212,18 @@ fn debug_test_renames() -> &'static [Rename] {
 #[cfg(not(debug_assertions))]
 fn debug_test_renames() -> &'static [Rename] {
     &[]
+}
+
+/// N5: in a `debug_assertions` build, only a `dev: true` row is eligible —
+/// see the module doc comment. In a release build every row is eligible.
+#[cfg(debug_assertions)]
+fn row_is_eligible(dev: bool) -> bool {
+    dev
+}
+
+#[cfg(not(debug_assertions))]
+fn row_is_eligible(_dev: bool) -> bool {
+    true
 }
 
 /// Pure table lookup: the row whose `to_product_name` is exactly `current`,
@@ -223,12 +241,14 @@ fn rename_matching_identifier<'a>(table: &'a [Rename], current: &str) -> Option<
     table.iter().find(|r| r.to_identifier == current)
 }
 
-/// The real lookup: `RENAMES` plus (debug builds only) `DEBUG_TEST_RENAMES` —
-/// this is the one migration.rs's own code actually calls.
+/// The real lookup: `RENAMES` plus (debug builds only) `DEBUG_TEST_RENAMES`,
+/// filtered by `row_is_eligible` — this is the one migration.rs's own code
+/// actually calls.
 fn rename_for_product_name(current: &str) -> Option<&'static Rename> {
     RENAMES
         .iter()
         .chain(debug_test_renames())
+        .filter(|r| row_is_eligible(r.dev))
         .find(|r| r.to_product_name == current)
 }
 
@@ -236,6 +256,7 @@ fn rename_for_identifier(current: &str) -> Option<&'static Rename> {
     RENAMES
         .iter()
         .chain(debug_test_renames())
+        .filter(|r| row_is_eligible(r.dev))
         .find(|r| r.to_identifier == current)
 }
 
@@ -1224,7 +1245,7 @@ mod tests {
         assert_eq!(decide_migration(false, true, true, true), Decision::NewAlreadyPopulated);
     }
 
-    // --- exact from -> to matching (H4, M5) -----------------------------------
+    // --- exact from -> to matching, debug/release filtering (H4, M5, N5) -----
 
     #[test]
     fn no_op_when_current_name_matches_a_known_from_or_is_otherwise_unrenamed() {
@@ -1235,14 +1256,28 @@ mod tests {
     }
 
     #[test]
-    fn finds_the_release_rename() {
-        let rename = rename_for_product_name("couplet").expect("should find the md-mini row");
-        assert_eq!(rename.from_product_name, "md-mini");
-        assert_eq!(rename.from_identifier, "com.md-mini.app");
-        assert!(!rename.dev);
+    fn n5_a_release_row_is_invisible_under_a_debug_build() {
+        // `cargo test` is itself a `debug_assertions` build, so this is the
+        // real regression check, not a simulation: without the `dev` filter,
+        // `npm run tauri dev` (a debug build reading `tauri.conf.json`'s
+        // PRODUCTION identity, per this repo's own `dev`-vs-`tauri dev`
+        // distinction in `CLAUDE.md`) would be able to match the release row
+        // and migrate the owner's real, installed `md-mini` data.
+        assert!(
+            rename_for_product_name("couplet").is_none(),
+            "the release row must not be reachable from a debug build"
+        );
+        assert!(rename_for_identifier("pro.couplet.app").is_none());
 
-        let by_id = rename_for_identifier("pro.couplet.app").expect("should find it by identifier too");
-        assert_eq!(by_id.from_identifier, "com.md-mini.app");
+        // The row still legitimately exists in the table (release builds DO
+        // need it) — checked with the unfiltered matchers, independent of
+        // which build is running the check.
+        let raw = rename_matching_product_name(RENAMES, "couplet").expect("the row must still exist in RENAMES");
+        assert_eq!(raw.from_product_name, "md-mini");
+        assert!(!raw.dev);
+        let raw_by_id =
+            rename_matching_identifier(RENAMES, "pro.couplet.app").expect("the row must still exist by identifier too");
+        assert_eq!(raw_by_id.from_identifier, "com.md-mini.app");
     }
 
     #[test]
@@ -1302,9 +1337,9 @@ mod tests {
     // --- evaluate + migrate_dir on real tempdirs ------------------------------
     //
     // These all use the DEV row (`couplet-dev` / `pro.couplet.dev`) as the
-    // target name — chosen for consistency with the tests added once N5
-    // makes the release row (`couplet` / `pro.couplet.app`) unreachable from
-    // a debug build, in the commit that follows this one.
+    // target name: `cargo test` is a debug build, and N5 makes the release
+    // row (`couplet` / `pro.couplet.app`) unreachable from one on purpose —
+    // see `n5_a_release_row_is_invisible_under_a_debug_build`.
 
     #[test]
     fn evaluate_reports_nothing_to_migrate_when_old_never_existed() {
