@@ -2,11 +2,11 @@
 
 **Powerful for you and your AI, yet minimalistic.**
 
-Same app, same documents, new name. Everything you had came across on its own: open windows, caret positions, unsaved drafts, crash copies, your theme and your recent files.
+Same app, same AI features, new name. Everything you had came across on its own: open windows, caret positions, unsaved drafts, crash copies, your theme and your recent files.
 
 ## Why we renamed
 
-**The name was taken twice.** Another app is also called mdmini and owns mdmini.com. Two small editors sharing one name means confused searches, the odd wrong download and bug reports about someone else's app. We would rather not make that your problem, so we stepped aside instead of fighting over it.
+**There are two apps called mdmini.** The other one owns mdmini.com. Two small editors sharing one name means confused searches, the odd wrong download and bug reports about someone else's app. We would rather not make that your problem, so we stepped aside instead of fighting over it.
 
 **And the old name had stopped telling the truth.** md-mini started as a minimal markdown editor. What it has become is a page you and your AI agent work on together. The agent jumps you to a line, rewrites the live buffer while you watch, asks with real buttons and answers the comments you leave in the margin. A couplet is two lines that read as one, and that is the idea now. Minimalism stays: it is how we build, just no longer the whole point.
 
