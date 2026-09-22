@@ -2,7 +2,8 @@
   import { onMount } from 'svelte';
   import Editor from './lib/editor/Editor.svelte';
   import type { EditorHandle } from './lib/editor/Editor.svelte';
-  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createFileState, createRecentFilesStore } from './lib/stores.svelte';
+  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createFileState, createRecentFilesStore, setProductName } from './lib/stores.svelte';
+  import { getName } from '@tauri-apps/api/app';
   import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type PendingOpen } from './lib/tauri/commands';
   import {
     onMenuEvent,
@@ -1300,6 +1301,13 @@
   }
 
   onMount(() => {
+    // Настоящее имя сборки в заголовок: у `dev:app` и `build:dev` оно другое,
+    // и титлбар — единственное место, где человек видит, дев перед ним или
+    // установленный релиз.
+    getName()
+      .then(setProductName)
+      .catch(() => {});
+
     // Pull any file path stored by the backend for this window (CLI args or new-window open).
     // This avoids the race condition of the push-based emit approach.
     invoke<PendingOpen | null>('get_pending_file').then(async (pending) => {

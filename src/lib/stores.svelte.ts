@@ -270,6 +270,20 @@ export function createZoomStore() {
   };
 }
 
+/**
+ * Имя продукта в заголовке окна. Раньше здесь была строка «md-mini», и этим
+ * заголовок фронтенда стирал тот, что выставил Rust (`window.rs` собирает его
+ * из `productName` конфига) — так что дев-сборка в титлбаре выглядела ровно
+ * как установленное приложение, хотя у неё и bundle id, и каталог данных
+ * другие. Значение приходит из `getName()`; до ответа стоит имя релиза, оно же
+ * остаётся в браузере, где IPC нет.
+ */
+let productName = $state('md-mini');
+
+export function setProductName(name: string): void {
+  if (name) productName = name;
+}
+
 export function createFileState() {
   let filePath = $state<string | null>(null);
   let isDirty = $state(false);
@@ -296,7 +310,7 @@ export function createFileState() {
     },
     get title() {
       const name = filePath ? filePath.split('/').pop() : 'Untitled';
-      return `${isDirty ? '\u25cf ' : ''}${name} \u2014 md-mini`;
+      return `${isDirty ? '\u25cf ' : ''}${name} \u2014 ${productName}`;
     },
   };
 }
