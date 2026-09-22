@@ -15,6 +15,7 @@ import { codeBlockExitKeymap } from './code-block-exit';
 import { slashCommands } from './slash-commands';
 import type { SlashAction } from './slash-actions';
 import { themeAction, themePickerExtensions, renderThemeSwatch, type ThemeControl } from './slash-theme';
+import { toneAction, tonePickerExtensions } from './slash-tone';
 import { livePreviewPlugin } from './preview/plugin';
 import { tableModeField } from './preview/table-state';
 import { mermaidViewField } from './preview/mermaid-state';
@@ -52,8 +53,8 @@ export function openExternalUrl(url: string): Promise<void> {
  * demo cards). A direct import of the app's theme store would pull
  * `localStorage`/`matchMedia` onto the landing at module load time and give
  * the demo editor the ability to repaint the whole page. Without
- * `themeControl`, `/theme` does not appear in the slash menu at all — see
- * `slash-theme.ts`.
+ * `themeControl`, neither `/theme` nor `/tone` appears in the slash menu at
+ * all — see `slash-theme.ts` and `slash-tone.ts`.
  */
 export interface EditorDeps {
   themeControl?: ThemeControl;
@@ -61,7 +62,9 @@ export interface EditorDeps {
 
 export function createExtensions(deps: EditorDeps = {}): Extension[] {
   const { themeControl } = deps;
-  const actions: SlashAction[] = themeControl ? [themeAction(themeControl)] : [];
+  const actions: SlashAction[] = themeControl
+    ? [themeAction(themeControl), toneAction(themeControl)]
+    : [];
 
   return [
     editorTheme,
@@ -83,6 +86,7 @@ export function createExtensions(deps: EditorDeps = {}): Extension[] {
     listContinuation(),
     slashCommands(actions),
     ...(themeControl ? themePickerExtensions(themeControl) : []),
+    ...(themeControl ? tonePickerExtensions(themeControl) : []),
     autocompletion(
       themeControl
         ? {
@@ -90,7 +94,8 @@ export function createExtensions(deps: EditorDeps = {}): Extension[] {
             // sits between them. Gated inside renderThemeSwatch on
             // `completion.type`, since `addToOptions` is global to this one
             // `autocompletion()` call and would otherwise run for every
-            // completion in the app, including language ones.
+            // completion in the app, including `/tone`'s and language ones.
+            // `/tone` has no swatches — renderThemeSwatch returns null for it.
             addToOptions: [{ render: renderThemeSwatch, position: 30 }],
           }
         : {}
