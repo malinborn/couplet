@@ -119,6 +119,65 @@ phosphor` × половины `light/dark`. **Корневой `CLAUDE.md` зд�
 перенести содержимое. Тест упадёт при переименовании; это не помеха, а сигнализация,
 и менять его надо осознанно, вместе с миграцией.
 
+### Что реально лежит в каталоге (измерено 2026-09-22)
+
+```
+ai-connect-mcp.md  ai-playbook.md  ai-teach.md   сгенерированные AI-документы
+ai-connected                       флаг: агент уже подключался
+onboarding-version                 версия пройденного онбординга
+welcome-1.0.0.md … welcome-1.3.0.md
+recovery/                          аварийные копии несохранённого
+session/                           БЕЗЫМЯННЫЕ БУФЕРЫ — живой контент пользователя
+session.json                       окна, геометрия, каретки
+```
+
+На момент замера в `session/` лежал `untitled-editor-2.md` на 1552 байта — настоящий
+черновик владельца. Потерять `session/` = потерять то, что человек не сохранял намеренно,
+полагаясь на восстановление сессии.
+
+Побочно: сброс `onboarding-version` и `ai-connected` вернёт приветственное окно и тост
+«подключите агента» тем, кто их уже прошёл. Не потеря данных, но выглядит как регресс.
+
+### ВТОРАЯ точка потери: смена `identifier` (найдено смежной сессией)
+
+`productName` — не единственный ключ. Настройки фронтенда живут не в файле, а в
+**localStorage WKWebView**, а его хранилище привязано к **bundle identifier**:
+
+```
+~/Library/WebKit/<identifier>/WebsiteData/Default/<hash>/<hash>/LocalStorage/localstorage.sqlite3
+```
+
+Сейчас `identifier: com.md-mini.app`. Смена идентификатора уводит WebView на новое
+хранилище, и localStorage окажется пустым — **даже если префикс ключей не трогать**.
+
+Измеренные ключи:
+
+```
+md-mini:theme  md-mini:themeFamily  md-mini:themeSystem  md-mini:engine
+md-mini:lastNonRawEngine  md-mini:liveRenderDefault  md-mini:mode
+md-mini:recentFiles  md-mini:themesNudgeSeen  md-mini:zoomLevel
+md-mini.ai-hint-seen        ← ВНИМАНИЕ: точка, а не двоеточие
+```
+
+Два подводных камня:
+- `recentFiles` — это пользовательские данные, а не настройка;
+- **префикса два**, `md-mini:` и `md-mini.`. Замена только по `md-mini:` пропустит
+  `ai-hint-seen`, и подсказка вернётся.
+
+Доказательство, что грабли уже наступали: в `~/Library/WebKit/` лежат **четыре** хранилища —
+`com.md-mini.app`, `com.md-mini.dev`, `md-mini`, `mdmini`. Имя менялось минимум дважды,
+и каждый раз предыдущие настройки осиротели.
+
+**Вывод: миграций нужно две, независимые.** Каталог данных (Rust, по `productName`) и
+localStorage (фронтенд, по `identifier` + префиксу ключей). Самый дешёвый способ убрать
+вторую — **не менять `identifier` вообще**: он не виден пользователю, а его смена
+ломает и localStorage, и выданные системой разрешения на папки. Если менять — нужен
+перенос localStorage, который из JS недоступен, потому что старое хранилище принадлежит
+другому идентификатору; тогда переносить придётся на стороне Rust, до подъёма WebView.
+
+Побочно от `identifier` зависит и имя сокета single-instance
+(`/tmp/com_md_mini_app_si.sock`).
+
 ---
 
 ## План
@@ -135,8 +194,12 @@ phosphor` × половины `light/dark`. **Корневой `CLAUDE.md` зд�
 6. Переименовать GitHub-репозиторий (старые URL редиректятся автоматически) и tap.
 
 ### Фаза 2 — приложение
-7. `productName`, `identifier` в `tauri.conf.json` и `tauri.dev.conf.json`.
-8. **Миграция каталога данных** — вместе с правкой теста в `paths.rs`.
+7. `productName` в `tauri.conf.json` и `tauri.dev.conf.json`.
+   **`identifier` по умолчанию НЕ менять** — он невидим пользователю, а его смена
+   обнуляет localStorage и системные разрешения на папки. Менять только сознательно,
+   с миграцией localStorage на стороне Rust.
+8. **Две миграции, независимые**: каталог данных (по `productName`, в Rust — вместе
+   с правкой теста в `paths.rs`) и localStorage (префиксы `md-mini:` **и** `md-mini.`).
 9. Имя сокета single-instance, CLI-бинарь, `scripts/mdmini`, имя MCP-сервера.
    Помнить: `/usr/local/bin/<name>` должен быть **копией**, а не симлинком.
 10. `npm run check`, `npx vitest run --dir src`, `cargo test`, `npm run check:x86`.
