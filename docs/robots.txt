@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://md-mini.com/sitemap.xml
+Sitemap: https://couplet.pro/sitemap.xml

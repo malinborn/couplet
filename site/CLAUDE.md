@@ -1,9 +1,12 @@
-# site/ — the md-mini.com landing
+# site/ — the couplet.pro landing
 
-The marketing page for md-mini.com. Its distinguishing idea: **the demos are the real
-app**. Every editor on the page is an actual CodeMirror 6 instance running mdmini's own
-live-preview decorations, themes, mermaid renderer, AI highlights and question widgets —
-imported straight from `src/`. Nothing here is a screenshot or a mockup of the editor.
+The marketing page for couplet.pro (the product formerly known as md-mini — the app,
+CLI, cask, tap and MCP server still go by `mdmini` until the renamed release; see the
+rebrand plan in `docs/superpowers/plans/`). Its distinguishing idea: **the demos are the
+real app**. Every editor on the page is an actual CodeMirror 6 instance running the
+app's own live-preview decorations, themes, mermaid renderer, AI highlights and question
+widgets — imported straight from `src/`. Nothing here is a screenshot or a mockup of the
+editor.
 
 Read this before changing anything under `site/`. Most of what follows was learned the
 hard way and is invisible until it bites.
@@ -26,9 +29,10 @@ hard way and is invisible until it bites.
   `robots.txt`, `sitemap.xml`, `llms.txt`, the favicons, `sample.md`, and the internal
   `*.md` docs. Hence `emptyOutDir: false` in the config.
 - The same `docs/index.html` is also what GitHub Pages serves as the archive. It carries
-  `rel=canonical` → md-mini.com plus a JS redirect that only fires on a `.github.io`
-  hostname. Don't remove either; Pages cannot 301 to an external domain, so that pair is
-  the whole migration story.
+  `rel=canonical` → couplet.pro plus a JS redirect that only fires on a `.github.io`
+  hostname, rewriting the GH Pages project path (`/mdmini/…`, since the repo itself is
+  not renamed) onto the new domain's root. Don't remove either; Pages cannot 301 to an
+  external domain, so that pair is the whole migration story.
 
 ## Practices
 
@@ -49,7 +53,7 @@ hard way and is invisible until it bites.
   `./demos/editor-demo`. Render one settled, composed frame; no loops, no typing.
 - **Pause when off-screen or `document.hidden`.** Several demos loop forever; none of
   them may burn CPU in a background tab.
-- Keep claims honest: **mdmini ships no AI of its own.** Slides say "your agent"; the
+- Keep claims honest: **couplet ships no AI of its own.** Slides say "your agent"; the
   demo terminals label the agent's lines explicitly so a visitor doesn't think they have
   to type mdmini commands by hand. Any command shown must match `docs/ai-interface.md`.
 
@@ -150,10 +154,16 @@ hard way and is invisible until it bites.
   underneath (600–1000px at that width) with small bright cores on top is what makes
   colour actually shift. The wash palette spans only ~70° of hue, which caps how dramatic
   that shift can get.
-- **Compositor-only, always.** Animate `transform`, `opacity` and `background-position`.
-  `filter: blur()` values must be static so the blur rasterizes once; animating `filter`
-  (including `hue-rotate`) re-filters every frame. No canvas, no rAF loop, no SVG
-  turbulence.
+- **Compositor-only, always — except the one deliberate exception.** The CSS blob field
+  (`.hero-aurora-field`, dark theme and the light-theme no-WebGL fallback) still animates
+  `transform`, `opacity` and `background-position` only, with static `filter: blur()`, per
+  the rule above. Light theme's *realistic* aurora (`site/hero-aurora.ts`, owner-requested
+  "aurora at noon" gag) is the intentional exception: a WebGL fragment shader on a canvas,
+  driven by a capped-FPS `requestAnimationFrame` loop. It REPLACES the blob field for
+  light theme (toggled via `.is-realistic`/`.is-fallback` on `.hero-aurora`), never layers
+  on top of it, and is paused by `IntersectionObserver` + `visibilitychange` + a DPR cap —
+  read the file header before touching either the shader or the rest of this section's
+  rules, since they were written before this exception existed.
 - **A full-bleed layer needs `overflow: hidden` on the hero**, or blurred children add to
   page `scrollWidth`. Check for horizontal overflow at 360, 390, 1280 **and** 2000 —
   wide viewports are where this shows.

@@ -1,8 +1,8 @@
-# mdmini
+# couplet
 
-> Minimalist live-preview markdown editor for macOS
+> Minimalist live-preview markdown editor for macOS (formerly md-mini)
 
-mdmini is a free, open-source markdown editor built with Tauri 2, Svelte 5, and CodeMirror 6. You edit raw markdown and see it rendered inline — no split panes, no mode switching.
+couplet is a free, open-source markdown editor built with Tauri 2, Svelte 5, and CodeMirror 6. You edit raw markdown and see it rendered inline — no split panes, no mode switching. The CLI answers to `couplet`, the short alias `coup`, and `mdmini`. Until the renamed release ships, the Homebrew cask and the MCP setup keep the `mdmini` name; after it, all three work.
 
 ## Features
 
@@ -14,7 +14,7 @@ mdmini is a free, open-source markdown editor built with Tauri 2, Svelte 5, and 
 - **Secret masking** — sensitive values in .env and shell configs (.zshrc, .bashrc) hidden by default
 - **Shell config highlighting** — .zshrc, .bashrc, .profile render with Shell syntax
 - **File watching** — auto-reloads on external changes
-- **CLI launcher** — `mdmini file.md` from terminal
+- **CLI launcher** — `couplet file.md` from terminal (or `coup file.md`)
 - **Dark & Light themes** — Rosé Pine
 
 ## Install
@@ -27,7 +27,7 @@ brew install --cask mdmini
 
 ## Links
 
-- Website: https://md-mini.com/
+- Website: https://couplet.pro/
 - Source: https://github.com/malinborn/mdmini
 - Releases: https://github.com/malinborn/mdmini/releases
 - License: GPL-3.0
