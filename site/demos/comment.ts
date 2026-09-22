@@ -14,8 +14,8 @@ import { mountDemoEditor, prefersReducedMotion } from './editor-demo';
  *
  *   - the pasted prompt is the first line of `buildWatchPrompt()`
  *   - the Monitor call is what that prompt tells the agent to run
- *   - the `[mdmini] …` wake-up line is `event_line()` from src-tauri/src/watch.rs
- *   - `mdmini answer <doc> --id <id>` is the verb from docs/ai-interface.md
+ *   - the `[couplet] …` wake-up line is `event_line()` from src-tauri/src/watch.rs
+ *   - `couplet answer <doc> --id <id>` is the verb from docs/ai-interface.md
  *
  * Nothing here spawns or simulates an AI beyond replaying that transcript, and
  * the terminal labels the agent's rows explicitly so a visitor doesn't read
@@ -80,7 +80,7 @@ const MENU_ITEMS: ReadonlyArray<{
   { label: '', sep: true },
   { label: 'Connect AI via CLI' },
   { label: 'Connect AI via MCP' },
-  { label: 'Teach your AI md-mini' },
+  { label: 'Teach your AI couplet' },
   { label: '', sep: true },
   { label: 'Comment on Selection', accel: '⇧⌘M' },
   { label: 'Connect Agent to Doc Questions', pick: true },
@@ -89,16 +89,16 @@ const MENU_ITEMS: ReadonlyArray<{
 ];
 
 const PASTED_PROMPT = `Watch for my comments under ${WATCH_DIR} and answer them.`;
-const MONITOR_CALL = `Monitor({command: "mdmini watch ${WATCH_DIR}", persistent: true})`;
+const MONITOR_CALL = `Monitor({command: "couplet watch ${WATCH_DIR}", persistent: true})`;
 const WATCHING_NOTE = 'watching — a new comment interrupts me';
 
 /** `event_line()` from src-tauri/src/watch.rs, verbatim in shape. */
 function eventLine(id: string, quote: string, question: string): string {
-  return `[mdmini] ${DOC_NAME} ${id} · «${quote}» · ${question}`;
+  return `[couplet] ${DOC_NAME} ${id} · «${quote}» · ${question}`;
 }
 
 function answerCall(id: string): string {
-  return `mdmini answer ${DOC_NAME} --id ${id}`;
+  return `couplet answer ${DOC_NAME} --id ${id}`;
 }
 
 // Typing speeds. Note there is no paste speed: the watch prompt is pasted, so
@@ -138,7 +138,7 @@ type RowKind = 'in' | 'tool' | 'note' | 'event';
  *
  * Its body is a fixed-height scroller rather than a stack of reserved rows (the
  * shape demo-edit.css uses): this transcript grows by seven rows across the loop
- * and the `[mdmini]` wake-up line is long enough to wrap, so reserving every row
+ * and the `[couplet]` wake-up line is long enough to wrap, so reserving every row
  * up front would need either a very tall panel or a truncation of the one line
  * carrying the most meaning. A fixed height with the content scrolling inside
  * keeps the panel's own box constant — the property that actually matters, since
@@ -196,7 +196,7 @@ function addRow(term: TerminalDom, kind: RowKind): HTMLElement {
     prompt.textContent = '$';
     row.appendChild(prompt);
   } else if (kind === 'tool') {
-    // Labelled, so a visitor reads this as their agent calling mdmini — not as
+    // Labelled, so a visitor reads this as their agent calling couplet — not as
     // another command they are expected to type.
     const tag = document.createElement('span');
     tag.className = 'cmt-term-tag';
@@ -699,7 +699,7 @@ export function mount(container: HTMLElement): void {
       const at = commentWidgetLine(view, ID_1);
       if (at !== null) {
         // Highlighted exactly as `insertIntoText` does it in the app: text from
-        // an agent reads the same whether it arrived via `mdmini edit` (the
+        // an agent reads the same whether it arrived via `couplet edit` (the
         // edit slide, two slides back) or via a comment thread.
         view.dispatch({
           changes: { from: at, insert: `\n${ANSWER_1}\n` },

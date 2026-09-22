@@ -26,8 +26,8 @@ import './styles/demo-comment.css';
 import './styles/demo-anyway.css';
 import './styles/demo-showcase.css';
 
-const THEME_KEY = 'mdmini-site:theme';
-const INSTALL_CMD = 'brew tap malinborn/mdmini && brew trust malinborn/mdmini && brew install --cask mdmini';
+const THEME_KEY = 'couplet-site:theme';
+const INSTALL_CMD = 'brew tap malinborn/couplet && brew trust malinborn/couplet && brew install --cask couplet';
 
 type ThemeMode = 'auto' | 'dark' | 'light';
 
@@ -226,7 +226,7 @@ function setupDemoMounting(): void {
       })
       .catch((err: unknown) => {
         // A missing/broken demo degrades to an empty card, never a blank page.
-        console.error(`[md-mini] demo "${name}" failed to mount`, err);
+        console.error(`[couplet] demo "${name}" failed to mount`, err);
       });
   }
 
