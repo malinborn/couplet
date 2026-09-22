@@ -6,7 +6,7 @@
 
   <script>
     if (location.hostname.endsWith('.github.io')) {
-      location.replace('https://couplet.dev' + location.pathname.replace(/^\/couplet/, '') + location.search + location.hash);
+      location.replace('https://couplet.pro' + location.pathname.replace(/^\/mdmini/, '') + location.search + location.hash);
     }
   </script>
   <script>
@@ -22,22 +22,22 @@
   <title>couplet — Minimalist Markdown Editor for macOS</title>
   <meta name="description" content="Free minimalist markdown editor for macOS with live preview, mermaid diagrams, GFM tables, syntax highlighting. Built with Tauri, lightweight and fast." />
   <meta name="keywords" content="markdown editor, macOS, markdown, live preview, mermaid diagrams, GFM tables, code editor, Tauri, open source, free" />
-  <link rel="canonical" href="https://couplet.dev/" />
-  <link rel="alternate" type="text/plain" href="https://couplet.dev/llms.txt" title="LLM-readable description" />
+  <link rel="canonical" href="https://couplet.pro/" />
+  <link rel="alternate" type="text/plain" href="https://couplet.pro/llms.txt" title="LLM-readable description" />
 
   <!-- Open Graph -->
   <meta property="og:type" content="website" />
   <meta property="og:title" content="couplet — Minimalist Markdown Editor for macOS" />
   <meta property="og:description" content="Free markdown editor with live preview, mermaid diagrams, GFM tables, and syntax highlighting. Lightweight, fast, open source." />
-  <meta property="og:url" content="https://couplet.dev/" />
-  <meta property="og:image" content="https://couplet.dev/screenshot.png" />
+  <meta property="og:url" content="https://couplet.pro/" />
+  <meta property="og:image" content="https://couplet.pro/screenshot.png" />
   <meta property="og:site_name" content="couplet" />
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="couplet — Minimalist Markdown Editor for macOS" />
   <meta name="twitter:description" content="Free markdown editor with live preview, mermaid diagrams, GFM tables, and syntax highlighting." />
-  <meta name="twitter:image" content="https://couplet.dev/screenshot.png" />
+  <meta name="twitter:image" content="https://couplet.pro/screenshot.png" />
 
   <!-- Structured Data -->
   <script type="application/ld+json">
@@ -45,18 +45,21 @@
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "couplet",
+    "alternateName": "md-mini",
     "description": "Minimalist live-preview markdown editor for macOS with mermaid diagrams, GFM tables, and syntax highlighting",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "macOS",
     "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-    "url": "https://couplet.dev/",
-    "downloadUrl": "https://github.com/malinborn/couplet/releases",
+    "url": "https://couplet.pro/",
+    "downloadUrl": "https://github.com/malinborn/mdmini/releases",
+    "sameAs": ["https://github.com/malinborn/mdmini"],
     "softwareVersion": "1.3.0",
     "license": "https://opensource.org/licenses/GPL-3.0"
   }
   </script>
 
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 
   <script type="module" src="/main.ts"></script>
@@ -66,10 +69,7 @@
   <nav class="site-nav">
     <div class="wrap site-nav-inner">
       <a href="#top" class="brand">
-        <span class="brand-mark" aria-hidden="true">
-          <span class="brand-mark-text">cp</span>
-          <span class="brand-caret"></span>
-        </span>
+        <img src="/favicon-32.png" width="26" height="26" alt="" class="brand-mark" />
         couplet
       </a>
       <ul class="nav-links">
@@ -77,7 +77,7 @@
         <li class="nav-anchor-only"><a href="#features">Features</a></li>
         <li><a href="#install">Install</a></li>
         <li class="nav-anchor-only"><a href="#changelog">Changelog</a></li>
-        <li><a href="https://github.com/malinborn/couplet">GitHub</a></li>
+        <li><a href="https://github.com/malinborn/mdmini">GitHub</a></li>
       </ul>
       <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Theme: automatic">
         <span class="theme-toggle-label">Auto</span>
@@ -115,12 +115,12 @@
       </div>
       <div class="hero-cta">
         <div class="install-row install-row--hero">
-          <code class="install-code"><span class="install-prompt">$</span> <span class="tok-keyword">brew</span> tap <span class="tok-string">malinborn/couplet</span> <span class="tok-operator">&amp;&amp;</span> <span class="tok-keyword">brew</span> trust <span class="tok-string">malinborn/couplet</span> <span class="tok-operator">&amp;&amp;</span> <span class="tok-keyword">brew</span> install <span class="tok-propertyName">--cask</span> <span class="tok-string">couplet</span></code>
+          <code class="install-code"><span class="install-prompt">$</span> <span class="tok-keyword">brew</span> tap <span class="tok-string">malinborn/mdmini</span> <span class="tok-operator">&amp;&amp;</span> <span class="tok-keyword">brew</span> trust <span class="tok-string">malinborn/mdmini</span> <span class="tok-operator">&amp;&amp;</span> <span class="tok-keyword">brew</span> install <span class="tok-propertyName">--cask</span> <span class="tok-string">mdmini</span></code>
           <button id="copy-install" class="copy-btn" type="button" aria-label="Copy install command">
             <span class="copy-btn-label">Copy</span>
           </button>
         </div>
-        <a class="hero-secondary-link" href="https://github.com/malinborn/couplet">Or look at the source on GitHub &rarr;</a>
+        <a class="hero-secondary-link" href="https://github.com/malinborn/mdmini">Or look at the source on GitHub &rarr;</a>
       </div>
     </div>
     </div>
@@ -214,7 +214,7 @@
                 <noscript>
 <div class="static-card">
                   <div class="static-card-label">from the terminal</div>
-                  <code class="static-card-code"><span class="tok-teal">$</span> couplet README.md</code>
+                  <code class="static-card-code"><span class="tok-teal">$</span> mdmini README.md</code>
                 </div>
                 <div class="static-card static-card--row">
                   <span class="app-icon app-icon--34" aria-hidden="true"><span class="app-icon-text">md</span></span>
@@ -368,9 +368,9 @@
 
         <div class="feature-card">
           <h3>CLI Launcher</h3>
-          <p>Open files instantly from the terminal with <code>couplet file.md</code>.</p>
+          <p>Open files instantly from the terminal with <code>mdmini file.md</code>.</p>
           <div class="feature-illustration">
-            <div class="illus-cli"><span class="tok-teal">$</span> couplet file.md<span class="cli-caret caret-blink" aria-hidden="true"></span></div>
+            <div class="illus-cli"><span class="tok-teal">$</span> mdmini file.md<span class="cli-caret caret-blink" aria-hidden="true"></span></div>
           </div>
         </div>
 
@@ -439,13 +439,14 @@
           <span class="terminal-title">zsh &mdash; 80&times;16</span>
         </div>
         <div class="terminal-body">
-          <div class="terminal-line"><span class="tok-teal">$</span> brew tap malinborn/couplet &amp;&amp; brew trust malinborn/couplet &amp;&amp; brew install --cask couplet</div>
-          <div class="terminal-line"><span class="tok-teal">$</span> couplet README.md          <span class="terminal-comment"># opens in a native macOS window</span></div>
-          <div class="terminal-line"><span class="tok-teal">$</span> couplet *.md notes/*.md    <span class="terminal-comment"># each file gets its own window</span></div>
-          <div class="terminal-line"><span class="tok-teal">$</span> claude mcp add --scope user couplet -- couplet mcp   <span class="terminal-comment"># connect your AI agent — or use plain CLI verbs: couplet show / edit / ask</span></div>
-          <div class="terminal-line"><span class="tok-teal">$</span> brew update &amp;&amp; brew upgrade --cask couplet</div>
+          <div class="terminal-line"><span class="tok-teal">$</span> brew tap malinborn/mdmini &amp;&amp; brew trust malinborn/mdmini &amp;&amp; brew install --cask mdmini</div>
+          <div class="terminal-line"><span class="tok-teal">$</span> mdmini README.md          <span class="terminal-comment"># opens in a native macOS window</span></div>
+          <div class="terminal-line"><span class="tok-teal">$</span> mdmini *.md notes/*.md    <span class="terminal-comment"># each file gets its own window</span></div>
+          <div class="terminal-line"><span class="tok-teal">$</span> claude mcp add --scope user mdmini -- mdmini mcp   <span class="terminal-comment"># connect your AI agent — or use plain CLI verbs: mdmini show / edit / ask</span></div>
+          <div class="terminal-line"><span class="tok-teal">$</span> brew update &amp;&amp; brew upgrade --cask mdmini</div>
         </div>
       </div>
+      <p class="install-note"><strong>couplet was called md-mini.</strong> The CLI, the Homebrew tap/cask and the MCP server keep the <code>mdmini</code> name until the renamed release &mdash; existing configs keep working unchanged.</p>
       <p class="install-note"><strong>After an upgrade, macOS asks for folder access again.</strong> couplet is ad-hoc signed &mdash; no Apple Team ID &mdash; so macOS identifies it by a code hash that changes with every release, and the permission you granted belongs to what it now considers a different app. Signing and notarizing properly costs $99/year, which a free open-source tool is not going to carry. Grant it again and carry on.</p>
     </div>
   </section>
@@ -468,7 +469,7 @@
             <li><strong>Two new themes, and neither is a port</strong> &mdash; <em>Blueprint</em> is a cyanotype: white on deep blue, because white there is not an accent but unexposed paper, with red reserved for what you change &mdash; the caret, the checkbox, struck-through text. <em>Phosphor</em> is a terminal from before colour: P1 green on black glass, amber as the only second hue, and monospace in the prose itself. Both come in a light half too &mdash; tracing paper and fanfold printout</li>
             <li><strong>The Theme menu is three groups, not a list</strong> &mdash; family (Classic, Aurora, Blueprint, Phosphor), half (Light, Dark), and <strong>Follow System</strong> as a checkbox. &ldquo;System&rdquo; was a fifth mutually exclusive option, which is the one thing it is not: it decides the half, and it has nothing to say about which family you like. Tick it and the theme follows your Mac from day into night without leaving the family. &ldquo;Default&rdquo; is now called <em>Classic</em>, the name it has had in the code since it was written</li>
             <li><strong>A ticked task reads as done</strong> &mdash; greyed and struck through, while bold stays bold, italic stays italic and a link keeps its underline: only the colour is taken over. A wrapped item stays greyed across its continuation lines, and an unfinished child of a finished parent does not &mdash; the range follows the item, not the line. In the Aurora themes the grey is a gradient, and in Blueprint the line is drawn in that theme's red pencil while the text stays muted: crossed off, not deleted</li>
-            <li><strong>One menu item where four documents used to be</strong> &mdash; <code>AI &rarr; Teach Your AI couplet</code>. &ldquo;Getting Started&rdquo;, &ldquo;Connect via CLI&rdquo;, &ldquo;Connect via MCP&rdquo; and &ldquo;Teach your AI&rdquo; each explained their own part and left the assembly to you, so you ended up stitching a setup out of four texts. Now the document hands over a prompt: your agent registers couplet over MCP, writes itself a skill on using it well, and adds a short note to its own config about when to reach for it. A second prompt in the same document does the skill only, if you would rather your main config stayed untouched</li>
+            <li><strong>One menu item where four documents used to be</strong> &mdash; <code>AI &rarr; Teach Your AI mdmini</code>. &ldquo;Getting Started&rdquo;, &ldquo;Connect via CLI&rdquo;, &ldquo;Connect via MCP&rdquo; and &ldquo;Teach your AI&rdquo; each explained their own part and left the assembly to you, so you ended up stitching a setup out of four texts. Now the document hands over a prompt: your agent registers md-mini over MCP, writes itself a skill on using it well, and adds a short note to its own config about when to reach for it. A second prompt in the same document does the skill only, if you would rather your main config stayed untouched</li>
             <li><strong>OCD Alignment</strong> &mdash; the tick in a checked box sits a hair off centre, and that is not sloppiness: <code>&#10003;</code> is not a symmetrical glyph, so it never looks centred anywhere. If that hair is going to follow you around all day, <code>View &rarr; OCD Alignment</code> replaces it with a cross drawn as two strokes rotated around one point, symmetrical by construction. We like the tick. We also know how it is</li>
             <li><strong>The table header stopped ignoring the theme</strong> &mdash; its gradient was hardcoded in two variants, picked by whether the theme's name ended in &ldquo;light&rdquo;, so Phosphor got a lilac header on green paper. It is a theme variable now, with the old values as the default, so the themes that never asked look exactly as they did</li>
             <li><strong>A checkbox in the menu works with two windows open</strong> &mdash; a menu event is broadcast to every window, and each applied it to its own copy of the setting. Harmless for a radio item, where N windows set the same value; not for a toggle, where N windows flip it N times &mdash; so <strong>Follow System</strong> visibly did nothing whenever a second window was open. The event now carries the value rather than the instruction to flip</li>
@@ -507,8 +508,8 @@
           <ul class="changelog-body-list">
             <li><strong>Comment on any text</strong> &mdash; select a fragment and press <code>&#8679;&#8984;M</code>, or use the &#128172; in Live Render's selection toolbar. The quoted words stay highlighted in the document, the card header carries an excerpt of them, and putting the caret in a commented fragment makes its cards shimmer &mdash; and the other way around. With several comments stacked under one paragraph, that is the difference between finding the right card and hunting for it</li>
             <li><strong>Your agent gets woken, not polled</strong> &mdash; <code>AI &rarr; Connect Agent to Doc Questions</code> copies a prompt that arms a watcher over your project. With Claude Code's Monitor tool, a new comment interrupts the session that already has your context, the moment you send it. That is the whole design: nothing here spawns an agent or hands your question to one that knows nothing about the work</li>
-            <li><strong>The answer comes back into the thread</strong> &mdash; <code>couplet answer plan.md --id c-4f2a1b</code>. If the comment asked for a change rather than an answer, <strong>insert into text</strong> folds it into the document &mdash; highlighted like any other AI edit, Escape to dismiss, <code>&#8984;Z</code> to take it back. If it was just a question, <strong>resolve</strong> closes the thread</li>
-            <li><strong>The comments live next to your file</strong> &mdash; in <code>.couplet_comments_&lt;file&gt;.md</code>, plain markdown you can read, edit by hand and diff in git. couplet never rewrites that file wholesale, only appends to it. So the feature works with the app closed, works for agents with no MCP, and needs no store of its own &mdash; couplet is deliberately not the source of truth here</li>
+            <li><strong>The answer comes back into the thread</strong> &mdash; <code>mdmini answer plan.md --id c-4f2a1b</code>. If the comment asked for a change rather than an answer, <strong>insert into text</strong> folds it into the document &mdash; highlighted like any other AI edit, Escape to dismiss, <code>&#8984;Z</code> to take it back. If it was just a question, <strong>resolve</strong> closes the thread</li>
+            <li><strong>The comments live next to your file</strong> &mdash; in <code>.mdmini_comments_&lt;file&gt;.md</code>, plain markdown you can read, edit by hand and diff in git. md-mini never rewrites that file wholesale, only appends to it. So the feature works with the app closed, works for agents with no MCP, and needs no store of its own &mdash; md-mini is deliberately not the source of truth here</li>
             <li><strong>Git worktrees stop being a problem</strong> &mdash; comments sit beside the copy they were written on, so the agent watching that tree is the one that answers. No routing, no claims, no queue to divide between sessions</li>
           </ul>
         </details>
@@ -521,9 +522,9 @@
             <span class="changelog-title">Now it installs on your Intel Mac, and tells you it speaks AI</span>
           </summary>
           <ul class="changelog-body-list">
-            <li><strong>Intel Macs are supported</strong> &mdash; the build is universal now, one download for both architectures. Previously <code>brew install --cask couplet</code> simply refused on an Intel machine, and never said why. The culprit was a single arch-dependent type: Objective-C's <code>BOOL</code> is a <code>bool</code> on Apple Silicon and an <code>i8</code> everywhere else, so one <code>true</code> literal compiled on one machine and broke the other</li>
+            <li><strong>Intel Macs are supported</strong> &mdash; the build is universal now, one download for both architectures. Previously <code>brew install --cask mdmini</code> simply refused on an Intel machine, and never said why. The culprit was a single arch-dependent type: Objective-C's <code>BOOL</code> is a <code>bool</code> on Apple Silicon and an <code>i8</code> everywhere else, so one <code>true</code> literal compiled on one machine and broke the other</li>
             <li><strong>The AI interface is findable</strong> &mdash; 1.0 shipped it and then hid it. A toast on launch now says the editor can be driven by your agent, and a new <strong>Getting Started</strong> entry sits at the top of the AI menu. It leads with a map of that menu rather than a wall of setup, because the thing worth remembering is where this lives, not which command to type</li>
-            <li><strong>It knows when to stop</strong> &mdash; the toast appears at most three times, once a day, never on the launch that already opened the welcome window, and never again once an agent has actually connected. The first time one does, couplet says so &mdash; useful if someone handed you a config and you were wondering what just moved on screen</li>
+            <li><strong>It knows when to stop</strong> &mdash; the toast appears at most three times, once a day, never on the launch that already opened the welcome window, and never again once an agent has actually connected. The first time one does, md-mini says so &mdash; useful if someone handed you a config and you were wondering what just moved on screen</li>
           </ul>
         </details>
 
@@ -535,16 +536,16 @@
             <span class="changelog-title">One point oh &mdash; now your agent can type too</span>
           </summary>
           <ul class="changelog-body-list">
-            <li><strong>An interface for AI agents</strong> &mdash; <code>couplet show file.md --line 42</code> scrolls a window to a spot and pulses it; <code>cat new.md | couplet edit file.md</code> pushes content straight into the live buffer and highlights exactly what changed. No writing to disk and praying the watcher notices</li>
-            <li><strong>Your agent can ask you things</strong> &mdash; <code>couplet ask</code> plants a real question with option buttons inside the document and <em>blocks</em> until you click. Checkboxes for multi-select, a free-text field when none of the options fit</li>
-            <li><strong>Speaks MCP too</strong> &mdash; <code>couplet mcp</code> runs a stdio MCP server exposing the same three verbs as tools, so agents that prefer MCP need no shell glue. <code>couplet agent</code> prints a ready-to-paste block for your CLAUDE.md</li>
+            <li><strong>An interface for AI agents</strong> &mdash; <code>mdmini show file.md --line 42</code> scrolls a window to a spot and pulses it; <code>cat new.md | mdmini edit file.md</code> pushes content straight into the live buffer and highlights exactly what changed. No writing to disk and praying the watcher notices</li>
+            <li><strong>Your agent can ask you things</strong> &mdash; <code>mdmini ask</code> plants a real question with option buttons inside the document and <em>blocks</em> until you click. Checkboxes for multi-select, a free-text field when none of the options fit</li>
+            <li><strong>Speaks MCP too</strong> &mdash; <code>mdmini mcp</code> runs a stdio MCP server exposing the same three verbs as tools, so agents that prefer MCP need no shell glue. <code>mdmini agent</code> prints a ready-to-paste block for your CLAUDE.md</li>
             <li><strong>Live Render, in beta</strong> &mdash; an opt-in mode where markdown markers stay hidden even when the caret sits on them, Notion-style. It installs only while selected, so the live-preview mode you already trust is untouched by construction. <code>View → Editor Engine → (beta) Live Render</code></li>
             <li><strong>Aurora themes</strong> &mdash; two new palettes, light and dark, alongside Rosé Pine. Five entries in the theme menu now, System included, and the caret picked up a gradient</li>
             <li><strong>A new app icon</strong> &mdash; and, at the last minute, a properly antialiased one: the first cut carried a baked drop shadow that ate a fifth of the canvas at 32px</li>
-            <li><strong>A welcome window, once</strong> &mdash; on first launch after the upgrade couplet opens a short document showing how to connect your agent, by CLI or by MCP. Close it and it stays closed</li>
+            <li><strong>A welcome window, once</strong> &mdash; on first launch after the upgrade md-mini opens a short document showing how to connect your agent, by CLI or by MCP. Close it and it stays closed</li>
             <li><strong>Fixed: external edits no longer jump you around</strong> &mdash; when a watched file is reloaded from disk, your scroll position and caret stay where you left them</li>
             <li><strong>Fixed: selecting across a diagram</strong> &mdash; dragging a selection over a mermaid block or a table no longer paints over the widget</li>
-            <li><strong>New home</strong> &mdash; the site lives at <code>couplet.dev</code>; the old GitHub Pages address redirects</li>
+            <li><strong>New home</strong> &mdash; the site lives at <code>md-mini.com</code>; the old GitHub Pages address redirects</li>
           </ul>
         </details>
 
@@ -573,7 +574,7 @@
             <li><strong>Reopen your last session</strong> &mdash; quitting no longer loses the windows you had open. A toast tells you how many are waiting; <code>&#8679;&#8984;T</code> brings them back, or use <code>File &rarr; Reopen Windows from Last Session</code></li>
             <li><strong>Everything comes back with them</strong> &mdash; file, window position and size, where the caret was, and how far you had scrolled</li>
             <li><strong>Unsaved drafts too</strong> &mdash; an Untitled window you never saved returns with its text intact, still marked dirty</li>
-            <li><strong>Survives an upgrade</strong> &mdash; this is the point: <code>brew upgrade --cask couplet</code> closes every window, and now you can get them back</li>
+            <li><strong>Survives an upgrade</strong> &mdash; this is the point: <code>brew upgrade --cask mdmini</code> closes every window, and now you can get them back</li>
             <li><strong>Notifications stack</strong> &mdash; the update notice and the session offer sit above one another instead of overlapping, and each waits until you dismiss it</li>
             <li><strong>Fixed: scrolling a diagram-heavy file</strong> &mdash; reaching the end of a document full of mermaid diagrams and scrolling back up threw you straight down again. Diagrams no longer briefly lay out at full natural size, which was corrupting every scroll position on the page</li>
           </ul>
@@ -743,7 +744,7 @@
           </summary>
           <ul class="changelog-body-list">
             <li><strong>Dock file drop</strong> &mdash; drag files onto the Dock icon to open</li>
-            <li><strong>File associations</strong> &mdash; macOS registers couplet for .md, .txt, .json, .py, .rs, .yml, .toml, .sh</li>
+            <li><strong>File associations</strong> &mdash; macOS registers mdmini for .md, .txt, .json, .py, .rs, .yml, .toml, .sh</li>
             <li><strong>Smart window reuse</strong> &mdash; drag-drop and Dock drop open in empty windows</li>
             <li><strong>No white flash</strong> &mdash; dark background set before CSS loads</li>
             <li><strong>Cmd+Z safety</strong> &mdash; undo no longer clears content after file open</li>
@@ -792,25 +793,25 @@
             <li><strong>Syntax highlighting</strong> &mdash; fenced code blocks with language detection</li>
             <li><strong>Secret masking</strong> &mdash; <code>.env</code> values blurred by default</li>
             <li><strong>File watching</strong> &mdash; external edits reload automatically</li>
-            <li><strong>CLI launcher</strong> &mdash; <code>couplet file.md</code> via Homebrew tap</li>
+            <li><strong>CLI launcher</strong> &mdash; <code>mdmini file.md</code> via Homebrew tap</li>
             <li><strong>Themes</strong> &mdash; Ros&eacute; Pine dark &amp; dawn</li>
             <li><strong>Auto-save &amp; crash recovery</strong></li>
           </ul>
         </details>
 
       </div>
-      <p class="changelog-more"><a href="https://github.com/malinborn/couplet/releases">Full release history on GitHub &rarr;</a></p>
+      <p class="changelog-more"><a href="https://github.com/malinborn/mdmini/releases">Full release history on GitHub &rarr;</a></p>
     </div>
   </section>
 
   <footer class="site-footer">
     <div class="wrap footer-inner">
       <span class="footer-mark">
-        <span class="footer-mark-swatch" aria-hidden="true"></span>
+        <img src="/favicon-32.png" width="18" height="18" alt="" class="footer-mark-swatch" />
         couplet
       </span>
       <span class="footer-links">
-        <a href="https://github.com/malinborn/couplet">GitHub</a>
+        <a href="https://github.com/malinborn/mdmini">GitHub</a>
         <span class="footer-note">GPL-3.0 &middot; free and open source &middot; built with Tauri</span>
       </span>
     </div>

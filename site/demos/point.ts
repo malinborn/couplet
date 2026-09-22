@@ -78,14 +78,14 @@ Stop and escalate — see below.
 Page the on-call engineer if the rollback itself fails.`;
 
 // The chrome's tiny agent conversation: a human question typed at a readable
-// pace, then a real `couplet show` invocation (see docs/ai-interface.md) and
+// pace, then a real `mdmini show` invocation (see docs/ai-interface.md) and
 // its result note, both typed faster — tool traffic, not dialogue.
 //
 // The second and third rows are explicitly labelled "agent" (not a bare `$`
 // shell prompt) and visually grouped under the human's line by a connector
 // in demo-point.css, precisely so a first-time visitor doesn't read this as
 // "type this command yourself" — it's the visitor's own agent (Claude Code
-// or any MCP client) calling couplet's real CLI, per docs/ai-interface.md.
+// or any MCP client) calling mdmini's real CLI, per docs/ai-interface.md.
 //
 // Kept short on purpose: this line has to fit, fully typed, inside the
 // chrome panel's own narrow content width on a 390px phone viewport without
@@ -93,7 +93,7 @@ Page the on-call engineer if the rollback itself fails.`;
 // demo-point.css). `text-overflow: ellipsis` is a defensive fallback, not
 // the plan.
 const QUESTION = 'once again — where’s the rollback procedure stated?';
-const COMMAND_LINE = 'couplet show runbook.md --find "previous tag"';
+const COMMAND_LINE = 'mdmini show runbook.md --find "previous tag"';
 const RESULT_LINE = 'found it — 2 mentions, pulsing each';
 
 const USER_CHAR_MS = 34;
@@ -141,7 +141,7 @@ function buildChrome(host: HTMLElement): ChromeNodes {
 
   const user = makeLine('user', 'you');
   // Labelled "agent" rather than a bare `$` — this line is the visitor's
-  // own AI agent calling couplet's real CLI (see docs/ai-interface.md), not
+  // own AI agent calling mdmini's real CLI (see docs/ai-interface.md), not
   // the person typing a shell command by hand.
   const cmd = makeLine('cmd', 'agent');
   const note = makeLine('note', '→');

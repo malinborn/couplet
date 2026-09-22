@@ -138,19 +138,15 @@ code { font-family: var(--font-mono); }
 }
 .brand:hover { color: var(--text); text-decoration: none; }
 
+/* The mark is the real app icon (couplet-icon-design-stand.html, 'default' theme):
+   an ampersand — "you and your agent" — over a glowing gradient caret, baked into
+   a PNG at build time. No CSS-drawn placeholder; the asset is the source of truth. */
 .brand-mark {
   width: 26px;
   height: 26px;
-  border-radius: 7px;
-  background: var(--brand-gradient);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 1px;
   flex: none;
+  display: block;
 }
-.brand-mark-text { font-family: var(--font-display); font-size: 12px; color: #fff; letter-spacing: -0.5px; }
-.brand-caret { width: 1.5px; height: 12px; border-radius: 1px; background: var(--caret-gradient); }
 
 .nav-links {
   display: flex;
@@ -1403,7 +1399,7 @@ code { font-family: var(--font-mono); }
   color: var(--muted);
 }
 .footer-mark { display: flex; align-items: center; gap: 8px; }
-.footer-mark-swatch { width: 18px; height: 18px; border-radius: 5px; background: var(--brand-gradient); }
+.footer-mark-swatch { width: 18px; height: 18px; display: block; }
 .footer-links { margin-left: auto; display: flex; gap: 20px; flex-wrap: wrap; align-items: center; }
 .footer-note { color: var(--muted); }
 

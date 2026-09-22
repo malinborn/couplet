@@ -27,7 +27,7 @@ import './styles/demo-anyway.css';
 import './styles/demo-showcase.css';
 
 const THEME_KEY = 'couplet-site:theme';
-const INSTALL_CMD = 'brew tap malinborn/couplet && brew trust malinborn/couplet && brew install --cask couplet';
+const INSTALL_CMD = 'brew tap malinborn/mdmini && brew trust malinborn/mdmini && brew install --cask mdmini';
 
 type ThemeMode = 'auto' | 'dark' | 'light';
 

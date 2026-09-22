@@ -67,14 +67,14 @@ Confirm the build is **reproducible** and matches the tag in \`CHANGELOG.md\`. A
 | Notarize | CI | pending |
 
 \`\`\`bash
-npm run build:dev && open dist/couplet-dev.app
+npm run build:dev && open dist/md-mini-dev.app
 \`\`\`
 
 ---
 
 ## Once it's out the door
 
-The rollout is *gradual*, never **instant**, and it is ~~definitely not~~ absolutely not something we push on a Friday. Watch the crash rate in \`metrics.dashboard\`, and keep the [release notes](https://github.com/malinborn/couplet/releases) open in a second window.
+The rollout is *gradual*, never **instant**, and it is ~~definitely not~~ absolutely not something we push on a Friday. Watch the crash rate in \`metrics.dashboard\`, and keep the [release notes](https://github.com/malinborn/mdmini/releases) open in a second window.
 
 1. Announce the build
 2. Watch the first hour of crash reports
@@ -128,13 +128,13 @@ const SHELL_ACT: Act = {
   body: `# ~/.zshrc
 
 export PATH="$HOME/bin:$PATH"
-export EDITOR="couplet"
+export EDITOR="mdmini"
 
 export OPENAI_API_KEY="example-value-not-a-real-key"
 
 alias gs="git status"
 alias ll="ls -lah"
-alias md="couplet"
+alias md="mdmini"
 
 function mkcd() {
   mkdir -p "$1" && cd "$1"
