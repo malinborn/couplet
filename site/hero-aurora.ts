@@ -10,7 +10,11 @@
 // oxygen emission line) and fade upward into a diffuse high-altitude glow
 // tinted by nitrogen (pink/magenta) and higher-oxygen (violet) lines — the
 // fragment shader's vertical profile and color ramp follow that structure
-// rather than an arbitrary gradient.
+// rather than an arbitrary gradient. The green itself isn't one fixed tone
+// either: auroraGreen() picks a point in a small teal/cyan -> emerald ->
+// yellow-green family, drifting slowly by x and time, so the colour visibly
+// flows along the curtain instead of sitting still (owner's ask, added
+// after seeing the first version live).
 //
 // site/CLAUDE.md's `:root[data-theme]` warning is about *CSS* scoping
 // (global, can't nest under a demo card) — irrelevant here since theme
@@ -65,6 +69,19 @@ float fbm(vec2 p) {
   return v;
 }
 
+/* A hand-picked "aurora green family" (teal/cyan -> emerald -> yellow-
+   green) — no blue sky, no rainbow. h wraps 0..1; the two triangle-mix legs
+   make a continuous cycle, so a slowly drifting h reads as colour actually
+   flowing rather than snapping between fixed tones. */
+vec3 auroraGreen(float h) {
+  vec3 teal = vec3(0.106, 0.816, 0.788);
+  vec3 emerald = vec3(0.086, 0.847, 0.475);
+  vec3 yellowGreen = vec3(0.612, 0.882, 0.298);
+  float p = fract(h);
+  if (p < 0.5) return mix(teal, emerald, p * 2.0);
+  return mix(emerald, yellowGreen, (p - 0.5) * 2.0);
+}
+
 void main() {
   vec2 uv = gl_FragCoord.xy / uResolution.xy;
   float aspect = max(uResolution.x / uResolution.y, 0.6);
@@ -95,22 +112,32 @@ void main() {
   // climbing toward the top that settles out before the very top of the
   // hero — the physical brightest-at-the-base profile, with the diffuse
   // high-altitude glow given a real ceiling rather than reaching the nav.
+  // Owner asked for the light to read "a bit longer" after seeing this
+  // commit live — only the top of skyFade's range moved (0.80 -> 0.90),
+  // so the glow persists somewhat further up before fading out. Thickness
+  // and groundCut (the bottom edge) are untouched on purpose.
   float groundCut = smoothstep(0.03, 0.17, uv.y);
-  float skyFade = 1.0 - smoothstep(0.22, 0.80, uv.y);
+  float skyFade = 1.0 - smoothstep(0.22, 0.90, uv.y);
   float vertical = groundCut * skyFade;
 
   float intensity = structure * vertical;
 
-  vec3 oxygenLow = vec3(0.235, 0.941, 0.541);   /* #3cf08a */
-  vec3 oxygenHigh = vec3(0.180, 0.902, 0.627);  /* #2ee6a0 */
   vec3 nitrogenPink = vec3(0.902, 0.310, 0.580);
   vec3 highViolet = vec3(0.514, 0.345, 0.937);
 
   // Green carries the bulk of the visible band; pink/violet are an accent
   // near its upper edge only, not a second dominant colour — the climb
   // thresholds are deliberately late so most of what's on screen reads
-  // as oxygen green before any magenta enters the mix.
-  vec3 base = mix(oxygenLow, oxygenHigh, noise(vec2(x * 2.0, drift)));
+  // as green before any magenta enters the mix.
+  //
+  // Owner's second ask: the green itself should visibly flow rather than
+  // sit at one fixed tone — auroraGreen() below is a small hand-picked
+  // palette (teal/cyan -> emerald -> yellow-green, all natural aurora
+  // hues, no blue sky and no rainbow) and hueN drifts slowly along x AND
+  // time, so neighbouring folds land on different greens and the same
+  // point in x shifts hue as the seconds pass.
+  float hueN = fbm(vec2(x * 1.1 + drift * 1.3, drift * 0.9)) + 0.12 * sin(x * 2.2 - drift * 2.0);
+  vec3 base = auroraGreen(hueN);
   float climb = clamp(uv.y * 1.55, 0.0, 1.0);
   vec3 col = mix(base, nitrogenPink, smoothstep(0.54, 0.86, climb));
   col = mix(col, highViolet, smoothstep(0.86, 1.0, climb));
