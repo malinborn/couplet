@@ -23,8 +23,12 @@ ref_b64 = base64.b64encode((ROOT / "site/ref-icon.png").read_bytes()).decode()
 # classic light/dark set --color-cursor to the text colour, so a caret painted
 # from it vanishes into the ampersand; those two fall back to --color-link.
 THEMES = [
-    ("light", "#fafaf9", "#292524", "#2563eb", None, "каретка из --color-link"),
-    ("dark", "#191724", "#c4a7e7", "#9ccfd8", None, "каретка из --color-link"),
+    ("light", "#fafaf9", "#292524", "#2563eb", None, "нет градиента во всей теме"),
+    # dark DOES declare --heading-grad-1. An earlier pass generalised light.css's
+    # "строгая тема: только тон, без градиентов" to the whole classic family and
+    # rendered dark flat, which was wrong — that comment sits in light.css alone.
+    ("dark", "#191724", "#c4a7e7", "#9ccfd8",
+     "linear-gradient(100deg,#eb6f92 0%,#c4a7e7 42%,#9ccfd8 76%,#c4a7e7 100%)", "градиент"),
     ("aurora-light", "#efeeec", "#5566ec", "#e0509f",
      "linear-gradient(100deg,#d6438f 0%,#7f5ce0 32%,#12849f 64%,#5566ec 100%)", "градиент"),
     ("aurora-dark", "#171629", "#8f9ff5", "#f78cc7",
