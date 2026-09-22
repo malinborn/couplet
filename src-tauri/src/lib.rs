@@ -72,21 +72,21 @@ pub fn run() {
     // product/identifier, not the current one. It activates on its own the
     // moment `tauri.conf.json` / `tauri.dev.conf.json` are renamed.
     //
-    // `migrate_app_data_dir_real` returns the product name THIS launch
-    // should actually use for `paths::init` below — the current name
-    // normally, or the legacy one if migration did not complete this launch
-    // (see `migration.rs`'s doc comment: using the current name unconditionally
-    // would let this same launch immediately create an empty directory under
-    // it, permanently stranding the old data because the next launch would
-    // then see "new already has data" and never retry).
+    // `migrate_all_real` may block on a native dialog (a matching-generation
+    // legacy build is running) or call `std::process::exit(0)` (the user
+    // chose to abandon this launch rather than wait) — see `migration.rs`'s
+    // module doc comment. It returns the product name THIS launch should
+    // actually use for `paths::init` below: the current name normally, or
+    // the legacy one if the app-data migration itself failed for a reason
+    // OTHER than a running legacy build (a genuine copy error) — safe
+    // specifically because nothing else is then running on that directory.
     let context = tauri::generate_context!();
     let product_name = context
         .config()
         .product_name
         .as_deref()
         .unwrap_or(paths::FALLBACK_PRODUCT_NAME);
-    let effective_product_name = migration::migrate_app_data_dir_real(product_name);
-    migration::migrate_webkit_profile_real(product_name, &context.config().identifier);
+    let effective_product_name = migration::migrate_all_real(product_name, &context.config().identifier);
 
     // `mut` is only needed by the `mcp-bridge` registration below; without that
     // feature the builder is never reassigned.
