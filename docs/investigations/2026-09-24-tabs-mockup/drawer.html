@@ -217,21 +217,21 @@ kbd { font-family: var(--ui); font-size: 10.5px; color: var(--text-muted); lette
    that is left at the window edge. The trapezoid is a perspective-rotated
    box, so border, radius, shadow and the AI gradient all follow the shape. */
 .notch {
-  position: absolute; top: 12px; left: calc(100% - 1px); width: 28px; height: 108px;
+  position: absolute; top: 12px; left: calc(100% - 1px); width: 30px; height: 120px;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
   cursor: pointer; user-select: none; -webkit-user-select: none; outline: none;
 }
 .notch .shape, .mini-notch .shape {
-  position: absolute; left: 0; top: 0; width: 36px; height: 100%; overflow: hidden;
+  position: absolute; left: 0; top: 0; width: 41px; height: 100%; overflow: hidden;
   background: var(--bg-surface); border: 1px solid var(--border); border-left: none; border-radius: 0 9px 9px 0;
-  transform-origin: left center; transform: perspective(56px) rotateY(30deg);
+  transform-origin: left center; transform: perspective(63px) rotateY(30deg);
   box-shadow: 0 3px 0 -1px var(--bg-surface), 0 3px 0 0 var(--border), 4px 5px 14px rgba(var(--shadow-rgb), calc(var(--shadow-a) * 1.1));
   transition: transform .22s var(--ease), box-shadow .6s ease, border-color .6s ease;
 }
-.notch:hover .shape, .notch:focus-visible .shape { transform: perspective(56px) rotateY(24deg); }
+.notch:hover .shape, .notch:focus-visible .shape { transform: perspective(63px) rotateY(24deg); }
 .notch:focus-visible .shape { border-color: var(--text-muted); }
-.notch .wid, .mini-notch .wid { position: relative; font-family: var(--font-code); font-size: 11.5px; color: var(--text-primary); letter-spacing: -0.04em; margin-left: -3px; }
-.notch .cnt, .mini-notch .cnt { position: relative; font-size: 9.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; margin-left: -3px; }
+.notch .wid, .mini-notch .wid { position: relative; font-family: var(--font-code); font-size: 12.5px; color: var(--text-primary); letter-spacing: -0.04em; margin-left: -3px; }
+.notch .cnt, .mini-notch .cnt { position: relative; font-size: 10.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; margin-left: -3px; }
 .notch .glow, .card .ring {
   position: absolute; inset: -1px; border-radius: inherit; pointer-events: none; opacity: 0;
   transition: opacity .9s ease;
@@ -252,6 +252,12 @@ kbd { font-family: var(--ui); font-size: 10.5px; color: var(--text-muted); lette
 .drawer-title b .wno { font-family: var(--font-code); font-weight: 400; color: var(--text-subtle); margin-left: 3px; }
 .drawer-title b .cnt { font-weight: 400; color: var(--text-muted); margin-left: 2px; }
 .drawer-title small { font-size: 11.5px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 5px; }
+.drawer-title .type-hint { font-size: 11px; color: var(--text-muted); white-space: nowrap; transition: opacity .15s; }
+.drawer-title .type-hint.off { opacity: 0; }
+/* Inline SVG magnifier: ~1em box, so the ring matches the letters' height. */
+.mag { width: 1em; height: 1em; flex: 0 0 auto; display: block; }
+.drawer-title .type-hint { gap: 5px; }
+.search .s-ico { display: inline-flex; align-items: center; }
 .chip { display: inline-block; padding: 1px 5px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-base); color: var(--text-subtle); font-size: 10.5px; line-height: 1.35; }
 .sorts { display: flex; flex-wrap: nowrap; align-items: center; gap: 0; white-space: nowrap; }
 .sorts .lbl { font-size: 11px; color: var(--text-muted); margin-right: 2px; }
@@ -407,7 +413,7 @@ body.shift .tab-cards .card { cursor: cell; }
 .win.mini .doc h1 { font-size: 1.7em; }
 .win.mini.drop-target { box-shadow: 0 0 0 2px var(--brand-a), 0 28px 70px rgba(var(--shadow-rgb), calc(var(--shadow-a) * 2.4)); }
 .mini-notch {
-  position: absolute; top: 12px; left: -1px; width: 28px; height: 92px; z-index: 5; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  position: absolute; top: 12px; left: -1px; width: 32px; height: 104px; z-index: 5; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
   cursor: pointer; user-select: none; -webkit-user-select: none;
 }
 
@@ -437,12 +443,31 @@ mark { background: color-mix(in oklab, var(--brand-a) 24%, transparent); color: 
 .notch .nk {
   /* rotated 180°, so the bottom border lands on top — a hairline under the count */
   display: none; position: relative; margin: 7px 0 0 -3px; padding-bottom: 7px; border-bottom: 1px solid color-mix(in oklab, var(--text-muted) 45%, transparent);
-  writing-mode: vertical-rl; transform: rotate(180deg); font-size: 10px; letter-spacing: .08em; line-height: 1; color: var(--text-muted);
+  writing-mode: vertical-rl; transform: rotate(180deg); font-size: 11px; letter-spacing: .08em; line-height: 1; color: var(--text-muted);
 }
-body.notch-key .notch { height: 140px; }
 body.notch-key .notch .nk { display: block; }
 .ai-bind { transition: transform .18s var(--ease), opacity .18s ease, top .25s var(--ease); }
-body.notch-key .ai-bind { top: 162px; }
+/* The AI button's resting protrusion equals the notch's visible depth (measured: see --notch-depth). */
+.ai-bind { --peek: var(--notch-depth, 29px); }
+
+/* ── Notch text: everything vertical, reading bottom-to-top (like the ⌘J hint) ──
+   Top-to-bottom order stays #22 · 12 · divider · ⌘J; the divider is a short
+   horizontal tick across the column (it separates stacked items). */
+.notch .wid, .notch .cnt, .mini-notch .wid, .mini-notch .cnt { writing-mode: vertical-rl; transform: rotate(180deg); line-height: 1; }
+.notch .wid { margin-bottom: 5px; }
+body.notch-key .notch { height: 120px; }
+body.notch-key .ai-bind { top: 144px; }
+/* Theme-following colours: surface/border come from tokens on .shape; the
+   number takes the theme's accent (--color-glow is each theme's accent triple),
+   with its subtle heading gradient where the theme defines one. */
+.notch .wid, .mini-notch .wid { color: rgb(var(--color-glow)); font-weight: 600; }
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .notch .wid, .mini-notch .wid {
+    background-color: rgb(var(--color-glow)); background-image: var(--heading-grad-2, none);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  }
+}
+.notch .cnt, .notch .nk, .mini-notch .cnt { color: var(--text-muted); }
 
 /* ── Tweak: View → Tabs → Compact ── */
 .card-imeta { display: none; }
@@ -488,7 +513,7 @@ body.compact .card.expanded { transform: none; }
   <p class="corner-note">Часть сочетаний браузер может перехватить сам (⌘L — адрес, ⌘R — перезагрузка). Кнопки в панели внизу работают всегда.</p>
 </div>
 
-<div class="win" id="win1" data-win="7">
+<div class="win" id="win1" data-win="22">
   <div class="titlebar"><div class="lights"><i></i><i></i><i></i></div><div class="title" id="title1"></div></div>
   <div class="content" id="content1">
     <div class="editor" id="editor1"><div class="doc" id="doc1"></div></div>
@@ -497,9 +522,9 @@ body.compact .card.expanded { transform: none; }
     </button>
     <div class="scrim" id="scrim"></div>
     <div class="drawer-wrap" id="drawerWrap">
-      <aside class="drawer" id="drawer" aria-label="Вкладки окна #7">
+      <aside class="drawer" id="drawer" aria-label="Вкладки окна #22">
         <div class="drawer-head">
-          <div class="drawer-title"><b>Окно<span class="wno">#7</span> <span class="cnt">· <span id="tabCount"></span></span></b></div>
+          <div class="drawer-title"><b>Окно<span class="wno">#22</span> <span class="cnt">· <span id="tabCount"></span></span></b><small class="type-hint" id="typeHint"><svg class="mag" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.8" cy="6.8" r="4.8" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M10.4 10.4 14.2 14.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>печатайте для поиска</small></div>
           <div class="sorts">
             <span class="lbl">Разложить:</span>
             <button class="sort-btn" data-sort="opened" title="Недавно открытые сверху">открытие <kbd>⌘L</kbd></button><span class="dot">·</span>
@@ -507,7 +532,7 @@ body.compact .card.expanded { transform: none; }
             <button class="sort-btn" data-sort="ai" title="Непросмотренные вкладки от ИИ сверху"><span class="ai-g">✦</span> ИИ <kbd>⌘U</kbd></button>
           </div>
         </div>
-        <div class="search" id="search" aria-live="polite"><span class="s-ico" aria-hidden="true">⌕</span><span class="s-q" id="sQ"></span><span class="caret" aria-hidden="true"></span><span class="s-n" id="sN"></span></div>
+        <div class="search" id="search" aria-live="polite"><span class="s-ico" aria-hidden="true"><svg class="mag" viewBox="0 0 16 16"><circle cx="6.8" cy="6.8" r="4.8" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M10.4 10.4 14.2 14.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span><span class="s-q" id="sQ"></span><span class="caret" aria-hidden="true"></span><span class="s-n" id="sN"></span></div>
         <div class="tab-list" id="tabList"><div class="tab-cards" id="tabCards"></div><div class="empty" id="emptyRes">Ничего не найдено</div><div class="drop-ind" id="dropInd"></div></div>
         <div class="sel-bar" id="selBar">
           <span class="n" id="selN"></span>
@@ -517,9 +542,9 @@ body.compact .card.expanded { transform: none; }
         </div>
         <div class="hint" id="hint"><span><b>⇧ клик</b> — выделить · <b>⇧ протяжка</b> — инвертировать · <b>⌘ клик</b> — закрыть</span></div>
       </aside>
-      <div class="notch" id="notch" role="button" tabindex="0" aria-label="Вкладки окна #7">
+      <div class="notch" id="notch" role="button" tabindex="0" aria-label="Вкладки окна #22">
         <span class="shape" aria-hidden="true"><span class="glow"></span></span>
-        <span class="wid">#7</span><span class="cnt" id="notchCnt"></span><span class="nk" aria-hidden="true">⌘J</span>
+        <span class="wid">#22</span><span class="cnt" id="notchCnt"></span><span class="nk" aria-hidden="true">⌘J</span>
       </div>
     </div>
     <div class="toast" id="toast"></div>
@@ -538,7 +563,7 @@ body.compact .card.expanded { transform: none; }
     <label class="tgl"><input type="checkbox" id="tglCompact"><span class="sw"></span><span><code>View → Tabs → Compact</code></span></label>
   </div>
   <ul>
-    <li>Хлястик <b>#7</b> слева: навести (200 мс), клик или <kbd>⌘J</kbd></li>
+    <li>Хлястик <b>#22</b> слева: навести (200 мс), клик или <kbd>⌘J</kbd></li>
     <li>В открытом ящике просто печатайте — фильтр по имени и тексту; Esc — сброс</li>
     <li>Задержать курсор на карточке ~0.6 с — раскроется</li>
     <li>Тянуть карточку — порядок; за окно — новое окно; на другое окно — перенос</li>
@@ -621,7 +646,7 @@ Minimalist live-preview markdown editor for macOS. Tauri 2 + Svelte 5 + CodeMirr
 `# AI interface
 \`mdmini show\` and \`mdmini edit\` let an agent open a file in the running app and highlight what it changed.
 ## JSON contract
-Every command answers with \`{ "ok": true, "window": 7 }\` or an error object with a stable \`code\`.
+Every command answers with \`{ "ok": true, "window": 22 }\` or an error object with a stable \`code\`.
 ## Command socket
 Line-delimited JSON over a Unix socket in the app data directory. One request per connection.` },
   { id: 8, name: 'review-notes.md', proj: 'md-mini-worktree', br: 'feature-x', md:
@@ -700,9 +725,9 @@ const INITIAL_ORDER = [1, 3, 2, 9, 7, 8, 4, 5, 10, 6, 11, 12];     // "manually 
 let clock = 200;
 const tabs = new Map();
 for (const s of SAMPLE) tabs.set(s.id, { ...s, openedAt: OPENED.indexOf(s.id) + 1, viewedAt: VIEWED[s.id], aiUnread: false, aiAt: 0 });
-let nextTabId = 100, aiPoolIdx = 0, nextWinId = 8, zTop = 20;
+let nextTabId = 100, aiPoolIdx = 0, nextWinId = 23, zTop = 20;
 
-const W = { id: 7, order: [...INITIAL_ORDER], active: 1 };
+const W = { id: 22, order: [...INITIAL_ORDER], active: 1 };
 const extras = [];                   // { id, order, active, el }
 const selected = new Set();
 const closing = new Set();
@@ -770,7 +795,7 @@ function toast(html) { const t = $('#toast'); t.innerHTML = html; t.classList.ad
 /* ═════════════════════════ Rendering ═════════════════════════ */
 function renderEditor() {
   const t = T(W.active); const doc = $('#doc1');
-  $('#title1').innerHTML = `${esc(t.name)}<span class="wid">— #7</span>`;
+  $('#title1').innerHTML = `${esc(t.name)}<span class="wid">— #22</span>`;
   if (doc.dataset.id === String(t.id)) return;
   doc.classList.add('swap');
   setTimeout(() => { doc.innerHTML = renderMd(t.md); doc.dataset.id = t.id; $('#editor1').scrollTop = 0; doc.classList.remove('swap'); }, doc.dataset.id ? 120 : 0);
@@ -859,6 +884,7 @@ function renderList() {
   });
   for (const [id, el] of cardEls) if (!seen.has(id)) { el.remove(); cardEls.delete(id); }
   $('#search').classList.toggle('on', !!query);
+  $('#typeHint').classList.toggle('off', !!query);
   $('#sQ').textContent = query;
   $('#sN').textContent = query ? (ids.length ? `${ids.length} из ${W.order.length}` : '') + ' · esc — сброс' : '';
   $('#emptyRes').classList.toggle('on', !!query && !ids.length);
@@ -1121,7 +1147,7 @@ function spawnWindow(ids, x, y) {
   const vw = innerWidth, vh = innerHeight;
   x = Math.max(8, Math.min(x, vw - 448)); y = Math.max(8, Math.min(y, vh - 338));
   el.style.left = x + 'px'; el.style.top = y + 'px'; el.style.zIndex = ++zTop;
-  el.innerHTML = `<div class="titlebar"><div class="lights"><i title="Закрыть окно — вкладки вернутся в #7"></i><i></i><i></i></div><div class="title"></div></div>
+  el.innerHTML = `<div class="titlebar"><div class="lights"><i title="Закрыть окно — вкладки вернутся в #22"></i><i></i><i></i></div><div class="title"></div></div>
     <div class="content"><div class="editor"><div class="doc"></div></div>
     <div class="mini-notch" title="Демо: клик листает вкладки этого окна"><span class="shape"></span><span class="wid">#${id}</span><span class="cnt"></span></div></div>`;
   w.el = el; extras.push(w); document.body.appendChild(el);
@@ -1149,7 +1175,7 @@ function wireMini(w) {
     e.stopPropagation();
     W.order.push(...w.order); w.order.forEach(id => arriving.add(id));
     extras.splice(extras.indexOf(w), 1); el.classList.add('leaving'); setTimeout(() => el.remove(), 230);
-    flip(renderList); toast(`Окно #${w.id} закрыто <span>· вкладки вернулись в #7 (упрощение макета)</span>`);
+    flip(renderList); toast(`Окно #${w.id} закрыто <span>· вкладки вернулись в #22 (упрощение макета)</span>`);
   });
   const bar = el.querySelector('.titlebar');
   bar.addEventListener('pointerdown', e => {
@@ -1221,13 +1247,20 @@ $('#demoToggle').addEventListener('click', toggleDrawer);
 $('#demoReopen').addEventListener('click', reopen);
 $('#demoReset').addEventListener('click', () => location.reload());
 $('#aiBind').addEventListener('click', () => toast('<b>Промпт скопирован</b> <span>— отправьте его AI-агенту</span>'));
-notch.title = `Вкладки окна #7 — навести, клик или ${drawerKey.label}`;
+notch.title = `Вкладки окна #22 — навести, клик или ${drawerKey.label}`;
 /* Demo tweak. URL ?compact=1 presets it (for screenshots). */
 const params = new URLSearchParams(location.search);
 const tglCompact = $('#tglCompact');
 function applyCompact(on) { flip(() => { compact = on; document.body.classList.toggle('compact', on); tglCompact.checked = on; renderList(); }); }
 tglCompact.addEventListener('change', () => applyCompact(tglCompact.checked));
 compact = params.get('compact') === '1'; document.body.classList.toggle('compact', compact); tglCompact.checked = compact;
+/* Align the AI button's resting protrusion with the notch's visible depth (the reference). */
+function syncNotchDepth() {
+  const shape = notch.querySelector('.shape'), host = $('#content1');
+  const depth = +(shape.getBoundingClientRect().right - host.getBoundingClientRect().left).toFixed(2);
+  if (depth > 0 && !drawer.open) document.documentElement.style.setProperty('--notch-depth', depth + 'px');
+}
+syncNotchDepth();
 function setTheme(name) {
   document.documentElement.dataset.theme = name;
   document.querySelectorAll('[data-theme-btn]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.themeBtn === name)));
