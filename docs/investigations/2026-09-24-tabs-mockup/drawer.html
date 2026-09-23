@@ -251,19 +251,22 @@ kbd { font-family: var(--ui); font-size: 10.5px; color: var(--text-muted); lette
 .drawer-title b { font-size: 13px; font-weight: 600; letter-spacing: -0.005em; }
 .drawer-title b .wno { font-family: var(--font-code); font-weight: 400; color: var(--text-subtle); margin-left: 3px; }
 .drawer-title b .cnt { font-weight: 400; color: var(--text-muted); margin-left: 2px; }
-.drawer-title small { font-size: 11.5px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 5px; }
-.drawer-title .type-hint { font-size: 11px; color: var(--text-muted); white-space: nowrap; transition: opacity .15s; }
+/* One text baseline for all three header items: plain text blocks aligned by
+   the flex row's `baseline`; no inline-flex (whose baseline an SVG would steal),
+   no overflow:hidden (which moves a block's baseline to its bottom edge). */
+.drawer-title small { display: block; font-size: 11px; line-height: 1.4; color: var(--text-muted); white-space: nowrap; }
+.drawer-title .type-hint { transition: opacity .15s; }
 .drawer-title .type-hint.off { opacity: 0; }
-/* Faint centred «⇧ — выделить» between the title and the search hint. It is the
-   first thing to go: if it does not fit whole (measured in JS, .nofit) it hides. */
-.drawer-title .sel-hint {
-  flex: 1 1 auto; min-width: 0; padding: 0 10px; text-align: center; white-space: nowrap; overflow: hidden;
-  font-size: 11px; color: var(--text-muted); opacity: .55; transition: opacity .15s;
-}
-.drawer-title .sel-hint.off, .drawer-title .sel-hint.nofit { opacity: 0; }
-/* Inline SVG magnifier: ~1em box, so the ring matches the letters' height. */
+/* Centred «⇧ — выделить» between the title and the search hint — same size and
+   colour as the search hint. First thing to go: if it does not fit whole
+   (measured in JS, .nofit) it hides. */
+.drawer-title .sel-hint { flex: 1 1 auto; min-width: 0; padding: 0 10px; text-align: center; transition: opacity .15s; }
+.drawer-title .sel-hint.off { opacity: 0; }
+.drawer-title .sel-hint.nofit { opacity: 0; visibility: hidden; }
+/* Inline SVG magnifier: ~1em box; `vertical-align: middle` centres it on the
+   text's x-height instead of letting it define the line's baseline. */
 .mag { width: 1em; height: 1em; flex: 0 0 auto; display: block; }
-.drawer-title .type-hint { gap: 5px; }
+.drawer-title .type-hint .mag { display: inline-block; vertical-align: middle; margin: -0.1em 5px 0 0; }
 .search .s-ico { display: inline-flex; align-items: center; }
 .chip { display: inline-block; padding: 1px 5px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-base); color: var(--text-subtle); font-size: 10.5px; line-height: 1.35; }
 .sorts { display: flex; flex-wrap: nowrap; align-items: center; gap: 0; white-space: nowrap; }
@@ -371,7 +374,7 @@ body.shift .tab-cards .card { cursor: cell; }
 .hint {
   flex: 0 0 auto; padding: 0 18px; height: 0; overflow: hidden; opacity: 0; font-size: 11.5px; line-height: 1.5; color: var(--text-muted);
   display: flex; align-items: center; border-top: 1px solid transparent;
-  transition: height .22s var(--ease), opacity .2s, border-color .2s;
+  transition: height .14s var(--ease), opacity .12s, border-color .12s; /* quick: it tracks the Shift key */
 }
 .hint.on { height: 36px; opacity: 1; border-top-color: color-mix(in oklab, var(--border) 70%, transparent); }
 .hint b { white-space: nowrap; }
@@ -914,7 +917,7 @@ function renderSelBar() {
   $('#selBar').classList.toggle('on', n > 0 && drawer.open);
   if (n) $('#selN').innerHTML = `${n} ${plural(n, 'выбрана', 'выбраны', 'выбрано')}<small title="Выделенные можно тянуть группой">⇅ тянуть</small>`;
 }
-function renderHint() { $('#hint').classList.toggle('on', drawer.open && (drawer.firstOpen || shiftHeld)); }
+function renderHint() { $('#hint').classList.toggle('on', drawer.open && shiftHeld); } // only while Shift is held
 function flip(mutate) {
   const before = new Map(); cardEls.forEach((el, id) => { const r = el.getBoundingClientRect(); if (r.height > 0) before.set(id, r.top); });
   mutate();
