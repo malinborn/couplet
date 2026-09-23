@@ -2,6 +2,7 @@ import type { EditorView } from '@codemirror/view';
 import type { Completion } from '@codemirror/autocomplete';
 import { THEME_FAMILIES, concreteTheme, familyOf, halfOf, type ThemeFamily, type ConcreteTheme } from '../theme-resolve';
 import type { SlashAction } from './slash-actions';
+import { t } from '../i18n';
 import {
   createPickerCore,
   openPicker,
@@ -53,6 +54,16 @@ export interface ThemeControl {
 
 const THEME_FAMILY_PICKER_TYPE = 'md-theme-family';
 
+// Deliberately NOT translated — `menu.rs`'s native Theme submenu makes the
+// same call for the identical four values ("Названия семей ... имена
+// собственные и не переводятся"): Classic/Aurora/Blueprint/Phosphor are the
+// families' proper names, not descriptive words, and are the same literal
+// strings `ThemeFamily` has used since this menu was "Default" rather than
+// "Classic". A capitalized `family` also stays a safe, stable reverse-lookup
+// key built once at module load — routing it through `t()` here would tie
+// that lookup to catalog install order (see `resolveTemplateInsert`'s note
+// in `block-templates.ts`: only functions called well after boot may call
+// `t()` at all).
 function familyLabel(family: ThemeFamily): string {
   return family.charAt(0).toUpperCase() + family.slice(1);
 }
@@ -113,7 +124,7 @@ function themeOptions(control: ThemeControl): ThemeFamilyCompletion[] {
   const tone = halfOf(control.current);
   return THEME_FAMILIES.map((family, index) => ({
     label: familyLabel(family),
-    detail: isCurrentFamily(control, family) ? '● current' : undefined,
+    detail: isCurrentFamily(control, family) ? `● ${t('editor.slash_picker.current')}` : undefined,
     type: THEME_FAMILY_PICKER_TYPE,
     boost: THEME_FAMILIES.length - index,
     swatchColors: SWATCH_COLORS[concreteTheme(family, tone)],
@@ -139,7 +150,7 @@ export function themeAction(control: ThemeControl): SlashAction {
   return {
     id: 'theme',
     label: '/theme',
-    detail: 'Switch the theme family',
+    detail: t('editor.slash_theme.action_detail'),
     run(view: EditorView) {
       openPicker(picker, view);
     },

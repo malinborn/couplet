@@ -9,6 +9,7 @@ import {
 import { RangeSetBuilder, type Extension } from '@codemirror/state';
 import { isSecret, maskSecret, stripQuotes } from './env';
 import { cursorInRange } from './utils';
+import { t } from '../../i18n';
 
 // ---------------------------------------------------------------------------
 // Pure parser
@@ -141,15 +142,15 @@ class ShellSecretWidget extends WidgetType {
 
     const copyBtn = document.createElement('button');
     copyBtn.className = 'cm-shell-secret-copy';
-    copyBtn.textContent = 'Copy';
+    copyBtn.textContent = t('ui.copy');
     copyBtn.addEventListener('mousedown', (e) => {
       e.preventDefault();
       e.stopPropagation();
 
       navigator.clipboard.writeText(unquoted).then(() => {
-        copyBtn.textContent = 'Copied!';
+        copyBtn.textContent = t('ui.copied');
         setTimeout(() => {
-          copyBtn.textContent = 'Copy';
+          copyBtn.textContent = t('ui.copy');
         }, 1500);
       }).catch(() => {
         // Clipboard API may fail in certain contexts — fail silently

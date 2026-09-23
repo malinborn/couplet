@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { RecentFile } from './stores.svelte';
+  import { t } from './i18n';
 
   interface Props {
     files: RecentFile[];
@@ -38,14 +39,14 @@
 ></div>
 
 <!-- Panel -->
-<div class="panel" role="dialog" aria-label="Recent Files" aria-modal="true">
+<div class="panel" role="dialog" aria-label={t('ui.recent_files.title')} aria-modal="true">
   <div class="panel-header">
-    <span class="panel-title">Recent Files</span>
-    <button class="close-btn" onclick={onclose} aria-label="Close">&#x2715;</button>
+    <span class="panel-title">{t('ui.recent_files.title')}</span>
+    <button class="close-btn" onclick={onclose} aria-label={t('ui.recent_files.close')}>&#x2715;</button>
   </div>
 
   {#if files.length === 0}
-    <div class="empty">No recent files.</div>
+    <div class="empty">{t('ui.recent_files.empty')}</div>
   {:else}
     <ul class="file-list">
       {#each files as file (file.path)}

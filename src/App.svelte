@@ -2,7 +2,8 @@
   import { onMount } from 'svelte';
   import Editor from './lib/editor/Editor.svelte';
   import type { EditorHandle } from './lib/editor/Editor.svelte';
-  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createFileState, createRecentFilesStore } from './lib/stores.svelte';
+  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createFileState, createRecentFilesStore, setProductName } from './lib/stores.svelte';
+  import { getName } from '@tauri-apps/api/app';
   import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, broadcastTheme, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type PendingOpen } from './lib/tauri/commands';
   import { concreteTheme, halfOf, type ThemeFamily } from './lib/theme-resolve';
   import type { ThemeControl } from './lib/editor/slash-theme';
@@ -13,6 +14,8 @@
     onSessionRestored,
     onUpdateAvailable,
     onUpdateDismissed,
+    onCheckUpdatesRequested,
+    onLanguageChangeFailed,
     onAiCommand,
     onCommentsChanged,
     type AiCommandPayload,
@@ -38,6 +41,7 @@
   import { MARKDOWN_EXTENSIONS, isShellConfig } from './lib/editor/file-language';
   import { reinitializeTheme } from './lib/editor/preview/mermaid';
   import { computeReplacement, computeChangedLineRanges } from './lib/editor/content-diff';
+  import { resolveExternalChange } from './lib/external-change';
   import {
     resolveShowTarget,
     changedLineRanges,
@@ -57,9 +61,9 @@
     CommentWidget,
     COMMENT_IDLE,
     COMMENT_SEND_LABEL,
-    COMMENT_SEND_TEXT,
     COMMENT_SENDING,
-    COMMENT_SENDING_TEXT,
+    commentSendText,
+    commentSendingText,
     type CommentActions,
   } from './lib/editor/ai-comment';
   import {
@@ -74,6 +78,7 @@
   } from './lib/comment-format';
   import { buildBindPrompt } from './lib/ai-bind';
   import { applyJsonOffer, formatJsonCommand } from './lib/editor/json-paste';
+  import { t } from './lib/i18n';
   import './lib/theme/dark.css';
   import './lib/theme/light.css';
   import './lib/theme/aurora-dark.css';
@@ -222,8 +227,23 @@
   let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let recoveryInterval: ReturnType<typeof setInterval> | null = null;
 
-  // Track whether we are currently writing to disk (to avoid reacting to our own save)
-  let isSaving = false;
+  // Disk baseline: content as we last read it from, or wrote it to, disk.
+  // An FSEvent whose content still matches this is our own write echoing back,
+  // not an external change — see `resolveExternalChange`.
+  let diskBaseline: string | null = null;
+  // Disk content the user already said No to reloading; a repeated FSEvent for
+  // the same bytes must not ask again.
+  let dismissedDisk: string | null = null;
+  // The in-flight save, if any. External-change handling awaits it first, so
+  // it always compares against the disk state the save actually produced.
+  let currentSave: Promise<void> | null = null;
+  // Bumped at the start of every `doSave`, so a reader can tell whether a save
+  // landed while it was mid-await (e.g. mid-`readFile`) even though by the
+  // time it checks `currentSave` is already back to null.
+  let saveGeneration = 0;
+  // Coalesces external-change events that arrive while the conflict dialog is
+  // already up (FSEvents can fire more than once for one write).
+  let conflictDialogOpen = false;
 
   function handleChange(doc: string) {
     fileState.isDirty = true;
@@ -237,6 +257,10 @@
     }
     autoSaveTimer = setTimeout(() => {
       autoSaveTimer = null;
+      // Saving now would write the buffer over the disk state the open
+      // conflict dialog is asking the user about — the dialog's own "Yes"
+      // path needs that state to still be there when it re-reads the file.
+      if (conflictDialogOpen) return;
       if (fileState.isDirty && fileState.filePath) {
         performSave();
       }
@@ -245,16 +269,48 @@
 
   async function performSave(): Promise<void> {
     if (!fileState.filePath) return;
+    // Serialize saves: two overlapping atomic writes can land in either order,
+    // which would desync the baseline from what disk actually ends up holding.
+    // A loop, not a single await — another save can start between the await
+    // resolving and `currentSave = save` below, and this must wait for that
+    // one too.
+    while (currentSave) await currentSave.catch(() => {});
+
+    const save = doSave(fileState.filePath);
+    currentSave = save;
+    try {
+      await save;
+    } finally {
+      if (currentSave === save) currentSave = null;
+    }
+  }
+
+  async function doSave(path: string): Promise<void> {
+    saveGeneration += 1;
     const content = editorHandle?.view?.state.doc.toString() ?? '';
     try {
-      isSaving = true;
-      await writeFile(fileState.filePath, content);
-      fileState.isDirty = false;
-      fileState.lastSavedAt = Date.now();
-      // A previous failure is over the moment a save lands.
-      toasts.dismissKind('save-error');
+      await writeFile(path, content);
+      // A window can switch to a different file (Cmd+O) while this write is
+      // in flight; the bookkeeping below belongs to `path`, not to whatever
+      // file the window holds by the time the write resolves.
+      if (fileState.filePath === path) {
+        // Only clear dirty if the buffer still reads exactly what was
+        // written — keystrokes typed during the write are not covered by it
+        // and must stay unsaved, or the next external-change check would
+        // read the file as clean and silently discard them on reload.
+        if (editorHandle?.view?.state.doc.toString() === content) {
+          fileState.isDirty = false;
+        }
+        fileState.lastSavedAt = Date.now();
+        // A landed save supersedes any earlier "No" — the disk state the user
+        // declined no longer exists.
+        diskBaseline = content;
+        dismissedDisk = null;
+        // A previous failure is over the moment a save lands.
+        toasts.dismissKind('save-error');
+      }
       // Clean up recovery file on successful save
-      await invoke('delete_recovery', { path: fileState.filePath }).catch(() => {});
+      await invoke('delete_recovery', { path }).catch(() => {});
     } catch (err) {
       // `isDirty` deliberately stays true: the document is still unsaved, so
       // the next keystroke reschedules a save and the recovery snapshot keeps
@@ -264,12 +320,9 @@
       console.error('Auto-save failed:', err);
       toasts.push({
         kind: 'save-error',
-        fileName: fileState.filePath.split('/').pop() ?? fileState.filePath,
+        fileName: path.split('/').pop() ?? path,
         message: err instanceof Error ? err.message : String(err),
       });
-    } finally {
-      // Keep isSaving true briefly to suppress FSEvent from our own atomic write
-      setTimeout(() => { isSaving = false; }, 600);
     }
   }
 
@@ -284,7 +337,7 @@
   async function handleSaveAs(): Promise<void> {
     const name = fileState.filePath
       ? fileState.filePath.split('/').pop()
-      : 'Untitled.md';
+      : t('ui.untitled_filename');
     const path = await showSaveDialog(name);
     if (!path) return;
     fileState.filePath = path;
@@ -305,8 +358,14 @@
       // "already open" focus-instead-of-duplicate), and never gets watched
       // for external changes either.
       invoke('register_open_file', { path }).catch(() => {});
-      fileState.isDirty = false;
+      diskBaseline = content;
+      dismissedDisk = null;
+      // After replaceContent: its dispatch re-dirties the buffer via
+      // handleChange (a real edit as far as CM6 is concerned), so isDirty
+      // must be cleared afterwards — clearing it first just gets it flipped
+      // back on and triggers a pointless autosave 300ms after open.
       editorHandle?.replaceContent(content);
+      fileState.isDirty = false;
       recentFiles.add(path);
     } catch (err) {
       console.error('Open failed:', err);
@@ -333,9 +392,12 @@
       if (exists) {
         const content = await readFile(path);
         editorHandle?.replaceContent(content);
+        diskBaseline = content;
       } else {
         editorHandle?.replaceContent('');
+        diskBaseline = null;
       }
+      dismissedDisk = null;
       fileState.filePath = path;
       // Register this window as the owner of `path` — see the matching call
       // in `handleOpen`. Also (re)starts the file watcher, replacing the
@@ -397,32 +459,95 @@
   }
 
   // --- External file change handling ---
+  //
+  // The watcher fires on every write to the path, our own autosave included —
+  // there is no OS-level way to tell those apart from a real external edit.
+  // `resolveExternalChange` tells them apart by content instead.
   async function handleExternalChange(path: string): Promise<void> {
-    if (isSaving) return; // Ignore changes caused by our own save
     if (path !== fileState.filePath) return;
 
-    if (!fileState.isDirty) {
-      // Silently reload
+    // A save may still be writing the very bytes this event is about, or one
+    // could start between the wait below resolving and the read that follows
+    // it — either way `disk` must reflect what a save actually produced, not
+    // a state caught mid-write. Retry the read until no save landed while it
+    // was in flight.
+    let disk: string;
+    for (;;) {
+      while (currentSave) await currentSave.catch(() => {});
+      // Cmd+O (or another window event) may have switched this window to a
+      // different file while the loop was waiting.
+      if (path !== fileState.filePath) return;
+      const generation = saveGeneration;
       try {
-        const content = await readFile(path);
-        editorHandle?.updateContent(content);
-        fileState.isDirty = false;
+        disk = await readFile(path);
       } catch (err) {
-        console.error('Failed to reload externally changed file:', err);
+        console.error('Failed to read externally changed file:', err);
+        return;
       }
-    } else {
-      // Ask user
-      const reload = await ask(
-        'The file has been modified externally. Reload and lose your changes?',
-        { title: 'External Change', kind: 'warning' }
-      );
-      if (reload) {
+      // A save that began during the read may have landed on either side of
+      // it — if the generation moved, `disk` may already be stale.
+      if (generation === saveGeneration) break;
+    }
+    if (path !== fileState.filePath) return;
+
+    const decision = resolveExternalChange({
+      disk,
+      buffer: editorHandle?.view?.state.doc.toString() ?? '',
+      baseline: diskBaseline,
+      dismissedDisk,
+    });
+
+    switch (decision) {
+      case 'ignore':
+        return;
+      case 'adopt':
+        // Buffer already matches disk — nothing to reload, just resync.
+        diskBaseline = disk;
+        fileState.isDirty = false;
+        invoke('delete_recovery', { path }).catch(() => {});
+        return;
+      case 'reload':
+        editorHandle?.updateContent(disk);
+        diskBaseline = disk;
+        fileState.isDirty = false;
+        return;
+      case 'conflict': {
+        // FSEvents can fire more than once for one external write; coalesce
+        // rather than stacking a second dialog on top of the first. This also
+        // suppresses the autosave timer and the blur-save (see their guards)
+        // for as long as the dialog is open, so "Yes" below re-reads the
+        // external state rather than the buffer that just overwrote it.
+        if (conflictDialogOpen) return;
+        conflictDialogOpen = true;
         try {
-          const content = await readFile(path);
-          editorHandle?.updateContent(content);
-          fileState.isDirty = false;
-        } catch (err) {
-          console.error('Failed to reload externally changed file:', err);
+          const reload = await ask(
+            t('dialog.external_change.message'),
+            { title: t('dialog.external_change.title'), kind: 'warning' }
+          );
+          if (path !== fileState.filePath) return;
+          if (reload) {
+            // Disk may have moved on again while the dialog was up.
+            try {
+              const latest = await readFile(path);
+              if (path !== fileState.filePath) return;
+              editorHandle?.updateContent(latest);
+              diskBaseline = latest;
+              fileState.isDirty = false;
+              dismissedDisk = null;
+            } catch (err) {
+              console.error('Failed to reload externally changed file:', err);
+            }
+          } else {
+            // Suppress repeats for this exact disk state; a further external
+            // change still asks again.
+            dismissedDisk = disk;
+            // The autosave that fired while the dialog was up (if any) was
+            // suppressed by the guard above — the edits it would have saved
+            // are still only in the buffer, so re-arm it.
+            if (fileState.isDirty) scheduleAutoSave();
+          }
+        } finally {
+          conflictDialogOpen = false;
         }
       }
     }
@@ -526,7 +651,7 @@
         button.classList.remove(COMMENT_SENDING);
         (button as HTMLButtonElement).disabled = false;
         const verb = button.querySelector(`.${COMMENT_SEND_LABEL}`);
-        if (verb) verb.textContent = COMMENT_SEND_TEXT;
+        if (verb) verb.textContent = commentSendText();
       }
     }
     if (!commentCountdowns.size && commentTicker !== null) {
@@ -571,7 +696,7 @@
       button.classList.toggle(COMMENT_IDLE, !sending);
       button.classList.toggle(COMMENT_SENDING, sending);
       (button as HTMLButtonElement).disabled = sending;
-      if (verb) verb.textContent = sending ? COMMENT_SENDING_TEXT : COMMENT_SEND_TEXT;
+      if (verb) verb.textContent = sending ? commentSendingText() : commentSendText();
     }
     if (!commentCountdowns.size && commentTicker !== null) {
       clearInterval(commentTicker);
@@ -705,9 +830,10 @@
     const card = view?.dom.querySelector(`[data-comment-thread="${CSS.escape(id)}"]`);
     const label = card?.querySelector('.cm-ai-comment-saved');
     if (!label) return;
-    label.textContent = 'saved';
+    const savedText = t('editor.ai_comment.saved_label');
+    label.textContent = savedText;
     setTimeout(() => {
-      if (label.textContent === 'saved') label.textContent = '';
+      if (label.textContent === savedText) label.textContent = '';
     }, 2500);
   }
 
@@ -1332,7 +1458,9 @@
 
   // --- Save on blur ---
   function handleWindowBlur(): void {
-    if (fileState.isDirty && fileState.filePath) {
+    // Same reason as the autosave-timer guard: writing now would overwrite
+    // the disk state the open conflict dialog is asking about.
+    if (fileState.isDirty && fileState.filePath && !conflictDialogOpen) {
       performSave();
     }
     // Leaving md-mini ends every running comment pause on the spot.
@@ -1350,6 +1478,13 @@
   }
 
   onMount(() => {
+    // Настоящее имя сборки в заголовок: у `dev:app` и `build:dev` оно другое,
+    // и титлбар — единственное место, где человек видит, дев перед ним или
+    // установленный релиз.
+    getName()
+      .then(setProductName)
+      .catch(() => {});
+
     // Pull any file path stored by the backend for this window (CLI args or new-window open).
     // This avoids the race condition of the push-based emit approach.
     invoke<PendingOpen | null>('get_pending_file').then(async (pending) => {
@@ -1560,8 +1695,30 @@
       toasts.push({ kind: 'update', latest: info.latest, current: info.current, highlight: info.highlight });
     });
 
+    // Manual "Check for Updates…" (#82). Routed to exactly one window — see
+    // `onCheckUpdatesRequested`'s doc comment — and, unlike the automatic
+    // poll above, always answers: found piggybacks on the `update` toast via
+    // `report_update`'s `force` flag (handled by `onUpdateAvailable` above,
+    // no extra code needed here), already-latest and network-failure get
+    // their own toasts since the automatic checker never surfaces those.
+    const unlistenCheckUpdatesRequested = onCheckUpdatesRequested(() => {
+      void import('./lib/updater').then(async ({ checkForUpdatesManually }) => {
+        const result = await checkForUpdatesManually();
+        if (result === 'none') toasts.push({ kind: 'update-none' });
+        else if (result === 'error') toasts.push({ kind: 'update-check-failed' });
+      });
+    });
+
     const unlistenUpdateDismissed = onUpdateDismissed(() => {
       toasts.dismissKind('update');
+    });
+
+    // Surfaces a language change that failed to persist (#see finding in
+    // i18n code review) — this app already decided silent write failures
+    // need a toast (`save-error`, `comment-error`); a language pick that
+    // silently does nothing is the same failure shape.
+    const unlistenLanguageChangeFailed = onLanguageChangeFailed((message) => {
+      toasts.push({ kind: 'language-error', message });
     });
 
     // Offer the previous session, but only in the window that exists at launch —
@@ -1615,7 +1772,9 @@
       unlistenDragDrop.then((fn) => fn());
       unlistenSessionRestored.then((fn) => fn());
       unlistenUpdateAvailable.then((fn) => fn());
+      unlistenCheckUpdatesRequested.then((fn) => fn());
       unlistenUpdateDismissed.then((fn) => fn());
+      unlistenLanguageChangeFailed.then((fn) => fn());
       window.removeEventListener('blur', handleWindowBlur);
       if (autoSaveTimer !== null) clearTimeout(autoSaveTimer);
       if (recoveryInterval !== null) clearInterval(recoveryInterval);
@@ -1760,7 +1919,10 @@
   });
 </script>
 
-<main style="font-size: {zoom.level}rem;">
+<!-- Масштаб применяется зумом страницы webview, а не каскадом `font-size` —
+     см. `lib/window-zoom.ts`. Атрибут ничего не масштабирует: это проба,
+     по которой уровень видно в DOM (и в браузерном тесте) без IPC. -->
+<main data-zoom={zoom.level}>
   <Editor
     bind:handle={editorHandle}
     onchange={handleChange}

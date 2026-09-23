@@ -69,15 +69,35 @@ impl UpdateState {
         self.checker.lock().unwrap().as_deref() == Some(label)
     }
 
+    /// The label of the window that owns the poll timer, if any window has
+    /// claimed it yet. Read by `lib.rs`'s "Check for Updates…" handler so it
+    /// can target that one window with `emit_to` instead of broadcasting —
+    /// see the doc comment there for why an unfiltered `emit` is not enough.
+    pub fn checker_label(&self) -> Option<String> {
+        self.checker.lock().unwrap().clone()
+    }
+
     /// Record a found update. Returns whether windows should be told — a
     /// dismissed notice stays dismissed, and re-reporting the same version on the
     /// next hourly poll must not make the toast reappear.
-    pub fn record(&self, info: UpdateInfo) -> bool {
+    ///
+    /// `force` is for the manual "Check for Updates…" menu item: unlike the
+    /// hourly autopoll, a manual check must always answer, even when the
+    /// version is unchanged or was already dismissed — otherwise clicking it
+    /// after dismissing the toast looks like nothing happened.
+    pub fn record(&self, info: UpdateInfo, force: bool) -> bool {
         let mut found = self.found.lock().unwrap();
         let is_new = found.as_ref() != Some(&info);
         let already_shown = !is_new;
         *found = Some(info);
         drop(found);
+
+        if force {
+            // A manual check resurfaces a previously dismissed notice
+            // unconditionally — that is the whole point of asking again.
+            self.dismissed.store(false, Ordering::SeqCst);
+            return true;
+        }
 
         if is_new {
             // A different version than the one dismissed is worth showing again.
@@ -111,6 +131,9 @@ pub async fn claim_update_checker(
 }
 
 /// The polling window found a newer release. Tell every window once.
+///
+/// `force` distinguishes the hourly autopoll (`false`) from the manual "Check
+/// for Updates…" menu item (`true`) — see `UpdateState::record`.
 #[tauri::command]
 pub async fn report_update(
     app: tauri::AppHandle,
@@ -118,6 +141,7 @@ pub async fn report_update(
     latest: String,
     current: String,
     highlight: Option<String>,
+    force: bool,
 ) -> Result<(), String> {
     use tauri::Emitter;
     let info = UpdateInfo {
@@ -125,7 +149,7 @@ pub async fn report_update(
         current,
         highlight,
     };
-    if state.record(info.clone()) {
+    if state.record(info.clone(), force) {
         let _ = app.emit("update-available", info);
     }
     Ok(())
@@ -197,26 +221,46 @@ mod tests {
     }
 
     #[test]
+    fn checker_label_is_none_before_any_claim() {
+        assert_eq!(UpdateState::new().checker_label(), None);
+    }
+
+    #[test]
+    fn checker_label_reports_the_claim_holder() {
+        let state = UpdateState::new();
+        state.claim("main");
+        assert_eq!(state.checker_label(), Some("main".to_string()));
+    }
+
+    #[test]
+    fn checker_label_is_cleared_on_release() {
+        let state = UpdateState::new();
+        state.claim("main");
+        state.release("main");
+        assert_eq!(state.checker_label(), None);
+    }
+
+    #[test]
     fn first_report_is_broadcast() {
         let state = UpdateState::new();
-        assert!(state.record(info("v0.6.0")));
+        assert!(state.record(info("v0.6.0"), false));
     }
 
     #[test]
     fn repeated_report_of_the_same_version_is_not_rebroadcast() {
         // The poll runs hourly and would otherwise re-raise the toast every hour.
         let state = UpdateState::new();
-        assert!(state.record(info("v0.6.0")));
-        assert!(!state.record(info("v0.6.0")));
+        assert!(state.record(info("v0.6.0"), false));
+        assert!(!state.record(info("v0.6.0"), false));
     }
 
     #[test]
     fn dismissal_survives_the_next_poll() {
         let state = UpdateState::new();
-        state.record(info("v0.6.0"));
+        state.record(info("v0.6.0"), false);
         state.dismiss();
         assert!(
-            !state.record(info("v0.6.0")),
+            !state.record(info("v0.6.0"), false),
             "an hourly re-report must not resurrect a dismissed notice"
         );
         assert_eq!(state.pending(), None);
@@ -225,9 +269,38 @@ mod tests {
     #[test]
     fn a_newer_version_shows_again_after_dismissal() {
         let state = UpdateState::new();
-        state.record(info("v0.6.0"));
+        state.record(info("v0.6.0"), false);
         state.dismiss();
-        assert!(state.record(info("v0.7.0")));
+        assert!(state.record(info("v0.7.0"), false));
+        assert_eq!(state.pending(), Some(info("v0.7.0")));
+    }
+
+    #[test]
+    fn forced_report_resurfaces_a_dismissed_notice_of_the_same_version() {
+        // The manual "Check for Updates…" click must always answer, even when
+        // the version is unchanged and was already dismissed — otherwise
+        // clicking it after dismissing the toast looks like nothing happened.
+        let state = UpdateState::new();
+        state.record(info("v0.6.0"), false);
+        state.dismiss();
+        assert!(state.record(info("v0.6.0"), true));
+        assert_eq!(state.pending(), Some(info("v0.6.0")));
+    }
+
+    #[test]
+    fn forced_report_broadcasts_even_when_nothing_changed_and_nothing_was_dismissed() {
+        let state = UpdateState::new();
+        state.record(info("v0.6.0"), false);
+        // Not dismissed, same version — an unforced re-report here would be
+        // `false` (already shown). A forced one always answers.
+        assert!(state.record(info("v0.6.0"), true));
+    }
+
+    #[test]
+    fn a_forced_check_does_not_mask_a_genuinely_new_version_later() {
+        let state = UpdateState::new();
+        state.record(info("v0.6.0"), true);
+        assert!(state.record(info("v0.7.0"), false));
         assert_eq!(state.pending(), Some(info("v0.7.0")));
     }
 
@@ -239,7 +312,7 @@ mod tests {
     #[test]
     fn pending_serves_windows_opened_later() {
         let state = UpdateState::new();
-        state.record(info("v0.6.0"));
+        state.record(info("v0.6.0"), false);
         assert_eq!(state.pending(), Some(info("v0.6.0")));
     }
 }

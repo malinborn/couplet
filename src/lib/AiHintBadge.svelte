@@ -4,11 +4,13 @@
    * Never intercepts input — it's purely informational, so pointer-events
    * stays off even while faded in.
    */
+  import { t } from './i18n';
+
   let { visible }: { visible: boolean } = $props();
 </script>
 
 <div class="ai-hint-badge" class:ai-hint-visible={visible} aria-hidden="true">
-  <kbd>Esc</kbd><span>hide AI edit highlight</span>
+  <kbd>Esc</kbd><span>{t('ui.ai_hint.text')}</span>
 </div>
 
 <style>

@@ -28,11 +28,37 @@ notify = { version = "8.2.0", features = ["macos_fsevent"] }
 tauri-plugin-dialog = "2.6.0"
 tauri-plugin-shell = "2"
 dirs = "6.0.0"
+# Locale resolution for the native menu, built before the webview exists —
+# `@tauri-apps/plugin-os`'s `locale()` is JS-only and runs too late.
+#
+# The design doc calls for the `sys-locale` crate here, but this sandbox has
+# no network access to crates.io to fetch a brand-new dependency, so
+# `locale.rs` instead reads `NSLocale.preferredLanguages` directly through
+# `objc`/`cocoa` — both already resolved dependencies (`cocoa` is already a
+# direct one; `objc` was already in the tree transitively via it and is
+# pinned to the exact version already in `Cargo.lock`, so this adds no new
+# network fetch). Same properties either way: no webview needed, no ACL
+# permission (not a Tauri plugin), reads the OS directly.
+objc = "0.2.7"
 cocoa = "0.26"
 # Used by the atomic save path in `commands.rs`: `copyfile` (ACL + xattr),
 # `fchown`, `fchmod`. Already in the tree transitively via `cocoa`; declared
 # directly because `commands.rs` calls it by name.
 libc = "0.2"
+# `migration.rs`'s "legacy build is running" / migration-failure dialogs use
+# `CFUserNotificationDisplayAlert`, NOT `NSAlert` — the latter needs
+# `NSApplication.sharedApplication` to exist, and calling that before Tauri's
+# own `tao`-driven `NSApplication` setup (inside `Builder::build()`) hands
+# `tao` someone else's `NSApp` instance instead of its own subclass, silently
+# breaking its `sendEvent:` override (Cmd+key handling, device events) for
+# the rest of the session. `CFUserNotificationDisplayAlert` never touches
+# `NSApplication` at all. Both crates are already in `Cargo.lock` at these
+# exact versions (pulled in transitively — `core-foundation-sys` by several
+# macOS-facing deps, `core-foundation` by `tao`/`objc`-adjacent crates), so
+# declaring them directly adds no new network fetch or version resolution;
+# `core-foundation` is only for its safe, `Drop`-managed `CFString`.
+core-foundation-sys = "0.8.7"
+core-foundation = "0.10.1"
 # DEV-ONLY agent driving bridge. `optional = true` + the `mcp-bridge` feature
 # below means that with the feature off this crate is NOT COMPILED AT ALL — it is
 # absent from the binary, not merely disabled at runtime.

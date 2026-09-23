@@ -1,0 +1,147 @@
+{
+  "toast.dismiss": "Dismiss",
+
+  "toast.save_error.headline": "Could not save {fileName}",
+  "toast.save_error.instruction": "Your edits are still here — fix the cause, then press",
+
+  "toast.comment_error.headline": "Could not save comments on {fileName}",
+  "toast.comment_error.instruction": "What you typed is still in the box — fix the cause, then keep typing",
+
+  "toast.language_error.headline": "Could not change the language",
+
+  "toast.update.headline": "mdmini {latest} available",
+  "toast.update.current": "you have v{current}",
+  "toast.update.copy_title": "Click to copy",
+  "toast.update.copied": "Copied!",
+
+  "toast.update_none.message": "You're already on the latest version",
+  "toast.update_check_failed.message": "Could not check for updates — check your connection",
+
+  "toast.session.windows.one": "{count} window from your last session",
+  "toast.session.windows.few": "{count} windows from your last session",
+  "toast.session.windows.many": "{count} windows from your last session",
+  "toast.session.windows.other": "{count} windows from your last session",
+  "toast.session.reopen_prefix": "Press",
+  "toast.session.reopen_suffix": "to reopen",
+
+  "toast.ai_nudge.message": "<strong>Your AI can drive md-mini</strong> <span class=\"md-toast-dim\">— see the <strong>AI</strong> menu</span>",
+  "toast.ai_nudge.action": "Getting Started",
+
+  "toast.themes_nudge.message": "<strong>md-mini has themes</strong> <span class=\"md-toast-dim\">— four of them in the <strong>Theme</strong> menu</span>",
+
+  "toast.json_offer.message": "<strong>That looks like JSON</strong> <span class=\"md-toast-dim\">— expand it?</span>",
+  "toast.json_offer.action": "Format",
+  "toast.json_offer.or": "or",
+
+  "toast.ai_bind_copied.saved": "<strong>Prompt copied</strong> <span class=\"md-toast-dim\">— send it to your AI agent to connect it to this file</span>",
+  "toast.ai_bind_copied.unsaved": "<strong>Save the file first</strong> <span class=\"md-toast-dim\">— an agent needs a path to open</span>",
+
+  "toast.ai_watch_copied.saved": "<strong>Watch command copied</strong> <span class=\"md-toast-dim\">— paste it into your agent's session</span>",
+  "toast.ai_watch_copied.unsaved": "<strong>Save the file first</strong> <span class=\"md-toast-dim\">— an unsaved document has no path to watch</span>",
+
+  "toast.ai_first_use.message": "<strong>That was your AI</strong> <span class=\"md-toast-dim\">— md-mini is connected</span>",
+  "toast.ai_first_use.more": "More in the <strong>AI</strong> menu → Getting Started",
+
+  "editor.ai_comment.status.open": "waiting for agent",
+  "editor.ai_comment.status.paused": "not sent yet",
+  "editor.ai_comment.status.answered": "answered",
+  "editor.ai_comment.status.resolved": "resolved",
+  "editor.ai_comment.anchor_lost": "anchor lost",
+  "editor.ai_comment.placeholder_reply": "Reply — saved as you type",
+  "editor.ai_comment.placeholder_comment": "Comment — saved as you type",
+  "editor.ai_comment.send_now": "send now",
+  "editor.ai_comment.sending": "sending…",
+  "editor.ai_comment.send_now_title": "Hand this comment to the agent now, without waiting out the pause",
+  "editor.ai_comment.send_to_agent": "send to agent",
+  "editor.ai_comment.paste_confirm": "paste it into your agent",
+  "editor.ai_comment.insert_into_text": "insert into text",
+  "editor.ai_comment.resolve": "resolve",
+  "editor.ai_comment.saved_label": "saved",
+
+  "editor.ai_ask.dismiss": "Dismiss",
+  "editor.ai_ask.multi_hint": " (select any, then OK)",
+  "editor.ai_ask.placeholder": "Your own answer…",
+  "editor.ai_ask.ok": "OK",
+
+  "editor.inspector.link_group": "Link",
+  "editor.inspector.link_url": "Link URL",
+  "editor.inspector.open": "Open",
+  "editor.inspector.jump_to_heading": "Jump to the heading",
+  "editor.inspector.open_in_browser": "Open link in browser",
+  "editor.inspector.remove_link": "Remove link",
+  "editor.inspector.code_language_group": "Code block language",
+  "editor.inspector.plain_text": "Plain text",
+
+  "editor.selection_toolbar.group_label": "Text formatting",
+  "editor.selection_toolbar.bold": "Bold",
+  "editor.selection_toolbar.italic": "Italic",
+  "editor.selection_toolbar.strikethrough": "Strikethrough",
+  "editor.selection_toolbar.code": "Code",
+  "editor.selection_toolbar.comment": "Comment on selection",
+  "editor.selection_toolbar.comment_tooltip": "Comment",
+  "editor.selection_toolbar.link": "Link",
+
+  "editor.mermaid.zoom_out": "Zoom out",
+  "editor.mermaid.zoom_in": "Zoom in",
+  "editor.mermaid.fit": "Fit diagram",
+  "editor.mermaid.resize_hint": "Drag to resize, double-click to reset",
+  "editor.mermaid.rendering": "Rendering diagram...",
+
+  "editor.tables.toggle_mode": "Toggle wrap / full width",
+  "editor.tables.new_column": "New",
+  "editor.tables.hotkeys_title": "Table keyboard shortcuts",
+
+  "editor.table_keys.col_next": "Column to the right",
+  "editor.table_keys.col_prev": "Column to the left",
+  "editor.table_keys.col_prev_note": "Wraps inside the row — never changes row",
+  "editor.table_keys.row_next": "Next row, same column",
+  "editor.table_keys.row_next_note": "On the last row: leaves the table",
+  "editor.table_keys.break": "Line break inside the cell",
+  "editor.table_keys.commit": "Apply the edit",
+  "editor.table_keys.new_row": "New row below",
+  "editor.table_keys.cancel": "Discard the edit",
+
+  "editor.block_templates.h1": "Heading 1",
+  "editor.block_templates.h2": "Heading 2",
+  "editor.block_templates.h3": "Heading 3",
+  "editor.block_templates.h4": "Heading 4",
+  "editor.block_templates.h5": "Heading 5",
+  "editor.block_templates.h6": "Heading 6",
+  "editor.block_templates.ul": "Bullet list",
+  "editor.block_templates.ol": "Numbered list",
+  "editor.block_templates.task": "Checkbox",
+  "editor.block_templates.code": "Code block",
+  "editor.block_templates.table": "Table",
+  "editor.block_templates.quote": "Blockquote",
+  "editor.block_templates.hr": "Horizontal rule",
+  "editor.block_templates.table_column": "Column {n}",
+
+  "editor.slash_theme.action_detail": "Switch the theme family",
+  "editor.slash_tone.action_detail": "Switch light / dark",
+  "editor.slash_tone.light": "Light",
+  "editor.slash_tone.dark": "Dark",
+  "editor.slash_tone.follow_system": "Follow System",
+  "editor.slash_picker.current": "current",
+
+  "editor.hover_menu.insert_block": "Insert block",
+
+  "editor.env.empty_value": "EMPTY",
+
+  "ui.copy": "Copy",
+  "ui.copied": "Copied!",
+  "ui.untitled": "Untitled",
+  "ui.untitled_filename": "Untitled.md",
+  "ui.window_title": "{name} — {product}",
+
+  "ui.recent_files.title": "Recent Files",
+  "ui.recent_files.close": "Close",
+  "ui.recent_files.empty": "No recent files.",
+
+  "ui.ai_bind.tooltip": "Copy a prompt that connects this file to your AI agent",
+  "ui.ai_bind.label": "Connect to AI agent",
+
+  "ui.ai_hint.text": "hide AI edit highlight",
+
+  "dialog.external_change.title": "External Change",
+  "dialog.external_change.message": "The file has been modified externally. Reload and lose your changes?"
+}

@@ -3,6 +3,7 @@ import { startCompletion, type Completion } from '@codemirror/autocomplete';
 import { halfOf } from '../theme-resolve';
 import type { SlashAction } from './slash-actions';
 import type { ThemeControl } from './slash-theme';
+import { t } from '../i18n';
 import {
   createPickerCore,
   openPicker,
@@ -38,9 +39,13 @@ const TONE_PICKER_TYPE = 'md-theme-tone';
 // order the spec calls out and the native Theme submenu's own grouping.
 const TONE_CHOICES: readonly ToneChoice[] = ['light', 'dark', 'system'];
 
+// Translated — unlike `slash-theme.ts`'s family names, these are ordinary
+// descriptive words (matching `menu.theme.half_light`/`half_dark` and
+// `menu.common.follow_system` in `locales/*/native.json`, which the native
+// Theme submenu already uses for the same three concepts).
 function toneLabel(choice: ToneChoice): string {
-  if (choice === 'system') return 'Follow System';
-  return choice === 'dark' ? 'Dark' : 'Light';
+  if (choice === 'system') return t('editor.slash_tone.follow_system');
+  return choice === 'dark' ? t('editor.slash_tone.dark') : t('editor.slash_tone.light');
 }
 
 // Reverse lookup, unused today (this picker never previews, so nothing ever
@@ -48,9 +53,20 @@ function toneLabel(choice: ToneChoice): string {
 // same reason `slash-theme.ts` keeps its own: `pickerExtensions` always wants
 // a `choiceForLabel`, and building it once alongside the labels keeps the two
 // in sync by construction rather than by two authors remembering to agree.
-const LABEL_TO_TONE: ReadonlyMap<string, ToneChoice> = new Map(
-  TONE_CHOICES.map((choice) => [toneLabel(choice), choice])
-);
+//
+// Built lazily, NOT as a module-level constant: `toneLabel` now calls `t()`,
+// and this module is imported (hence evaluated) well before `main.ts` installs
+// the language catalog — a top-level `new Map(...)` here would freeze every
+// label in whatever `t()` returns before boot (see `familyLabel`'s comment in
+// `slash-theme.ts`). Safe to cache after the first call: the active language
+// never changes without a full app restart.
+let labelToToneCache: ReadonlyMap<string, ToneChoice> | null = null;
+function labelToTone(label: string): ToneChoice | undefined {
+  if (!labelToToneCache) {
+    labelToToneCache = new Map(TONE_CHOICES.map((choice) => [toneLabel(choice), choice]));
+  }
+  return labelToToneCache.get(label);
+}
 
 const picker: PickerCore = createPickerCore();
 
@@ -67,7 +83,7 @@ function isCurrentTone(control: ThemeControl, choice: ToneChoice): boolean {
 function toneOptions(control: ThemeControl): Completion[] {
   return TONE_CHOICES.map((choice, index) => ({
     label: toneLabel(choice),
-    detail: isCurrentTone(control, choice) ? '● current' : undefined,
+    detail: isCurrentTone(control, choice) ? `● ${t('editor.slash_picker.current')}` : undefined,
     type: TONE_PICKER_TYPE,
     boost: TONE_CHOICES.length - index,
     apply(view: EditorView, _completion: Completion, from: number, to: number) {
@@ -103,7 +119,7 @@ export function toneAction(control: ThemeControl): SlashAction {
   return {
     id: 'tone',
     label: '/tone',
-    detail: 'Switch light / dark',
+    detail: t('editor.slash_tone.action_detail'),
     run(view: EditorView) {
       openPicker(picker, view);
     },
@@ -132,7 +148,7 @@ export function tonePickerExtensions(control: ThemeControl) {
     picker,
     tonePickerSource(control),
     TONE_PICKER_TYPE,
-    (label) => LABEL_TO_TONE.get(label),
+    (label) => labelToTone(label),
     undefined
   );
 }

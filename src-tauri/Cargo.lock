@@ -2286,9 +2286,12 @@ name = "md-mini"
 version = "1.0.0"
 dependencies = [
  "cocoa",
+ "core-foundation",
+ "core-foundation-sys",
  "dirs",
  "libc",
  "notify",
+ "objc",
  "serde",
  "serde_json",
  "tauri",

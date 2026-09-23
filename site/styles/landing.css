@@ -1,4 +1,4 @@
-/* mdmini landing page — converted 1:1 from the Claude Design "mdmini Landing v2"
+/* couplet landing page — converted 1:1 from the Claude Design "couplet Landing v2"
    template into real semantic markup + real CSS classes. Tokens are keyed to the
    same [data-theme] attribute the app itself uses, so one attribute on <html>
    themes the page chrome and every embedded live editor together. */
@@ -138,19 +138,15 @@ code { font-family: var(--font-mono); }
 }
 .brand:hover { color: var(--text); text-decoration: none; }
 
+/* The mark is the real app icon (couplet-icon-design-stand.html, 'default' theme):
+   an ampersand — "you and your agent" — over a glowing gradient caret, baked into
+   a PNG at build time. No CSS-drawn placeholder; the asset is the source of truth. */
 .brand-mark {
   width: 26px;
   height: 26px;
-  border-radius: 7px;
-  background: var(--brand-gradient);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 1px;
   flex: none;
+  display: block;
 }
-.brand-mark-text { font-family: var(--font-display); font-size: 12px; color: #fff; letter-spacing: -0.5px; }
-.brand-caret { width: 1.5px; height: 12px; border-radius: 1px; background: var(--caret-gradient); }
 
 .nav-links {
   display: flex;
@@ -234,6 +230,85 @@ code { font-family: var(--font-mono); }
 @keyframes auroraBreathe {
   0%, 100% { opacity: 0.87; }
   50% { opacity: 1; }
+}
+
+/* ── Realistic daylight aurora (light theme only, hero-aurora.ts) ──
+   The owner's deliberate joke: a real-looking aurora curtain, at noon, on a
+   light background. `.hero-aurora-canvas` is a WebGL shader (fbm folds +
+   vertical ray noise, oxygen-green base fading through nitrogen pink to
+   high-altitude violet); `.hero-aurora-fallback` is a static CSS stand-in
+   for browsers/contexts without WebGL. Both REPLACE `.hero-aurora-field`
+   for the light theme rather than layering on top of it — hero-aurora.ts
+   toggles `.is-realistic` / `.is-fallback` on `.hero-aurora-field`'s parent
+   (`.hero-aurora`) and hides the blob field via the sibling selectors
+   below. Dark theme never gets either class, so `.hero-aurora-field` keeps
+   rendering exactly as before there — this is additive to the dark-theme
+   styling, not a rewrite of it. */
+/* Both need their OWN horizontal fade — `.hero-aurora`'s mask (vertical
+   only) does apply to them since CSS mask/compositing covers a whole
+   painted subtree, but `.hero-aurora-field`'s horizontal left/right fade is
+   declared on that element alone, and the canvas/fallback are its SIBLINGS
+   (children of `.hero-aurora`, not of `.hero-aurora-field`), so without
+   this they never got any horizontal feather — the hard vertical seams an
+   early version showed at each edge were exactly this: the shader's own
+   content ending in a straight cut at the canvas's true left/right edge. */
+.hero-aurora-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: none;
+  mask-image: linear-gradient(to right,
+    transparent 0%, #000 4%, #000 96%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to right,
+    transparent 0%, #000 4%, #000 96%, transparent 100%);
+}
+.hero-aurora-fallback {
+  position: absolute;
+  inset: 0;
+  display: none;
+  mask-image: linear-gradient(to right,
+    transparent 0%, #000 4%, #000 96%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to right,
+    transparent 0%, #000 4%, #000 96%, transparent 100%);
+  /* A single frozen "curtain": green base through the upper-middle band,
+     climbing into pink/violet toward its own top, banded (not smooth) so
+     it still reads as structure rather than a flat wash. Positioned high —
+     behind the title/tagline — to match where the real shader sits. */
+  background:
+    repeating-linear-gradient(100deg,
+      rgba(46, 230, 160, 0.20) 0%, rgba(46, 230, 160, 0.20) 6%,
+      transparent 6%, transparent 13%,
+      rgba(60, 240, 138, 0.16) 13%, rgba(60, 240, 138, 0.16) 18%,
+      transparent 18%, transparent 27%),
+    linear-gradient(to top,
+      transparent 0%,
+      rgba(60, 240, 138, 0.10) 30%,
+      rgba(60, 240, 138, 0.34) 52%,
+      rgba(230, 79, 148, 0.22) 70%,
+      rgba(131, 88, 239, 0.14) 84%,
+      transparent 98%);
+}
+.hero-aurora.is-realistic .hero-aurora-field,
+.hero-aurora.is-fallback .hero-aurora-field {
+  display: none;
+}
+.hero-aurora.is-realistic .hero-aurora-canvas { display: block; }
+.hero-aurora.is-fallback .hero-aurora-fallback { display: block; }
+
+/* Readability while the realistic shader runs, done per-element rather
+   than with a plate/vignette behind the whole block — a plate flattened
+   the aurora exactly where it's supposed to read as the main event (behind
+   the title). `.pill` and `.install-row--hero` already carry their own
+   translucent+blur chip (see those rules) regardless of theme; this is the
+   one addition, matched to the owner-approved screenshot: a soft light
+   text-shadow on the title and tagline only. */
+.hero-aurora.is-realistic ~ .wrap .hero-title,
+.hero-aurora.is-realistic ~ .wrap .hero-tagline {
+  text-shadow:
+    0 0 6px var(--bg), 0 0 6px var(--bg), 0 0 6px var(--bg),
+    0 0 14px var(--bg), 0 0 14px var(--bg),
+    0 0 28px var(--bg);
 }
 
 /* The AI-shimmer sweep that used to travel across the hero every 13s has
@@ -607,10 +682,10 @@ code { font-family: var(--font-mono); }
 }
 
 /* ── Hero marker reveal ──
-   The h1's real text is just "mdmini" (see index.html) — the leading "#"
+   The h1's real text is just "couplet" (see index.html) — the leading "#"
    is generated content (::before), never a DOM text node. That's what keeps
    this a genuine, crawlable <h1> with no hidden duplicate: a text-only
-   reader of the served HTML sees exactly "mdmini", the same as before this
+   reader of the served HTML sees exactly "couplet", the same as before this
    feature existed. The marker is positioned absolutely, outside the h1's own
    box (`.hero-title` is the positioning context) — it never occupies flow
    width, so it can't reserve a permanent gap once it fades, and the h1's
@@ -785,7 +860,7 @@ code { font-family: var(--font-mono); }
 }
 
 /* The command is marked up with the editor's own .tok-* classes, so it carries
-   mdmini's real syntax colours in both themes. Only the shell prompt is ours —
+   couplet's real syntax colours in both themes. Only the shell prompt is ours —
    it isn't part of the command, so it stays quiet. */
 .install-prompt { color: var(--muted); }
 
@@ -834,7 +909,7 @@ code { font-family: var(--font-mono); }
   overflow: hidden;
   width: 100%;
   max-width: 100%;
-  /* A demo card is a crop of a real mdmini window: it must always read
+  /* A demo card is a crop of a real couplet window: it must always read
      left-aligned regardless of the slide it sits in. The showcase slide
      (`.slide--showcase`) sets `text-align: center` on itself for its own
      centred copy, and without this reset that alignment inherits straight
@@ -856,7 +931,7 @@ code { font-family: var(--font-mono); }
 .dot.yellow { background: #febc2e; }
 .dot.green { background: #28c840; }
 
-/* A real mdmini window puts the traffic lights at the far left and the
+/* A real couplet window puts the traffic lights at the far left and the
    title immediately after them in the system UI font — not centred, and
    not monospace (that was this card's own invention, not the app's). */
 .demo-name {
@@ -1403,7 +1478,7 @@ code { font-family: var(--font-mono); }
   color: var(--muted);
 }
 .footer-mark { display: flex; align-items: center; gap: 8px; }
-.footer-mark-swatch { width: 18px; height: 18px; border-radius: 5px; background: var(--brand-gradient); }
+.footer-mark-swatch { width: 18px; height: 18px; display: block; }
 .footer-links { margin-left: auto; display: flex; gap: 20px; flex-wrap: wrap; align-items: center; }
 .footer-note { color: var(--muted); }
 
@@ -1461,7 +1536,7 @@ code { font-family: var(--font-mono); }
    Tints are kept low-alpha over the page background so text contrast survives
    in both themes, and the embedded editors are deliberately left alone: they
    carry the app's own `--color-selection`, so a demo selects exactly like
-   mdmini does. */
+   couplet does. */
 ::selection { background: color-mix(in srgb, #7068d5 32%, transparent); }
 
 .hero ::selection,

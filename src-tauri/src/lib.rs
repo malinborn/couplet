@@ -12,10 +12,14 @@ pub mod atomic_write;
 pub mod comment_pause;
 pub mod comments;
 mod commands;
+mod i18n;
+mod locale;
 pub mod mcp_server;
 mod menu;
+mod migration;
 mod onboarding;
 mod paths;
+mod preferences;
 mod recovery;
 mod session;
 mod updater;
@@ -51,6 +55,38 @@ fn toggle_value(app: &tauri::AppHandle, id: &str) -> Option<bool> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Rebrand data migration — deliberately the very first thing `run()`
+    // does, before `tauri::Builder::default()` even starts. This is not
+    // merely "early": `Builder::build()` creates every window listed in
+    // `tauri.conf.json` (see `migration.rs`'s module doc for the exact call
+    // site in the `tauri` crate) as its first internal step, before our own
+    // `.setup()` closure ever runs — and creating the "main" window is what
+    // creates its WKWebView, which is what creates
+    // `~/Library/WebKit/<identifier>/`. There is no hook between "window
+    // exists" and "our code runs" that comes early enough, so this has to sit
+    // above the builder entirely. The context is read from here rather than
+    // re-generated at the `.build()` call below, so both this and `.build()`
+    // see the exact same identifier/product name.
+    //
+    // No-op today: `migration.rs`'s rename table only matches a renamed
+    // product/identifier, not the current one. It activates on its own the
+    // moment `tauri.conf.json` / `tauri.dev.conf.json` are renamed.
+    //
+    // `migrate_all_real` may block on a native dialog (a matching-generation
+    // legacy build is running, or a migration failed) and can
+    // `std::process::exit(0)` if the user chooses to abandon this launch
+    // rather than wait/retry — see `migration.rs`'s module doc comment. It
+    // never asks `run()` to use a different product name any more: on
+    // success (or a genuine no-op) the current name is always correct by
+    // the time it returns.
+    let context = tauri::generate_context!();
+    let product_name = context
+        .config()
+        .product_name
+        .as_deref()
+        .unwrap_or(paths::FALLBACK_PRODUCT_NAME);
+    migration::migrate_all_real(product_name, &context.config().identifier);
+
     // `mut` is only needed by the `mcp-bridge` registration below; without that
     // feature the builder is never reassigned.
     #[cfg_attr(not(feature = "mcp-bridge"), allow(unused_mut))]
@@ -129,12 +165,21 @@ pub fn run() {
             commands::sync_engine_menu,
             commands::sync_ocd_alignment_menu,
             commands::broadcast_theme,
+            i18n::resolved_language,
         ])
         .setup(|app| {
             // FIRST, before anything touches disk: decide which data directory this
             // build owns. A dev build must never share `recovery/` or `session.json`
             // with an installed release one.
-            paths::init(app.config().product_name.as_deref().unwrap_or("md-mini"));
+            paths::init(app.config().product_name.as_deref().unwrap_or(paths::FALLBACK_PRODUCT_NAME));
+
+            // Locale resolution: stored preference -> system locale -> "en".
+            // Must run before `menu::build_menu` — the menu's labels come from
+            // `i18n::t()`, and there is no runtime reactivity by design (a
+            // language change restarts the app; see `apply_language_change`).
+            let explicit_language = preferences::read_language();
+            let resolved_language = locale::resolve_at_startup(explicit_language.clone());
+            i18n::init(resolved_language);
 
             // DEV-ONLY: grant the bridge's webview->host commands their ACL permission
             // AT RUNTIME, so `capabilities/default.json` never carries an
@@ -167,7 +212,7 @@ pub fn run() {
             };
 
             let (menu, theme_items, engine_items, view_toggles) =
-                menu::build_menu(app.handle(), pending_count)?;
+                menu::build_menu(app.handle(), pending_count, explicit_language.as_deref())?;
             app.set_menu(menu)?;
             app.manage(theme_items);
             app.manage(view_toggles);
@@ -235,6 +280,55 @@ pub fn run() {
                 // where focus is actually knowable.
                 if id == "ai_comment" {
                     let _ = _app.emit("menu-event", &id);
+                    return;
+                }
+
+                // Manual "Check for Updates…". Must reach exactly one window,
+                // for the same reason "ai_comment" is not routed through the
+                // per-window broadcast loop at the bottom of this handler:
+                // that loop would fire one GitHub request per open window.
+                //
+                // A bare `app.emit` does NOT do this — it broadcasts to every
+                // registered listener regardless of target label (an unfiltered
+                // `emit` matches `Any`), so every window's `onCheckUpdatesRequested`
+                // would fire and race to run its own check. `emit_to` is what
+                // actually restricts delivery to one window, the same primitive
+                // `ai_socket.rs` uses to route a command to the window that owns
+                // its file. The update-checker claim holder is the natural
+                // target since it already owns update work; fall back to any
+                // window if no claim has been made yet (e.g. the poll hasn't
+                // started).
+                if id == "check_updates" {
+                    let target = _app
+                        .state::<UpdateState>()
+                        .checker_label()
+                        .or_else(|| _app.webview_windows().keys().next().cloned());
+                    if let Some(label) = target {
+                        let _ = _app.emit_to(label.as_str(), "check-updates-requested", ());
+                    }
+                    return;
+                }
+
+                // Language radio group. Unlike Theme's checkboxes, a language
+                // click needs no `Toggle`/`flip` dance: the id itself already
+                // names the final value, not "switch it". `apply_language_change`
+                // persists it, saves the session explicitly (a restart on the
+                // main thread skips `RunEvent::Exit`, so `save_session_on_exit`
+                // would otherwise never run), then restarts the process — the
+                // rebuilt menu picks up the new language from `preferences.json`
+                // on the way back up.
+                if let Some(rest) = id.strip_prefix("language_") {
+                    let language = if rest == "system" { None } else { Some(rest.to_string()) };
+                    if let Err(e) = apply_language_change(_app, language) {
+                        // `eprintln!` alone is invisible in a bundled app: the
+                        // user clicked a language, nothing visibly happened, and
+                        // that is indistinguishable from a broken menu item.
+                        // This app already decided silent write failures need a
+                        // surface — `save-error` and `comment-error` exist for
+                        // exactly this reason — so this gets the same treatment.
+                        eprintln!("language change: {}", e);
+                        let _ = _app.emit("language-change-failed", &e);
+                    }
                     return;
                 }
 
@@ -346,7 +440,7 @@ pub fn run() {
         });
 
     let app = builder
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application");
 
     app.run(|_app_handle, event| {
@@ -416,6 +510,36 @@ pub fn run() {
             _ => {}
         }
     });
+}
+
+/// Persist the language preference (`None` = follow system), then restart the
+/// app so the native menu — built once in `setup`, never rebuilt live — comes
+/// back up with the new language. Called from the native menu's Language
+/// items, the only caller: there is no IPC counterpart (an in-app language
+/// picker would need one, but nothing calls this from the frontend today —
+/// see the removed `set_language` command's history for why an unvalidated
+/// IPC entry point here is worth avoiding rather than convenient to keep).
+///
+/// `AppHandle::restart()` never returns (it calls `cleanup_before_exit()` then
+/// `process::restart()`), and critically it does so **without** emitting
+/// `RunEvent::Exit` when called from the main thread — which is exactly where
+/// a menu handler and an IPC command both run. `save_session_on_exit` is
+/// therefore called explicitly here rather than relied upon via the event; see
+/// the trap documented at `docs/superpowers/specs/2026-09-21-i18n-design.md`.
+fn apply_language_change(app: &tauri::AppHandle, language: Option<String>) -> Result<(), String> {
+    preferences::write_language(language)?;
+    save_session_on_exit(app);
+    // `AppHandle::restart()` skips `RunEvent::Exit` (that is why `save_session_on_exit`
+    // is called explicitly above), and the single-instance plugin only unlinks its
+    // socket from that same event (`tauri-plugin-single-instance`'s macOS impl removes
+    // it in its `RunEvent::Exit` handler, nowhere else). `restart()` spawns the child
+    // process and then exits the parent — `tauri::process::restart` — so the two
+    // briefly overlap. If the child's single-instance handshake reaches the parent's
+    // listening socket before the parent has torn it down, the child reads that as
+    // "an instance is already running" and exits as a duplicate, and md-mini never
+    // comes back. Removing the socket ourselves, here, closes that window.
+    tauri_plugin_single_instance::destroy(app);
+    app.restart();
 }
 
 /// Snapshot and persist the session on the way out, then freeze it.

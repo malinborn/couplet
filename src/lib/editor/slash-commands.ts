@@ -1,8 +1,9 @@
 import type { Completion, CompletionContext, CompletionResult, CompletionSection } from '@codemirror/autocomplete';
 import { EditorState, type Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
-import { blockTemplates } from './block-templates';
+import { blockTemplates, resolveTemplateInsert } from './block-templates';
 import type { SlashAction } from './slash-actions';
+import { t } from '../i18n';
 
 // Shared objects, as the docs for `Completion.section` recommend, rather than
 // a fresh literal per option — CM6 groups options by reference identity.
@@ -18,15 +19,19 @@ function slashCommandSource(actions: readonly SlashAction[]) {
     const from = before.from + slashIndex;
 
     const blockOptions: Completion[] = blockTemplates.map((tpl): Completion => ({
+      // `label` stays the untranslated id — the user types `/table`, and
+      // that match key has to be stable across languages. Only `detail`,
+      // the caption shown in the completion list, is translated.
       label: `/${tpl.id}`,
-      detail: tpl.label,
+      detail: t(tpl.labelKey),
       section: BLOCKS_SECTION,
       apply: (view: EditorView, _completion: Completion, applyFrom: number, applyTo: number) => {
+        const insertText = resolveTemplateInsert(tpl);
         view.dispatch({
-          changes: { from: applyFrom, to: applyTo, insert: tpl.insert },
+          changes: { from: applyFrom, to: applyTo, insert: insertText },
           selection: tpl.cursorOffset
-            ? { anchor: applyFrom + tpl.insert.length + tpl.cursorOffset }
-            : { anchor: applyFrom + tpl.insert.length },
+            ? { anchor: applyFrom + insertText.length + tpl.cursorOffset }
+            : { anchor: applyFrom + insertText.length },
         });
       },
     }));

@@ -78,30 +78,54 @@ function clampHighlight(line: string): string {
   return line.length > HIGHLIGHT_MAX ? `${line.slice(0, HIGHLIGHT_MAX - 1)}…` : line;
 }
 
-export async function checkForUpdates(): Promise<void> {
+/** Outcome of a check, for the manual path — the automatic one only ever acts on 'found'. */
+export type UpdateCheckResult = 'found' | 'none' | 'error';
+
+async function performCheck(force: boolean): Promise<UpdateCheckResult> {
   try {
     const current = await getCurrentVersion();
 
     const res = await fetch(CHECK_URL, {
       headers: { Accept: 'application/vnd.github.v3+json' },
     });
-    if (!res.ok) return;
+    if (!res.ok) return 'error';
 
     const data = await res.json();
     const latest = data.tag_name as string;
 
-    if (!latest || !isNewer(latest, current)) return;
+    if (!latest) return 'error';
+    if (!isNewer(latest, current)) return 'none';
 
     // Rust decides whether this is worth showing — it remembers dismissals and
-    // suppresses the repeat report every subsequent hour.
+    // suppresses the repeat report every subsequent hour. `force` bypasses
+    // that suppression: a manual click always gets the toast, even if the
+    // same version was already dismissed.
     await invoke('report_update', {
       latest,
       current,
       highlight: releaseHighlight(data.body as string | null),
+      force,
     });
+    return 'found';
   } catch {
-    // Network error, repo not found — silently ignore
+    // Network error, repo not found.
+    return 'error';
   }
+}
+
+export async function checkForUpdates(): Promise<void> {
+  await performCheck(false);
+}
+
+/**
+ * The "Check for Updates…" menu item (#82). Unlike the polling check above,
+ * this one always answers: found (the existing `update` toast, via
+ * `report_update`'s `force`), already latest, or the request failed. Callers
+ * push the `update-none` / `update-check-failed` toasts themselves for the
+ * two outcomes the automatic checker deliberately stays silent on.
+ */
+export async function checkForUpdatesManually(): Promise<UpdateCheckResult> {
+  return performCheck(true);
 }
 
 /**

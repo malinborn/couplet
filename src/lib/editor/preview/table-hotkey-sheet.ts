@@ -1,6 +1,7 @@
 import { computePosition, flip, offset, shift, size } from '@floating-ui/dom';
 import { TABLE_CELL_BINDINGS, type CellBinding } from './table-keys';
 import { hotkeyLabel, ariaKeyShortcuts } from '../hotkey-label';
+import { t } from '../../i18n';
 // The chrome (`.cm-toolbar-tooltip`) is declared in this sheet, which reaches
 // the bundle through `live-render/selection-toolbar.ts`. Imported here as well
 // so the dependency is stated rather than inherited: this affordance is on
@@ -83,11 +84,11 @@ function buildSheet(bindings: readonly CellBinding[]): HTMLElement {
     grid.appendChild(keyEl(binding));
     const desc = document.createElement('span');
     desc.className = 'cm-table-hotkeys-desc';
-    desc.textContent = binding.description;
-    if (binding.note) {
+    desc.textContent = t(binding.descriptionKey);
+    if (binding.noteKey) {
       const note = document.createElement('span');
       note.className = 'cm-table-hotkeys-note';
-      note.textContent = binding.note;
+      note.textContent = t(binding.noteKey);
       desc.appendChild(note);
     }
     grid.appendChild(desc);
@@ -111,8 +112,8 @@ export function createHotkeySheetButton(
   btn.className = 'cm-md-table-btn-info';
   btn.type = 'button';
   btn.textContent = 'ⓘ';
-  btn.title = 'Table keyboard shortcuts';
-  btn.setAttribute('aria-label', 'Table keyboard shortcuts');
+  btn.title = t('editor.tables.hotkeys_title');
+  btn.setAttribute('aria-label', t('editor.tables.hotkeys_title'));
   // The keys themselves, for a screen reader that will never see the panel.
   btn.setAttribute(
     'aria-keyshortcuts',

@@ -1,0 +1,147 @@
+{
+  "toast.dismiss": "Закрыть",
+
+  "toast.save_error.headline": "Не удалось сохранить {fileName}",
+  "toast.save_error.instruction": "Ваши изменения не потеряны — устраните причину и нажмите",
+
+  "toast.comment_error.headline": "Не удалось сохранить комментарии к {fileName}",
+  "toast.comment_error.instruction": "Введённый текст остался в поле — устраните причину и продолжайте печатать",
+
+  "toast.language_error.headline": "Не удалось изменить язык",
+
+  "toast.update.headline": "Доступна версия mdmini {latest}",
+  "toast.update.current": "у вас установлена v{current}",
+  "toast.update.copy_title": "Нажмите, чтобы скопировать",
+  "toast.update.copied": "Скопировано!",
+
+  "toast.update_none.message": "У вас уже установлена последняя версия",
+  "toast.update_check_failed.message": "Не удалось проверить обновления — проверьте подключение к интернету",
+
+  "toast.session.windows.one": "{count} окно из прошлой сессии",
+  "toast.session.windows.few": "{count} окна из прошлой сессии",
+  "toast.session.windows.many": "{count} окон из прошлой сессии",
+  "toast.session.windows.other": "{count} окон из прошлой сессии",
+  "toast.session.reopen_prefix": "Нажмите",
+  "toast.session.reopen_suffix": ", чтобы восстановить",
+
+  "toast.ai_nudge.message": "<strong>Ваш AI умеет управлять md-mini</strong> <span class=\"md-toast-dim\">— смотрите меню <strong>AI</strong></span>",
+  "toast.ai_nudge.action": "Начало работы",
+
+  "toast.themes_nudge.message": "<strong>В md-mini есть темы</strong> <span class=\"md-toast-dim\">— четыре штуки в меню <strong>Тема</strong></span>",
+
+  "toast.json_offer.message": "<strong>Похоже, это JSON</strong> <span class=\"md-toast-dim\">— развернуть?</span>",
+  "toast.json_offer.action": "Форматировать",
+  "toast.json_offer.or": "или",
+
+  "toast.ai_bind_copied.saved": "<strong>Промпт скопирован</strong> <span class=\"md-toast-dim\">— отправьте его своему AI-агенту, чтобы агент подключился к этому файлу</span>",
+  "toast.ai_bind_copied.unsaved": "<strong>Сначала сохраните файл</strong> <span class=\"md-toast-dim\">— агенту нужен путь, чтобы его открыть</span>",
+
+  "toast.ai_watch_copied.saved": "<strong>Команда watch скопирована</strong> <span class=\"md-toast-dim\">— вставьте её в сессию своего агента</span>",
+  "toast.ai_watch_copied.unsaved": "<strong>Сначала сохраните файл</strong> <span class=\"md-toast-dim\">— у несохранённого документа нет пути для отслеживания</span>",
+
+  "toast.ai_first_use.message": "<strong>Это был ваш AI</strong> <span class=\"md-toast-dim\">— md-mini подключён</span>",
+  "toast.ai_first_use.more": "Подробнее в меню <strong>AI</strong> → Начало работы",
+
+  "editor.ai_comment.status.open": "ожидает агента",
+  "editor.ai_comment.status.paused": "пока не отправлено",
+  "editor.ai_comment.status.answered": "отвечено",
+  "editor.ai_comment.status.resolved": "закрыто",
+  "editor.ai_comment.anchor_lost": "привязка потеряна",
+  "editor.ai_comment.placeholder_reply": "Ответ — сохраняется по мере набора",
+  "editor.ai_comment.placeholder_comment": "Комментарий — сохраняется по мере набора",
+  "editor.ai_comment.send_now": "отправить сейчас",
+  "editor.ai_comment.sending": "отправка…",
+  "editor.ai_comment.send_now_title": "Передать этот комментарий агенту прямо сейчас, не дожидаясь паузы",
+  "editor.ai_comment.send_to_agent": "отправить агенту",
+  "editor.ai_comment.paste_confirm": "вставьте это в сессию своего агента",
+  "editor.ai_comment.insert_into_text": "вставить в текст",
+  "editor.ai_comment.resolve": "закрыть",
+  "editor.ai_comment.saved_label": "сохранено",
+
+  "editor.ai_ask.dismiss": "Закрыть",
+  "editor.ai_ask.multi_hint": " (выберите любые, затем OK)",
+  "editor.ai_ask.placeholder": "Свой ответ…",
+  "editor.ai_ask.ok": "OK",
+
+  "editor.inspector.link_group": "Ссылка",
+  "editor.inspector.link_url": "URL ссылки",
+  "editor.inspector.open": "Открыть",
+  "editor.inspector.jump_to_heading": "Перейти к заголовку",
+  "editor.inspector.open_in_browser": "Открыть ссылку в браузере",
+  "editor.inspector.remove_link": "Удалить ссылку",
+  "editor.inspector.code_language_group": "Язык блока кода",
+  "editor.inspector.plain_text": "Обычный текст",
+
+  "editor.selection_toolbar.group_label": "Форматирование текста",
+  "editor.selection_toolbar.bold": "Полужирный",
+  "editor.selection_toolbar.italic": "Курсив",
+  "editor.selection_toolbar.strikethrough": "Зачёркнутый",
+  "editor.selection_toolbar.code": "Код",
+  "editor.selection_toolbar.comment": "Комментировать выделение",
+  "editor.selection_toolbar.comment_tooltip": "Комментарий",
+  "editor.selection_toolbar.link": "Ссылка",
+
+  "editor.mermaid.zoom_out": "Уменьшить",
+  "editor.mermaid.zoom_in": "Увеличить",
+  "editor.mermaid.fit": "Вписать диаграмму",
+  "editor.mermaid.resize_hint": "Потяните, чтобы изменить размер, дважды щёлкните для сброса",
+  "editor.mermaid.rendering": "Рендеринг диаграммы…",
+
+  "editor.tables.toggle_mode": "Перенос / полная ширина",
+  "editor.tables.new_column": "Столбец",
+  "editor.tables.hotkeys_title": "Горячие клавиши таблицы",
+
+  "editor.table_keys.col_next": "Столбец справа",
+  "editor.table_keys.col_prev": "Столбец слева",
+  "editor.table_keys.col_prev_note": "Переход внутри строки — строка не меняется",
+  "editor.table_keys.row_next": "Следующая строка, тот же столбец",
+  "editor.table_keys.row_next_note": "В последней строке: выходит из таблицы",
+  "editor.table_keys.break": "Разрыв строки внутри ячейки",
+  "editor.table_keys.commit": "Применить изменение",
+  "editor.table_keys.new_row": "Новая строка ниже",
+  "editor.table_keys.cancel": "Отменить изменение",
+
+  "editor.block_templates.h1": "Заголовок 1",
+  "editor.block_templates.h2": "Заголовок 2",
+  "editor.block_templates.h3": "Заголовок 3",
+  "editor.block_templates.h4": "Заголовок 4",
+  "editor.block_templates.h5": "Заголовок 5",
+  "editor.block_templates.h6": "Заголовок 6",
+  "editor.block_templates.ul": "Маркированный список",
+  "editor.block_templates.ol": "Нумерованный список",
+  "editor.block_templates.task": "Чекбокс",
+  "editor.block_templates.code": "Блок кода",
+  "editor.block_templates.table": "Таблица",
+  "editor.block_templates.quote": "Цитата",
+  "editor.block_templates.hr": "Горизонтальная линия",
+  "editor.block_templates.table_column": "Столбец {n}",
+
+  "editor.slash_theme.action_detail": "Сменить семейство темы",
+  "editor.slash_tone.action_detail": "Переключить светлую / тёмную",
+  "editor.slash_tone.light": "Светлая",
+  "editor.slash_tone.dark": "Тёмная",
+  "editor.slash_tone.follow_system": "Как в системе",
+  "editor.slash_picker.current": "текущая",
+
+  "editor.hover_menu.insert_block": "Вставить блок",
+
+  "editor.env.empty_value": "ПУСТО",
+
+  "ui.copy": "Копировать",
+  "ui.copied": "Скопировано!",
+  "ui.untitled": "Без названия",
+  "ui.untitled_filename": "Без названия.md",
+  "ui.window_title": "{name} — {product}",
+
+  "ui.recent_files.title": "Последние файлы",
+  "ui.recent_files.close": "Закрыть",
+  "ui.recent_files.empty": "Нет недавних файлов.",
+
+  "ui.ai_bind.tooltip": "Скопировать промпт, который подключит этот файл к вашему AI-агенту",
+  "ui.ai_bind.label": "Подключить к AI-агенту",
+
+  "ui.ai_hint.text": "скрыть подсветку правок AI",
+
+  "dialog.external_change.title": "Внешнее изменение",
+  "dialog.external_change.message": "Файл изменён извне. Перезагрузить и потерять ваши изменения?"
+}

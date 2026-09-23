@@ -9,6 +9,7 @@
     "core:window:allow-set-focus",
     "core:window:allow-set-title",
     "core:window:allow-center",
+    "core:webview:allow-set-webview-zoom",
     "cli:default",
     "fs:default",
     "fs:allow-read",

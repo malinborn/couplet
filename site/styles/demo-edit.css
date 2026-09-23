@@ -78,7 +78,7 @@
 }
 
 /* Explicit actor label on the tool-call row: this is the agent invoking
-   mdmini, not the person typing another shell command — see the file
+   couplet, not the person typing another shell command — see the file
    header comment. Small monospace chip, same restrained language as the
    point-demo chrome's tags (site/styles/demo-point.css), themed via the
    page's own accent token instead of a literal color since this terminal

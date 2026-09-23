@@ -8,6 +8,7 @@ import {
 } from '@codemirror/view';
 import { RangeSetBuilder, type Extension } from '@codemirror/state';
 import { cursorInRange } from './utils';
+import { t } from '../../i18n';
 
 // --- Secret detection heuristic ---
 
@@ -110,7 +111,7 @@ class EnvLineWidget extends WidgetType {
     const unquoted = stripQuotes(this.rawValue);
     const isEmpty = !unquoted;
     const secret = !isEmpty && isSecret(unquoted, this.key);
-    const displayValue = isEmpty ? 'EMPTY' : secret ? maskSecret(unquoted) : unquoted;
+    const displayValue = isEmpty ? t('editor.env.empty_value') : secret ? maskSecret(unquoted) : unquoted;
 
     const span = document.createElement('span');
     span.className = 'cm-env-line';
@@ -130,15 +131,15 @@ class EnvLineWidget extends WidgetType {
 
     const copyBtn = document.createElement('button');
     copyBtn.className = 'cm-env-copy';
-    copyBtn.textContent = 'Copy';
+    copyBtn.textContent = t('ui.copy');
     copyBtn.addEventListener('mousedown', (e) => {
       e.preventDefault();
       e.stopPropagation();
 
       navigator.clipboard.writeText(unquoted).then(() => {
-        copyBtn.textContent = 'Copied!';
+        copyBtn.textContent = t('ui.copied');
         setTimeout(() => {
-          copyBtn.textContent = 'Copy';
+          copyBtn.textContent = t('ui.copy');
         }, 1500);
       }).catch(() => {
         // Clipboard API may fail in certain contexts — fail silently

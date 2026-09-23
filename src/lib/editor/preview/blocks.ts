@@ -4,6 +4,7 @@ import type { RangeSetBuilder } from '@codemirror/state';
 import type { SyntaxNode } from '@lezer/common';
 import { shouldReveal } from './flavour';
 import type { DecoSink } from './utils';
+import { t } from '../../i18n';
 
 class CodeBlockHeaderWidget extends WidgetType {
   constructor(
@@ -27,15 +28,15 @@ class CodeBlockHeaderWidget extends WidgetType {
 
     const copyBtn = document.createElement('button');
     copyBtn.className = 'cm-md-code-copy';
-    copyBtn.textContent = 'Copy';
+    copyBtn.textContent = t('ui.copy');
     copyBtn.addEventListener('mousedown', (e) => {
       e.preventDefault();
       e.stopPropagation();
       const code = view.state.doc.sliceString(this.codeFrom, this.codeTo);
       navigator.clipboard.writeText(code);
-      copyBtn.textContent = 'Copied!';
+      copyBtn.textContent = t('ui.copied');
       setTimeout(() => {
-        copyBtn.textContent = 'Copy';
+        copyBtn.textContent = t('ui.copy');
       }, 1500);
     });
     header.appendChild(copyBtn);

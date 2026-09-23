@@ -76,7 +76,7 @@
   animation: none !important;
 }
 
-/* ── Shared "window" chrome (terminal + mdmini mocks) ── */
+/* ── Shared "window" chrome (terminal + couplet mocks) ── */
 .anyway-winbar {
   display: flex;
   align-items: center;
@@ -110,7 +110,7 @@
   position: absolute;
   left: 14px;
   top: 14px;
-  /* Wide enough to show the whole batch command ("mdmini README.md
+  /* Wide enough to show the whole batch command ("couplet README.md
      CLAUDE.md auth_spec.md", 40 chars) without clipping — the point of Act 1
      is watching that exact line get typed in full, not just its first third. */
   width: 322px;
@@ -151,10 +151,10 @@
   60%, 100% { opacity: 0; }
 }
 
-/* ── mdmini mock windows (3 cascaded + 1 solo for the "as an app" act) ── */
+/* ── couplet mock windows (3 cascaded + 1 solo for the "as an app" act) ── */
 .anyway-win {
   position: absolute;
-  /* Wide enough that "auth_spec.md — md-mini" (the longest of the three
+  /* Wide enough that "auth_spec.md — couplet" (the longest of the three
      cascade titles) never hits `.anyway-wintitle`'s ellipsis — verified by
      screenshot. */
   width: 232px;
