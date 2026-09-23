@@ -115,7 +115,7 @@ mentions port 80 beyond opening it in the firewall (ACME needs it).
 
    Set the key without pasting it anywhere:
    ```bash
-   gh secret set DEPLOY_SSH_KEY --repo malinborn/mdmini < /home/deploy-mdmini/.ssh/id_ed25519
+   gh secret set DEPLOY_SSH_KEY --repo malinborn/couplet < /home/deploy-mdmini/.ssh/id_ed25519
    ```
 
 5. **First deploy** — push to main (or run the workflow manually via

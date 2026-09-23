@@ -230,7 +230,7 @@ cat <<EOF
  Certificates: Caddy requests them on the first HTTPS request and
  renews them automatically. Nothing to schedule.
 
- Add these three GitHub Actions secrets to malinborn/mdmini:
+ Add these three GitHub Actions secrets to malinborn/couplet:
 
    DEPLOY_HOST = $(curl -s4 --max-time 5 ifconfig.me || echo '<this server IP>')
    DEPLOY_USER = ${DEPLOY_USER}
@@ -238,7 +238,7 @@ cat <<EOF
 
  Set the key without it passing through anyone's chat history:
 
-   gh secret set DEPLOY_SSH_KEY --repo malinborn/mdmini < ${KEY_PATH}
+   gh secret set DEPLOY_SSH_KEY --repo malinborn/couplet < ${KEY_PATH}
 
  …or copy it from here:
 ================================================================
