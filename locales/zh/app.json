@@ -116,6 +116,13 @@
   "editor.block_templates.hr": "分割线",
   "editor.block_templates.table_column": "列 {n}",
 
+  "editor.slash_theme.action_detail": "切换主题系列",
+  "editor.slash_tone.action_detail": "切换浅色 / 深色",
+  "editor.slash_tone.light": "浅色",
+  "editor.slash_tone.dark": "深色",
+  "editor.slash_tone.follow_system": "跟随系统",
+  "editor.slash_picker.current": "当前",
+
   "editor.hover_menu.insert_block": "插入块",
 
   "editor.env.empty_value": "空",

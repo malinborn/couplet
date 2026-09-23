@@ -116,6 +116,13 @@
   "editor.block_templates.hr": "Горизонтальная линия",
   "editor.block_templates.table_column": "Столбец {n}",
 
+  "editor.slash_theme.action_detail": "Сменить семейство темы",
+  "editor.slash_tone.action_detail": "Переключить светлую / тёмную",
+  "editor.slash_tone.light": "Светлая",
+  "editor.slash_tone.dark": "Тёмная",
+  "editor.slash_tone.follow_system": "Как в системе",
+  "editor.slash_picker.current": "текущая",
+
   "editor.hover_menu.insert_block": "Вставить блок",
 
   "editor.env.empty_value": "ПУСТО",

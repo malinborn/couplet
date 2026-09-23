@@ -116,6 +116,13 @@
   "editor.block_templates.hr": "Horizontal rule",
   "editor.block_templates.table_column": "Column {n}",
 
+  "editor.slash_theme.action_detail": "Switch the theme family",
+  "editor.slash_tone.action_detail": "Switch light / dark",
+  "editor.slash_tone.light": "Light",
+  "editor.slash_tone.dark": "Dark",
+  "editor.slash_tone.follow_system": "Follow System",
+  "editor.slash_picker.current": "current",
+
   "editor.hover_menu.insert_block": "Insert block",
 
   "editor.env.empty_value": "EMPTY",

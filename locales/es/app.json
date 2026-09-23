@@ -116,6 +116,13 @@
   "editor.block_templates.hr": "Línea horizontal",
   "editor.block_templates.table_column": "Columna {n}",
 
+  "editor.slash_theme.action_detail": "Cambiar la familia de tema",
+  "editor.slash_tone.action_detail": "Cambiar claro / oscuro",
+  "editor.slash_tone.light": "Claro",
+  "editor.slash_tone.dark": "Oscuro",
+  "editor.slash_tone.follow_system": "Seguir al sistema",
+  "editor.slash_picker.current": "actual",
+
   "editor.hover_menu.insert_block": "Insertar bloque",
 
   "editor.env.empty_value": "VACÍO",

@@ -3,6 +3,7 @@
   import { EditorView } from '@codemirror/view';
   import { ChangeSet, EditorState, Transaction } from '@codemirror/state';
   import { createExtensions, languageCompartment, previewCompartment } from './setup';
+  import type { ThemeControl } from './slash-theme';
   import { languages } from '@codemirror/language-data';
   import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
   import { findCodeLanguage, isShellConfig } from './file-language';
@@ -38,6 +39,7 @@
     onAiHighlightVisibilityChange,
     onJsonOffer,
     onJsonOfferWithdrawn,
+    themeControl,
     handle = $bindable(),
   }: {
     onchange?: (doc: string) => void;
@@ -46,6 +48,12 @@
     onJsonOffer?: () => void;
     /** The pending offer stopped being applicable — take the toast down. */
     onJsonOfferWithdrawn?: () => void;
+    /**
+     * Enables `/theme` in the slash menu. Omitted by `site/demos/editor-demo.ts`
+     * (the landing's demo cards), which is what keeps them from repainting the
+     * whole page — see `EditorDeps` in `./setup`.
+     */
+    themeControl?: ThemeControl;
     handle?: EditorHandle;
   } = $props();
 
@@ -146,7 +154,7 @@
     const state = EditorState.create({
       doc: '',
       extensions: [
-        ...createExtensions(),
+        ...createExtensions({ themeControl }),
         EditorView.updateListener.of((update) => {
           if (update.docChanged && onchange) {
             onchange(update.state.doc.toString());

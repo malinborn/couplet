@@ -50,8 +50,17 @@ export function createThemeStore() {
   let theme = $state<ConcreteTheme>(initial.theme);
   let followSystem = $state(initial.followSystem);
   let systemDark = $state(window.matchMedia('(prefers-color-scheme: dark)').matches);
+  // `/theme` slash-command live preview (slash-theme.ts). Set while the
+  // picker is open, cleared on commit or abort; never persisted — a direct
+  // write to `documentElement`'s attribute was rejected for the same reason
+  // this exists as a store field: any later run of the `$effect` below (e.g.
+  // the system theme flipping while the picker is open) would overwrite it
+  // back to the saved value, and the preview would silently vanish.
+  let previewOverride = $state<ConcreteTheme | null>(null);
 
-  const resolved = $derived<ConcreteTheme>(resolveTheme({ theme, followSystem }, systemDark));
+  const resolved = $derived<ConcreteTheme>(
+    previewOverride ?? resolveTheme({ theme, followSystem }, systemDark)
+  );
   const isDark = $derived(isDarkTheme(resolved));
 
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
@@ -111,6 +120,17 @@ export function createThemeStore() {
     },
     get isDark() {
       return isDark;
+    },
+    /**
+     * Raw OS preference, exposed so a `/theme` preview of "System" can show
+     * the half the OS would pick right now, without committing `followSystem`.
+     */
+    get systemDark() {
+      return systemDark;
+    },
+    /** `/theme` slash-command preview — see `previewOverride` above. */
+    setPreview(value: ConcreteTheme | null) {
+      previewOverride = value;
     },
   };
 }

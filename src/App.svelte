@@ -4,7 +4,9 @@
   import type { EditorHandle } from './lib/editor/Editor.svelte';
   import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createFileState, createRecentFilesStore, setProductName } from './lib/stores.svelte';
   import { getName } from '@tauri-apps/api/app';
-  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type PendingOpen } from './lib/tauri/commands';
+  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, broadcastTheme, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type PendingOpen } from './lib/tauri/commands';
+  import { concreteTheme, halfOf, type ThemeFamily } from './lib/theme-resolve';
+  import type { ThemeControl } from './lib/editor/slash-theme';
   import {
     onMenuEvent,
     onOpenFile,
@@ -89,6 +91,54 @@
 
   const theme = createThemeStore();
   const engine = createEngineStore();
+
+  /**
+   * Bridges `/theme` and `/tone` (which cannot import the theme store
+   * directly — see `EditorDeps` in `lib/editor/setup.ts`) to it.
+   *
+   * Each commit mirrors what the matching native Theme-menu click already
+   * does in this file's `menu-event` handler below: write the choice,
+   * correct the native menu's checkmarks, and broadcast to every other
+   * window over the same `menu-event` path (`broadcast_theme` in
+   * commands.rs), so two windows never end up on different themes after a
+   * picker closes. `commitFamily` and `commitTone` each touch only the one
+   * thing their own picker owns — a family choice never changes the tone or
+   * "Follow System", and a tone choice never changes the family.
+   */
+  const themeControl: ThemeControl = {
+    get current() {
+      return theme.resolved;
+    },
+    get followSystem() {
+      return theme.followSystem;
+    },
+    previewFamily(family: ThemeFamily | null) {
+      if (family === null) {
+        theme.setPreview(null);
+      } else {
+        // Same tone that is already on screen — a family preview must never
+        // move the brightness (that split is the whole point of `/theme`
+        // vs. `/tone`), whether that tone came from an explicit choice or
+        // from "Follow System".
+        theme.setPreview(concreteTheme(family, halfOf(theme.resolved)));
+      }
+    },
+    commitFamily(family: ThemeFamily) {
+      theme.setPreview(null);
+      theme.setFamily(family);
+      syncThemeMenu(theme.resolved, theme.followSystem);
+      broadcastTheme({ family });
+    },
+    commitTone(tone: 'light' | 'dark' | 'system') {
+      if (tone === 'system') {
+        theme.setFollowSystem(true);
+      } else {
+        theme.setHalf(tone);
+      }
+      syncThemeMenu(theme.resolved, theme.followSystem);
+      broadcastTheme(tone === 'system' ? { followSystem: true } : { half: tone });
+    },
+  };
 
   const zoom = createZoomStore();
   const lineGlow = createLineGlowStore();
@@ -1879,6 +1929,7 @@
     onAiHighlightVisibilityChange={handleAiHighlightVisibilityChange}
     onJsonOffer={() => toasts.push({ kind: 'json-offer' })}
     onJsonOfferWithdrawn={() => toasts.dismissKind('json-offer')}
+    {themeControl}
   />
 </main>
 

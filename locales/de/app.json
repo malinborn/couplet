@@ -116,6 +116,13 @@
   "editor.block_templates.hr": "Trennlinie",
   "editor.block_templates.table_column": "Spalte {n}",
 
+  "editor.slash_theme.action_detail": "Themenfamilie wechseln",
+  "editor.slash_tone.action_detail": "Hell / Dunkel wechseln",
+  "editor.slash_tone.light": "Hell",
+  "editor.slash_tone.dark": "Dunkel",
+  "editor.slash_tone.follow_system": "Systemeinstellung folgen",
+  "editor.slash_picker.current": "aktuell",
+
   "editor.hover_menu.insert_block": "Block einfügen",
 
   "editor.env.empty_value": "LEER",

@@ -71,4 +71,21 @@ export const editorTheme = EditorView.theme({
       backgroundColor: 'var(--highlight)',
     },
   },
+  // `/theme` picker swatches (slash-theme.ts's `renderThemeSwatch`, via
+  // `autocompletion({ addToOptions })`). Colours are set inline per-option as
+  // `background-color` — see the comment on `SWATCH_COLORS` for why they are
+  // hardcoded rather than read from this theme's own CSS variables.
+  '.cm-md-theme-swatches': {
+    display: 'inline-flex',
+    gap: '3px',
+    marginRight: '6px',
+    verticalAlign: 'middle',
+  },
+  '.cm-md-theme-swatch': {
+    display: 'inline-block',
+    width: '10px',
+    height: '10px',
+    borderRadius: '50%',
+    border: '1px solid var(--color-border)',
+  },
 });
