@@ -93,9 +93,6 @@ kbd { font-family: var(--ui); font-size: 10.5px; color: var(--text-muted); lette
 
 /* ───────────────────────── Outside-the-window chrome ───────────────────────── */
 .corner { position: fixed; top: 16px; right: 20px; z-index: 5000; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; width: 340px; }
-.key-switch { align-items: center; }
-.key-switch .lbl { font-size: 11.5px; color: var(--text-muted); padding: 0 6px 0 7px; white-space: nowrap; }
-.key-switch button { font-family: var(--ui); font-variant-numeric: tabular-nums; }
 .corner-note { font-size: 11px; line-height: 1.4; color: var(--text-muted); text-align: right; padding: 0 4px; }
 .theme-switch {
   display: flex; gap: 2px; padding: 3px;
@@ -252,13 +249,16 @@ kbd { font-family: var(--ui); font-size: 10.5px; color: var(--text-muted); lette
 .drawer-head { padding: 16px 18px 10px 20px; flex: 0 0 auto; }
 .drawer-title { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 12px; }
 .drawer-title b { font-size: 13px; font-weight: 600; letter-spacing: -0.005em; }
-.drawer-title b span { font-family: var(--font-code); font-weight: 400; color: var(--text-subtle); margin-left: 3px; }
-.drawer-title small { font-size: 11.5px; color: var(--text-muted); }
-.sorts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 4px; }
-.sorts .lbl { font-size: 11px; color: var(--text-muted); margin-right: 4px; }
+.drawer-title b .wno { font-family: var(--font-code); font-weight: 400; color: var(--text-subtle); margin-left: 3px; }
+.drawer-title b .cnt { font-weight: 400; color: var(--text-muted); margin-left: 2px; }
+.drawer-title small { font-size: 11.5px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 5px; }
+.chip { display: inline-block; padding: 1px 5px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-base); color: var(--text-subtle); font-size: 10.5px; line-height: 1.35; }
+.sorts { display: flex; flex-wrap: nowrap; align-items: center; gap: 0; white-space: nowrap; }
+.sorts .lbl { font-size: 11px; color: var(--text-muted); margin-right: 2px; }
+.sorts .dot { color: var(--text-muted); opacity: .6; font-size: 11px; padding: 0 1px; }
 .sort-btn {
-  display: inline-flex; align-items: center; gap: 6px; border: 1px solid transparent; background: transparent;
-  border-radius: 7px; padding: 4px 7px; font-size: 11.5px; color: var(--text-subtle); cursor: pointer;
+  display: inline-flex; align-items: center; gap: 5px; border: 1px solid transparent; background: transparent; white-space: nowrap;
+  border-radius: 7px; padding: 3px 6px; font-size: 11.5px; color: var(--text-subtle); cursor: pointer;
   transition: background-color .15s, border-color .15s, color .15s;
 }
 .sort-btn:hover { background: var(--bg-base); border-color: var(--border); color: var(--text-primary); }
@@ -411,14 +411,72 @@ body.shift .tab-cards .card { cursor: cell; }
   cursor: pointer; user-select: none; -webkit-user-select: none;
 }
 
+/* ── Type-to-filter ── */
+.search {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 7px; margin: 0 14px 0 12px; padding: 0 10px; height: 0; overflow: hidden; opacity: 0;
+  background: var(--bg-base); border: 1px solid transparent; border-radius: 9px; font-size: 13px;
+  transition: height .2s var(--ease), opacity .15s, margin .2s var(--ease), border-color .2s;
+}
+.search.on { height: 34px; opacity: 1; margin-bottom: 8px; border-color: var(--border); }
+.search .s-ico { color: var(--text-muted); font-size: 13px; }
+.search .s-q { white-space: pre; color: var(--text-primary); font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
+.search .caret { width: 1.5px; height: 15px; margin-left: -6px; background: var(--color-cursor, var(--text-primary)); animation: blink 1.1s steps(1) infinite; }
+.search .s-n { margin-left: auto; font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+@keyframes blink { 50% { opacity: 0; } }
+mark { background: color-mix(in oklab, var(--brand-a) 24%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; box-shadow: 0 0 0 1px color-mix(in oklab, var(--brand-a) 30%, transparent); }
+.card-preview .hit { color: var(--text-primary); }
+.card-preview .hit-l { font-family: var(--ui); font-size: 10.5px; color: var(--text-muted); margin-bottom: 1px; }
+.card.filtered-out { opacity: 0; transform: translateX(-16px); padding-top: 0; padding-bottom: 0; margin-bottom: 0; border-width: 0; overflow: hidden; }
+.card.gone { display: none; }
+.empty { display: none; padding: 34px 10px; text-align: center; font-size: 12.5px; color: var(--text-muted); }
+.empty.on { display: block; animation: arrive .3s var(--ease); }
+
+/* ── Tweak: key hint along the notch ── */
+.notch, .notch .shape { transition: height .25s var(--ease); }
+.notch .shape { transition: transform .22s var(--ease), box-shadow .6s ease, border-color .6s ease, height .25s var(--ease); }
+.notch .nk {
+  /* rotated 180°, so the bottom border lands on top — a hairline under the count */
+  display: none; position: relative; margin: 7px 0 0 -3px; padding-bottom: 7px; border-bottom: 1px solid color-mix(in oklab, var(--text-muted) 45%, transparent);
+  writing-mode: vertical-rl; transform: rotate(180deg); font-size: 10px; letter-spacing: .08em; line-height: 1; color: var(--text-muted);
+}
+body.notch-key .notch { height: 140px; }
+body.notch-key .notch .nk { display: block; }
+.ai-bind { transition: transform .18s var(--ease), opacity .18s ease, top .25s var(--ease); }
+body.notch-key .ai-bind { top: 162px; }
+
+/* ── Tweak: View → Tabs → Compact ── */
+.card-imeta { display: none; }
+body.compact .card { padding: 7px 10px 7px 16px; margin-bottom: 4px; border-radius: 9px; }
+body.compact .card::before { top: 8px; bottom: 8px; }
+body.compact .card-meta { display: none; }
+body.compact .card-name { flex: 0 1 auto; max-width: 68%; font-size: 13px; }
+body.compact .card-imeta { display: block; flex: 1 1 0; min-width: 0; font-size: 11.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body.compact .card-imeta .br { font-family: var(--font-code); font-size: 10.5px; }
+body.compact .card-preview, body.compact .card.expanded .card-preview { margin-top: 1px; max-height: 1.55em; -webkit-mask-image: none; mask-image: none; }
+body.compact .card-preview > div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body.compact .card-preview .hit-l { display: none; }
+body.compact .card.expanded { transform: none; }
+
+/* ── Demo toggles ── */
+.toggles { display: grid; gap: 7px; margin-bottom: 12px; }
+.tgl { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--text-primary); cursor: pointer; user-select: none; -webkit-user-select: none; }
+.tgl input { position: absolute; opacity: 0; pointer-events: none; }
+.tgl .sw { flex: 0 0 auto; width: 28px; height: 16px; border-radius: 999px; background: var(--highlight); position: relative; transition: background-color .2s; }
+.tgl .sw::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--bg-base); box-shadow: 0 1px 2px rgba(0,0,0,.2); transition: transform .2s var(--ease); }
+.tgl input:checked + .sw { background: var(--brand-a); }
+.tgl input:checked + .sw::after { transform: translateX(12px); }
+.tgl input:focus-visible + .sw { outline: 2px solid var(--text-muted); outline-offset: 2px; }
+.tgl code { font-family: var(--font-code); font-size: 11.5px; }
+
 @media (prefers-reduced-motion: reduce) {
+  .search .caret { animation: none; }
   .notch.ai .glow, .card.ai-unread .ring, .card.ai-unread .wash { animation: none; background-position: 50% 50%; }
   .drawer-wrap, .card, .card-preview, .scrim { transition-duration: .01s !important; }
   .card.arriving, .win.mini { animation: none; }
 }
 </style>
 </head>
-<body>
+<body class="notch-key">
 
 <div class="corner">
   <div class="theme-switch" role="group" aria-label="Тема">
@@ -427,15 +485,7 @@ body.shift .tab-cards .card { cursor: cell; }
     <button data-theme-btn="aurora-light">Aurora light</button>
     <button data-theme-btn="aurora-dark">Aurora dark</button>
   </div>
-  <div class="theme-switch key-switch" role="group" aria-label="Клавиша дровера">
-    <span class="lbl">Клавиша дровера:</span>
-    <button data-key-btn="P">⌘P</button>
-    <button data-key-btn="Backslash">⌘\</button>
-    <button data-key-btn="J">⌘J</button>
-    <button data-key-btn="AltS">⌘⌥S</button>
-    <button data-key-btn="D">⌘D</button>
-  </div>
-  <p class="corner-note">Часть сочетаний браузер может перехватить сам (⌘P — печать, ⌘D — закладка, ⌘L — адрес). Кнопка в панели внизу работает всегда.</p>
+  <p class="corner-note">Часть сочетаний браузер может перехватить сам (⌘L — адрес, ⌘R — перезагрузка). Кнопки в панели внизу работают всегда.</p>
 </div>
 
 <div class="win" id="win1" data-win="7">
@@ -449,15 +499,16 @@ body.shift .tab-cards .card { cursor: cell; }
     <div class="drawer-wrap" id="drawerWrap">
       <aside class="drawer" id="drawer" aria-label="Вкладки окна #7">
         <div class="drawer-head">
-          <div class="drawer-title"><b>Окно<span>#7</span></b><small><span id="tabCount"></span> · <kbd class="dk-label">⌘P</kbd> закрыть</small></div>
+          <div class="drawer-title"><b>Окно<span class="wno">#7</span> <span class="cnt">· <span id="tabCount"></span></span></b></div>
           <div class="sorts">
             <span class="lbl">Разложить:</span>
-            <button class="sort-btn" data-sort="opened" title="Недавно открытые сверху">по открытию <kbd>⌘L</kbd></button>
-            <button class="sort-btn" data-sort="viewed" title="Недавно просмотренные сверху">по просмотру <kbd>⌘R</kbd></button>
-            <button class="sort-btn" data-sort="ai" title="Непросмотренные вкладки от ИИ сверху"><span class="ai-g">✦</span> новое от ИИ сверху <kbd>⌘U</kbd></button>
+            <button class="sort-btn" data-sort="opened" title="Недавно открытые сверху">открытие <kbd>⌘L</kbd></button><span class="dot">·</span>
+            <button class="sort-btn" data-sort="viewed" title="Недавно просмотренные сверху">просмотр <kbd>⌘R</kbd></button><span class="dot">·</span>
+            <button class="sort-btn" data-sort="ai" title="Непросмотренные вкладки от ИИ сверху"><span class="ai-g">✦</span> ИИ <kbd>⌘U</kbd></button>
           </div>
         </div>
-        <div class="tab-list" id="tabList"><div class="tab-cards" id="tabCards"></div><div class="drop-ind" id="dropInd"></div></div>
+        <div class="search" id="search" aria-live="polite"><span class="s-ico" aria-hidden="true">⌕</span><span class="s-q" id="sQ"></span><span class="caret" aria-hidden="true"></span><span class="s-n" id="sN"></span></div>
+        <div class="tab-list" id="tabList"><div class="tab-cards" id="tabCards"></div><div class="empty" id="emptyRes">Ничего не найдено</div><div class="drop-ind" id="dropInd"></div></div>
         <div class="sel-bar" id="selBar">
           <span class="n" id="selN"></span>
           <button id="selNewWin">В новое окно</button>
@@ -468,7 +519,7 @@ body.shift .tab-cards .card { cursor: cell; }
       </aside>
       <div class="notch" id="notch" role="button" tabindex="0" aria-label="Вкладки окна #7">
         <span class="shape" aria-hidden="true"><span class="glow"></span></span>
-        <span class="wid">#7</span><span class="cnt" id="notchCnt"></span>
+        <span class="wid">#7</span><span class="cnt" id="notchCnt"></span><span class="nk" aria-hidden="true">⌘J</span>
       </div>
     </div>
     <div class="toast" id="toast"></div>
@@ -479,12 +530,16 @@ body.shift .tab-cards .card { cursor: cell; }
   <h3>Демо-управление</h3>
   <div class="row">
     <button class="demo-btn ai" id="demoAi"><span>✦ ИИ открыл вкладку в фоне</span></button>
-    <button class="demo-btn" id="demoToggle"><span>Ящик: открыть / закрыть</span><kbd class="dk-label">⌘P</kbd></button>
+    <button class="demo-btn" id="demoToggle"><span>Ящик: открыть / закрыть</span><kbd>⌘J</kbd></button>
     <button class="demo-btn" id="demoReopen"><span>Вернуть закрытую</span><kbd>⌘⇧T</kbd></button>
     <button class="demo-btn" id="demoReset"><span>Сбросить макет</span></button>
   </div>
+  <div class="toggles">
+    <label class="tgl"><input type="checkbox" id="tglCompact"><span class="sw"></span><span><code>View → Tabs → Compact</code></span></label>
+  </div>
   <ul>
-    <li>Хлястик <b>#7</b> слева: навести (200 мс), клик или <kbd class="dk-label">⌘P</kbd></li>
+    <li>Хлястик <b>#7</b> слева: навести (200 мс), клик или <kbd>⌘J</kbd></li>
+    <li>В открытом ящике просто печатайте — фильтр по имени и тексту; Esc — сброс</li>
     <li>Задержать курсор на карточке ~0.6 с — раскроется</li>
     <li>Тянуть карточку — порядок; за окно — новое окно; на другое окно — перенос</li>
     <li>⇧ клик / ⇧ протяжка — выделение; ⌘ клик — закрыть</li>
@@ -663,15 +718,11 @@ const $ = (s, r = document) => r.querySelector(s);
 /* ⌘ on a Mac; Ctrl only as the stand-in on other platforms (no Control combos on macOS). */
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const modKey = e => IS_MAC ? e.metaKey : e.ctrlKey;
-/* Drawer hotkey is not final — the owner compares candidates via the corner selector. */
-const DRAWER_KEYS = {
-  P: { code: 'KeyP', alt: false, label: '⌘P' },
-  Backslash: { code: 'Backslash', alt: false, label: '⌘\\' },
-  J: { code: 'KeyJ', alt: false, label: '⌘J' },
-  AltS: { code: 'KeyS', alt: true, label: '⌘⌥S' },
-  D: { code: 'KeyD', alt: false, label: '⌘D' },
-};
-let drawerKey = DRAWER_KEYS.P;
+/* Drawer hotkey: ⌘J (final). */
+const drawerKey = { code: 'KeyJ', alt: false, label: '⌘J' };
+/* Type-to-filter state. `view` is what the list currently shows, in display order. */
+let query = '', view = [];
+let compact = false;
 const T = id => tabs.get(id);
 const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 function inline(s) {
@@ -724,31 +775,93 @@ function renderEditor() {
   doc.classList.add('swap');
   setTimeout(() => { doc.innerHTML = renderMd(t.md); doc.dataset.id = t.id; $('#editor1').scrollTop = 0; doc.classList.remove('swap'); }, doc.dataset.id ? 120 : 0);
 }
-function cardHTML(t, i) {
+/* Markdown line → plain text (for search, compact first line, content hits). */
+const plainLine = l => l.replace(/^#{1,6}\s+/, '').replace(/^- \[( |x)\] /, '').replace(/^(?:-|\d+\.|>) /, '').replace(/\*\*|`|\*/g, '').trim();
+const firstLine = md => { for (const l of md.split('\n')) { if (l.startsWith('```')) continue; const p = plainLine(l); if (p) return p; } return ''; };
+function hl(text, q) {
+  if (!q) return esc(text);
+  const lo = text.toLowerCase(), ql = q.toLowerCase(); let out = '', i = 0, j;
+  while ((j = lo.indexOf(ql, i)) !== -1) { out += esc(text.slice(i, j)) + '<mark>' + esc(text.slice(j, j + ql.length)) + '</mark>'; i = j + ql.length; }
+  return out + esc(text.slice(i));
+}
+/* Ranking: filename prefix (0) > filename substring (1) > content (2). */
+function matchTab(t, ql) {
+  const i = t.name.toLowerCase().indexOf(ql);
+  if (i === 0) return { rank: 0 };
+  if (i > 0) return { rank: 1 };
+  for (const raw of t.md.split('\n')) { const l = plainLine(raw); if (l && l.toLowerCase().includes(ql)) return { rank: 2, line: l }; }
+  return null;
+}
+function computeView() {
+  if (!query) return { ids: [...W.order], m: new Map() };
+  const ql = query.toLowerCase(), m = new Map();
+  for (const id of W.order) { const r = matchTab(T(id), ql); if (r) m.set(id, r); }
+  const ids = [...m.keys()].sort((a, b) => m.get(a).rank - m.get(b).rank || W.order.indexOf(a) - W.order.indexOf(b));
+  return { ids, m };
+}
+function hitLine(line, q) {
+  // keep the match inside the visible part of a long line
+  const j = line.toLowerCase().indexOf(q.toLowerCase());
+  const cut = j > 42 ? '…' + line.slice(j - 24) : line;
+  return hl(cut, q);
+}
+function cardHTML(t, i, mm) {
   const meta = t.proj ? `<span>${esc(t.proj)}</span><span class="br">⎇ ${esc(t.br)}</span>` : `<span>не сохранён</span>`;
+  const imeta = t.proj ? `${esc(t.proj)} · <span class="br">⎇ ${esc(t.br)}</span>` : 'не сохранён';
+  const nameQ = mm && mm.rank < 2 ? query : '';
+  let preview;
+  if (mm && mm.rank === 2) preview = `<div class="hit-l">в тексте:</div><div class="hit">${hitLine(mm.line, query)}</div>`;
+  else if (compact) { const f = firstLine(t.md); preview = f ? `<div>${esc(f)}</div>` : ''; }
+  else preview = renderPreview(t.md);
   return `<span class="ring"></span><span class="wash"></span>
-    <div class="card-head"><span class="sel-dot">✓</span><span class="card-name">${esc(t.name)}</span><span class="ai-chip">✦ от ИИ</span>
+    <div class="card-head"><span class="sel-dot">✓</span><span class="card-name">${hl(t.name, nameQ)}</span><span class="card-imeta">${imeta}</span><span class="ai-chip">✦ от ИИ</span>
       ${i < 9 ? `<kbd class="card-kbd">⌘${i + 1}</kbd>` : ''}<button class="card-close" type="button" aria-label="Закрыть ${esc(t.name)}" title="Закрыть (⌘-клик)">×</button></div>
     <div class="card-meta">${meta}</div>
-    <div class="card-preview">${renderPreview(t.md)}</div>`;
+    ${preview ? `<div class="card-preview">${preview}</div>` : ''}`;
+}
+/* Animated hide/show for filtered cards. */
+function setFiltered(el, hide) {
+  if (hide === el.classList.contains('filtered-out')) return;
+  clearTimeout(el._ft);
+  if (hide) {
+    clearTimeout(el._hold); el.classList.remove('expanded');
+    el.style.height = el.offsetHeight + 'px'; void el.offsetHeight;
+    el.classList.add('filtered-out'); el.style.height = '0px';
+    el._ft = setTimeout(() => el.classList.add('gone'), 230);
+  } else {
+    el.classList.remove('gone', 'filtered-out'); el.style.height = '';
+    const h = el.offsetHeight;
+    el.classList.add('filtered-out'); el.style.height = '0px'; void el.offsetHeight;
+    el.classList.remove('filtered-out'); el.style.overflow = 'hidden'; el.style.height = h + 'px';
+    el._ft = setTimeout(() => { el.style.height = ''; el.style.overflow = ''; }, 260);
+  }
 }
 function renderList() {
   const box = $('#tabCards'); const seen = new Set();
-  W.order.forEach((id, i) => {
+  const { ids, m } = computeView(); view = ids;
+  const shown = new Set(ids);
+  const all = [...ids, ...W.order.filter(id => !shown.has(id))];
+  all.forEach((id, pos) => {
     const t = T(id); let el = cardEls.get(id);
     if (!el) { el = document.createElement('div'); el.className = 'card'; el.dataset.id = id; wireCard(el); cardEls.set(id, el); }
-    const sig = `${i < 9 ? i : 9}|${t.name}`;
-    if (el.dataset.sig !== sig) { el.innerHTML = cardHTML(t, i); el.dataset.sig = sig; }
+    const vis = shown.has(id), i = vis ? pos : 99, mm = m.get(id);
+    const sig = `${i < 9 ? i : 9}|${t.name}|${compact ? 1 : 0}|${mm ? query + '|' + mm.rank : ''}`;
+    if (el.dataset.sig !== sig) { el.innerHTML = cardHTML(t, i, mm); el.dataset.sig = sig; }
     el.classList.toggle('active', id === W.active);
     el.classList.toggle('selected', selected.has(id));
     el.classList.toggle('ai-unread', t.aiUnread);
     el.classList.toggle('untitled', !t.proj);
-    el.classList.toggle('kb', drawer.open && drawer.kb === i);
+    el.classList.toggle('kb', drawer.open && vis && drawer.kb === pos);
     if (arriving.has(id)) { arriving.delete(id); el.classList.remove('arriving'); void el.offsetWidth; el.classList.add('arriving'); setTimeout(() => el.classList.remove('arriving'), 520); }
-    if (box.children[i] !== el) box.insertBefore(el, box.children[i] || null);
+    if (box.children[pos] !== el) box.insertBefore(el, box.children[pos] || null);
+    setFiltered(el, !vis);
     seen.add(id);
   });
   for (const [id, el] of cardEls) if (!seen.has(id)) { el.remove(); cardEls.delete(id); }
+  $('#search').classList.toggle('on', !!query);
+  $('#sQ').textContent = query;
+  $('#sN').textContent = query ? (ids.length ? `${ids.length} из ${W.order.length}` : '') + ' · esc — сброс' : '';
+  $('#emptyRes').classList.toggle('on', !!query && !ids.length);
   const n = W.order.length;
   $('#tabCount').textContent = `${n} ${plural(n, 'вкладка', 'вкладки', 'вкладок')}`;
   $('#notchCnt').textContent = n;
@@ -762,10 +875,10 @@ function renderSelBar() {
 }
 function renderHint() { $('#hint').classList.toggle('on', drawer.open && (drawer.firstOpen || shiftHeld)); }
 function flip(mutate) {
-  const before = new Map(); cardEls.forEach((el, id) => before.set(id, el.getBoundingClientRect().top));
+  const before = new Map(); cardEls.forEach((el, id) => { const r = el.getBoundingClientRect(); if (r.height > 0) before.set(id, r.top); });
   mutate();
   cardEls.forEach((el, id) => {
-    const b = before.get(id); if (b == null) return;
+    const b = before.get(id); if (b == null || el.classList.contains('filtered-out')) return;
     const dy = b - el.getBoundingClientRect().top; if (Math.abs(dy) < 1) return;
     el.style.transition = 'none'; el.style.transform = `translateY(${dy}px)`; el.getBoundingClientRect();
     el.style.transition = ''; el.style.transform = '';
@@ -786,7 +899,7 @@ function closeDrawer() {
   if (!drawer.open) return;
   drawer.open = false; drawer.mode = null; drawer.firstOpen = false;
   $('#content1').classList.remove('drawer-open');
-  selected.clear();
+  selected.clear(); query = '';
   cardEls.forEach(el => { el.classList.remove('expanded'); clearTimeout(el._hold); });
   renderList(); renderHint();
 }
@@ -864,8 +977,8 @@ function sortBy(kind) {
     const ai = arr.filter(id => T(id).aiUnread).sort((a, b) => T(b).aiAt - T(a).aiAt);
     arr.splice(0, arr.length, ...ai, ...arr.filter(id => !T(id).aiUnread));
   }
-  const kbId = W.order[drawer.kb];
-  flip(() => { W.order = arr; drawer.kb = kbId == null ? -1 : W.order.indexOf(kbId); renderList(); });
+  const kbId = view[drawer.kb];
+  flip(() => { W.order = arr; renderList(); drawer.kb = kbId == null ? -1 : view.indexOf(kbId); renderList(); });
   const b = $(`.sort-btn[data-sort="${kind}"]`); b.classList.remove('flash'); void b.offsetWidth; b.classList.add('flash');
   $('#tabList').scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -949,7 +1062,7 @@ function beginDrag(id, card, sx, sy) {
 function hitTarget(x, y) {
   const el = document.elementFromPoint(x, y);
   if (!el) return { kind: 'desktop' };
-  if (drawer.open && el.closest('#tabList')) return { kind: 'list' };
+  if (drawer.open && el.closest('#tabList')) return query ? { kind: 'none' } : { kind: 'list' }; // no manual reorder inside a filtered view
   const mini = el.closest('.win.mini'); if (mini && !mini.classList.contains('leaving')) return { kind: 'win', win: extras.find(w => w.el === mini) };
   if (el.closest('#win1')) return { kind: 'none' };
   if (el.closest('.demo-panel, .theme-switch')) return { kind: 'none' };
@@ -1062,22 +1175,43 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Shift' && !shiftHeld) { shiftHeld = true; document.body.classList.add('shift'); renderHint(); }
   const mod = modKey(e);
   if (mod && !e.shiftKey && e.code === drawerKey.code && e.altKey === drawerKey.alt) { e.preventDefault(); toggleDrawer(); return; }
-  if (e.key === 'Escape' && drawer.open) { e.preventDefault(); if (selected.size) { selected.clear(); renderList(); } else closeDrawer(); return; }
+  if (e.key === 'Escape' && drawer.open) {
+    e.preventDefault();
+    if (query) setQuery('');                                   // 1st Esc: clear the search
+    else if (selected.size) { selected.clear(); renderList(); }
+    else closeDrawer();                                        // next Esc: close
+    return;
+  }
   if (mod && e.shiftKey && e.code === 'KeyT') { e.preventDefault(); reopen(); return; }
-  if (mod && !e.shiftKey && /^Digit[1-9]$/.test(e.code)) { const id = W.order[+e.code.slice(5) - 1]; if (id) { e.preventDefault(); activate(id); } return; }
+  if (mod && !e.shiftKey && /^Digit[1-9]$/.test(e.code)) { const list = drawer.open ? view : W.order; const id = list[+e.code.slice(5) - 1]; if (id) { e.preventDefault(); activate(id); } return; }
   if (!drawer.open) return;
   if (mod && !e.shiftKey && !e.altKey) {
     const k = { KeyL: 'opened', KeyR: 'viewed', KeyU: 'ai' }[e.code];
     if (k) { e.preventDefault(); sortBy(k); return; }
   }
+  // Type-to-filter: any printable key without ⌘/⌃/⌥ goes straight into the query.
+  if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    if (e.key === ' ' && !query) return;
+    e.preventDefault(); setQuery(query + e.key); return;
+  }
+  if (e.key === 'Backspace' && query) { e.preventDefault(); setQuery(query.slice(0, -1)); return; }
   if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-    e.preventDefault();
-    const from = drawer.kb < 0 ? W.order.indexOf(W.active) : drawer.kb;
-    drawer.kb = Math.max(0, Math.min(W.order.length - 1, from + (e.key === 'ArrowDown' ? 1 : -1)));
-    renderList(); cardEls.get(W.order[drawer.kb])?.scrollIntoView({ block: 'nearest' });
-  } else if (e.key === 'Enter' && drawer.kb >= 0) { e.preventDefault(); activate(W.order[drawer.kb]); }
-  else if ((e.key === 'Backspace' || e.key === 'Delete') && drawer.kb >= 0) { e.preventDefault(); closeTabs([W.order[drawer.kb]]); }
+    e.preventDefault(); if (!view.length) return;
+    const from = drawer.kb < 0 ? Math.max(0, view.indexOf(W.active)) : drawer.kb;
+    drawer.kb = Math.max(0, Math.min(view.length - 1, from + (e.key === 'ArrowDown' ? 1 : -1)));
+    renderList(); cardEls.get(view[drawer.kb])?.scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'Enter') {
+    const idx = drawer.kb >= 0 ? drawer.kb : query ? 0 : -1;
+    if (view[idx]) { e.preventDefault(); activate(view[idx]); }
+  }
 });
+function setQuery(q) {
+  query = q;
+  if (q && drawer.mode === 'hover') drawer.mode = 'pinned';   // typing commits to the drawer
+  drawer.kb = q ? 0 : -1;                                     // top result is the Enter target
+  flip(renderList);
+  $('#tabList').scrollTop = 0;
+}
 document.addEventListener('keyup', e => { if (e.key === 'Shift') { shiftHeld = false; document.body.classList.remove('shift'); renderHint(); } });
 window.addEventListener('blur', () => { shiftHeld = false; document.body.classList.remove('shift'); renderHint(); });
 
@@ -1087,16 +1221,13 @@ $('#demoToggle').addEventListener('click', toggleDrawer);
 $('#demoReopen').addEventListener('click', reopen);
 $('#demoReset').addEventListener('click', () => location.reload());
 $('#aiBind').addEventListener('click', () => toast('<b>Промпт скопирован</b> <span>— отправьте его AI-агенту</span>'));
-function setDrawerKey(id) {
-  drawerKey = DRAWER_KEYS[id] || DRAWER_KEYS.P;
-  document.querySelectorAll('[data-key-btn]').forEach(b => b.setAttribute('aria-pressed', String(DRAWER_KEYS[b.dataset.keyBtn] === drawerKey)));
-  document.querySelectorAll('.dk-label').forEach(k => { k.textContent = drawerKey.label; });
-  notch.title = `Вкладки окна #7 — навести, клик или ${drawerKey.label}`;
-  try { localStorage.setItem('couplet-mockup-drawer-key', id); } catch (_) { /* file:// may deny */ }
-}
-document.querySelectorAll('[data-key-btn]').forEach(b => b.addEventListener('click', () => setDrawerKey(b.dataset.keyBtn)));
-let savedKey = null; try { savedKey = localStorage.getItem('couplet-mockup-drawer-key'); } catch (_) { /* ignore */ }
-setDrawerKey(new URLSearchParams(location.search).get('key') || savedKey || 'P');
+notch.title = `Вкладки окна #7 — навести, клик или ${drawerKey.label}`;
+/* Demo tweak. URL ?compact=1 presets it (for screenshots). */
+const params = new URLSearchParams(location.search);
+const tglCompact = $('#tglCompact');
+function applyCompact(on) { flip(() => { compact = on; document.body.classList.toggle('compact', on); tglCompact.checked = on; renderList(); }); }
+tglCompact.addEventListener('change', () => applyCompact(tglCompact.checked));
+compact = params.get('compact') === '1'; document.body.classList.toggle('compact', compact); tglCompact.checked = compact;
 function setTheme(name) {
   document.documentElement.dataset.theme = name;
   document.querySelectorAll('[data-theme-btn]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.themeBtn === name)));
