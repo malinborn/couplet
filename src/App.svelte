@@ -310,11 +310,11 @@
       invoke('register_open_file', { path }).catch(() => {});
       diskBaseline = content;
       dismissedDisk = null;
-      // After replaceContent: its dispatch re-dirties the buffer via
+      // After loadDocument: its dispatch re-dirties the buffer via
       // handleChange (a real edit as far as CM6 is concerned), so isDirty
       // must be cleared afterwards — clearing it first just gets it flipped
       // back on and triggers a pointless autosave 300ms after open.
-      editorHandle?.replaceContent(content);
+      editorHandle?.loadDocument(content);
       fileState.isDirty = false;
       recentFiles.add(path);
     } catch (err) {
@@ -341,10 +341,10 @@
       const exists = await fileExists(path);
       if (exists) {
         const content = await readFile(path);
-        editorHandle?.replaceContent(content);
+        editorHandle?.loadDocument(content);
         diskBaseline = content;
       } else {
-        editorHandle?.replaceContent('');
+        editorHandle?.loadDocument('');
         diskBaseline = null;
       }
       dismissedDisk = null;
@@ -1443,7 +1443,7 @@
         await handleOpenFilePath(pending.path);
       } else if (pending.content !== null) {
         // Restored Untitled window — no file on disk, just the buffer.
-        editorHandle?.replaceContent(pending.content);
+        editorHandle?.loadDocument(pending.content);
         fileState.isDirty = true;
       }
       if (pending.cursor > 0 || pending.topLine > 1) {

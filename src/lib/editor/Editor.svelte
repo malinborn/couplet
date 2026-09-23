@@ -2,7 +2,8 @@
   import { onMount } from 'svelte';
   import { EditorView } from '@codemirror/view';
   import { ChangeSet, EditorState, Transaction } from '@codemirror/state';
-  import { createExtensions, languageCompartment, previewCompartment } from './setup';
+  import { createExtensions, historyCompartment, languageCompartment, previewCompartment } from './setup';
+  import { loadDocumentContent } from './document-load';
   import { languages } from '@codemirror/language-data';
   import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
   import { findCodeLanguage, isShellConfig } from './file-language';
@@ -18,7 +19,7 @@
 
   export interface EditorHandle {
     view: EditorView | undefined;
-    replaceContent: (newContent: string) => void;
+    loadDocument: (newContent: string) => void;
     updateContent: (newContent: string) => void;
     setCodeMode: (ext: string | null, basename?: string) => void;
     setEnvMode: (enabled: boolean) => void;
@@ -57,14 +58,9 @@
       get view() {
         return view;
       },
-      replaceContent(newContent: string) {
+      loadDocument(newContent: string) {
         if (!view) return;
-        const docLen = view.state.doc.length;
-        view.dispatch({
-          changes: { from: 0, to: docLen, insert: newContent },
-          selection: newContent.length > 0 ? { anchor: newContent.length } : undefined,
-          annotations: Transaction.addToHistory.of(false),
-        });
+        loadDocumentContent(view, historyCompartment, newContent);
         if (newContent.length > 0) {
           view.contentDOM.blur();
         }
@@ -74,7 +70,7 @@
         const repl = computeReplacement(view.state.doc.toString(), newContent);
         if (!repl) return;
         // Single-span diff keeps CM6's automatic selection mapping intact and
-        // preserves scroll position — unlike replaceContent's full-doc swap.
+        // preserves scroll position — unlike loadDocument's full-doc swap.
         // scrollSnapshot() captures the anchor at pre-change offsets; it must be
         // mapped through the same ChangeSet passed to dispatch, or a length-changing
         // edit above the viewport leaves the anchor pointing at the wrong position.
