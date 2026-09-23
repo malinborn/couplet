@@ -40,6 +40,7 @@
   import { reinitializeTheme } from './lib/editor/preview/mermaid';
   import { computeReplacement, computeChangedLineRanges } from './lib/editor/content-diff';
   import { resolveExternalChange } from './lib/external-change';
+  import { createAutoSaveScheduler } from './lib/autosave';
   import {
     resolveShowTarget,
     changedLineRanges,
@@ -174,7 +175,6 @@
   }
 
   // --- Timers ---
-  let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let recoveryInterval: ReturnType<typeof setInterval> | null = null;
 
   // Disk baseline: content as we last read it from, or wrote it to, disk.
@@ -197,25 +197,19 @@
 
   function handleChange(doc: string) {
     fileState.isDirty = true;
-    scheduleAutoSave();
+    autoSave.schedule();
   }
 
-  // --- Auto-save (300ms debounce) ---
-  function scheduleAutoSave(): void {
-    if (autoSaveTimer !== null) {
-      clearTimeout(autoSaveTimer);
-    }
-    autoSaveTimer = setTimeout(() => {
-      autoSaveTimer = null;
-      // Saving now would write the buffer over the disk state the open
-      // conflict dialog is asking the user about — the dialog's own "Yes"
-      // path needs that state to still be there when it re-reads the file.
-      if (conflictDialogOpen) return;
-      if (fileState.isDirty && fileState.filePath) {
-        performSave();
-      }
-    }, 300);
-  }
+  // --- Auto-save (300ms debounce). `performSave` is declared below, but
+  // `function` declarations are hoisted, so referencing it here is safe. ---
+  const autoSave = createAutoSaveScheduler({
+    delayMs: 300,
+    // Saving now would write the buffer over the disk state the open
+    // conflict dialog is asking the user about — the dialog's own "Yes"
+    // path needs that state to still be there when it re-reads the file.
+    shouldSave: () => !conflictDialogOpen && fileState.isDirty && Boolean(fileState.filePath),
+    save: performSave,
+  });
 
   async function performSave(): Promise<void> {
     if (!fileState.filePath) return;
@@ -494,7 +488,7 @@
             // The autosave that fired while the dialog was up (if any) was
             // suppressed by the guard above — the edits it would have saved
             // are still only in the buffer, so re-arm it.
-            if (fileState.isDirty) scheduleAutoSave();
+            if (fileState.isDirty) autoSave.schedule();
           }
         } finally {
           conflictDialogOpen = false;
@@ -1726,7 +1720,7 @@
       unlistenUpdateDismissed.then((fn) => fn());
       unlistenLanguageChangeFailed.then((fn) => fn());
       window.removeEventListener('blur', handleWindowBlur);
-      if (autoSaveTimer !== null) clearTimeout(autoSaveTimer);
+      autoSave.cancel();
       if (recoveryInterval !== null) clearInterval(recoveryInterval);
       clearAiHintTimer();
     };
