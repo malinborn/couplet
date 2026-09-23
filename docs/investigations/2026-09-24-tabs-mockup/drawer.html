@@ -254,6 +254,13 @@ kbd { font-family: var(--ui); font-size: 10.5px; color: var(--text-muted); lette
 .drawer-title small { font-size: 11.5px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 5px; }
 .drawer-title .type-hint { font-size: 11px; color: var(--text-muted); white-space: nowrap; transition: opacity .15s; }
 .drawer-title .type-hint.off { opacity: 0; }
+/* Faint centred «⇧ — выделить» between the title and the search hint. It is the
+   first thing to go: if it does not fit whole (measured in JS, .nofit) it hides. */
+.drawer-title .sel-hint {
+  flex: 1 1 auto; min-width: 0; padding: 0 10px; text-align: center; white-space: nowrap; overflow: hidden;
+  font-size: 11px; color: var(--text-muted); opacity: .55; transition: opacity .15s;
+}
+.drawer-title .sel-hint.off, .drawer-title .sel-hint.nofit { opacity: 0; }
 /* Inline SVG magnifier: ~1em box, so the ring matches the letters' height. */
 .mag { width: 1em; height: 1em; flex: 0 0 auto; display: block; }
 .drawer-title .type-hint { gap: 5px; }
@@ -366,7 +373,7 @@ body.shift .tab-cards .card { cursor: cell; }
   display: flex; align-items: center; border-top: 1px solid transparent;
   transition: height .22s var(--ease), opacity .2s, border-color .2s;
 }
-.hint.on { height: 50px; opacity: 1; border-top-color: color-mix(in oklab, var(--border) 70%, transparent); }
+.hint.on { height: 36px; opacity: 1; border-top-color: color-mix(in oklab, var(--border) 70%, transparent); }
 .hint b { white-space: nowrap; }
 .hint b { color: var(--text-subtle); font-weight: 600; }
 
@@ -455,8 +462,8 @@ body.notch-key .notch .nk { display: block; }
    horizontal tick across the column (it separates stacked items). */
 .notch .wid, .notch .cnt, .mini-notch .wid, .mini-notch .cnt { writing-mode: vertical-rl; transform: rotate(180deg); line-height: 1; }
 .notch .wid { margin-bottom: 5px; }
-body.notch-key .notch { height: 120px; }
-body.notch-key .ai-bind { top: 144px; }
+body.notch-key .notch { height: 150px; }
+body.notch-key .ai-bind { top: 174px; }
 /* Theme-following colours: surface/border come from tokens on .shape; the
    number takes the theme's accent (--color-glow is each theme's accent triple),
    with its subtle heading gradient where the theme defines one. */
@@ -524,7 +531,7 @@ body.compact .card.expanded { transform: none; }
     <div class="drawer-wrap" id="drawerWrap">
       <aside class="drawer" id="drawer" aria-label="Вкладки окна #22">
         <div class="drawer-head">
-          <div class="drawer-title"><b>Окно<span class="wno">#22</span> <span class="cnt">· <span id="tabCount"></span></span></b><small class="type-hint" id="typeHint"><svg class="mag" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.8" cy="6.8" r="4.8" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M10.4 10.4 14.2 14.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>печатайте для поиска</small></div>
+          <div class="drawer-title"><b>Окно<span class="wno">#22</span> <span class="cnt">· <span id="tabCount"></span></span></b><small class="sel-hint" id="selHint" aria-hidden="true">⇧ — выделить</small><small class="type-hint" id="typeHint"><svg class="mag" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.8" cy="6.8" r="4.8" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M10.4 10.4 14.2 14.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>печатайте для поиска</small></div>
           <div class="sorts">
             <span class="lbl">Разложить:</span>
             <button class="sort-btn" data-sort="opened" title="Недавно открытые сверху">открытие <kbd>⌘L</kbd></button><span class="dot">·</span>
@@ -540,7 +547,7 @@ body.compact .card.expanded { transform: none; }
           <button id="selClose">Закрыть выбранные</button>
           <button class="x" id="selClear" title="Снять выделение">×</button>
         </div>
-        <div class="hint" id="hint"><span><b>⇧ клик</b> — выделить · <b>⇧ протяжка</b> — инвертировать · <b>⌘ клик</b> — закрыть</span></div>
+        <div class="hint" id="hint"><span><b>⇧ клик / протяжка</b> — выделение · <b>⌘ клик</b> — закрыть</span></div>
       </aside>
       <div class="notch" id="notch" role="button" tabindex="0" aria-label="Вкладки окна #22">
         <span class="shape" aria-hidden="true"><span class="glow"></span></span>
@@ -800,6 +807,12 @@ function renderEditor() {
   doc.classList.add('swap');
   setTimeout(() => { doc.innerHTML = renderMd(t.md); doc.dataset.id = t.id; $('#editor1').scrollTop = 0; doc.classList.remove('swap'); }, doc.dataset.id ? 120 : 0);
 }
+function fitSelHint() {
+  const el = $('#selHint'); if (!el) return;
+  el.classList.toggle('nofit', el.scrollWidth > el.clientWidth + 0.5);
+}
+window.addEventListener('resize', fitSelHint);
+if (document.fonts) document.fonts.ready.then(fitSelHint);
 /* Markdown line → plain text (for search, compact first line, content hits). */
 const plainLine = l => l.replace(/^#{1,6}\s+/, '').replace(/^- \[( |x)\] /, '').replace(/^(?:-|\d+\.|>) /, '').replace(/\*\*|`|\*/g, '').trim();
 const firstLine = md => { for (const l of md.split('\n')) { if (l.startsWith('```')) continue; const p = plainLine(l); if (p) return p; } return ''; };
@@ -885,6 +898,8 @@ function renderList() {
   for (const [id, el] of cardEls) if (!seen.has(id)) { el.remove(); cardEls.delete(id); }
   $('#search').classList.toggle('on', !!query);
   $('#typeHint').classList.toggle('off', !!query);
+  $('#selHint').classList.toggle('off', !!query);
+  fitSelHint();
   $('#sQ').textContent = query;
   $('#sN').textContent = query ? (ids.length ? `${ids.length} из ${W.order.length}` : '') + ' · esc — сброс' : '';
   $('#emptyRes').classList.toggle('on', !!query && !ids.length);
