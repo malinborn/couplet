@@ -337,6 +337,15 @@ pub fn label_to_focus(
         .cloned()
 }
 
+/// Bring `win` to the front even if it is minimized — tao's macOS
+/// `set_focus` is a silent no-op on a minimized window.
+fn reveal(win: &tauri::WebviewWindow) {
+    if win.is_minimized().unwrap_or(false) {
+        let _ = win.unminimize();
+    }
+    let _ = win.set_focus();
+}
+
 /// IPC command: if `path` is already open in a *different* window, focus it
 /// and report `true`. Used by `switchDocument` before it replaces the current
 /// window's document, so the same file never ends up open — and
@@ -359,7 +368,7 @@ pub async fn focus_if_open(
     match target {
         Some(other) => match app.get_webview_window(&other) {
             Some(win) => {
-                let _ = win.set_focus();
+                reveal(&win);
                 Ok(true)
             }
             None => Ok(false),

@@ -406,12 +406,18 @@ impl AiPending {
         self.paths.lock().unwrap().insert(id, path.into());
     }
 
-    /// Fail every entry registered under `label` for `path` with "switched
-    /// away from this document" — called by `switchDocument`'s
-    /// `cancel_ai_ask` before the document currently on screen is replaced,
-    /// so an agent's `ask` mid-question doesn't silently vanish into a
-    /// document that no longer shows it (it used to hang until the
-    /// request's own timeout — up to an hour for `ask`).
+    #[cfg(test)]
+    fn path_count(&self) -> usize {
+        self.paths.lock().unwrap().len()
+    }
+
+    /// Fail every entry registered under `label` for `path` — `show`, `edit`
+    /// and `ask` alike — with "switched away from this document". Called by
+    /// `switchDocument`'s `cancel_ai_ask` before the document currently on
+    /// screen is replaced, so an agent's request doesn't silently vanish into
+    /// a document that no longer shows it (it used to hang until the
+    /// request's own timeout — up to an hour for `ask`). An entry that never
+    /// had `set_path` called is left alone.
     pub fn cancel_for_window_and_path(&self, label: &str, path: &str) {
         let mut map = self.map.lock().unwrap();
         let mut paths = self.paths.lock().unwrap();
@@ -690,8 +696,8 @@ pub async fn ai_respond(app: AppHandle, id: u64, response: AiResponse) -> Result
     Ok(())
 }
 
-/// IPC command: cancel any `ask`/`edit` still waiting on a response for
-/// `path` in the calling window — called by `switchDocument` before it
+/// IPC command: fail every `show`/`edit`/`ask` still waiting on a response
+/// for `path` in the calling window — called by `switchDocument` before it
 /// replaces that window's document.
 #[tauri::command]
 pub async fn cancel_ai_ask(
@@ -1800,6 +1806,56 @@ mod tests {
         pending.cancel_for_window_and_path("editor-2", "/tmp/a.md");
 
         assert!(rx.try_recv().is_err(), "a different window must not be cancelled");
+    }
+
+    #[test]
+    fn cancel_for_window_and_path_ignores_an_entry_with_no_recorded_path() {
+        let pending = AiPending::new();
+        let (tx, rx) = mpsc::channel();
+        let id = pending.alloc_id();
+        pending.register(id, "editor-1", tx);
+
+        pending.cancel_for_window_and_path("editor-1", "/tmp/a.md");
+
+        assert!(rx.try_recv().is_err(), "an entry without a path must not be cancelled");
+        pending.respond(id, AiResponse::ok());
+        assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap().ok);
+    }
+
+    #[test]
+    fn every_removal_also_drops_the_recorded_path() {
+        let pending = AiPending::new();
+        let register = |label: &str, path: &str| {
+            let (tx, rx) = mpsc::channel();
+            let id = pending.alloc_id();
+            pending.register(id, label, tx);
+            pending.set_path(id, path);
+            (id, rx)
+        };
+
+        let (id, _rx) = register("editor-1", "/tmp/a.md");
+        pending.respond(id, AiResponse::ok());
+        assert_eq!(pending.path_count(), 0, "respond");
+
+        let (id, _rx) = register("editor-1", "/tmp/a.md");
+        pending.cancel(id);
+        assert_eq!(pending.path_count(), 0, "cancel");
+
+        let (_, _rx1) = register("editor-1", "/tmp/a.md");
+        let (_, _rx2) = register("editor-1", "/tmp/b.md");
+        pending.cancel_for_window("editor-1");
+        assert_eq!(pending.path_count(), 0, "cancel_for_window");
+
+        let (_, _rx1) = register("editor-1", "/tmp/a.md");
+        let (_, _rx2) = register("editor-2", "/tmp/a.md");
+        pending.cancel_for_window_and_path("editor-1", "/tmp/a.md");
+        assert_eq!(
+            pending.path_count(),
+            1,
+            "cancel_for_window_and_path drops only the entry it cancelled"
+        );
+        pending.cancel_for_window("editor-2");
+        assert_eq!(pending.path_count(), 0);
     }
 
     fn args(parts: &[&str]) -> Vec<String> {
