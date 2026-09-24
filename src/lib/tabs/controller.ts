@@ -120,18 +120,26 @@ export interface TabControllerDeps {
   };
   ai: {
     /**
-     * Fail every agent waiting on `path` in this window — the pending asks
-     * AND the commands still queued for it (Rust `cancel_for_tab`, reached
-     * through `cancel_ai_ask`). A queued payload left behind would be
-     * delivered into whatever tab is active next.
+     * The controller is leaving `tabId`, which stays open in the background:
+     * the agents' live questions on it wait for its return (spec §5). Called
+     * synchronously before the state is stripped of its ask widgets. `true`
+     * when something was parked — the tab then shimmers.
      */
-    cancel(path: string): Promise<void>;
+    leave(tabId: string): boolean;
+    /** `tabId` was just shown and Rust knows it is active: deliver what waited for it. */
+    enter(tabId: string): Promise<void>;
+    /**
+     * `tabId` left this window for good: drop what waited for it. Rust answers
+     * its agents — `tab closed`, `tab released`, `window closed`.
+     */
+    forget(tabId: string): void;
     hasLiveAsk(): boolean;
-    clearAsks(): void;
   };
   disk: {
     exists(path: string): Promise<boolean>;
     read(path: string): Promise<string>;
+    /** Save a background tab's text — an agent's edit there. Rejects on failure. */
+    write(path: string, content: string): Promise<void>;
   };
   rust: {
     owner(path: string): Promise<TabOwner>;
@@ -169,6 +177,8 @@ interface TabCache {
   scroll: StateEffect<unknown> | null;
   /** Disk content as of leaving; `null` when the file did not exist. */
   baseline: string | null;
+  /** Where to put the caret when the tab is next shown — an agent's background `show`/`edit`. */
+  enterAt: Position | null;
 }
 
 type Ready =
@@ -204,10 +214,57 @@ type Loadable =
   | { working: TabListState; failed: string[]; tab: TabMeta; ready: Ready }
   | { working: TabListState; failed: string[]; tab: null; ready: null };
 
+/** What `openBackgroundNow` did. `text`: the file as read, for resolving a target in it. */
+export type BackgroundOpen =
+  | { kind: 'opened'; tabId: string; text: string }
+  | { kind: 'existing'; tabId: string }
+  | { kind: 'other-window'; label: string }
+  | { kind: 'failed' };
+
+/**
+ * What `openPathNow` did. `opened`: this call created the tab — the only tab a
+ * `show` may make a quick look (D17). Rust's `fresh` cannot say so when the
+ * tab landed in an existing window. `shown`: a tab this window already had is
+ * active now. `elsewhere`: another window holds the file. `refused`: the
+ * active tab may not be left (its save has not landed).
+ */
+export type OpenPathResult =
+  | { kind: 'opened'; tabId: string }
+  | { kind: 'shown'; tabId: string }
+  | { kind: 'elsewhere' }
+  | { kind: 'refused' }
+  | { kind: 'failed' };
+
+export type ApplyResult<T> =
+  | { kind: 'applied'; result: T }
+  | { kind: 'unchanged' }
+  | { kind: 'failed'; error: string };
+
+function message(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function fromActivate(tabId: string, result: ActivateResult): OpenPathResult {
+  if (result === 'ok' || result === 'noop') return { kind: 'shown', tabId };
+  return result === 'failed' ? { kind: 'failed' } : { kind: 'refused' };
+}
+
 export function createTabController(deps: TabControllerDeps) {
   const queue = createSerialQueue();
   const cache = new Map<string, TabCache>();
   let list: TabListState = emptyTabList();
+
+  /**
+   * An AI command holds the queue (`runExclusive`). Every agent-driven change
+   * to a tab runs only then — a stamp from outside could interleave with a
+   * switch and mark the tab the human has just activated (D9).
+   */
+  let exclusive = false;
+
+  function requireExclusive(what: string): boolean {
+    if (!exclusive) console.error(`${what} called outside runExclusive; ignored`);
+    return exclusive;
+  }
 
   function publish(next: TabListState): void {
     list = next;
@@ -264,21 +321,18 @@ export function createTabController(deps: TabControllerDeps) {
   /**
    * Step 3: hand the active document over. Comment text first — a pause
    * committed before its text is written would give an agent stale text, and
-   * a failed write stops everything before anything is irreversible. Then
-   * pauses and asks, whose agents learn at once. A file tab typed into during
-   * these awaits stays: its asks are already answered, so their widgets go,
-   * and its cards are rebuilt from the file.
+   * a failed write stops everything before anything is irreversible. An
+   * agent's questions are not cancelled: `stashActive` parks them. A file tab
+   * typed into during these awaits stays, and its cards are rebuilt.
    */
   async function handOver(): Promise<boolean> {
     const path = deps.doc.path();
     if (path !== null) {
       if (!(await deps.comments.flush(path))) return false;
       await deps.comments.commitPauses(path);
-      await deps.ai.cancel(path);
     }
     await flushWithRetries();
     if (path !== null && deps.doc.dirty()) {
-      deps.ai.clearAsks();
       void deps.comments.reload();
       deps.reportUnsaved();
       return false;
@@ -296,6 +350,8 @@ export function createTabController(deps: TabControllerDeps) {
     const scroll = deps.editor.scrollSnapshot();
     const dirty = deps.doc.dirty();
     const baseline = deps.doc.baseline();
+    // Before the strip clears them: the agents' live questions wait for the tab.
+    const parked = deps.ai.leave(tab.id);
     deps.editor.stripForBackground();
     cache.set(tab.id, {
       state: deps.editor.current(),
@@ -304,9 +360,17 @@ export function createTabController(deps: TabControllerDeps) {
       topLine,
       scroll,
       baseline,
+      enterAt: null,
     });
     if (tab.path !== null) deps.comments.forget(tab.path);
-    publish(updateTab(list, tab.id, deps.windowFocused() ? { dirty, viewedAt: deps.now() } : { dirty }));
+    publish(
+      updateTab(list, tab.id, {
+        dirty,
+        ...(deps.windowFocused() ? { viewedAt: deps.now() } : {}),
+        // A question now waits there: it shimmers until the human goes back.
+        ...(parked ? { unviewed: true } : {}),
+      })
+    );
   }
 
   /** Step 2: what entering `tab` will show. Nothing changes here. */
@@ -358,6 +422,7 @@ export function createTabController(deps: TabControllerDeps) {
   async function releaseAll(ids: string[]): Promise<void> {
     for (const id of ids) {
       cache.delete(id);
+      deps.ai.forget(id);
       await deps.rust.release(id);
     }
   }
@@ -365,17 +430,18 @@ export function createTabController(deps: TabControllerDeps) {
   /** What entering `tab` will swap in. Builds a state, changes nothing. */
   function build(tab: TabMeta, ready: Ready, position: Position | null): Entry {
     const cached = cache.get(tab.id);
+    // A position asked for now, else one an agent placed while it was away.
+    const at = position ?? cached?.enterAt ?? null;
     if (ready.kind === 'cached') {
       return {
         state: ready.state,
-        swap: { blur: false, scroll: !position && cached?.scroll ? cached.scroll : 'top' },
+        swap: { blur: false, scroll: !at && cached?.scroll ? cached.scroll : 'top' },
         dirty: tab.dirty,
         baseline: ready.baseline,
-        restore: position,
+        restore: at,
       };
     }
-    const restore =
-      position ?? (cached ? { cursor: cached.cursor, topLine: cached.topLine } : null);
+    const restore = at ?? (cached ? { cursor: cached.cursor, topLine: cached.topLine } : null);
     return {
       state: deps.editor.createState(ready.content, restore ? restore.cursor : null),
       swap: { blur: true, scroll: 'top' },
@@ -400,6 +466,8 @@ export function createTabController(deps: TabControllerDeps) {
     if (restore) await deps.editor.applyPosition(restore);
     await deps.rust.activate(tab.id);
     if (deps.windowFocused()) markSeen(tab.id);
+    // After `activate`: an answer from here comes from the window Rust sees showing it.
+    await deps.ai.enter(tab.id);
     void deps.comments.reload();
     deps.entered(tab.path, opened);
     deps.settled();
@@ -425,6 +493,7 @@ export function createTabController(deps: TabControllerDeps) {
         topLine: t.topLine,
         scroll: null,
         baseline: null,
+        enterAt: null,
       });
     }
     const now = deps.now();
@@ -473,7 +542,11 @@ export function createTabController(deps: TabControllerDeps) {
     return 'ok';
   }
 
-  async function openInNewTab(path: string, position: Position | null, replace: boolean): Promise<void> {
+  async function openInNewTab(
+    path: string,
+    position: Position | null,
+    replace: boolean
+  ): Promise<OpenPathResult> {
     let content = '';
     let exists = false;
     try {
@@ -481,7 +554,7 @@ export function createTabController(deps: TabControllerDeps) {
       content = exists ? await deps.disk.read(path) : '';
     } catch (err) {
       console.error('Failed to open file:', err);
-      return;
+      return { kind: 'failed' };
     }
     let answer = await deps.rust.open(path);
     if (answer.kind === 'this-window' && !findById(list, answer.tabId)) {
@@ -491,19 +564,18 @@ export function createTabController(deps: TabControllerDeps) {
       answer = await deps.rust.open(path);
     }
     // A tab dedup cannot see would let the same file open a second time.
-    if (answer.kind === 'failed') return;
+    if (answer.kind === 'failed') return { kind: 'failed' };
     if (answer.kind === 'other-window') {
       await deps.rust.focusElsewhere(path);
-      return;
+      return { kind: 'elsewhere' };
     }
     if (answer.kind === 'this-window') {
       if (findById(list, answer.tabId)) {
-        await activateNow(answer.tabId, { position: position ?? undefined });
-      } else {
-        console.error('tab_open keeps answering with a tab this window does not have:', path);
-        await deps.rust.release(answer.tabId);
+        return fromActivate(answer.tabId, await activateNow(answer.tabId, { position: position ?? undefined }));
       }
-      return;
+      console.error('tab_open keeps answering with a tab this window does not have:', path);
+      await deps.rust.release(answer.tabId);
+      return { kind: 'failed' };
     }
     const tab = newMeta(answer.tabId, answer.path ?? path);
     const shown = await showClaimed(tab, { kind: 'fresh', content, exists }, position, () => {
@@ -513,6 +585,7 @@ export function createTabController(deps: TabControllerDeps) {
       if (replace && previous && isEmptyUntitled()) {
         deps.editor.stripForBackground();
         cache.delete(previous.id);
+        deps.ai.forget(previous.id);
         publish(replaceTab(list, previous.id, tab));
         return previous.id;
       }
@@ -520,9 +593,10 @@ export function createTabController(deps: TabControllerDeps) {
       publish(insertAfterActive(list, tab));
       return null;
     });
-    if (!shown) return;
+    if (!shown) return { kind: 'refused' };
     await settle(tab, shown.entry.restore, true);
     if (shown.placed !== null) await deps.rust.release(shown.placed);
+    return { kind: 'opened', tabId: tab.id };
   }
 
   /**
@@ -550,7 +624,7 @@ export function createTabController(deps: TabControllerDeps) {
     }
   }
 
-  async function openNow(path: string, position: Position | null): Promise<void> {
+  async function openNow(path: string, position: Position | null): Promise<OpenPathResult> {
     deps.editor.commitCellEdit();
     await flushWithRetries();
     const local = findByPath(list, path);
@@ -572,23 +646,21 @@ export function createTabController(deps: TabControllerDeps) {
     switch (action.kind) {
       case 'noop':
         if (position) await deps.editor.applyPosition(position);
-        return;
+        return list.activeId === null ? { kind: 'failed' } : { kind: 'shown', tabId: list.activeId };
       case 'refuse-save-error':
         // The standing `save-error` toast already says why.
-        return;
+        return { kind: 'refused' };
       case 'refuse-unsaved':
         deps.reportUnsaved();
-        return;
+        return { kind: 'refused' };
       case 'focus-other-window':
         await deps.rust.focusElsewhere(path);
-        return;
+        return { kind: 'elsewhere' };
       case 'activate-tab':
-        await activateNow(action.tabId, { position: position ?? undefined });
-        return;
+        return fromActivate(action.tabId, await activateNow(action.tabId, { position: position ?? undefined }));
       case 'replace-active':
       case 'open-new-tab':
-        await openInNewTab(path, position, action.kind === 'replace-active');
-        return;
+        return openInNewTab(path, position, action.kind === 'replace-active');
     }
   }
 
@@ -609,8 +681,14 @@ export function createTabController(deps: TabControllerDeps) {
    * its agents (Rust `tab_close`); `'release'` gives the claim back without a
    * closed-stack entry (Rust `tab_release`) — the tab moves to another window,
    * so a release never closes this one. `true` when the tab is gone from the list.
+   * `onLastTab` runs when closing it is about to close the window — an agent's
+   * `close` answers there, before its window is gone.
    */
-  async function closeNow(tabId: string, how: 'close' | 'release' = 'close'): Promise<boolean> {
+  async function closeNow(
+    tabId: string,
+    how: 'close' | 'release' = 'close',
+    onLastTab?: () => Promise<void>
+  ): Promise<boolean> {
     if (!findById(list, tabId)) return false;
     const finish = (position: Position) =>
       how === 'close' ? deps.rust.close(tabId, position) : deps.rust.release(tabId);
@@ -620,6 +698,7 @@ export function createTabController(deps: TabControllerDeps) {
       // it was left; there is nothing to flush.
       const cached = cache.get(tabId);
       cache.delete(tabId);
+      deps.ai.forget(tabId);
       publish(removeTab(list, tabId).state);
       await finish({ cursor: cached?.cursor ?? 0, topLine: cached?.topLine ?? 1 });
       deps.settled();
@@ -665,12 +744,14 @@ export function createTabController(deps: TabControllerDeps) {
     if (path !== null) deps.comments.forget(path);
     deps.editor.stripForBackground();
     cache.delete(tabId);
+    deps.ai.forget(tabId);
     for (const id of next.failed) cache.delete(id);
     publish(next.working);
     if (next.tab === null) {
       await finish(position);
       await releaseAll(next.failed);
       deps.settled();
+      if (onLastTab) await onLastTab();
       await deps.rust.closeWindow();
       return true;
     }
@@ -737,8 +818,136 @@ export function createTabController(deps: TabControllerDeps) {
       topLine: d.position.topLine,
       scroll: null,
       baseline: null,
+      enterAt: null,
     });
     publish(insertAt(list, d.index, { ...d.meta, id: answer.tabId, dirty: false }));
+  }
+
+  /** An agent opens `path` without switching to it (spec §5). The tab shimmers. */
+  async function openBackgroundNow(path: string): Promise<BackgroundOpen> {
+    if (!requireExclusive('openBackgroundNow')) return { kind: 'failed' };
+    const local = findByPath(list, path);
+    if (local) return { kind: 'existing', tabId: local.id };
+    let text = '';
+    try {
+      text = (await deps.disk.exists(path)) ? await deps.disk.read(path) : '';
+    } catch (err) {
+      console.error('Failed to open file:', err);
+      return { kind: 'failed' };
+    }
+    let answer = await deps.rust.open(path);
+    if (answer.kind === 'this-window' && !findById(list, answer.tabId)) {
+      // Left over from an operation that failed after claiming.
+      await deps.rust.release(answer.tabId);
+      answer = await deps.rust.open(path);
+    }
+    if (answer.kind === 'other-window') return { kind: 'other-window', label: answer.label };
+    if (answer.kind === 'this-window') {
+      if (findById(list, answer.tabId)) return { kind: 'existing', tabId: answer.tabId };
+      await deps.rust.release(answer.tabId);
+      return { kind: 'failed' };
+    }
+    if (answer.kind !== 'created') return { kind: 'failed' };
+    cache.set(answer.tabId, {
+      state: null,
+      content: null,
+      cursor: 0,
+      topLine: 1,
+      scroll: null,
+      baseline: null,
+      enterAt: null,
+    });
+    publish(insertAfterActive(list, { ...newMeta(answer.tabId, answer.path ?? path), unviewed: true }));
+    deps.settled();
+    return { kind: 'opened', tabId: answer.tabId, text };
+  }
+
+  /** Where a background tab opens next time it is shown. `false`: not a background tab. */
+  function placeCaretNow(tabId: string, position: Position): boolean {
+    if (!requireExclusive('placeCaretNow')) return false;
+    if (tabId === list.activeId || !findById(list, tabId)) return false;
+    const cached = cache.get(tabId);
+    const state = cached?.state
+      ? cached.state.update({ selection: { anchor: Math.min(position.cursor, cached.state.doc.length) } }).state
+      : null;
+    cache.set(tabId, {
+      state,
+      content: cached?.content ?? null,
+      cursor: position.cursor,
+      topLine: position.topLine,
+      scroll: null,
+      baseline: cached?.baseline ?? null,
+      enterAt: position,
+    });
+    return true;
+  }
+
+  /**
+   * An agent's change to a background file tab (spec §5): applied to its
+   * cached state — or one built from disk when it was never shown or the
+   * disk moved on — and written at once, so the tab stays clean (a
+   * background tab has no autosave). Undo and highlights live in the state
+   * and are there when the tab is shown; the new baseline makes return reuse
+   * it. A failed write changes nothing.
+   */
+  async function applyToTabNow<T>(
+    tabId: string,
+    edit: (state: EditorState) => { state: EditorState; result: T } | null
+  ): Promise<ApplyResult<T>> {
+    if (!requireExclusive('applyToTabNow')) return { kind: 'failed', error: 'not inside runExclusive' };
+    const tab = findById(list, tabId);
+    if (!tab || tab.path === null || tab.id === list.activeId) {
+      return { kind: 'failed', error: 'not a background file tab' };
+    }
+    const cached = cache.get(tabId);
+    let base: EditorState;
+    try {
+      const exists = await deps.disk.exists(tab.path);
+      const disk = exists ? await deps.disk.read(tab.path) : '';
+      base =
+        cached?.state && decideEnter({ baseline: cached.baseline, disk: exists ? disk : null }) === 'use-cache'
+          ? cached.state
+          : deps.editor.createState(disk, cached?.cursor ?? 0);
+    } catch (err) {
+      return { kind: 'failed', error: message(err) };
+    }
+    const out = edit(base);
+    if (!out) return { kind: 'unchanged' };
+    const text = out.state.doc.toString();
+    try {
+      await deps.disk.write(tab.path, text);
+    } catch (err) {
+      return { kind: 'failed', error: message(err) };
+    }
+    cache.set(tabId, {
+      state: out.state,
+      content: null,
+      cursor: out.state.selection.main.head,
+      topLine: cached?.topLine ?? 1,
+      scroll: cached?.scroll ?? null,
+      baseline: text,
+      enterAt: cached?.enterAt ?? null,
+    });
+    return { kind: 'applied', result: out.result };
+  }
+
+  /**
+   * The text a tab shows or will show when entered: the live view, an
+   * untitled tab's own text, a file tab's disk (what entering it reads).
+   * `null`: no such tab, or the file cannot be read.
+   */
+  async function textForAgentNow(tabId: string): Promise<string | null> {
+    if (tabId === list.activeId) return deps.editor.current()?.doc.toString() ?? null;
+    const tab = findById(list, tabId);
+    if (!tab) return null;
+    const cached = cache.get(tabId);
+    if (tab.path === null) return cached?.state?.doc.toString() ?? cached?.content ?? '';
+    try {
+      if (!(await deps.disk.exists(tab.path))) return cached?.state?.doc.toString() ?? '';
+      return await deps.disk.read(tab.path);
+    } catch {
+      return null;
+    }
   }
 
   function report(live: { cursor: number; topLine: number; content: string }): {
@@ -778,7 +987,10 @@ export function createTabController(deps: TabControllerDeps) {
     },
     init: (tabs: readonly InitTab[], activeTabId: string | null) =>
       queue.run(() => initNow(tabs, activeTabId)),
-    openPath: (path: string, position?: Position) => queue.run(() => openNow(path, position ?? null)),
+    openPath: (path: string, position?: Position) =>
+      queue.run(async () => {
+        await openNow(path, position ?? null);
+      }),
     activate: (tabId: string) => queue.run(() => activateNow(tabId)),
     newTab: () => queue.run(newTabNow),
     closeActive: () =>
@@ -797,11 +1009,29 @@ export function createTabController(deps: TabControllerDeps) {
       }),
     /**
      * Run `fn` between tab operations — for AI commands. Inside it call only
-     * `activateNow`: a queued method awaited from here waits for this very
-     * slot and never runs.
+     * the `*Now` methods: a queued method awaited from here waits for this
+     * very slot and never runs. Agent-driven stamps are accepted only here.
      */
-    runExclusive: <T>(fn: () => Promise<T>) => queue.run(fn),
+    runExclusive: <T>(fn: () => Promise<T>) =>
+      queue.run(async () => {
+        exclusive = true;
+        try {
+          return await fn();
+        } finally {
+          exclusive = false;
+        }
+      }),
     activateNow,
+    /** `openPath` for an AI command, inside `runExclusive`. Says whether it opened the tab. */
+    openPathNow: async (path: string, position?: Position): Promise<OpenPathResult> =>
+      requireExclusive('openPathNow') ? openNow(path, position ?? null) : { kind: 'failed' },
+    openBackgroundNow,
+    placeCaretNow,
+    applyToTabNow,
+    textForAgentNow,
+    /** ⌘W for an agent's `close`, inside `runExclusive` (see `closeNow`'s `onLastTab`). */
+    closeTabNow: async (tabId: string, onLastTab?: () => Promise<void>): Promise<boolean> =>
+      requireExclusive('closeTabNow') ? closeNow(tabId, 'close', onLastTab) : false,
     findByPath: (path: string) => findByPath(list, path),
     /** Save As gave the active tab a new path. */
     renameActive(path: string): void {
@@ -817,12 +1047,13 @@ export function createTabController(deps: TabControllerDeps) {
         deps.settled();
       }),
     /**
-     * An agent's command landed on `tabId` while nobody was looking: it stays
-     * unviewed until it is active in a focused window. Synchronous — call it
-     * inside `runExclusive`, where the AI command already holds the queue.
+     * An agent's command landed on `tabId` and nobody is looking at it: it
+     * stays unviewed until it is active in a focused window. Only the active
+     * tab of a focused window is "being looked at". Inside `runExclusive` only.
      */
     markUnviewedNow(tabId: string): void {
-      if (deps.windowFocused() || !findById(list, tabId)) return;
+      if (!requireExclusive('markUnviewedNow') || !findById(list, tabId)) return;
+      if (tabId === list.activeId && deps.windowFocused()) return;
       publish(updateTab(list, tabId, { unviewed: true }));
       deps.settled();
     },

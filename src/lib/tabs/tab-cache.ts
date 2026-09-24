@@ -5,8 +5,9 @@ import { clearJsonOffer } from '../editor/json-paste';
 
 /**
  * What must not stay in a state that goes to the background:
- * - ask widgets: their agents are answered when the tab is left, so a widget
- *   left behind would answer nobody;
+ * - ask widgets: the controller's `ai.leave` parks their questions before the
+ *   strip and `ai.enter` places them again on return, so a widget kept in
+ *   the cached state would be a second copy of the same question;
  * - comment cards: rebuilt from the sidecar on return, and a cached card
  *   would carry a textarea with stale text;
  * - the JSON offer: its toast belongs to the window and is withdrawn on leave.

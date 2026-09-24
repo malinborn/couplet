@@ -53,7 +53,7 @@
     clearAiHighlights,
     aiHighlightRanges,
   } from './lib/editor/ai-highlight';
-  import { activeAskIds, addAiAsk, removeAiAsk, clearAiAsks } from './lib/editor/ai-ask';
+  import { activeAskIds, addAiAsk, removeAiAsk } from './lib/editor/ai-ask';
   import type { TabOwner } from './lib/switch-document';
   import { activeCellEditSession } from './lib/editor/cell-edit-session';
   import { closeSearchPanel } from '@codemirror/search';
@@ -540,16 +540,20 @@
       reload: reloadComments,
     },
     ai: {
-      cancel: (path) => invoke<void>('cancel_ai_ask', { path }).catch(logTabIpc('cancel_ai_ask')),
+      // Wired to the agent orchestrator in the next tasks; until then nothing
+      // is parked, and a question on a tab that is left waits out its timeout.
+      leave: () => false,
+      enter: async () => {},
+      forget: () => {},
       hasLiveAsk: () => {
         const view = editorHandle?.view;
         return view ? activeAskIds(view.state).length > 0 : false;
       },
-      clearAsks: () => editorHandle?.view?.dispatch({ effects: clearAiAsks.of(null) }),
     },
     disk: {
       exists: (path) => readingForTab(path, () => fileExists(path)),
       read: (path) => readingForTab(path, () => readFile(path)),
+      write: (path, content) => writeFile(path, content),
     },
     rust: {
       owner: (path) =>

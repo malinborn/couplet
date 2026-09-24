@@ -37,6 +37,8 @@ function makeHarness(initialFiles: Record<string, string>) {
   const doc = { path: null as string | null, dirty: false, baseline: null as string | null };
   let live = EditorState.create({ doc: '' });
   let saveSucceeds = true;
+  const parkOnLeave = new Set<string>();
+  let writeFails = false;
   let nextId = 1;
   let snapshot = 0;
   const clock = { now: 1_000, focused: true };
@@ -102,11 +104,17 @@ function makeHarness(initialFiles: Record<string, string>) {
       reload: vi.fn(async () => {}),
     },
     ai: {
-      cancel: vi.fn(async (path: string) => {
-        calls.push(`cancel ${path}`);
+      leave: vi.fn((tabId: string) => {
+        calls.push(`leave ${tabId}`);
+        return parkOnLeave.has(tabId);
+      }),
+      enter: vi.fn(async (tabId: string) => {
+        calls.push(`enter ${tabId}`);
+      }),
+      forget: vi.fn((tabId: string) => {
+        calls.push(`forget ${tabId}`);
       }),
       hasLiveAsk: vi.fn(() => false),
-      clearAsks: vi.fn(),
     },
     disk: {
       exists: async (path) => files.has(path),
@@ -116,6 +124,10 @@ function makeHarness(initialFiles: Record<string, string>) {
         const text = files.get(path);
         if (text === undefined) throw new Error('ENOENT');
         return text;
+      }),
+      write: vi.fn(async (path: string, content: string) => {
+        if (writeFails) throw new Error('EACCES');
+        files.set(path, content);
       }),
     },
     rust: {
@@ -167,6 +179,10 @@ function makeHarness(initialFiles: Record<string, string>) {
     },
     setSaveSucceeds(value: boolean) {
       saveSucceeds = value;
+    },
+    parkOnLeave,
+    setWriteFails(value: boolean) {
+      writeFails = value;
     },
     ids: () => controller.list.tabs.map((t) => t.id),
     active: () => controller.list.activeId,
@@ -251,7 +267,7 @@ describe('openPath', () => {
     expect(h.live().doc.toString()).toBe('BBBB');
     expect(h.deps.comments.flush).toHaveBeenCalledWith('/a.md');
     expect(h.calls).toContain('commitPauses /a.md');
-    expect(h.calls).toContain('cancel /a.md');
+    expect(h.calls).toContain('leave a');
 
     await h.controller.activate('a');
     expect(h.live()).toBe(stateA);
@@ -361,7 +377,7 @@ describe('openPath', () => {
 
     await h.controller.openPath('/b.md');
 
-    expect(h.deps.ai.clearAsks).toHaveBeenCalled();
+    expect(h.deps.ai.leave).not.toHaveBeenCalled();
     expect(h.deps.comments.reload).toHaveBeenCalled();
     expect(h.deps.reportUnsaved).toHaveBeenCalled();
     expect(h.deps.rust.release).toHaveBeenCalledWith('t1');
@@ -376,7 +392,7 @@ describe('openPath', () => {
     await h.controller.openPath('/b.md');
 
     expect(h.deps.comments.commitPauses).not.toHaveBeenCalled();
-    expect(h.deps.ai.cancel).not.toHaveBeenCalled();
+    expect(h.deps.ai.leave).not.toHaveBeenCalled();
     expect(h.deps.rust.release).toHaveBeenCalledWith('t1');
     expect(h.ids()).toEqual(['a']);
   });
@@ -871,15 +887,28 @@ describe('drawer stamps', () => {
     expect(meta(h, 'b').viewedAt).toBe(0);
   });
 
-  it('AnAgentMarksATabUnviewedOnlyWhileNobodyLooks', async () => {
+  it('AnAgentMarksATabUnviewedUnlessItIsInFrontOfAHuman', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
+    await h.controller.runExclusive(async () => {
+      h.controller.markUnviewedNow('a');
+      h.controller.markUnviewedNow('b');
+    });
+    expect(meta(h, 'a').unviewed, 'the active tab of a focused window is being looked at').toBe(false);
+    expect(meta(h, 'b').unviewed, 'a background tab is not, focus or no focus').toBe(true);
+    h.clock.focused = false;
+    await h.controller.runExclusive(async () => h.controller.markUnviewedNow('a'));
+    expect(meta(h, 'a').unviewed).toBe(true);
+    expect(h.deps.settled).toHaveBeenCalled();
+    await h.controller.runExclusive(async () => {
+      expect(() => h.controller.markUnviewedNow('ghost')).not.toThrow();
+    });
+  });
+
+  it('AStampFromOutsideTheExclusiveSlotIsRefused', async () => {
     const h = await started(files, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
     h.controller.markUnviewedNow('b');
     expect(meta(h, 'b').unviewed).toBe(false);
-    h.clock.focused = false;
-    h.controller.markUnviewedNow('b');
-    expect(meta(h, 'b').unviewed).toBe(true);
-    expect(h.deps.settled).toHaveBeenCalled();
-    expect(() => h.controller.markUnviewedNow('ghost')).not.toThrow();
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('markUnviewedNow'));
   });
 
   it('TheHeartbeatCarriesTheStamps', async () => {
@@ -1124,5 +1153,286 @@ describe('drawer operations', () => {
     await Promise.all([closing, reordering]);
 
     expect(h.ids()).toEqual(['a', 'c']);
+  });
+});
+
+describe('agent hooks', () => {
+  const files = { '/a.md': 'AAAA', '/b.md': 'BBBB' };
+  const meta = (h: Harness, id: string) => h.controller.list.tabs.find((t) => t.id === id);
+
+  it('LeavingATabParksItsAsksBeforeTheStrip_AndMarksItUnviewed', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    h.parkOnLeave.add('a');
+    await h.controller.openPath('/b.md');
+    expect(h.calls.indexOf('leave a')).toBeGreaterThanOrEqual(0);
+    expect(h.calls.indexOf('leave a')).toBeLessThan(h.calls.indexOf('strip'));
+    expect(meta(h, 'a')?.unviewed).toBe(true);
+  });
+
+  it('ATabThatParkedNothingIsNotMarked', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    await h.controller.openPath('/b.md');
+    expect(meta(h, 'a')?.unviewed).toBe(false);
+  });
+
+  it('ShowingATabDeliversWhatWaitsForIt_AfterRustKnowsItIsActive', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    await h.controller.openPath('/b.md');
+    h.calls.length = 0;
+    await h.controller.activate('a');
+    expect(h.calls.indexOf('activate a')).toBeGreaterThanOrEqual(0);
+    expect(h.calls.indexOf('activate a')).toBeLessThan(h.calls.indexOf('enter a'));
+  });
+
+  it('ClosingATabForgetsWhatWaitsForIt_BackgroundOrActive', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    await h.controller.openPath('/b.md');
+    await h.controller.closeTabs(['a']);
+    expect(h.calls).toContain('forget a');
+    // Rust still answers the agents: `tab_close` fails them with `tab closed`.
+    expect(h.calls).toContain('close a');
+    await h.controller.closeActive();
+    expect(h.calls).toContain('forget t1');
+    expect(h.calls).toContain('close t1');
+    expect(h.deps.ai.leave, 'a closed tab parks nothing').not.toHaveBeenCalledWith('t1');
+  });
+
+  it('ATabMovedToAnotherWindowIsForgottenAndReleased', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
+    await h.controller.moveToNewWindows(['b']);
+    // `tab_release` fails its agents with `tab released`.
+    expect(h.calls.indexOf('forget b')).toBeGreaterThanOrEqual(0);
+    expect(h.calls.indexOf('forget b')).toBeLessThan(h.calls.indexOf('release b'));
+  });
+
+  it('TheBlankTabAFileReplacesIsForgotten', async () => {
+    const h = await started(files, [untitledTab('u')]);
+    await h.controller.openPath('/a.md');
+    expect(h.calls).toContain('forget u');
+    expect(h.deps.ai.leave).not.toHaveBeenCalled();
+  });
+});
+
+describe('agent operations', () => {
+  const files = { '/a.md': 'AAAA', '/b.md': 'BBBB' };
+  const meta = (h: Harness, id: string) => h.controller.list.tabs.find((t) => t.id === id);
+  const exclusive = <T>(h: Harness, fn: () => Promise<T>) => h.controller.runExclusive(fn);
+  const prependX = (s: EditorState) => ({ state: s.update({ changes: { from: 0, insert: 'X' } }).state, result: 'done' });
+
+  it('OpenBackgroundAddsATabWithoutSwitching', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    const opened = await exclusive(h, () => h.controller.openBackgroundNow('/b.md'));
+    expect(opened).toEqual({ kind: 'opened', tabId: 't1', text: 'BBBB' });
+    expect(h.ids()).toEqual(['a', 't1']);
+    expect(h.active()).toBe('a');
+    expect(h.swaps).toHaveLength(0);
+    expect(h.deps.rust.activate).not.toHaveBeenCalled();
+    expect(meta(h, 't1')?.unviewed).toBe(true);
+    expect(h.deps.settled).toHaveBeenCalled();
+    await h.controller.activate('t1');
+    expect(h.live().doc.toString()).toBe('BBBB');
+  });
+
+  it('OpenBackgroundAnswersWhereTheFileAlreadyIs_OrThatItCannot', async () => {
+    const h = await started({ ...files, '/bad.md': 'x' }, [fileTab('a', '/a.md')]);
+    expect(await exclusive(h, () => h.controller.openBackgroundNow('/a.md'))).toEqual({ kind: 'existing', tabId: 'a' });
+    vi.mocked(h.deps.rust.open).mockResolvedValueOnce({ kind: 'other-window', label: 'editor-2' });
+    expect(await exclusive(h, () => h.controller.openBackgroundNow('/b.md'))).toEqual({ kind: 'other-window', label: 'editor-2' });
+    h.unreadable.add('/bad.md');
+    expect(await exclusive(h, () => h.controller.openBackgroundNow('/bad.md'))).toEqual({ kind: 'failed' });
+    expect(h.ids()).toEqual(['a']);
+  });
+
+  it('OpenBackgroundTakesThePathAsRustRegisteredIt', async () => {
+    const h = await started({ ...files, '/tmp/c.md': 'CCCC' }, [fileTab('a', '/a.md')]);
+    vi.mocked(h.deps.rust.open).mockResolvedValueOnce({ kind: 'created', tabId: 't9', path: '/private/tmp/c.md' });
+    await exclusive(h, () => h.controller.openBackgroundNow('/tmp/c.md'));
+    expect(meta(h, 't9')?.path).toBe('/private/tmp/c.md');
+  });
+
+  it('APlacedCaretIsWhereANeverShownTabOpens', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    await exclusive(h, async () => {
+      await h.controller.openBackgroundNow('/b.md');
+      expect(h.controller.placeCaretNow('t1', { cursor: 2, topLine: 1 })).toBe(true);
+    });
+    await h.controller.activate('t1');
+    expect(h.deps.editor.applyPosition).toHaveBeenLastCalledWith({ cursor: 2, topLine: 1 });
+    expect(h.live().selection.main.head).toBe(2);
+  });
+
+  it('APlacedCaretIsWhereACachedTabComesBack_ScrolledThereNotWhereItWasLeft', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    await h.controller.openPath('/b.md');
+    await h.controller.activate('a');
+    await exclusive(h, async () => {
+      h.controller.placeCaretNow('t1', { cursor: 3, topLine: 1 });
+    });
+    await h.controller.activate('t1');
+    expect(h.swaps[h.swaps.length - 1]?.opts).toEqual({ blur: false, scroll: 'top' });
+    expect(h.deps.editor.applyPosition).toHaveBeenLastCalledWith({ cursor: 3, topLine: 1 });
+    expect(h.live().selection.main.head).toBe(3);
+  });
+
+  it('APlacedCaretIsUsedOnce', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    await h.controller.openPath('/b.md');
+    await h.controller.activate('a');
+    await exclusive(h, async () => {
+      h.controller.placeCaretNow('t1', { cursor: 3, topLine: 1 });
+    });
+    await h.controller.activate('t1');
+    await h.controller.activate('a');
+    vi.mocked(h.deps.editor.applyPosition).mockClear();
+    await h.controller.activate('t1');
+    expect(h.deps.editor.applyPosition, 'back where it was left, not at the old placement').not.toHaveBeenCalled();
+  });
+
+  it('PlaceCaretRefusesTheActiveTab', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    expect(await exclusive(h, async () => h.controller.placeCaretNow('a', { cursor: 1, topLine: 1 }))).toBe(false);
+  });
+
+  it('AnEditOfACachedTabIsWrittenAtOnce_AndThatStateComesBack', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    await h.controller.openPath('/b.md');
+    await h.controller.activate('a');
+    const result = await exclusive(h, () => h.controller.applyToTabNow('t1', prependX));
+    expect(result).toEqual({ kind: 'applied', result: 'done' });
+    expect(h.files.get('/b.md')).toBe('XBBBB');
+    await h.controller.activate('t1');
+    expect(h.live().doc.toString()).toBe('XBBBB');
+    expect(h.swaps[h.swaps.length - 1]?.opts.blur, 'the cached state, not a reload').toBe(false);
+  });
+
+  it('AnEditOfANeverShownTabStartsFromTheDisk', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    await exclusive(h, async () => {
+      await h.controller.openBackgroundNow('/b.md');
+      await h.controller.applyToTabNow('t1', prependX);
+    });
+    expect(h.files.get('/b.md')).toBe('XBBBB');
+    await h.controller.activate('t1');
+    expect(h.live().doc.toString()).toBe('XBBBB');
+  });
+
+  it('AnEditOfACachedTabWhoseFileMovedOnStartsFromTheDisk', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    await h.controller.openPath('/b.md');
+    await h.controller.activate('a');
+    h.files.set('/b.md', 'NEW');
+    await exclusive(h, () => h.controller.applyToTabNow('t1', prependX));
+    expect(h.files.get('/b.md')).toBe('XNEW');
+  });
+
+  it('AFailedWriteChangesNothing', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    await h.controller.openPath('/b.md');
+    await h.controller.activate('a');
+    h.setWriteFails(true);
+    const result = await exclusive(h, () => h.controller.applyToTabNow('t1', prependX));
+    expect(result).toEqual({ kind: 'failed', error: 'EACCES' });
+    expect(h.files.get('/b.md')).toBe('BBBB');
+    await h.controller.activate('t1');
+    expect(h.live().doc.toString()).toBe('BBBB');
+  });
+
+  it('ApplyRefusesTheActiveTabAndUntitledOnes_AndReportsNoChange', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), untitledTab('u', 'draft')]);
+    expect((await exclusive(h, () => h.controller.applyToTabNow('a', prependX)))?.kind).toBe('failed');
+    expect((await exclusive(h, () => h.controller.applyToTabNow('u', prependX)))?.kind).toBe('failed');
+    await h.controller.openPath('/b.md');
+    expect(await exclusive(h, () => h.controller.applyToTabNow('a', () => null))).toEqual({ kind: 'unchanged' });
+    expect(h.deps.disk.write).not.toHaveBeenCalled();
+  });
+
+  it('ClosingTheLastTabAnswersTheAgentBeforeTheWindowCloses', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    const closed = await exclusive(h, () =>
+      h.controller.closeTabNow('a', async () => {
+        h.calls.push('answered');
+      })
+    );
+    expect(closed).toBe(true);
+    expect(h.calls.indexOf('answered')).toBeGreaterThanOrEqual(0);
+    expect(h.calls.indexOf('answered')).toBeLessThan(h.calls.indexOf('closeWindow'));
+  });
+
+  it('CloseTabNowRefusesAnActiveTabWhoseSaveDidNotLand', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
+    h.setSaveSucceeds(false);
+    h.type('x');
+    expect(await exclusive(h, () => h.controller.closeTabNow('a'))).toBe(false);
+    expect(h.ids()).toEqual(['a', 'b']);
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+  });
+
+  it('TextForAgentReadsTheLiveViewOrTheDisk', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
+    await exclusive(h, async () => {
+      expect(await h.controller.textForAgentNow('a')).toBe('AAAA');
+      expect(await h.controller.textForAgentNow('b')).toBe('BBBB');
+      expect(await h.controller.textForAgentNow('ghost')).toBeNull();
+    });
+  });
+
+  it('OpenPathNowSaysWhetherItOpenedTheTab_WhichIsWhatAQuickLookNeeds', async () => {
+    // Rust's `fresh` is false when the tab lands in an existing window: only
+    // this answer tells the command that it opened the tab itself (D17).
+    const h = await started({ ...files, '/c.md': 'CCCC' }, [fileTab('a', '/a.md')]);
+    expect(await exclusive(h, () => h.controller.openPathNow('/b.md'))).toEqual({ kind: 'opened', tabId: 't1' });
+    expect(h.active()).toBe('t1');
+    expect(await exclusive(h, () => h.controller.openPathNow('/a.md'))).toEqual({ kind: 'shown', tabId: 'a' });
+    expect(await exclusive(h, () => h.controller.openPathNow('/a.md')), 'already active').toEqual({
+      kind: 'shown',
+      tabId: 'a',
+    });
+    h.owners.set('/c.md', { kind: 'other-window' });
+    expect(await exclusive(h, () => h.controller.openPathNow('/c.md'))).toEqual({ kind: 'elsewhere' });
+  });
+
+  it('OpenPathNowIntoTheBlankTabOfAnUntouchedWindowIsAnOpen', async () => {
+    const h = await started(files, [untitledTab('u')]);
+    expect(await exclusive(h, () => h.controller.openPathNow('/a.md'))).toEqual({ kind: 'opened', tabId: 't1' });
+    expect(h.ids()).toEqual(['t1']);
+  });
+
+  it('OpenPathNowReportsARefusal_AndAnUnreadableFile', async () => {
+    const h = await started({ ...files, '/bad.md': 'x' }, [fileTab('a', '/a.md')]);
+    h.unreadable.add('/bad.md');
+    expect(await exclusive(h, () => h.controller.openPathNow('/bad.md'))).toEqual({ kind: 'failed' });
+    h.setSaveSucceeds(false);
+    h.type('x');
+    expect(await exclusive(h, () => h.controller.openPathNow('/b.md'))).toEqual({ kind: 'refused' });
+    expect(h.active()).toBe('a');
+  });
+
+  it('EveryAgentOperationIsRefusedOutsideTheExclusiveSlot', async () => {
+    const h = await started({ ...files, '/c.md': 'CCCC' }, [fileTab('a', '/a.md')]);
+    await h.controller.openPath('/b.md');
+    await h.controller.activate('a');
+    vi.mocked(console.error).mockClear();
+
+    expect(await h.controller.openBackgroundNow('/c.md')).toEqual({ kind: 'failed' });
+    expect(h.controller.placeCaretNow('t1', { cursor: 1, topLine: 1 })).toBe(false);
+    expect((await h.controller.applyToTabNow('t1', prependX)).kind).toBe('failed');
+    expect(await h.controller.closeTabNow('t1')).toBe(false);
+    expect(await h.controller.openPathNow('/c.md')).toEqual({ kind: 'failed' });
+
+    expect(h.ids()).toEqual(['a', 't1']);
+    expect(h.active()).toBe('a');
+    expect(h.files.get('/b.md')).toBe('BBBB');
+    for (const name of ['openBackgroundNow', 'placeCaretNow', 'applyToTabNow', 'closeTabNow', 'openPathNow']) {
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining(name));
+    }
+  });
+
+  it('TheSlotClosesEvenWhenTheCommandThrows', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
+    await h.controller.runExclusive(async () => {
+      throw new Error('boom');
+    });
+    h.controller.markUnviewedNow('b');
+    expect(meta(h, 'b')?.unviewed).toBe(false);
   });
 });

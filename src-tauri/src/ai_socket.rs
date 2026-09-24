@@ -549,8 +549,8 @@ impl AiPending {
         self.fail_where("window closed", |e| e.label == label);
     }
 
-    /// Fail every entry of `label` about `path` — the tab was switched away
-    /// from or closed. An entry with no path is never matched.
+    /// Fail every entry of `label` about `path` — the tab was closed or
+    /// released. An entry with no path is never matched.
     pub fn cancel_for_window_and_path(&self, label: &str, path: &str, error: &str) {
         self.fail_where(error, |e| e.label == label && e.path.as_deref() == Some(path));
     }
@@ -1038,22 +1038,11 @@ fn stamp_window(reg: &crate::tabs::TabRegistry, label: &str, response: &mut AiRe
 
 /// IPC command: whether the command `id` still has an agent waiting on it. A
 /// command can wait in the frontend's tab queue past its cancellation (the
-/// tab it was for was left or closed) or its timeout; applied then, it would
+/// tab it was for was closed or released) or its timeout; applied then, it would
 /// act for an agent that was already told it failed.
 #[tauri::command]
 pub async fn ai_is_pending(app: AppHandle, id: u64) -> Result<bool, String> {
     Ok(app.state::<AiPending>().is_pending(id))
-}
-
-/// IPC command: fail every `show`/`edit`/`ask` for `path` in the calling window — pending and queued — before the window stops showing it.
-#[tauri::command]
-pub async fn cancel_ai_ask(
-    app: AppHandle,
-    window: tauri::WebviewWindow,
-    path: String,
-) -> Result<(), String> {
-    cancel_for_tab(&app, window.label(), &path, "switched away from this document");
-    Ok(())
 }
 
 /// IPC command: drain the AI commands queued for the calling window — commands
