@@ -180,6 +180,11 @@ pub fn build_menu(
                 .build(app)?,
         )
         .item(
+            &MenuItemBuilder::with_id("new_tab", t("menu.file.new_tab"))
+                .accelerator("CmdOrCtrl+T")
+                .build(app)?,
+        )
+        .item(
             &MenuItemBuilder::with_id("open", t("menu.file.open"))
                 .accelerator("CmdOrCtrl+O")
                 .build(app)?,
@@ -259,6 +264,33 @@ pub fn build_menu(
     let toggle_ocd_alignment =
         CheckMenuItemBuilder::with_id("toggle_ocd_alignment", t("menu.view.ocd_alignment")).build(app)?;
 
+    // Nine literal builder chains, not a loop: the accelerator mirror test
+    // (`native-menu-accelerators.test.ts`) reads each item id as a string
+    // literal right after its builder call.
+    let tab_label = |n: u32| t("menu.view.select_tab").replace("{n}", &n.to_string());
+    let tabs_submenu = SubmenuBuilder::new(app, t("menu.view.tabs_title"))
+        .item(
+            &MenuItemBuilder::with_id("next_tab", t("menu.view.next_tab"))
+                .accelerator("Ctrl+Tab")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("prev_tab", t("menu.view.prev_tab"))
+                .accelerator("Ctrl+Shift+Tab")
+                .build(app)?,
+        )
+        .separator()
+        .item(&MenuItemBuilder::with_id("select_tab_1", tab_label(1)).accelerator("CmdOrCtrl+1").build(app)?)
+        .item(&MenuItemBuilder::with_id("select_tab_2", tab_label(2)).accelerator("CmdOrCtrl+2").build(app)?)
+        .item(&MenuItemBuilder::with_id("select_tab_3", tab_label(3)).accelerator("CmdOrCtrl+3").build(app)?)
+        .item(&MenuItemBuilder::with_id("select_tab_4", tab_label(4)).accelerator("CmdOrCtrl+4").build(app)?)
+        .item(&MenuItemBuilder::with_id("select_tab_5", tab_label(5)).accelerator("CmdOrCtrl+5").build(app)?)
+        .item(&MenuItemBuilder::with_id("select_tab_6", tab_label(6)).accelerator("CmdOrCtrl+6").build(app)?)
+        .item(&MenuItemBuilder::with_id("select_tab_7", tab_label(7)).accelerator("CmdOrCtrl+7").build(app)?)
+        .item(&MenuItemBuilder::with_id("select_tab_8", tab_label(8)).accelerator("CmdOrCtrl+8").build(app)?)
+        .item(&MenuItemBuilder::with_id("select_tab_9", tab_label(9)).accelerator("CmdOrCtrl+9").build(app)?)
+        .build()?;
+
     let view_menu = SubmenuBuilder::new(app, t("menu.view.title"))
         .item(
             &MenuItemBuilder::with_id("toggle_mode", t("menu.view.toggle_mode"))
@@ -289,6 +321,9 @@ pub fn build_menu(
         .separator()
         .item(&CheckMenuItemBuilder::with_id("toggle_line_glow", t("menu.view.line_glow")).build(app)?)
         .item(&toggle_ocd_alignment)
+        .separator()
+        // Plan 03 adds "Show Tabs" (⌘J) and "Compact" here (spec §6).
+        .item(&tabs_submenu)
         .build()?;
 
     // Семья и половина — две независимые группы, а не восемь комбинаций:

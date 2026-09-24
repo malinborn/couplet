@@ -340,16 +340,6 @@ pub fn run() {
                     return;
                 }
 
-                // Closes the whole window. The target is the tracked window,
-                // not `is_focused()`, which is unreliable while the menu bar
-                // is active.
-                if id == "close" {
-                    if let Some(win) = focused_window(_app).and_then(|l| _app.get_webview_window(&l)) {
-                        let _ = win.close();
-                    }
-                    return;
-                }
-
                 // Галочка обязана нести значение, а не команду «переключи».
                 //
                 // Ниже событие рассылается во все окна, и каждое применяет его
