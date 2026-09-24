@@ -49,7 +49,7 @@ pub fn check_tab_ids(reports: &[TabReport]) -> Result<(), String> {
 }
 
 /// One tab as it was when the session was captured.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TabSnapshot {
     /// Stable across a restore; names the tab's untitled sidecar.
@@ -64,6 +64,17 @@ pub struct TabSnapshot {
     pub cursor: usize,
     #[serde(default = "default_top_line")]
     pub top_line: usize,
+    /// When the tab was opened, ms since the epoch — the drawer's ⌘L. `0`:
+    /// unknown (a session written before the drawer); the frontend stamps it.
+    #[serde(default)]
+    pub opened_at: u64,
+    /// The last moment it was the active tab of a focused window — ⌘R. `0`: never.
+    #[serde(default)]
+    pub viewed_at: u64,
+    /// An agent put it up while nobody was looking, and nobody has since
+    /// (spec §2) — it shimmers until it is seen.
+    #[serde(default)]
+    pub unviewed: bool,
 }
 
 impl TabSnapshot {
@@ -125,6 +136,7 @@ impl WindowSnapshot {
                 untitled: None,
                 cursor: entry.cursor,
                 top_line: entry.top_line,
+                ..Default::default()
             }],
             active_tab: Some(tab_id),
         }
@@ -207,6 +219,7 @@ fn migrate_legacy(legacy: LegacySession) -> Session {
                     untitled: w.untitled,
                     cursor: w.cursor,
                     top_line: w.top_line,
+                    ..Default::default()
                 }],
             })
             .collect(),
@@ -648,7 +661,7 @@ pub fn window_geometry(window: &tauri::Window) -> Option<(i32, i32, u32, u32)> {
 }
 
 /// One tab as the frontend reports it on the heartbeat.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TabReport {
     pub tab_id: String,
@@ -657,6 +670,14 @@ pub struct TabReport {
     pub top_line: usize,
     /// An untitled tab's text; `None` for a file tab.
     pub content: Option<String>,
+    /// Drawer stamps — see `TabSnapshot`. Defaulted so a heartbeat from a
+    /// frontend without the drawer is still accepted.
+    #[serde(default)]
+    pub opened_at: u64,
+    #[serde(default)]
+    pub viewed_at: u64,
+    #[serde(default)]
+    pub unviewed: bool,
 }
 
 /// Turn a heartbeat into snapshots, plus the sidecar writes it calls for
@@ -690,6 +711,9 @@ pub fn tab_snapshots(
                 untitled,
                 cursor: r.cursor,
                 top_line: r.top_line.max(1),
+                opened_at: r.opened_at,
+                viewed_at: r.viewed_at,
+                unviewed: r.unviewed,
             }
         })
         .collect();
@@ -842,6 +866,7 @@ mod tests {
             untitled: None,
             cursor: 5,
             top_line: 3,
+            ..Default::default()
         }
     }
 
@@ -1155,10 +1180,10 @@ mod tests {
         state.seed("main", window(vec![untitled_tab("old", "untitled-main.md")]));
         let written = RefCell::new(Vec::<(String, String)>::new());
         let reports = vec![
-            TabReport { tab_id: "old".into(), path: None, cursor: 1, top_line: 0, content: Some("kept".into()) },
-            TabReport { tab_id: "new".into(), path: None, cursor: 0, top_line: 1, content: Some("fresh".into()) },
-            TabReport { tab_id: "blank".into(), path: None, cursor: 0, top_line: 1, content: Some(String::new()) },
-            TabReport { tab_id: "file".into(), path: Some("/tmp/a.md".into()), cursor: 9, top_line: 4, content: None },
+            TabReport { tab_id: "old".into(), path: None, cursor: 1, top_line: 0, content: Some("kept".into()), ..Default::default() },
+            TabReport { tab_id: "new".into(), path: None, cursor: 0, top_line: 1, content: Some("fresh".into()), ..Default::default() },
+            TabReport { tab_id: "blank".into(), path: None, cursor: 0, top_line: 1, content: Some(String::new()), ..Default::default() },
+            TabReport { tab_id: "file".into(), path: Some("/tmp/a.md".into()), cursor: 9, top_line: 4, content: None, ..Default::default() },
         ];
         let ids: Vec<String> = ["old", "new", "blank", "file"].map(String::from).to_vec();
         record_heartbeat(&state, "main", reports, Some("old".to_string()), &ids, &HashSet::new(), |name, text| {
@@ -1184,7 +1209,7 @@ mod tests {
     #[test]
     fn a_heartbeat_fails_when_a_sidecar_cannot_be_written() {
         let state = SessionState::new();
-        let reports = vec![TabReport { tab_id: "u".into(), path: None, cursor: 0, top_line: 1, content: Some("text".into()) }];
+        let reports = vec![TabReport { tab_id: "u".into(), path: None, cursor: 0, top_line: 1, content: Some("text".into()), ..Default::default() }];
         assert!(record_heartbeat(&state, "main", reports, None, &[], &HashSet::new(), |_, _| Err("disk full".into())).is_err());
     }
 
@@ -1194,7 +1219,7 @@ mod tests {
         // first sidecar written before its name is recorded can be deleted
         // before the name lands.
         let state = SessionState::new();
-        let reports = vec![TabReport { tab_id: "u".into(), path: None, cursor: 0, top_line: 1, content: Some("text".into()) }];
+        let reports = vec![TabReport { tab_id: "u".into(), path: None, cursor: 0, top_line: 1, content: Some("text".into()), ..Default::default() }];
         let checked = RefCell::new(false);
         record_heartbeat(&state, "main", reports, Some("u".to_string()), &["u".to_string()], &HashSet::new(), |name, _| {
             assert!(state.referenced_untitled().contains(name), "{name} written before it was referenced");
@@ -1212,7 +1237,7 @@ mod tests {
             "main",
             window(vec![tab("a", Some("/tmp/a.md")), untitled_tab("u", "untitled-u.md")]),
         );
-        let reports = vec![TabReport { tab_id: "a".into(), path: Some("/tmp/a.md".into()), cursor: 7, top_line: 2, content: None }];
+        let reports = vec![TabReport { tab_id: "a".into(), path: Some("/tmp/a.md".into()), cursor: 7, top_line: 2, content: None, ..Default::default() }];
         let ids = ["a", "u"].map(String::from).to_vec();
         record_heartbeat(&state, "main", reports, Some("a".to_string()), &ids, &HashSet::new(), |_, _| Ok(())).unwrap();
 
@@ -1227,7 +1252,7 @@ mod tests {
     fn a_tab_the_registry_no_longer_holds_is_dropped_from_the_session() {
         let state = SessionState::new();
         state.seed("main", window(vec![tab("a", Some("/tmp/a.md")), untitled_tab("u", "untitled-u.md")]));
-        let reports = vec![TabReport { tab_id: "a".into(), path: Some("/tmp/a.md".into()), cursor: 0, top_line: 1, content: None }];
+        let reports = vec![TabReport { tab_id: "a".into(), path: Some("/tmp/a.md".into()), cursor: 0, top_line: 1, content: None, ..Default::default() }];
         record_heartbeat(&state, "main", reports, Some("a".to_string()), &["a".to_string()], &HashSet::new(), |_, _| Ok(())).unwrap();
         assert!(!state.referenced_untitled().contains("untitled-u.md"));
         assert_eq!(state.snapshot_for("main").unwrap().tabs.len(), 1);
@@ -1242,8 +1267,8 @@ mod tests {
         reg.add_tab("main", "u", None);
         // Sent before ⌘W on `u`, processed after `tab_close`.
         let stale = vec![
-            TabReport { tab_id: "a".into(), path: Some("/tmp/a.md".into()), cursor: 0, top_line: 1, content: None },
-            TabReport { tab_id: "u".into(), path: None, cursor: 0, top_line: 1, content: Some("draft".into()) },
+            TabReport { tab_id: "a".into(), path: Some("/tmp/a.md".into()), cursor: 0, top_line: 1, content: None, ..Default::default() },
+            TabReport { tab_id: "u".into(), path: None, cursor: 0, top_line: 1, content: Some("draft".into()), ..Default::default() },
         ];
         reg.remove_tab("main", "u");
         state.remove_tab("main", "u");
@@ -1271,7 +1296,7 @@ mod tests {
         for bad in ["", "../x", "a/b", "u", "1.2", "1 2", "..", "1-2-3\0"] {
             assert!(!is_valid_tab_id(bad), "{bad:?} accepted");
         }
-        let report = |id: &str| TabReport { tab_id: id.into(), path: None, cursor: 0, top_line: 1, content: None };
+        let report = |id: &str| TabReport { tab_id: id.into(), path: None, cursor: 0, top_line: 1, content: None, ..Default::default() };
         assert!(check_tab_ids(&[report("1-2"), report("3-4")]).is_ok());
         assert!(check_tab_ids(&[report("1-2"), report("../../evil")]).is_err());
     }
@@ -1376,7 +1401,7 @@ mod tests {
     fn a_heartbeat_with_an_empty_untitled_buffer_drops_the_sidecar_name() {
         let state = SessionState::new();
         state.seed("main", window(vec![untitled_tab("u", "untitled-u.md")]));
-        let reports = vec![TabReport { tab_id: "u".into(), path: None, cursor: 0, top_line: 1, content: Some(String::new()) }];
+        let reports = vec![TabReport { tab_id: "u".into(), path: None, cursor: 0, top_line: 1, content: Some(String::new()), ..Default::default() }];
         record_heartbeat(&state, "main", reports, Some("u".to_string()), &["u".to_string()], &HashSet::new(), |_, _| {
             panic!("no sidecar for an empty buffer")
         })
@@ -1401,7 +1426,7 @@ mod tests {
     fn a_heartbeat_keeps_the_window_number() {
         let state = SessionState::new();
         state.set_number("editor-2", Some(7));
-        let reports = vec![TabReport { tab_id: "a".into(), path: Some("/tmp/a.md".into()), cursor: 0, top_line: 1, content: None }];
+        let reports = vec![TabReport { tab_id: "a".into(), path: Some("/tmp/a.md".into()), cursor: 0, top_line: 1, content: None, ..Default::default() }];
         record_heartbeat(&state, "editor-2", reports, Some("a".to_string()), &["a".to_string()], &HashSet::new(), |_, _| Ok(())).unwrap();
         assert_eq!(state.snapshot_for("editor-2").unwrap().number, Some(7));
     }
@@ -1410,5 +1435,53 @@ mod tests {
     fn this_build_writes_only_the_v2_file() {
         assert_eq!(SESSION_FILE, "session-v2.json");
         assert_ne!(SESSION_FILE, LEGACY_SESSION_FILE);
+    }
+
+    #[test]
+    fn drawer_stamps_ride_the_heartbeat_into_the_snapshot() {
+        let state = SessionState::new();
+        let reports = vec![TabReport {
+            tab_id: "a".into(),
+            path: Some("/tmp/a.md".into()),
+            cursor: 0,
+            top_line: 1,
+            content: None,
+            opened_at: 1_700_000_000_123,
+            viewed_at: 1_700_000_000_456,
+            unviewed: true,
+        }];
+        let (snapshots, _) = tab_snapshots(&state, "main", reports);
+        assert_eq!(snapshots[0].opened_at, 1_700_000_000_123);
+        assert_eq!(snapshots[0].viewed_at, 1_700_000_000_456);
+        assert!(snapshots[0].unviewed);
+    }
+
+    #[test]
+    fn a_heartbeat_without_stamps_is_still_accepted() {
+        let report: TabReport =
+            serde_json::from_str(r#"{"tabId":"1","path":null,"cursor":0,"topLine":1,"content":null}"#).unwrap();
+        assert_eq!((report.opened_at, report.viewed_at, report.unviewed), (0, 0, false));
+    }
+
+    #[test]
+    fn a_session_written_before_the_drawer_parses_with_empty_stamps() {
+        let json = r#"{"version":2,"savedAt":1,"windows":[{"x":0,"y":0,"width":900,"height":700,
+            "tabs":[{"tabId":"1-2-3","path":"/tmp/a.md","cursor":0,"topLine":1}],"activeTab":"1-2-3"}]}"#;
+        let s = parse_session(json).expect("parses");
+        let t = &s.windows[0].tabs[0];
+        assert_eq!((t.opened_at, t.viewed_at, t.unviewed), (0, 0, false));
+    }
+
+    #[test]
+    fn drawer_stamps_round_trip_through_the_session_file() {
+        let mut t = tab("t1", Some("/tmp/a.md"));
+        t.opened_at = 5;
+        t.viewed_at = 7;
+        t.unviewed = true;
+        let json = serde_json::to_string(&session(vec![window(vec![t.clone()])])).unwrap();
+        for key in [r#""openedAt":5"#, r#""viewedAt":7"#, r#""unviewed":true"#] {
+            assert!(json.contains(key), "{key} missing in {json}");
+        }
+        assert_eq!(parse_session(&json).unwrap().windows[0].tabs[0], t);
     }
 }

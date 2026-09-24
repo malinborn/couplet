@@ -27,6 +27,29 @@ pub struct PendingTab {
     pub content: Option<String>,
     pub cursor: usize,
     pub top_line: usize,
+    /// Drawer stamps from the session (`TabSnapshot`); `0` / `false` for a
+    /// tab that is new — the frontend stamps it.
+    pub opened_at: u64,
+    pub viewed_at: u64,
+    pub unviewed: bool,
+}
+
+/// The tab a restored snapshot hands its window's frontend: caret and drawer
+/// stamps as they were saved, the untitled text read by the caller.
+pub fn pending_tab_from_snapshot(
+    tab: &crate::session::TabSnapshot,
+    content: Option<String>,
+) -> PendingTab {
+    PendingTab {
+        tab_id: tab.tab_id.clone(),
+        path: tab.path.clone(),
+        content,
+        cursor: tab.cursor,
+        top_line: tab.top_line.max(1),
+        opened_at: tab.opened_at,
+        viewed_at: tab.viewed_at,
+        unviewed: tab.unviewed,
+    }
 }
 
 /// What a freshly created window should load once its frontend mounts.
@@ -49,6 +72,7 @@ impl PendingOpen {
                 content: None,
                 cursor: 0,
                 top_line: 1,
+                ..Default::default()
             }],
         }
     }
@@ -93,6 +117,7 @@ pub fn window_init(
                 content: None,
                 cursor: 0,
                 top_line: 1,
+                ..Default::default()
             })
             .collect(),
         active_tab_id: window.active.clone(),
@@ -396,6 +421,7 @@ pub fn open_file_window(app: &AppHandle, path: Option<String>) {
                     content: None,
                     cursor: 0,
                     top_line: 1,
+                    ..Default::default()
                 };
                 match hand_over_tab(app, &label, tab) {
                     Handover::Pending => set_watcher(app, &label, Some(&file_path)),
@@ -508,13 +534,7 @@ pub fn open_restored_window(
                 None => continue,
             },
         };
-        pending_tabs.push(PendingTab {
-            tab_id: tab.tab_id.clone(),
-            path: tab.path.clone(),
-            content,
-            cursor: tab.cursor,
-            top_line: tab.top_line.max(1),
-        });
+        pending_tabs.push(pending_tab_from_snapshot(&tab, content));
         kept.push(tab);
     }
 
@@ -867,6 +887,7 @@ mod tests {
             content: None,
             cursor: 0,
             top_line: 1,
+            ..Default::default()
         }]);
         assert_eq!(init.active_tab_id.as_deref(), Some("u1"));
         assert!(reg.window("main").is_some_and(|w| w.tabs.len() == 1), "registered, not just reported");
@@ -937,6 +958,7 @@ mod tests {
             content: None,
             cursor: 0,
             top_line: 1,
+            ..Default::default()
         }
     }
 
@@ -989,5 +1011,26 @@ mod tests {
             Handover::Pending
         );
         assert_eq!(reg.label_of("/a.md").as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn a_restored_tab_hands_its_drawer_stamps_to_the_frontend() {
+        let snapshot = crate::session::TabSnapshot {
+            tab_id: "1-2-3".into(),
+            path: Some("/a.md".into()),
+            cursor: 4,
+            top_line: 0,
+            opened_at: 11,
+            viewed_at: 22,
+            unviewed: true,
+            ..Default::default()
+        };
+        let tab = pending_tab_from_snapshot(&snapshot, None);
+        assert_eq!((tab.opened_at, tab.viewed_at, tab.unviewed), (11, 22, true));
+        assert_eq!((tab.cursor, tab.top_line), (4, 1), "line numbers are 1-based");
+        let json = serde_json::to_string(&tab).unwrap();
+        for key in [r#""openedAt":11"#, r#""viewedAt":22"#, r#""unviewed":true"#] {
+            assert!(json.contains(key), "{key} missing in {json}");
+        }
     }
 }

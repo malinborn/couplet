@@ -621,6 +621,7 @@ fn assign_file_to_main(app: &tauri::AppHandle, path: String) -> bool {
         content: None,
         cursor: 0,
         top_line: 1,
+        ..Default::default()
     };
     match window::hand_over_tab(app, "main", tab) {
         window::Handover::Pending => true,

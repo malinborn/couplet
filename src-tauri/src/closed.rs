@@ -280,6 +280,7 @@ pub fn reopen_closed(app: &tauri::AppHandle) -> bool {
                 content: None,
                 cursor: entry.cursor,
                 top_line: entry.top_line,
+                ..Default::default()
             };
             let reveal_label = match crate::window::hand_over_tab(app, &label, tab) {
                 crate::window::Handover::Pending => label,
@@ -354,7 +355,7 @@ mod tests {
     }
 
     fn snap_tab(id: &str, path: &str, cursor: usize, top_line: usize) -> TabSnapshot {
-        TabSnapshot { tab_id: id.to_string(), path: Some(path.to_string()), untitled: None, cursor, top_line }
+        TabSnapshot { tab_id: id.to_string(), path: Some(path.to_string()), untitled: None, cursor, top_line, ..Default::default() }
     }
 
     /// `editor-1` at 11,22 800×600, whose last heartbeat reported `tabs`.
