@@ -111,11 +111,13 @@ if [ "$routed" = 1 ]; then
   exec "$BIN" ai open "$@"
 fi
 
-# Resolve relative paths to absolute
+# Resolve relative paths to absolute. `pwd -P`, the physical directory: the
+# app spells a path with its symlinks resolved (`/private/tmp`, not `/tmp`),
+# and a second spelling of one file would open it in a second tab.
 args=()
 for arg in "$@"; do
   if [[ "$arg" != -* && "$arg" != /* ]]; then
-    arg="$(cd "$(dirname "$arg")" 2>/dev/null && pwd)/$(basename "$arg")"
+    arg="$(cd "$(dirname "$arg")" 2>/dev/null && pwd -P)/$(basename "$arg")"
   fi
   args+=("$arg")
 done

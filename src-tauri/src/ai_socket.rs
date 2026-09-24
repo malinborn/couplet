@@ -117,6 +117,18 @@ impl AiRequest {
         }
     }
 
+    /// The path to normalize at the socket's door; `None` for `windows`.
+    fn path_mut(&mut self) -> Option<&mut String> {
+        match self {
+            AiRequest::Show { path, .. }
+            | AiRequest::Edit { path, .. }
+            | AiRequest::Ask { path, .. }
+            | AiRequest::Open { path, .. }
+            | AiRequest::Close { path, .. } => Some(path),
+            AiRequest::Windows { .. } => None,
+        }
+    }
+
     /// Whether the command may take the view. `show` does by default, `open`
     /// when the CLI says so; `edit`, `ask` and `close` never switch tabs.
     fn focus(&self) -> bool {
@@ -778,7 +790,18 @@ fn payload_for(req: &AiRequest, id: u64, first_use: bool) -> AiCommandPayload {
 /// real id, since `AiPending::next` starts at 1) if the request was answered
 /// directly on `tx` without ever registering, so the caller's later
 /// `AiPending::cancel(id)` on timeout is a harmless no-op.
-fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u64 {
+fn dispatch(app: &AppHandle, mut req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u64 {
+    // MCP and raw clients converge on the spelling the CLI resolves to, so
+    // one file is one tab however the caller wrote it.
+    if let Some(path) = req.path_mut() {
+        match request_path(path) {
+            Ok(normalized) => *path = normalized,
+            Err(e) => {
+                let _ = tx.send(AiResponse::error(e));
+                return 0;
+            }
+        }
+    }
     match &req {
         AiRequest::Windows { .. } => {
             let mut resp = AiResponse::ok();
@@ -901,6 +924,22 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
     app.state::<AiPending>().register(id, label.clone(), Some(path), tx);
     deliver(app, &label, payload);
     id
+}
+
+/// A request's path in its one spelling (`path_norm::normalize_path`). It
+/// must be absolute: this process's own directory means nothing to the
+/// caller, and resolving against it would open some other file. A `..` that
+/// survives normalization would name a file by a spelling nobody else uses.
+fn request_path(raw: &str) -> Result<String, String> {
+    let path = Path::new(raw);
+    if !path.is_absolute() {
+        return Err("path must be absolute".to_string());
+    }
+    let normalized = crate::path_norm::normalize_path(path);
+    if normalized.components().any(|c| c == std::path::Component::ParentDir) {
+        return Err("path must be absolute".to_string());
+    }
+    Ok(normalized.to_string_lossy().into_owned())
 }
 
 /// `close`: to the window holding the file. Registered **without a path**:
@@ -3112,6 +3151,31 @@ mod tests {
         let close = parse_request(r#"{"v":1,"cmd":"close","path":"/a.md"}"#).unwrap();
         assert_eq!((payload_for(&close, 2, false).cmd.as_str(), close.focus()), ("close", false));
         assert!(matches!(parse_request(r#"{"v":1,"cmd":"windows"}"#).unwrap(), AiRequest::Windows { .. }));
+    }
+
+    #[test]
+    fn a_request_path_must_be_absolute_and_comes_out_normalized() {
+        for bad in ["", "a.md", "./a.md", "../a.md"] {
+            assert_eq!(request_path(bad), Err("path must be absolute".to_string()), "{bad:?}");
+        }
+        assert_eq!(request_path("/nope-x/../nope-a.md").as_deref(), Ok("/nope-a.md"));
+        assert_eq!(request_path("/nope-x/./nope-a.md").as_deref(), Ok("/nope-x/nope-a.md"));
+    }
+
+    #[test]
+    fn every_path_carrying_request_is_normalized_and_windows_is_not() {
+        let mut req = parse_request(r#"{"v":1,"cmd":"close","path":"/x/../a.md"}"#).unwrap();
+        *req.path_mut().unwrap() = request_path(req.path()).unwrap();
+        assert_eq!(req.path(), "/a.md");
+        for line in [
+            r#"{"v":1,"cmd":"show","path":"/a"}"#,
+            r#"{"v":1,"cmd":"edit","path":"/a","content":""}"#,
+            r#"{"v":1,"cmd":"ask","path":"/a","question":"Q","options":["A","B"]}"#,
+            r#"{"v":1,"cmd":"open","path":"/a"}"#,
+        ] {
+            assert!(parse_request(line).unwrap().path_mut().is_some(), "{line}");
+        }
+        assert!(AiRequest::Windows { v: 1 }.path_mut().is_none());
     }
 
     #[test]

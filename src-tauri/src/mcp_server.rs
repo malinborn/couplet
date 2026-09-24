@@ -709,7 +709,8 @@ mod tests {
         let req: Value = serde_json::from_str(&req_line).unwrap();
         assert_eq!(req["v"], json!(1));
         assert_eq!(req["cmd"], json!("show"));
-        assert_eq!(req["path"], json!("/tmp/a.md"));
+        // Sent in its one spelling: `/private/tmp/a.md` on macOS.
+        assert_eq!(req["path"], json!(crate::resolve_path("/tmp/a.md", None)));
         assert_eq!(req["line"], json!(5));
 
         let _ = std::fs::remove_file(&path);

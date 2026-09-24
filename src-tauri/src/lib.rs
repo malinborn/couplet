@@ -21,6 +21,7 @@ mod menu;
 mod menu_route;
 mod migration;
 mod onboarding;
+mod path_norm;
 mod paths;
 mod preferences;
 mod recent;
@@ -481,7 +482,7 @@ pub fn run() {
                 for url in &urls {
                     if let Ok(path) = url.to_file_path() {
                         if let Some(path_str) = path.to_str() {
-                            let file_path = path_str.to_string();
+                            let file_path = resolve_path(path_str, None);
                             let route = {
                                 let open_files = _app_handle.state::<window::OpenFiles>();
                                 let reg = open_files.0.lock().unwrap();
@@ -652,20 +653,20 @@ fn assign_file_to_main(app: &tauri::AppHandle, path: String) -> bool {
     }
 }
 
-/// Resolve a potentially relative path to an absolute path.
+/// Resolve a potentially relative path to an absolute one, in its one
+/// spelling (`path_norm::normalize_path`) — absolute paths included.
 pub(crate) fn resolve_path(path: &str, cwd: Option<&str>) -> String {
     let p = std::path::Path::new(path);
-    if p.is_absolute() {
-        return path.to_string();
-    }
-    let base = match cwd {
-        Some(c) => std::path::PathBuf::from(c),
-        None => std::env::current_dir().unwrap_or_default(),
+    let joined = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        match cwd {
+            Some(c) => std::path::PathBuf::from(c),
+            None => std::env::current_dir().unwrap_or_default(),
+        }
+        .join(p)
     };
-    base.join(p)
-        .canonicalize()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| base.join(path).to_string_lossy().to_string())
+    path_norm::normalize_path(&joined).to_string_lossy().into_owned()
 }
 
 /// Open pending files when app is already running (Reopen event).
@@ -684,7 +685,7 @@ fn open_pending_files(app: &tauri::AppHandle) {
     for line in contents.lines() {
         let file = line.trim();
         if !file.is_empty() {
-            window::open_file_window(app, Some(file.to_string()));
+            window::open_file_window(app, Some(resolve_path(file, None)));
         }
     }
 }
@@ -714,11 +715,13 @@ fn load_pending_open_files(app: &tauri::AppHandle) {
         if file.is_empty() {
             continue;
         }
+        // The wrapper writes absolute paths; this gives them their one spelling.
+        let file = resolve_path(file, None);
         if first {
             first = false;
-            assign_file_to_main(app, file.to_string());
+            assign_file_to_main(app, file);
         } else {
-            window::open_file_window(app, Some(file.to_string()));
+            window::open_file_window(app, Some(file));
         }
     }
 }
