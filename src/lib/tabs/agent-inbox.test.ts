@@ -18,7 +18,7 @@ describe('createAgentInbox', () => {
     inbox.park('c', { kind: 'ask', payload: payload(3), deadline: 10 });
     expect(inbox.take('b').map((i) => i.payload.id)).toEqual([1, 2]);
     expect(inbox.take('b')).toEqual([]);
-    expect(inbox.has('c')).toBe(true);
+    expect(inbox.take('c').map((i) => i.payload.id)).toEqual([3]);
   });
 
   it('ALaterPulseReplacesAnEarlierOne', () => {
@@ -33,8 +33,15 @@ describe('createAgentInbox', () => {
     const inbox = createAgentInbox();
     inbox.park('b', { kind: 'ask', payload: payload(1), deadline: 10 });
     expect(inbox.forget('b').map((i) => i.payload.id)).toEqual([1]);
-    expect(inbox.has('b')).toBe(false);
+    expect(inbox.take('b')).toEqual([]);
     expect(inbox.forget('ghost')).toEqual([]);
+  });
+
+  it('ForgetWorksDetachedFromTheInbox', () => {
+    const inbox = createAgentInbox();
+    inbox.park('b', { kind: 'ask', payload: payload(1), deadline: 10 });
+    const { forget } = inbox;
+    expect(forget('b').map((i) => i.payload.id)).toEqual([1]);
   });
 });
 

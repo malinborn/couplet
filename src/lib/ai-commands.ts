@@ -1,4 +1,5 @@
-import { ChangeSet, Text, type EditorState } from '@codemirror/state';
+import { isolateHistory } from '@codemirror/commands';
+import { ChangeSet, Text, type EditorState, type StateEffect, type TransactionSpec } from '@codemirror/state';
 import { computeChangedLineRanges, computeReplacement, type LineRange, type Replacement } from './editor/content-diff';
 import { setAiHighlights, type AiHighlightRange } from './editor/ai-highlight';
 import type { AiCommandPayload } from './tauri/events';
@@ -77,7 +78,11 @@ export interface AiEdit {
 }
 
 /** `null` when `newContent` is what `state` already holds. */
-export function buildAiEdit(state: EditorState, newContent: string): AiEdit | null {
+export function buildAiEdit(state: EditorState, rawContent: string): AiEdit | null {
+  // The document holds `\n` only: CM6 splits lines on `\r\n` and `\r` too.
+  // Measured on the raw text, every highlight after a CRLF drifts by one per
+  // line and the last one ends past the document (a RangeError in the field).
+  const newContent = rawContent.replace(/\r\n?/g, '\n');
   const oldContent = state.doc.toString();
   const repl = computeReplacement(oldContent, newContent);
   if (!repl) return null;
@@ -93,9 +98,30 @@ export function buildAiEdit(state: EditorState, newContent: string): AiEdit | nu
 }
 
 /**
- * `buildAiEdit` applied to a state with no view — a background tab's. An
- * ordinary undoable transaction carrying the highlight, so both are there
- * when the tab is shown; with `show` the caret moves to the change.
+ * The transaction of an agent's edit, in the live view or not. Undoable — an
+ * edit the human did not author, and ⌘Z is how they reject it — and its own
+ * undo step: without `isolateHistory` an edit landing within 500 ms of, and
+ * next to, a keystroke joins that keystroke's group, and one ⌘Z takes both.
+ * With `show` the caret goes to the change. `effects` follow the highlight
+ * (the live view's scroll).
+ */
+export function aiEditTransaction(
+  edit: AiEdit,
+  show: boolean,
+  effects: readonly StateEffect<unknown>[] = []
+): TransactionSpec {
+  return {
+    changes: edit.changes,
+    ...(show ? { selection: { anchor: edit.from } } : {}),
+    effects: [setAiHighlights.of(edit.highlights), ...effects],
+    annotations: isolateHistory.of('full'),
+  };
+}
+
+/**
+ * `buildAiEdit` applied to a state with no view — a background tab's. The
+ * highlight and the undo step live in the state, so both are there when the
+ * tab is shown.
  */
 export function applyAiEditToState(
   state: EditorState,
@@ -104,10 +130,6 @@ export function applyAiEditToState(
 ): { state: EditorState; result: AiEdit } | null {
   const edit = buildAiEdit(state, newContent);
   if (!edit) return null;
-  const next = state.update({
-    changes: edit.changes,
-    ...(show ? { selection: { anchor: edit.from } } : {}),
-    effects: setAiHighlights.of(edit.highlights),
-  }).state;
+  const next = state.update(aiEditTransaction(edit, show)).state;
   return { state: next, result: edit };
 }

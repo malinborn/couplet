@@ -21,6 +21,36 @@ describe('isEditableTarget', () => {
     expect(isEditableTarget(null)).toBe(false);
     editor.remove();
   });
+
+  it('AnIslandMarkedFalseCountsOnlyOutsideAnEditor', () => {
+    // A lone contenteditable="false" is not editable. Inside an editor (CM6
+    // widgets are such islands) the rule reaches the editor above it: a key
+    // there still counts as typing into the document.
+    const lone = document.createElement('div');
+    lone.setAttribute('contenteditable', 'false');
+    const inLone = document.createElement('span');
+    lone.appendChild(inLone);
+    const editor = document.createElement('div');
+    editor.setAttribute('contenteditable', 'true');
+    const widget = document.createElement('div');
+    widget.setAttribute('contenteditable', 'false');
+    const inWidget = document.createElement('span');
+    widget.appendChild(inWidget);
+    editor.appendChild(widget);
+    document.body.append(lone, editor);
+    expect(isEditableTarget(lone)).toBe(false);
+    expect(isEditableTarget(inLone)).toBe(false);
+    expect(isEditableTarget(inWidget)).toBe(true);
+    lone.remove();
+    editor.remove();
+  });
+
+  it('EveryInputCounts_ACheckboxToo', () => {
+    // The rule is the element type, not whether it takes text.
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    expect(isEditableTarget(checkbox)).toBe(true);
+  });
 });
 
 describe('countsAsTyping', () => {

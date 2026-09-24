@@ -36,7 +36,7 @@
   import { previewCompartment, lineGlowCompartment } from './lib/editor/setup';
   import { stashAndUnfoldAll, restoreStashedFolds } from './lib/editor/fold-memory';
   import { EditorView, highlightActiveLine } from '@codemirror/view';
-  import { ChangeSet, Text, type StateEffect } from '@codemirror/state';
+  import type { StateEffect } from '@codemirror/state';
   import { livePreviewPlugin } from './lib/editor/preview/plugin';
   import { LIVE_PREVIEW, LIVE_RENDER, flavourFacet } from './lib/editor/preview/flavour';
   import { liveRenderExtensions } from './lib/editor/live-render';
@@ -44,14 +44,9 @@
   import { shellSecretsPlugin } from './lib/editor/preview/shell-secrets';
   import { findCodeLanguage, previewKindFor } from './lib/editor/file-language';
   import { reinitializeTheme } from './lib/editor/preview/mermaid';
-  import { computeReplacement, computeChangedLineRanges } from './lib/editor/content-diff';
   import { resolveExternalChange } from './lib/external-change';
   import { createAutoSaveScheduler } from './lib/autosave';
-  import {
-    resolveShowTarget,
-    changedLineRanges,
-    docRangesForLineRanges,
-  } from './lib/ai-commands';
+  import { resolveShowTarget, buildAiEdit, aiEditTransaction } from './lib/ai-commands';
   import {
     setAiHighlights,
     pulseAiLine,
@@ -1566,7 +1561,7 @@
   }
 
   /** Invariant: the edit branch below must stay synchronous between reading
-   * `view.state.doc` (via `computeReplacement`) and calling `view.dispatch` —
+   * `view.state.doc` (via `buildAiEdit`) and calling `view.dispatch` —
    * no `await` in between. Two AI edit commands delivered back-to-back would
    * otherwise both read the same pre-edit state and diff against it, and
    * whichever dispatches second would clobber the first's change instead of
@@ -1669,50 +1664,28 @@
       return;
     }
 
-    // cmd === 'edit'
-    const oldContent = view.state.doc.toString();
-    const newContent = payload.content ?? '';
-    const repl = computeReplacement(oldContent, newContent);
-    if (!repl) {
+    // cmd === 'edit' — the same edit, CRLF handling and undo step as a
+    // background tab's (`buildAiEdit` / `aiEditTransaction`).
+    const edit = buildAiEdit(view.state, payload.content ?? '');
+    if (!edit) {
       await respondToAi(payload.id, { ok: true, changed_lines: [] });
       return;
     }
 
     // Single-span diff, exactly mirroring Editor.svelte's updateContent: keeps
     // CM6's automatic selection mapping intact and preserves scroll position.
-    const changes = ChangeSet.of(repl, view.state.doc.length);
-    const scrollEffect = view.scrollSnapshot().map(changes);
-    // The *change* is deliberately one coalescing span; the *highlight* is not.
-    // Edits scattered across the file would otherwise wash everything between
-    // the first and last of them (issue #27). Positions must be post-change,
-    // since the highlight field reads effect values in the end state — hence
-    // the diff runs against `newContent` rather than the live doc.
-    const lineRanges = computeChangedLineRanges(oldContent, newContent);
-    const highlightRanges = docRangesForLineRanges(Text.of(newContent.split('\n')), lineRanges);
-    view.dispatch({
-      changes,
-      // With `show` the user is being led to the change — bring the caret
-      // too (post-change coordinates), so arrow keys continue from there.
-      ...(payload.show ? { selection: { anchor: repl.from } } : {}),
-      effects: [
+    const scrollEffect = view.scrollSnapshot().map(edit.changes);
+    view.dispatch(
+      aiEditTransaction(edit, payload.show, [
         ...(scrollEffect ? [scrollEffect] : []),
-        setAiHighlights.of(highlightRanges),
-        ...(payload.show ? [EditorView.scrollIntoView(repl.from, { y: 'center' })] : []),
-      ],
-      // Unlike an external-reload or an untitled-restore transaction, an AI
-      // edit must stay undoable — it's a content change the user did not
-      // author, and Cmd+Z is their way to reject it. No addToHistory(false)
-      // annotation here (contrast Editor.svelte's updateContent).
-    });
+        // With `show` the user is being led to the change.
+        ...(payload.show ? [EditorView.scrollIntoView(edit.from, { y: 'center' })] : []),
+      ])
+    );
     // docChanged still fires the update listener (handleChange), which arms
     // dirty state + autosave — no separate call needed here.
 
-    await respondToAi(payload.id, {
-      ok: true,
-      // A pure deletion produces no new lines to report, so fall back to the
-      // single span's line (`view.state` is post-change after the dispatch).
-      changed_lines: lineRanges.length > 0 ? lineRanges : [changedLineRanges(view.state, repl)],
-    });
+    await respondToAi(payload.id, { ok: true, changed_lines: edit.changedLines });
   }
 
   // --- Recovery save (every 5s if dirty) ---

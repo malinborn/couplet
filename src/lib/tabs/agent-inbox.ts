@@ -11,6 +11,12 @@ export type InboxItem =
 
 export function createAgentInbox() {
   const byTab = new Map<string, InboxItem[]>();
+  /** Everything waiting for `tabId`, once. */
+  function take(tabId: string): InboxItem[] {
+    const items = byTab.get(tabId) ?? [];
+    byTab.delete(tabId);
+    return items;
+  }
   return {
     /** A later pulse replaces an earlier one: only the last "look here" matters. */
     park(tabId: string, item: InboxItem): void {
@@ -18,18 +24,10 @@ export function createAgentInbox() {
       items.push(item);
       byTab.set(tabId, items);
     },
-    /** Everything waiting for `tabId`, once. */
-    take(tabId: string): InboxItem[] {
-      const items = byTab.get(tabId) ?? [];
-      byTab.delete(tabId);
-      return items;
-    },
+    take,
     /** The tab is gone: drop what waited for it, and say what that was. */
     forget(tabId: string): InboxItem[] {
-      return this.take(tabId);
-    },
-    has(tabId: string): boolean {
-      return (byTab.get(tabId)?.length ?? 0) > 0;
+      return take(tabId);
     },
   };
 }
