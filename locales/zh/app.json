@@ -196,6 +196,7 @@
   "tabs.selection.new_windows": "移到新窗口",
   "tabs.selection.to_window": "移到窗口…",
   "tabs.selection.close": "关闭所选",
+  "tabs.selection.close_keys": "⌦，或在搜索为空时按 ⌫",
   "tabs.selection.clear": "取消选择",
 
   "tabs.hint.select": "⇧ 点击 / 拖动",

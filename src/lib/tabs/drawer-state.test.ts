@@ -185,6 +185,15 @@ describe('drawerKeyAction', () => {
     });
   });
 
+  it('AHeldKeyNeverClosesTheSelection', () => {
+    // Select, type «abc», hold ⌫: the repeat that finds the query empty must stop there.
+    expect(drawerKeyAction(key({ key: 'Backspace', code: 'Backspace', repeat: true }), '', true, true)).toEqual({ kind: 'none' });
+    expect(drawerKeyAction(key({ key: 'Backspace', code: 'Backspace', repeat: true }), 'ab', true, true)).toEqual({
+      kind: 'backspace',
+    });
+    expect(drawerKeyAction(key({ key: 'Delete', code: 'Delete', repeat: true }), '', true, true)).toEqual({ kind: 'none' });
+  });
+
   it('WithoutASelectionDeleteAndBackspaceAreWhatTheyWere', () => {
     const del = key({ key: 'Delete', code: 'Delete' });
     const bs = key({ key: 'Backspace', code: 'Backspace' });

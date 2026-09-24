@@ -944,6 +944,14 @@ pub async fn tabs_sync(
     Ok(())
 }
 
+/// The valid numbers of the windows a restore will build.
+fn reserved_numbers<'a>(snapshots: impl Iterator<Item = &'a WindowSnapshot>) -> HashSet<u32> {
+    snapshots
+        .filter_map(|s| s.number)
+        .filter(|n| crate::window_numbers::is_valid(*n))
+        .collect()
+}
+
 /// Reopen every window from the previous session. Returns how many were opened.
 /// The pending list is consumed, so a second call is a no-op.
 pub fn restore_pending(app: &tauri::AppHandle) -> usize {
@@ -952,16 +960,18 @@ pub fn restore_pending(app: &tauri::AppHandle) -> usize {
     let state = app.state::<SessionState>();
     let snapshots = state.take_pending();
     let count = snapshots.len();
+    // Planned first: only a window that will be built keeps its number free —
+    // one whose files are all open elsewhere must not move `main` off #1.
+    let plans: Vec<_> = snapshots
+        .iter()
+        .filter_map(|s| crate::window::plan_restore(app, s).map(|plan| (s, plan)))
+        .collect();
+    let reserved = reserved_numbers(plans.iter().map(|(s, _)| *s));
     // Every restored window's own number, kept free for it: `main` moves off
     // one, and a window whose number is taken falls back past them.
-    let reserved: HashSet<u32> = snapshots
-        .iter()
-        .filter_map(|s| s.number)
-        .filter(|n| crate::window_numbers::is_valid(*n))
-        .collect();
     crate::window::make_room_for_restore_now(app, &reserved);
-    for snapshot in &snapshots {
-        crate::window::open_restored_window(app, snapshot, &reserved);
+    for (snapshot, plan) in plans {
+        crate::window::build_restored_window(app, snapshot, plan, &reserved);
     }
     state.finish_restore();
     crate::closed::refresh_reopen_item(app);
@@ -1611,6 +1621,19 @@ mod tests {
 
         let v1 = r#"{"version":1,"savedAt":0,"windows":[{"path":"/a.md","x":0,"y":0,"width":9,"height":9}]}"#;
         assert_eq!(parse_session(v1).unwrap().windows[0].number, None);
+    }
+
+    #[test]
+    fn only_valid_numbers_are_reserved() {
+        let mut a = WindowSnapshot::empty();
+        a.number = Some(1);
+        let mut b = WindowSnapshot::empty();
+        b.number = Some(0);
+        let c = WindowSnapshot::empty();
+        let mut d = WindowSnapshot::empty();
+        d.number = Some(100);
+        let reserved = reserved_numbers([&a, &b, &c, &d].into_iter());
+        assert_eq!(reserved, [1].into_iter().collect());
     }
 
     #[test]

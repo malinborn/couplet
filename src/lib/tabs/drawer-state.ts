@@ -151,6 +151,8 @@ export interface KeyLike {
   isComposing?: boolean;
   /** 229 marks a key the IME consumed, even where `isComposing` is not yet set. */
   keyCode?: number;
+  /** Auto-repeat of a held key. */
+  repeat?: boolean;
 }
 
 export type DrawerKeyAction =
@@ -180,10 +182,12 @@ export type DrawerKeyAction =
  * (no drag, no carousel). Then ⌦ closes it, and so does ⌫ while the query is
  * empty — with text, ⌫ edits the query. Matched on the code, any modifiers:
  * ⇧ is often still held from selecting, and ⌘⌫ means nothing in the drawer.
+ * Never on auto-repeat: a ⌫ held to clear the query would go on, once it is
+ * empty, to close the selection — tabs the filter hides included.
  */
 export function drawerKeyAction(e: KeyLike, query: string, mac: boolean, canCloseSelection = false): DrawerKeyAction {
   if (e.isComposing || e.keyCode === 229) return { kind: 'none' };
-  if (canCloseSelection && (e.code === 'Delete' || (e.code === 'Backspace' && !query))) {
+  if (canCloseSelection && !e.repeat && (e.code === 'Delete' || (e.code === 'Backspace' && !query))) {
     return { kind: 'close-selected' };
   }
   const modified = e.metaKey || e.ctrlKey || e.altKey || e.shiftKey;

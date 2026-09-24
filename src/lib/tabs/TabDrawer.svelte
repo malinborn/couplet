@@ -1134,7 +1134,7 @@
           <button type="button" onclick={moveSelected}
             >{t(selected.size === 1 ? 'tabs.selection.new_window' : 'tabs.selection.new_windows')}</button
           >
-          <button type="button" title="⌦ / ⌫" aria-keyshortcuts="Delete Backspace" onclick={closeSelected}
+          <button type="button" title={t('tabs.selection.close_keys')} aria-keyshortcuts="Delete Backspace" onclick={closeSelected}
             >{t('tabs.selection.close')}</button
           >
           <button

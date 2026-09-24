@@ -876,11 +876,6 @@ pub async fn open_file_window_cmd(app: AppHandle, path: Option<String>) -> Resul
 
 /// Recreate a window from a session snapshot — geometry, tabs, and a payload
 /// the frontend pulls on mount. Returns the new window's label.
-///
-/// A tab whose file is already open elsewhere stays where it is (one file, one
-/// tab) and an untitled tab whose sidecar is gone has nothing to show. A
-/// window left with no tabs is not created; the window holding its first file
-/// is focused instead.
 /// `reserved`: the numbers of the other windows being restored with it, kept
 /// free for them when this one's own is taken (`number_window`).
 pub fn open_restored_window(
@@ -888,6 +883,23 @@ pub fn open_restored_window(
     snapshot: &crate::session::WindowSnapshot,
     reserved: &HashSet<u32>,
 ) -> Option<String> {
+    let plan = plan_restore(app, snapshot)?;
+    build_restored_window(app, snapshot, plan, reserved)
+}
+
+/// The tabs a restored window would show, read before anything is built.
+pub struct RestorePlan {
+    kept: Vec<crate::session::TabSnapshot>,
+    pending_tabs: Vec<PendingTab>,
+}
+
+/// The first half of `open_restored_window`: which of `snapshot`'s tabs a
+/// window would get. A tab whose file is already open elsewhere stays where it
+/// is (one file, one tab) and an untitled tab whose sidecar is gone has nothing
+/// to show. `None`: no window would be built — the window holding its first
+/// file is focused instead. A session restore plans every window first, so
+/// only the ones that will be built reserve their numbers.
+pub fn plan_restore(app: &AppHandle, snapshot: &crate::session::WindowSnapshot) -> Option<RestorePlan> {
     let mut focus_instead: Option<String> = None;
     let mut survivors: Vec<crate::session::TabSnapshot> = Vec::new();
     {
@@ -925,7 +937,17 @@ pub fn open_restored_window(
         }
         return None;
     }
+    Some(RestorePlan { kept, pending_tabs })
+}
 
+/// The second half of `open_restored_window`: build the planned window.
+pub fn build_restored_window(
+    app: &AppHandle,
+    snapshot: &crate::session::WindowSnapshot,
+    plan: RestorePlan,
+    reserved: &HashSet<u32>,
+) -> Option<String> {
+    let RestorePlan { kept, mut pending_tabs } = plan;
     let active_tab_id = snapshot
         .active_tab
         .clone()
@@ -962,6 +984,17 @@ pub fn open_restored_window(
         DEFAULT_HEIGHT
     };
 
+    // Numbered before it is built: once built, its frontend can mount and
+    // pull `get_window_init`, whose backstop would hand it the lowest free
+    // number without its own or the restore's reserved ones.
+    {
+        let open_files = app.state::<OpenFiles>();
+        let mut reg = open_files.0.lock().unwrap();
+        number_window(&mut reg, &label, snapshot.number, reserved, |l| {
+            app.get_webview_window(l).is_some()
+        });
+    }
+
     let builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
         .title(&window_title)
         .inner_size(width, height)
@@ -987,9 +1020,6 @@ pub fn open_restored_window(
             let (active_path, number) = {
                 let open_files = app.state::<OpenFiles>();
                 let mut reg = open_files.0.lock().unwrap();
-                number_window(&mut reg, &label, snapshot.number, reserved, |l| {
-                    app.get_webview_window(l).is_some()
-                });
                 // A restored window keeps the project it had, even if the file
                 // that bound it is no longer among its tabs.
                 if let Some(project) = snapshot.project.clone() {
@@ -1033,7 +1063,9 @@ pub fn open_restored_window(
         }
         Err(e) => {
             eprintln!("Failed to restore window: {}", e);
-            // No window will ever heartbeat or be destroyed under this label.
+            // No window will ever heartbeat or be destroyed under this label:
+            // its number goes back, and its session entry with it.
+            app.state::<OpenFiles>().0.lock().unwrap().remove_window(&label);
             app.state::<crate::session::SessionState>().remove(&label);
             None
         }

@@ -196,6 +196,7 @@
   "tabs.selection.new_windows": "To new windows",
   "tabs.selection.to_window": "To a window…",
   "tabs.selection.close": "Close selected",
+  "tabs.selection.close_keys": "⌦, or ⌫ when the search is empty",
   "tabs.selection.clear": "Clear selection",
 
   "tabs.hint.select": "⇧ click / drag",

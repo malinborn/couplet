@@ -1275,6 +1275,19 @@ describe('TabDrawer — ⌦ / ⌫ close the ⇧-selection (spec §6)', () => {
     expect(h.onclose).toHaveBeenCalledTimes(1);
   });
 
+  it('a held Backspace that empties the query does not go on to close the selection', async () => {
+    await selectBAndC();
+    for (const k of ['a', 'b', 'c']) press(k, { code: `Key${k.toUpperCase()}` });
+    await settle();
+    expect(query()).toBe('abc');
+    press('Backspace', { code: 'Backspace' });
+    for (let i = 0; i < 4; i++) press('Backspace', { code: 'Backspace', repeat: true });
+    await settle();
+    expect(query()).toBe('');
+    expect(h.onclose).not.toHaveBeenCalled();
+    expect(el('.sel-bar').classList.contains('on'), 'the selection stays').toBe(true);
+  });
+
   it('with no selection, neither key closes anything', async () => {
     h.handle().toggle();
     await settle();
@@ -1318,5 +1331,6 @@ describe('TabDrawer — ⌦ / ⌫ close the ⇧-selection (spec §6)', () => {
     await selectBAndC();
     const button = [...el('.sel-bar').querySelectorAll('button')].find((b) => b.textContent?.includes('Close selected'));
     expect(button?.getAttribute('aria-keyshortcuts')).toBe('Delete Backspace');
+    expect(button?.getAttribute('title'), 'says ⌫ needs an empty search').toBe('⌦, or ⌫ when the search is empty');
   });
 });

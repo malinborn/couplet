@@ -196,6 +196,7 @@
   "tabs.selection.new_windows": "В новые окна",
   "tabs.selection.to_window": "В окно…",
   "tabs.selection.close": "Закрыть выбранные",
+  "tabs.selection.close_keys": "⌦, или ⌫ при пустом поиске",
   "tabs.selection.clear": "Снять выделение",
 
   "tabs.hint.select": "⇧ клик / протяжка",
