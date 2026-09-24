@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { EditorState } from '@codemirror/state';
-import { resolveShowTarget, changedLineRanges, docRangesForLineRanges } from './ai-commands';
+import { history, undo } from '@codemirror/commands';
+import {
+  resolveShowTarget,
+  changedLineRanges,
+  docRangesForLineRanges,
+  buildAiEdit,
+  applyAiEditToState,
+} from './ai-commands';
+import { aiHighlightField, aiHighlightRanges } from './editor/ai-highlight';
 import { computeReplacement, computeChangedLineRanges } from './editor/content-diff';
 
 function makeState(doc: string): EditorState {
@@ -136,5 +144,46 @@ describe('docRangesForLineRanges', () => {
     for (const r of ranges) {
       expect(doc.sliceString(r.from, r.to)).not.toContain('\n');
     }
+  });
+});
+
+describe('buildAiEdit', () => {
+  it('NothingToDoForIdenticalContent', () => {
+    expect(buildAiEdit(makeState('a\nb'), 'a\nb')).toBeNull();
+  });
+
+  it('DescribesTheChangeItsLinesAndItsHighlight', () => {
+    const edit = buildAiEdit(makeState('a\nb\nc'), 'a\nB\nc');
+    expect(edit).not.toBeNull();
+    expect(edit!.changedLines).toEqual([[2, 2]]);
+    expect(edit!.from).toBe(2);
+    expect(edit!.highlights.length).toBe(1);
+  });
+
+  it('APureDeletionReportsTheLineItLandsOn', () => {
+    const edit = buildAiEdit(makeState('a\nb\nc'), 'a\nc');
+    expect(edit!.changedLines).toEqual([[2, 2]]);
+  });
+});
+
+describe('applyAiEditToState', () => {
+  const state = () => EditorState.create({ doc: 'a\nb\nc', extensions: [history(), aiHighlightField] });
+
+  it('AppliesTheEditWithItsHighlight_AndItIsUndoable', () => {
+    const out = applyAiEditToState(state(), 'a\nB\nc', false);
+    expect(out!.state.doc.toString()).toBe('a\nB\nc');
+    expect(aiHighlightRanges(out!.state).length).toBe(1);
+    const undone: { state: EditorState | null } = { state: null };
+    undo({ state: out!.state, dispatch: (tr) => { undone.state = tr.state; } });
+    expect(undone.state?.doc.toString()).toBe('a\nb\nc');
+  });
+
+  it('WithShowTheCaretGoesToTheChange', () => {
+    expect(applyAiEditToState(state(), 'a\nB\nc', true)!.state.selection.main.head).toBe(2);
+    expect(applyAiEditToState(state(), 'a\nB\nc', false)!.state.selection.main.head).toBe(0);
+  });
+
+  it('NullWhenNothingChanges', () => {
+    expect(applyAiEditToState(state(), 'a\nb\nc', true)).toBeNull();
   });
 });

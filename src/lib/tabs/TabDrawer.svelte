@@ -59,6 +59,7 @@
   import { createDrawerData, type DrawerDataDeps, type GitInfo, type TabText } from './drawer-data';
   import { dropBefore, moveIds, pastThreshold, sweptIds, type Box } from './drawer-geometry';
   import { tabName } from './tab-name';
+  import { isEditableTarget } from './typing';
 
   export interface TabDrawerHandle {
     /** ⌘J. */
@@ -250,7 +251,7 @@
   // the keys.
   $effect(() => {
     const note = (e: Event) => {
-      lastInputInEditable = !insideDrawer(e.target) && editable(e.target);
+      lastInputInEditable = !insideDrawer(e.target) && isEditableTarget(e.target);
     };
     window.addEventListener('keydown', note, true);
     window.addEventListener('pointerdown', note, true);
@@ -360,11 +361,6 @@
         `overflow: hidden; opacity: ${k}; height: ${k * height}px; padding-bottom: ${k * padding}px;` +
         ` transform: translateX(${(1 - k) * -30}px) scale(${0.97 + 0.03 * k});`,
     };
-  }
-
-  function editable(target: EventTarget | null): boolean {
-    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return true;
-    return target instanceof Element && target.closest('[contenteditable]:not([contenteditable="false"])') !== null;
   }
 
   function insideDrawer(target: EventTarget | null): boolean {

@@ -1,6 +1,6 @@
-import type { EditorState, Text } from '@codemirror/state';
-import type { LineRange, Replacement } from './editor/content-diff';
-import type { AiHighlightRange } from './editor/ai-highlight';
+import { ChangeSet, Text, type EditorState } from '@codemirror/state';
+import { computeChangedLineRanges, computeReplacement, type LineRange, type Replacement } from './editor/content-diff';
+import { setAiHighlights, type AiHighlightRange } from './editor/ai-highlight';
 import type { AiCommandPayload } from './tauri/events';
 
 /**
@@ -62,4 +62,52 @@ export function docRangesForLineRanges(doc: Text, lineRanges: readonly LineRange
     from: doc.line(clamp(start)).from,
     to: doc.line(clamp(end)).to,
   }));
+}
+
+/** An agent's `edit`, worked out against a state but not applied. */
+export interface AiEdit {
+  /** One coalescing span — keeps CM6's selection mapping and scroll intact. */
+  changes: ChangeSet;
+  /** Where the change starts, in the resulting document: where `show` puts the caret. */
+  from: number;
+  /** One highlight per changed region, in the resulting document (issue #27). */
+  highlights: AiHighlightRange[];
+  /** 1-based inclusive `changed_lines` for the response. */
+  changedLines: LineRange[];
+}
+
+/** `null` when `newContent` is what `state` already holds. */
+export function buildAiEdit(state: EditorState, newContent: string): AiEdit | null {
+  const oldContent = state.doc.toString();
+  const repl = computeReplacement(oldContent, newContent);
+  if (!repl) return null;
+  const changes = ChangeSet.of(repl, state.doc.length);
+  // Positions must be post-change: the highlight field reads effect values in
+  // the end state — hence the diff runs against `newContent`.
+  const lineRanges = computeChangedLineRanges(oldContent, newContent);
+  const highlights = docRangesForLineRanges(Text.of(newContent.split('\n')), lineRanges);
+  // A pure deletion produces no new lines to report: the single span's line.
+  const changedLines =
+    lineRanges.length > 0 ? lineRanges : [changedLineRanges(state.update({ changes }).state, repl)];
+  return { changes, from: repl.from, highlights, changedLines };
+}
+
+/**
+ * `buildAiEdit` applied to a state with no view — a background tab's. An
+ * ordinary undoable transaction carrying the highlight, so both are there
+ * when the tab is shown; with `show` the caret moves to the change.
+ */
+export function applyAiEditToState(
+  state: EditorState,
+  newContent: string,
+  show: boolean
+): { state: EditorState; result: AiEdit } | null {
+  const edit = buildAiEdit(state, newContent);
+  if (!edit) return null;
+  const next = state.update({
+    changes: edit.changes,
+    ...(show ? { selection: { anchor: edit.from } } : {}),
+    effects: setAiHighlights.of(edit.highlights),
+  }).state;
+  return { state: next, result: edit };
 }
