@@ -21,7 +21,7 @@ Rien ne se passe dans ton dos : **⌘Z** annule une modification de l'IA exactem
 
 ## Personnalise-le
 
-**Thèmes** — le menu **Thème**. Quatre familles — Classic, Aurora, Blueprint, Phosphor —, chacune avec sa moitié claire et sa moitié sombre. Famille et moitié se choisissent séparément : changer l'une laisse l'autre intacte. Coche **Suivre le système**, et la moitié suivra ton Mac du jour à la nuit, sans jamais sortir de la famille choisie.
+**Thèmes** — le menu **Thème**. Six familles — Classic, Aurora, Blueprint, Phosphor, Paper, Ink —, chacune avec sa moitié claire et sa moitié sombre. Famille et moitié se choisissent séparément : changer l'une laisse l'autre intacte. Coche **Suivre le système**, et la moitié suivra ton Mac du jour à la nuit, sans jamais sortir de la famille choisie.
 
 **Moteur de l'éditeur** — **Affichage → Moteur de l'éditeur**. *Rendu en direct* masque entièrement la syntaxe markdown ; *Aperçu* met le texte en forme mais laisse les marqueurs en place ; *Brut* montre le fichier exactement comme il est écrit. **⌘E** bascule entre la source et le moteur choisi — jamais d'un moteur à l'autre.
 

@@ -21,7 +21,7 @@ Nada ocurre a tus espaldas: **⌘Z** deshace una edición de la IA igual que des
 
 ## Hazlo tuyo
 
-**Temas** — el menú **Tema**. Cuatro familias — Classic, Aurora, Blueprint, Phosphor —, cada una con su mitad clara y su mitad oscura. Familia y mitad se eligen por separado: cambiar una no toca la otra. Activa **Seguir al sistema** y la mitad cambiará sola con tu Mac, clara de día y oscura de noche, sin salir de la familia que elegiste.
+**Temas** — el menú **Tema**. Seis familias — Classic, Aurora, Blueprint, Phosphor, Paper, Ink —, cada una con su mitad clara y su mitad oscura. Familia y mitad se eligen por separado: cambiar una no toca la otra. Activa **Seguir al sistema** y la mitad cambiará sola con tu Mac, clara de día y oscura de noche, sin salir de la familia que elegiste.
 
 **Motor del editor** — **Ver → Motor del editor**. *Renderizado en vivo* esconde del todo la sintaxis de markdown; *Vista previa* da estilo al texto pero deja los símbolos donde están; *Sin formato* muestra el archivo tal cual está escrito. **⌘E** alterna entre el código fuente y el motor que tengas elegido — nunca cambia un motor por otro.
 
