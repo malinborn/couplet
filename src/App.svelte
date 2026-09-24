@@ -263,6 +263,7 @@
         dismissedDisk = null;
         // A previous failure is over the moment a save lands.
         toasts.dismissKind('save-error');
+        toasts.dismissKind('unsaved-blocked');
       }
       // Clean up recovery file on successful save
       await invoke('delete_recovery', { path }).catch(() => {});
@@ -427,23 +428,18 @@
   }
 
   /**
-   * Say why a switch did nothing when the buffer it would have replaced is
-   * still not on disk.
+   * Say why a switch or close did nothing when the buffer it would have left
+   * is still not on disk.
    *
    * With the conflict dialog up there is nothing to add — the dialog is the
    * reason, and it is on screen. A real write failure already has its own
-   * `save-error` toast with the OS's message, which must not be overwritten.
-   * What is left is a save that simply has not landed yet, and it is reported
-   * through the same toast because the remedy is the same: get it saved.
+   * `save-error` toast with the OS's message. What is left is a save that has
+   * simply not landed yet.
    */
   function reportSwitchBlockedByUnsaved(): void {
     if (conflictDialogOpen || toasts.hasKind('save-error')) return;
     const path = fileState.filePath ?? '';
-    toasts.push({
-      kind: 'save-error',
-      fileName: path.split('/').pop() ?? path,
-      message: t('toast.save_error.not_on_disk'),
-    });
+    toasts.push({ kind: 'unsaved-blocked', fileName: path.split('/').pop() ?? path });
   }
 
   /**

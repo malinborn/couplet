@@ -40,6 +40,13 @@ export type ToastPayload =
    * item. Carries the OS's own message for the same reason `save-error` does.
    */
   | { kind: 'language-error'; message: string }
+  /**
+   * A tab switch or close did nothing because the document's latest edits
+   * have not reached the disk yet — a save still in flight. Not `save-error`:
+   * nothing failed and ⌘S is not the remedy, and `hasKind('save-error')` is
+   * what refuses every switch. The next successful save withdraws it.
+   */
+  | { kind: 'unsaved-blocked'; fileName: string }
   | { kind: 'update'; latest: string; current: string; highlight?: string }
   /**
    * Answers to a manual "Check for Updates…" click (#82) — the automatic
@@ -125,6 +132,8 @@ const ORDER: Record<ToastKind, number> = {
   // they have not acted on.
   'ai-watch-copied': 4,
   'ai-bind-copied': 4,
+  // A direct answer to the key the user just pressed, like the two above.
+  'unsaved-blocked': 4,
   // Sorts below everything: it is the only toast that is still waiting on a
   // decision, so it belongs closest to the pointer that has to make it.
   'json-offer': 5,

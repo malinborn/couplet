@@ -3,12 +3,13 @@
 
   "toast.save_error.headline": "无法保存 {fileName}",
   "toast.save_error.instruction": "你的修改还在——解决问题后按",
-  "toast.save_error.not_on_disk": "最新的修改尚未写入磁盘，因此没有打开另一个文件",
 
   "toast.comment_error.headline": "无法保存 {fileName} 上的评论",
   "toast.comment_error.instruction": "你输入的内容还在框里——解决问题后继续输入",
 
   "toast.language_error.headline": "无法更改语言",
+  "toast.unsaved_blocked.headline": "{fileName} 尚未写入磁盘",
+  "toast.unsaved_blocked.message": "最新的修改仍在保存中，请稍后再试",
 
   "toast.update.headline": "mdmini {latest} 已发布",
   "toast.update.current": "你当前是 v{current}",

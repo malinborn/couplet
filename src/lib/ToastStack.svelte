@@ -97,6 +97,13 @@
             <strong>{t('toast.language_error.headline')}</strong>
           </span>
           <span class="md-toast-highlight">{toast.payload.message}</span>
+        {:else if toast.payload.kind === 'unsaved-blocked'}
+          <!-- Not an alarm: nothing failed, the save is on its way. It says
+               why the key did nothing and leaves with the save. -->
+          <span class="md-toast-text">
+            <strong>{t('toast.unsaved_blocked.headline', { fileName: toast.payload.fileName })}</strong>
+          </span>
+          <span class="md-toast-dim">{t('toast.unsaved_blocked.message')}</span>
         {:else if toast.payload.kind === 'update'}
           <span class="md-toast-text">
             <strong>{t('toast.update.headline', { latest: toast.payload.latest })}</strong>

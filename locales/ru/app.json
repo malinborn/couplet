@@ -3,12 +3,13 @@
 
   "toast.save_error.headline": "Не удалось сохранить {fileName}",
   "toast.save_error.instruction": "Ваши изменения не потеряны — устраните причину и нажмите",
-  "toast.save_error.not_on_disk": "Последние правки ещё не записаны на диск, поэтому другой файл не открыт",
 
   "toast.comment_error.headline": "Не удалось сохранить комментарии к {fileName}",
   "toast.comment_error.instruction": "Введённый текст остался в поле — устраните причину и продолжайте печатать",
 
   "toast.language_error.headline": "Не удалось изменить язык",
+  "toast.unsaved_blocked.headline": "{fileName} ещё не записан на диск",
+  "toast.unsaved_blocked.message": "Последние правки ещё сохраняются — повторите через мгновение",
 
   "toast.update.headline": "Доступна версия mdmini {latest}",
   "toast.update.current": "у вас установлена v{current}",

@@ -186,4 +186,20 @@ describe('createToastStore', () => {
     const payload = store.toasts[0].payload;
     expect(payload.kind === 'update' && payload.latest).toBe('v1.1.0');
   });
+
+  it('UnsavedBlocked_IsNotASaveError', () => {
+    // `hasKind('save-error')` refuses every tab switch. A refusal that only
+    // says "the save has not landed yet" must not itself start refusing.
+    const store = createToastStore();
+    store.push({ kind: 'unsaved-blocked', fileName: 'a.md' });
+    expect(store.hasKind('save-error')).toBe(false);
+    expect(store.hasKind('unsaved-blocked')).toBe(true);
+  });
+
+  it('UnsavedBlocked_SortsBelowAFailedSave', () => {
+    const store = createToastStore();
+    store.push({ kind: 'unsaved-blocked', fileName: 'a.md' });
+    store.push({ kind: 'save-error', fileName: 'a.md', message: 'disk full' });
+    expect(store.toasts.map((t) => t.payload.kind)).toEqual(['save-error', 'unsaved-blocked']);
+  });
 });
