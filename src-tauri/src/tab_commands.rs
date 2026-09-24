@@ -905,12 +905,12 @@ mod tests {
             writes.into_inner(),
             vec![
                 ("untitled-main.md".to_string(), "typed a second ago".to_string()),
-                ("untitled-e.md".to_string(), String::new()),
+                ("draft-e.md".to_string(), String::new()),
             ],
             "the file tab writes nothing; an emptied draft is written empty, not left stale"
         );
         let names: Vec<_> = out.snapshots.iter().map(|s| (s.tab_id.as_str(), s.untitled.as_deref())).collect();
-        assert_eq!(names, vec![("u", Some("untitled-main.md")), ("a", None), ("e", Some("untitled-e.md"))]);
+        assert_eq!(names, vec![("u", Some("untitled-main.md")), ("a", None), ("e", Some("draft-e.md"))]);
 
         let mut failed = out.snapshots.clone();
         for s in &mut failed {

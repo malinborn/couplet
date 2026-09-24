@@ -233,10 +233,33 @@ fn migrate_legacy(legacy: LegacySession) -> Session {
     }
 }
 
+/// Prefix of every untitled sidecar this build names (`untitled_file_name`).
+const DRAFT_PREFIX: &str = "draft-";
+
+/// Prefix of the sidecars older builds named: `untitled-<label>.md` (v1) and
+/// `untitled-<tab_id>.md` (tabs before Q3). Still read, still kept by the GC;
+/// never given to a new tab.
+const LEGACY_UNTITLED_PREFIX: &str = "untitled-";
+
 /// Name of the sidecar file holding an untitled tab's text — keyed by the
 /// tab's id rather than a window label, which every launch reuses.
+///
+/// `draft-`, not `untitled-` (tabs-questions Q3): a pre-tabs build prunes
+/// every `untitled-*.md` its own `session.json` does not name, and it never
+/// reads `session-v2.json` — after a rollback it would delete the drafts this
+/// build made. A `draft-` file it neither shows nor deletes. A sidecar that
+/// already has an `untitled-` name keeps it (`SessionState::untitled_file_for`):
+/// renaming the only copy of an unsaved draft buys nothing but a window in
+/// which the GC sees neither name referenced.
 pub fn untitled_file_name(tab_id: &str) -> String {
-    format!("untitled-{}.md", tab_id)
+    format!("{DRAFT_PREFIX}{tab_id}.md")
+}
+
+/// Whether `name` is an untitled sidecar of this build or an older one — what
+/// `prune_untitled_files` may delete when nothing refers to it. Its temp file
+/// (`<name>.tmp`) is not.
+pub fn is_untitled_sidecar(name: &str) -> bool {
+    (name.starts_with(DRAFT_PREFIX) || name.starts_with(LEGACY_UNTITLED_PREFIX)) && name.ends_with(".md")
 }
 
 /// Drop tabs whose file no longer exists and untitled tabs that never earned a
@@ -412,8 +435,9 @@ impl SessionState {
     /// already records for it, else one derived from its id.
     ///
     /// Keeping a recorded name lets a tab restored from an older session —
-    /// sidecar `untitled-main.md` — go on writing to the file it was restored
-    /// from instead of orphaning it.
+    /// sidecar `untitled-main.md`, or `untitled-<tab_id>.md` from before
+    /// `draft-` — go on writing to the file it was restored from instead of
+    /// orphaning it.
     pub fn untitled_file_for(&self, label: &str, tab_id: &str) -> String {
         let map = self.entries.lock().unwrap();
         map.get(label)
@@ -699,11 +723,16 @@ pub fn write_untitled(file_name: &str, content: &str) -> Result<(), String> {
 /// snapshot alone — see that method for why.
 pub fn prune_untitled_files(referenced: &HashSet<String>) {
     let Ok(dir) = session_dir() else { return };
-    let Ok(entries) = fs::read_dir(&dir) else { return };
+    prune_untitled_files_in(&dir, referenced);
+}
+
+/// `prune_untitled_files` in `dir`: both sidecar prefixes (`is_untitled_sidecar`).
+fn prune_untitled_files_in(dir: &std::path::Path, referenced: &HashSet<String>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if !name.starts_with("untitled-") || !name.ends_with(".md") {
+        if !is_untitled_sidecar(name) {
             continue;
         }
         if !referenced.contains(name) {
@@ -1250,7 +1279,41 @@ mod tests {
 
     #[test]
     fn untitled_file_name_is_derived_from_tab_id() {
-        assert_eq!(untitled_file_name("17-42-3"), "untitled-17-42-3.md");
+        assert_eq!(untitled_file_name("17-42-3"), "draft-17-42-3.md");
+    }
+
+    #[test]
+    fn the_gc_knows_both_sidecar_prefixes_and_nothing_else() {
+        for name in ["draft-1-2-3.md", "untitled-1-2-3.md", "untitled-main.md"] {
+            assert!(is_untitled_sidecar(name), "{name}");
+        }
+        for name in ["draft-1-2-3.md.tmp", "untitled-main.md.tmp", "session-v2.json", "recent.json", "drafts.md"] {
+            assert!(!is_untitled_sidecar(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_new_draft_is_not_one_a_pre_tabs_gc_would_delete() {
+        // Q3: the old build prunes `untitled-*.md` it does not know.
+        assert!(!untitled_file_name("1-2-3").starts_with("untitled-"));
+    }
+
+    #[test]
+    fn the_prune_keeps_referenced_sidecars_of_both_prefixes() {
+        let dir = std::env::temp_dir().join(format!("mdmini-prune-{}", new_tab_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["draft-a.md", "draft-b.md", "untitled-c.md", "untitled-d.md", "notes.md"] {
+            std::fs::write(dir.join(name), "x").unwrap();
+        }
+        let referenced: HashSet<String> = ["draft-a.md", "untitled-c.md"].map(String::from).into();
+        prune_untitled_files_in(&dir, &referenced);
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, vec!["draft-a.md", "notes.md", "untitled-c.md"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1268,12 +1331,15 @@ mod tests {
         let state = SessionState::new();
         state.seed("editor-7", window(vec![untitled_tab("t", "untitled-editor-3.md")]));
         assert_eq!(state.untitled_file_for("editor-7", "t"), "untitled-editor-3.md");
+        // A pre-Q3 tab-id name is not renamed to `draft-` either.
+        state.seed("editor-8", window(vec![untitled_tab("1-2-3", "untitled-1-2-3.md")]));
+        assert_eq!(state.untitled_file_for("editor-8", "1-2-3"), "untitled-1-2-3.md");
     }
 
     #[test]
     fn untitled_file_for_a_fresh_tab_is_named_by_its_id() {
         let state = SessionState::new();
-        assert_eq!(state.untitled_file_for("main", "9-9-9"), "untitled-9-9-9.md");
+        assert_eq!(state.untitled_file_for("main", "9-9-9"), "draft-9-9-9.md");
     }
 
     #[test]
@@ -1298,12 +1364,12 @@ mod tests {
             written.into_inner(),
             vec![
                 ("untitled-main.md".to_string(), "kept".to_string()),
-                ("untitled-new.md".to_string(), "fresh".to_string()),
+                ("draft-new.md".to_string(), "fresh".to_string()),
             ]
         );
         let snaps = state.snapshot_for("main").unwrap().tabs;
         let names: Vec<Option<&str>> = snaps.iter().map(|s| s.untitled.as_deref()).collect();
-        assert_eq!(names, vec![Some("untitled-main.md"), Some("untitled-new.md"), None, None]);
+        assert_eq!(names, vec![Some("untitled-main.md"), Some("draft-new.md"), None, None]);
         assert_eq!(snaps[0].top_line, 1, "a reported 0 is normalized");
         assert_eq!((snaps[3].cursor, snaps[3].top_line), (9, 4));
     }
