@@ -300,7 +300,15 @@
     // The window now shows `path`: without this `OpenFiles` still maps it to
     // the old file (or to nothing, from Untitled), so dedup, the watcher and
     // Cmd+Shift+T's closed-window record all go on seeing the old document.
-    invoke('register_open_file', { path }).catch(() => {});
+    // Never over another window's entry, though: `register_open_file` would
+    // overwrite it, leaving that window unwatched and its AI commands routed
+    // here.
+    const openElsewhere = await invoke<boolean>('is_open_elsewhere', { path }).catch(() => false);
+    if (openElsewhere) {
+      console.warn('Save As target is open in another window; not registering it here:', path);
+    } else {
+      invoke('register_open_file', { path }).catch(() => {});
+    }
     recentFiles.add(path);
   }
 

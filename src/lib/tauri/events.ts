@@ -42,8 +42,15 @@ export function onMenuEvent(handler: (action: MenuAction) => void): Promise<() =
   });
 }
 
+/**
+ * A file the OS handed to the app (`RunEvent::Opened`), routed by Rust to one
+ * window with `emit_to`. Listened for through the current webview window for
+ * the same reason as `onAiCommand`: a global listener's target is `Any` and
+ * matches targeted emits too, so every window would run `switchDocument` for
+ * it.
+ */
 export function onOpenFile(handler: (path: string) => void): Promise<() => void> {
-  return listen<string>('open-file', (event) => {
+  return getCurrentWebviewWindow().listen<string>('open-file', (event) => {
     handler(event.payload);
   });
 }

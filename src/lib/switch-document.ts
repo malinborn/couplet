@@ -27,8 +27,9 @@ export interface SwitchDecisionInput {
   /** A save of the current document is known to have failed and has not
    * succeeded since — see `toasts.hasKind('save-error')`. */
   saveErrorPending: boolean;
-  /** `focus_if_open` already found (and focused) another window showing
-   * `targetPath`. */
+  /** Another live window shows `targetPath` — the answer of the side-effect-free
+   * `is_open_elsewhere` query. Nothing has been focused yet; `switchDocument`
+   * calls `focus_if_open` only when the decision is `focus-other-window`. */
   alreadyOpenElsewhere: boolean;
 }
 

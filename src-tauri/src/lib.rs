@@ -482,38 +482,50 @@ pub fn run() {
                     if let Ok(path) = url.to_file_path() {
                         if let Some(path_str) = path.to_str() {
                             let file_path = path_str.to_string();
-                            // Check if "main" window is empty (not tracking a file)
-                            let main_is_empty = {
+                            let route = {
                                 let open_files = _app_handle.state::<window::OpenFiles>();
                                 let map = open_files.0.lock().unwrap();
-                                !map.values().any(|v| v == "main")
+                                window::route_opened_file(&map, &file_path, |label| {
+                                    _app_handle.get_webview_window(label).is_some()
+                                })
                             };
-                            if main_is_empty {
-                                // Reuse "main" — store in PendingFiles + OpenFiles
-                                let pending = _app_handle.state::<window::PendingFiles>();
-                                let mut pmap = pending.0.lock().unwrap();
-                                pmap.insert(
-                                    "main".to_string(),
-                                    PendingOpen::from_path(file_path.clone()),
-                                );
-                                drop(pmap);
-                                let open_files = _app_handle.state::<window::OpenFiles>();
-                                let mut map = open_files.0.lock().unwrap();
-                                map.insert(file_path.clone(), "main".to_string());
-                                drop(map);
-                                // Emit in case frontend is already loaded
-                                if let Some(win) = _app_handle.get_webview_window("main") {
-                                    let _ = win.emit("open-file", &file_path);
-                                    let _ = win.set_focus();
+                            match route {
+                                window::OpenedRoute::FocusExisting(label) => {
+                                    if let Some(win) = _app_handle.get_webview_window(&label) {
+                                        window::reveal(&win);
+                                    }
                                 }
-                                // Start watcher
-                                if let Ok(watcher) = crate::watcher::watch_file(_app_handle, "main".to_string(), file_path) {
-                                    let watchers = _app_handle.state::<window::FileWatchers>();
-                                    let mut wmap = watchers.0.lock().unwrap();
-                                    wmap.insert("main".to_string(), watcher);
+                                window::OpenedRoute::UseMain => {
+                                    // Reuse "main" — store in PendingFiles + OpenFiles
+                                    let pending = _app_handle.state::<window::PendingFiles>();
+                                    let mut pmap = pending.0.lock().unwrap();
+                                    pmap.insert(
+                                        "main".to_string(),
+                                        PendingOpen::from_path(file_path.clone()),
+                                    );
+                                    drop(pmap);
+                                    let open_files = _app_handle.state::<window::OpenFiles>();
+                                    let mut map = open_files.0.lock().unwrap();
+                                    map.insert(file_path.clone(), "main".to_string());
+                                    drop(map);
+                                    // Emit in case frontend is already loaded.
+                                    // `emit_to`, not `emit`: a bare `emit` reaches
+                                    // every window, and each would run its own
+                                    // `switchDocument` for a file routed to main.
+                                    if let Some(win) = _app_handle.get_webview_window("main") {
+                                        let _ = win.emit_to("main", "open-file", &file_path);
+                                        let _ = win.set_focus();
+                                    }
+                                    // Start watcher
+                                    if let Ok(watcher) = crate::watcher::watch_file(_app_handle, "main".to_string(), file_path) {
+                                        let watchers = _app_handle.state::<window::FileWatchers>();
+                                        let mut wmap = watchers.0.lock().unwrap();
+                                        wmap.insert("main".to_string(), watcher);
+                                    }
                                 }
-                            } else {
-                                window::open_file_window(_app_handle, Some(file_path));
+                                window::OpenedRoute::NewWindow => {
+                                    window::open_file_window(_app_handle, Some(file_path));
+                                }
                             }
                         }
                     }

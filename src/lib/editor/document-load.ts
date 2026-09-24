@@ -5,7 +5,7 @@ import { history } from '@codemirror/commands';
 /**
  * Swaps the whole document and resets undo/redo to empty — the loaded
  * document must start at `undoDepth === 0`, with no way to Cmd+Z back into
- * whatever this window was showing before (#see docs/investigations/2026-09-23-tabs-options.md §1).
+ * whatever this window was showing before (@see docs/investigations/2026-09-23-tabs-options.md §1).
  *
  * A plain full-document replace does NOT reliably clear history on its own:
  * CodeMirror maps every existing undo/redo entry's stored INVERT through the

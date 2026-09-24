@@ -409,9 +409,42 @@ pub async fn release_open_file(
     Ok(())
 }
 
+/// Where a file handed to the app by the OS (`RunEvent::Opened`) goes.
+#[derive(Debug, PartialEq, Eq)]
+pub enum OpenedRoute {
+    /// A live window already shows the file: bring it forward, touch nothing.
+    FocusExisting(String),
+    /// "main" shows no file, so it takes this one.
+    UseMain,
+    NewWindow,
+}
+
+/// Decide `RunEvent::Opened` for `path`. `is_live` says whether a window label
+/// still exists — a mapping whose window is gone is stale and routes as if
+/// absent.
+///
+/// The existing-window check must come first: "main" being empty says nothing
+/// about the file, and registering it to main while another window holds it
+/// would overwrite that window's `OpenFiles` entry — the file then open in two
+/// windows and AI commands for it routed to the wrong one.
+pub fn route_opened_file(
+    open_files: &HashMap<String, String>,
+    path: &str,
+    is_live: impl Fn(&str) -> bool,
+) -> OpenedRoute {
+    if let Some(label) = open_files.get(path).filter(|label| is_live(label)) {
+        return OpenedRoute::FocusExisting(label.clone());
+    }
+    if open_files.values().any(|v| v == "main") {
+        OpenedRoute::NewWindow
+    } else {
+        OpenedRoute::UseMain
+    }
+}
+
 /// Bring `win` to the front even if it is minimized — tao's macOS
 /// `set_focus` is a silent no-op on a minimized window.
-fn reveal(win: &tauri::WebviewWindow) {
+pub(crate) fn reveal(win: &tauri::WebviewWindow) {
     if win.is_minimized().unwrap_or(false) {
         let _ = win.unminimize();
     }
@@ -492,6 +525,56 @@ mod tests {
         map.insert("/tmp/a.md".to_string(), "editor-2".to_string());
         assert!(!release_mapping(&mut map, "/tmp/a.md", "main"));
         assert_eq!(map.get("/tmp/a.md"), Some(&"editor-2".to_string()));
+    }
+
+    #[test]
+    fn route_opened_file_focuses_the_window_already_showing_it_even_with_main_empty() {
+        let mut map = HashMap::new();
+        map.insert("/tmp/x.md".to_string(), "editor-2".to_string());
+        assert_eq!(
+            route_opened_file(&map, "/tmp/x.md", |_| true),
+            OpenedRoute::FocusExisting("editor-2".to_string())
+        );
+    }
+
+    #[test]
+    fn route_opened_file_focuses_main_when_main_already_shows_it() {
+        let mut map = HashMap::new();
+        map.insert("/tmp/x.md".to_string(), "main".to_string());
+        assert_eq!(
+            route_opened_file(&map, "/tmp/x.md", |_| true),
+            OpenedRoute::FocusExisting("main".to_string())
+        );
+    }
+
+    #[test]
+    fn route_opened_file_ignores_a_mapping_to_a_dead_window() {
+        let mut map = HashMap::new();
+        map.insert("/tmp/x.md".to_string(), "editor-2".to_string());
+        assert_eq!(
+            route_opened_file(&map, "/tmp/x.md", |label| label != "editor-2"),
+            OpenedRoute::UseMain
+        );
+    }
+
+    #[test]
+    fn route_opened_file_uses_an_empty_main() {
+        let mut map = HashMap::new();
+        map.insert("/tmp/b.md".to_string(), "editor-2".to_string());
+        assert_eq!(
+            route_opened_file(&map, "/tmp/x.md", |_| true),
+            OpenedRoute::UseMain
+        );
+    }
+
+    #[test]
+    fn route_opened_file_opens_a_new_window_when_main_shows_another_file() {
+        let mut map = HashMap::new();
+        map.insert("/tmp/b.md".to_string(), "main".to_string());
+        assert_eq!(
+            route_opened_file(&map, "/tmp/x.md", |_| true),
+            OpenedRoute::NewWindow
+        );
     }
 
     #[test]
