@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { EditorView } from '@codemirror/view';
-  import { ChangeSet, EditorState, Transaction } from '@codemirror/state';
-  import { createExtensions, historyCompartment, languageCompartment, previewCompartment } from './setup';
-  import { loadDocumentContent } from './document-load';
+  import { ChangeSet, EditorState, Transaction, type Extension } from '@codemirror/state';
+  import { languageCompartment, previewCompartment } from './setup';
+  import { createDocumentState } from './state-factory';
+  import { latestOnly } from './latest-only';
   import { languages } from '@codemirror/language-data';
   import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
   import { findCodeLanguage, isShellConfig } from './file-language';
@@ -12,14 +13,25 @@
   import { livePreviewPlugin } from './preview/plugin';
   import { envPreviewPlugin } from './preview/env';
   import { computeReplacement } from './content-diff';
-  import { aiHighlightPresenceNotifier } from './ai-highlight';
-  import { jsonPasteNotifier } from './json-paste';
+  import { aiHighlightPresenceNotifier, notifyHighlightPresenceChange } from './ai-highlight';
+  import { jsonOfferField, jsonPasteNotifier } from './json-paste';
   import { jsonDocumentPath, setDocumentPath } from './json-fence';
   import '../../styles/editor-metrics.css';
 
   export interface EditorHandle {
     view: EditorView | undefined;
-    loadDocument: (newContent: string) => void;
+    /** A fresh state for `doc` with this view's listeners; caret at `cursor`, or the end. */
+    createState: (doc: string, cursor: number | null) => EditorState;
+    /**
+     * Show `state` — a fresh one or a background tab's cached one. `blur`
+     * mirrors what a file load always did: a non-empty document does not
+     * start with a blinking caret stealing focus.
+     *
+     * Everything a state carries in its own compartments — language, preview
+     * plugin, line glow — and the document path field arrive as that state
+     * holds them; the caller re-applies the window's current configuration.
+     */
+    swapState: (state: EditorState, opts?: { blur?: boolean }) => void;
     updateContent: (newContent: string) => void;
     setCodeMode: (ext: string | null, basename?: string) => void;
     setEnvMode: (enabled: boolean) => void;
@@ -52,25 +64,43 @@
 
   let editorContainer: HTMLDivElement;
   let view: EditorView | undefined = $state(undefined);
+  // Built once in onMount: every state this view shows carries the same
+  // listeners, so a cached state swapped back in still reports to this component.
+  let extras: Extension[] = [];
+  // A language that finishes loading after its state was swapped out, or after
+  // a newer mode was asked for, must not reconfigure the state now showing.
+  const languageLoads = latestOnly();
 
   $effect(() => {
     handle = {
       get view() {
         return view;
       },
-      loadDocument(newContent: string) {
+      createState(doc: string, cursor: number | null) {
+        return createDocumentState(doc, cursor, extras);
+      },
+      swapState(state: EditorState, opts?: { blur?: boolean }) {
         if (!view) return;
-        loadDocumentContent(view, historyCompartment, newContent);
-        if (newContent.length > 0) {
-          view.contentDOM.blur();
+        const previous = view.state;
+        languageLoads.invalidate();
+        view.setState(state);
+        // `setState` runs no update listeners, so the highlight hint would keep
+        // describing the state that just left.
+        notifyHighlightPresenceChange(previous, state, (visible) =>
+          onAiHighlightVisibilityChange?.(visible)
+        );
+        // Same for the JSON offer: its toast would stay up over a state with no offer to apply.
+        if (previous.field(jsonOfferField, false) && !state.field(jsonOfferField, false)) {
+          onJsonOfferWithdrawn?.();
         }
+        if (opts?.blur && state.doc.length > 0) view.contentDOM.blur();
       },
       updateContent(newContent: string) {
         if (!view) return;
         const repl = computeReplacement(view.state.doc.toString(), newContent);
         if (!repl) return;
         // Single-span diff keeps CM6's automatic selection mapping intact and
-        // preserves scroll position — unlike loadDocument's full-doc swap.
+        // preserves scroll position — unlike a whole-state swap.
         // scrollSnapshot() captures the anchor at pre-change offsets; it must be
         // mapped through the same ChangeSet passed to dispatch, or a length-changing
         // edit above the viewport leaves the anchor pointing at the wrong position.
@@ -84,6 +114,7 @@
       setCodeMode(ext: string | null, basename?: string) {
         if (!view) return;
         if (!ext) {
+          languageLoads.invalidate();
           // Back to markdown mode
           view.dispatch({
             effects: [
@@ -103,8 +134,9 @@
         // Find language by basename (extensionless dotfiles) or extension
         const lang = findCodeLanguage(basename ?? '', ext);
         if (lang) {
+          const isCurrent = languageLoads.begin();
           lang.load().then(langSupport => {
-            if (!view) return;
+            if (!view || !isCurrent()) return;
             view.dispatch({
               effects: [
                 languageCompartment.reconfigure(langSupport),
@@ -124,6 +156,7 @@
       setEnvMode(enabled: boolean) {
         if (!view) return;
         if (enabled) {
+          languageLoads.invalidate();
           view.dispatch({
             effects: [
               languageCompartment.reconfigure([]),
@@ -139,29 +172,24 @@
   });
 
   onMount(() => {
-    const state = EditorState.create({
-      doc: '',
-      extensions: [
-        ...createExtensions(),
-        EditorView.updateListener.of((update) => {
-          if (update.docChanged && onchange) {
-            onchange(update.state.doc.toString());
-          }
-        }),
-        // Same "append at construction time via a prop callback" pattern as the
-        // onchange listener above — createExtensions() is a static list shared by
-        // every consumer, so per-window callbacks are wired here instead.
-        aiHighlightPresenceNotifier((visible) => onAiHighlightVisibilityChange?.(visible)),
-        jsonPasteNotifier({
-          onOffer: () => onJsonOffer?.(),
-          onWithdraw: () => onJsonOfferWithdrawn?.(),
-        }),
-        jsonDocumentPath,
-      ],
-    });
+    extras = [
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged && onchange) {
+          onchange(update.state.doc.toString());
+        }
+      }),
+      // Per-window callbacks are appended here rather than in
+      // createExtensions(), which is a static list shared by every consumer.
+      aiHighlightPresenceNotifier((visible) => onAiHighlightVisibilityChange?.(visible)),
+      jsonPasteNotifier({
+        onOffer: () => onJsonOffer?.(),
+        onWithdraw: () => onJsonOfferWithdrawn?.(),
+      }),
+      jsonDocumentPath,
+    ];
 
     view = new EditorView({
-      state,
+      state: createDocumentState('', 0, extras),
       parent: editorContainer,
     });
 

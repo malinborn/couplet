@@ -59,7 +59,6 @@
   import { createSerialQueue } from './lib/serial-queue';
   import { createCommentWriter, adoptStartedDraft } from './lib/comment-writer';
   import { hideHoverMenu } from './lib/editor/hover-menu';
-  import { closeSearchPanel } from '@codemirror/search';
   import {
     addAiComment,
     aiCommentField,
@@ -499,7 +498,7 @@
 
       // Re-check right before the swap: the user may have typed during the
       // awaits above. This is the last await before the swap, so nothing can
-      // be typed between the check and `loadDocument`.
+      // be typed between the check and the swap.
       await autoSave.flush();
       if (fileState.isDirty) {
         if (leavingPath) {
@@ -519,23 +518,17 @@
         return;
       }
 
-      // Nothing from the old document may survive into the new one. The swap
-      // is a full-document replace inside the same state, so every field that
-      // maps through changes — asks, AI highlights, the search panel — keeps
-      // its old content unless cleared here.
-      const view = editorHandle?.view;
-      if (view) {
-        view.dispatch({ effects: [clearAiAsks.of(null), clearAiHighlights.of(null)] });
-        closeSearchPanel(view);
-      }
+      // A fresh state carries nothing of the old document — no undo history,
+      // asks, highlights or search panel — so none of it needs clearing.
       hideHoverMenu();
       showRecentFiles = false;
-
-      // After loadDocument: its dispatch re-dirties the buffer via
-      // handleChange (a real edit as far as CM6 is concerned), so isDirty
-      // must be cleared afterwards — clearing it first just gets it flipped
-      // back on and triggers a pointless autosave 300ms after open.
-      editorHandle?.loadDocument(content);
+      const handle = editorHandle;
+      if (handle) {
+        handle.swapState(handle.createState(content, null), { blur: true });
+        // The fresh state's path field starts at null, and the `$effect` that
+        // keeps it current only re-runs when `fileState.filePath` changes.
+        handle.setDocumentPath(path);
+      }
       diskBaseline = exists ? content : null;
       dismissedDisk = null;
       fileState.filePath = path;
@@ -577,6 +570,7 @@
       // `activePreview` was just assigned, so this cannot rely on the $effect
       // firing first.
       applyPreviewConfig();
+      applyLineGlow();
     } catch (err) {
       console.error('Failed to open file:', err);
       // `RunEvent::Opened` may have registered `path` to this window already;
@@ -1689,8 +1683,11 @@
         await switchDocument(tab.path);
       } else if (tab.content !== null) {
         // Restored untitled tab — no file on disk, just the buffer.
-        editorHandle?.loadDocument(tab.content);
+        const handle = editorHandle;
+        if (handle) handle.swapState(handle.createState(tab.content, null), { blur: true });
         fileState.isDirty = true;
+        applyPreviewConfig();
+        applyLineGlow();
       }
       if (tab.cursor > 0 || tab.topLine > 1) {
         await applyRestorePosition(tab.cursor, tab.topLine);
@@ -2027,15 +2024,20 @@
     });
   });
 
-  // Reconfigure line glow when toggled
-  $effect(() => {
+  /** Line glow lives in each state's own compartment: a swapped-in state needs it re-applied. */
+  function applyLineGlow(): void {
     const view = editorHandle?.view;
     if (!view) return;
     view.dispatch({
-      effects: lineGlowCompartment.reconfigure(
-        lineGlow.enabled ? highlightActiveLine() : []
-      ),
+      effects: lineGlowCompartment.reconfigure(lineGlow.enabled ? highlightActiveLine() : []),
     });
+  }
+
+  // Reconfigure line glow when toggled
+  $effect(() => {
+    void lineGlow.enabled;
+    void editorHandle?.view;
+    applyLineGlow();
   });
 
   // Reconfigure the preview compartment on engine change (Cmd+E, or a direct

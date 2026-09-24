@@ -29,7 +29,6 @@ import { jsonFormatKeymap, jsonOfferField } from './json-paste';
 export const previewCompartment = new Compartment();
 export const languageCompartment = new Compartment();
 export const lineGlowCompartment = new Compartment();
-export const historyCompartment = new Compartment();
 
 /**
  * Opens a rendered link. Uses the Tauri shell plugin in the app; falls back to
@@ -67,7 +66,7 @@ export function createExtensions(): Extension[] {
     slashCommands(),
     autocompletion(),
     markdownKeybindings(),
-    historyCompartment.of(history()),
+    history(),
     closeBrackets(),
     languageCompartment.of(markdownExtension()),
     keymap.of([
