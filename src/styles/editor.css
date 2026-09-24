@@ -1260,11 +1260,17 @@
   flex-shrink: 0;
 }
 
-/* ===== Find & Replace Panel ===== */
+/* ===== Find & Replace Panel =====
+   Theme tokens only (src/lib/theme/): these rules once read --color-text,
+   --color-accent and --color-bg, which no theme defines — every declaration
+   using them was dropped, and the field and its focus ring fell back to the
+   browser's defaults. The accent is `--color-glow` (an RGB triple). Borders on
+   the buttons are an inset shadow, so they take no room: the layout is the
+   one the panel had without them. */
 .cm-panels {
   background: var(--color-code-bg) !important;
   border-bottom: 1px solid var(--color-table-border);
-  color: var(--color-text);
+  color: var(--text-primary);
   font-family: var(--font-code);
   font-size: 0.85em;
 }
@@ -1276,43 +1282,70 @@
 
 .cm-panels .cm-panel input[type="text"],
 .cm-panels .cm-textfield {
-  background: var(--color-bg);
-  color: var(--color-text);
-  border: 1px solid var(--color-table-border);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  caret-color: var(--color-cursor);
+  border: 1px solid var(--border);
   border-radius: 4px;
   padding: 4px 8px;
   font-family: var(--font-code);
   font-size: 0.9em;
   outline: none;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.cm-panels .cm-panel input[type="text"]::placeholder,
+.cm-panels .cm-textfield::placeholder {
+  color: var(--text-subtle);
+  opacity: 1;
 }
 
 .cm-panels .cm-panel input[type="text"]:focus,
 .cm-panels .cm-textfield:focus {
-  border-color: var(--color-accent);
-  box-shadow: 0 0 0 1px var(--color-accent);
+  border-color: rgb(var(--color-glow));
+  box-shadow: 0 0 0 2px rgba(var(--color-glow), 0.28);
 }
 
 .cm-panels .cm-panel button,
 .cm-panels .cm-button {
-  background: var(--color-table-border);
-  color: var(--color-text);
+  background: var(--bg-base);
+  color: var(--text-primary);
   border: none;
+  box-shadow: inset 0 0 0 1px var(--border);
   border-radius: 4px;
   padding: 4px 10px;
   font-family: var(--font-code);
   font-size: 0.85em;
   cursor: pointer;
-  transition: background 0.15s;
+  transition:
+    background 0.15s,
+    box-shadow 0.15s;
 }
 
 .cm-panels .cm-panel button:hover,
 .cm-panels .cm-button:hover {
-  background: var(--color-accent);
-  color: var(--color-bg);
+  background: var(--highlight);
+  box-shadow: inset 0 0 0 1px var(--text-muted);
+}
+
+/* Above CodeMirror's own `&light .cm-button:active` gradient (0,3,0). */
+.cm-panels .cm-panel .cm-button:active,
+.cm-panels .cm-panel button.cm-button:active {
+  background: rgba(var(--color-glow), 0.2);
+  background-image: none;
+  box-shadow: inset 0 0 0 1px rgba(var(--color-glow), 0.6);
+}
+
+.cm-panels .cm-panel button:focus-visible,
+.cm-panels .cm-button:focus-visible {
+  outline: 2px solid rgba(var(--color-glow), 0.7);
+  outline-offset: 1px;
 }
 
 .cm-panels .cm-panel label {
-  color: var(--color-text);
+  color: var(--text-primary);
   font-size: 0.85em;
   display: inline-flex;
   align-items: center;
@@ -1320,11 +1353,16 @@
 }
 
 .cm-panels .cm-panel input[type="checkbox"] {
-  accent-color: var(--color-accent);
+  accent-color: rgb(var(--color-glow));
+}
+
+/* Native controls (an unchecked checkbox) follow a dark theme, not the OS. */
+:root[data-theme$='dark'] .cm-panels {
+  color-scheme: dark;
 }
 
 .cm-panels .cm-panel .cm-panel-close {
-  color: var(--color-text);
+  color: var(--text-primary);
   cursor: pointer;
   padding: 2px 6px;
   border-radius: 4px;
@@ -1356,6 +1394,7 @@
   padding: 0 0 2px;
   border-radius: 6px;
   background: transparent;
+  box-shadow: none;
   color: var(--text-subtle);
   font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
   font-size: 21px;
@@ -1368,6 +1407,7 @@
 }
 
 .cm-panels .cm-panel.cm-search button[name="close"]:hover {
+  box-shadow: none;
   background: rgba(var(--color-glow), 0.18);
   color: var(--text-primary);
 }
