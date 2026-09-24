@@ -11,6 +11,15 @@ export interface TabMeta {
   path: string | null;
   /** Unsaved text. For a background tab this can only be an untitled one. */
   dirty: boolean;
+  /** When the tab was opened, ms since the epoch — the drawer's ⌘L. */
+  openedAt: number;
+  /** The last moment it was active in a focused window — ⌘R. `0`: never. */
+  viewedAt: number;
+  /**
+   * An agent put it up while nobody was looking, and nobody has looked since
+   * (spec §2). It shimmers in the drawer and on the notch until it is seen.
+   */
+  unviewed: boolean;
 }
 
 export interface TabListState {
@@ -90,4 +99,22 @@ export function neighbour(s: TabListState, delta: 1 | -1): TabMeta | undefined {
   const at = s.tabs.findIndex((t) => t.id === s.activeId);
   if (at === -1) return undefined;
   return s.tabs[(at + delta + s.tabs.length) % s.tabs.length];
+}
+
+/**
+ * The drawer's order (drag, sorts). `order` must name every tab exactly once;
+ * anything else — a tab opened or closed while the drawer computed it — is
+ * refused and `s` comes back unchanged, as it does for the same order.
+ */
+export function reorderTabs(s: TabListState, order: readonly string[]): TabListState {
+  if (order.length !== s.tabs.length) return s;
+  const byId = new Map(s.tabs.map((t) => [t.id, t]));
+  const tabs: TabMeta[] = [];
+  for (const id of order) {
+    const tab = byId.get(id);
+    if (!tab) return s;
+    tabs.push(tab);
+    byId.delete(id);
+  }
+  return tabs.every((t, i) => t === s.tabs[i]) ? s : { ...s, tabs };
 }

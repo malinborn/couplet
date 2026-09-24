@@ -39,6 +39,7 @@ function makeHarness(initialFiles: Record<string, string>) {
   let saveSucceeds = true;
   let nextId = 1;
   let snapshot = 0;
+  const clock = { now: 1_000, focused: true };
 
   const deps: TabControllerDeps = {
     editor: {
@@ -139,6 +140,8 @@ function makeHarness(initialFiles: Record<string, string>) {
     entered: vi.fn(),
     changed: vi.fn(),
     settled: vi.fn(),
+    now: () => clock.now,
+    windowFocused: () => clock.focused,
   };
 
   const controller = createTabController(deps);
@@ -151,6 +154,7 @@ function makeHarness(initialFiles: Record<string, string>) {
     calls,
     swaps,
     hooks,
+    clock,
     doc,
     live: () => live,
     /** A keystroke: the live state changes and the document becomes dirty. */
@@ -529,8 +533,8 @@ describe('report', () => {
 
     expect(active).toBe('a');
     expect(tabs).toEqual([
-      { tabId: 'u', path: null, cursor: 0, topLine: 1, content: 'one two' },
-      { tabId: 'a', path: '/a.md', cursor: 3, topLine: 2, content: null },
+      expect.objectContaining({ tabId: 'u', path: null, cursor: 0, topLine: 1, content: 'one two' }),
+      expect.objectContaining({ tabId: 'a', path: '/a.md', cursor: 3, topLine: 2, content: null }),
     ]);
   });
 });
@@ -771,5 +775,94 @@ describe('close, continued', () => {
     expect(h.deps.rust.close).toHaveBeenCalledWith('t1', expect.anything());
     expect(h.ids()).toEqual(['a']);
     expect(h.active()).toBe('a');
+  });
+});
+
+describe('drawer stamps', () => {
+  const files = { '/a.md': 'AAAA', '/b.md': 'BBBB' };
+  const meta = (h: Harness, id: string) => {
+    const found = h.controller.list.tabs.find((t) => t.id === id);
+    if (!found) throw new Error(`no tab ${id}`);
+    return found;
+  };
+  const withStamps = (t: InitTab, openedAt: number, viewedAt: number, unviewed: boolean): InitTab => ({
+    ...t,
+    openedAt,
+    viewedAt,
+    unviewed,
+  });
+
+  it('ANewTabIsStampedWhenOpened', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    h.clock.now = 5_000;
+    await h.controller.newTab();
+    const fresh = h.controller.list.tabs.find((t) => t.id !== 'a');
+    expect(fresh).toMatchObject({ openedAt: 5_000, unviewed: false });
+  });
+
+  it('RestoredStampsAreKept_AndAMissingOneMeansNow', async () => {
+    const h = makeHarness(files);
+    h.clock.now = 9_000;
+    await h.controller.init([fileTab('a', '/a.md'), withStamps(fileTab('b', '/b.md'), 5, 6, true)], 'a');
+    expect(meta(h, 'a').openedAt).toBe(9_000);
+    expect(meta(h, 'b')).toMatchObject({ openedAt: 5, viewedAt: 6, unviewed: true });
+  });
+
+  it('ActivatingInAFocusedWindowMarksTheTabSeen_AndStampsTheOneLeft', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), withStamps(fileTab('b', '/b.md'), 5, 6, true)]);
+    h.clock.now = 7_000;
+    await h.controller.activate('b');
+    expect(meta(h, 'b')).toMatchObject({ viewedAt: 7_000, unviewed: false });
+    expect(meta(h, 'a').viewedAt).toBe(7_000);
+  });
+
+  it('ActivatingWhileNobodyLooksLeavesItUnviewed', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), withStamps(fileTab('b', '/b.md'), 5, 6, true)]);
+    const aSeen = meta(h, 'a').viewedAt;
+    h.clock.focused = false;
+    h.clock.now = 7_000;
+    await h.controller.activate('b');
+    expect(meta(h, 'b')).toMatchObject({ viewedAt: 6, unviewed: true });
+    expect(meta(h, 'a').viewedAt).toBe(aSeen);
+  });
+
+  it('FocusComingBackMarksTheActiveTabSeen', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), withStamps(fileTab('b', '/b.md'), 5, 6, true)]);
+    h.clock.focused = false;
+    await h.controller.activate('b');
+    h.clock.focused = true;
+    h.clock.now = 8_000;
+    vi.mocked(h.deps.settled).mockClear();
+    await h.controller.windowFocusChanged(true);
+    expect(meta(h, 'b')).toMatchObject({ viewedAt: 8_000, unviewed: false });
+    expect(h.deps.settled).toHaveBeenCalledTimes(1);
+  });
+
+  it('LosingFocusStampsTheActiveTab', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
+    h.clock.now = 3_000;
+    await h.controller.windowFocusChanged(false);
+    expect(meta(h, 'a').viewedAt).toBe(3_000);
+    expect(meta(h, 'b').viewedAt).toBe(0);
+  });
+
+  it('AnAgentMarksATabUnviewedOnlyWhileNobodyLooks', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
+    h.controller.markUnviewedNow('b');
+    expect(meta(h, 'b').unviewed).toBe(false);
+    h.clock.focused = false;
+    h.controller.markUnviewedNow('b');
+    expect(meta(h, 'b').unviewed).toBe(true);
+    expect(h.deps.settled).toHaveBeenCalled();
+    expect(() => h.controller.markUnviewedNow('ghost')).not.toThrow();
+  });
+
+  it('TheHeartbeatCarriesTheStamps', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), withStamps(fileTab('b', '/b.md'), 5, 6, true)]);
+    const { tabs } = h.controller.report({ cursor: 0, topLine: 1, content: 'AAAA' });
+    expect(tabs).toEqual([
+      expect.objectContaining({ tabId: 'a', openedAt: 1_000, viewedAt: 1_000, unviewed: false }),
+      expect.objectContaining({ tabId: 'b', openedAt: 5, viewedAt: 6, unviewed: true }),
+    ]);
   });
 });

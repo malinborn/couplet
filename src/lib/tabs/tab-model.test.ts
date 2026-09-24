@@ -10,11 +10,19 @@ import {
   neighbour,
   findByPath,
   activeTab,
+  reorderTabs,
   type TabListState,
   type TabMeta,
 } from './tab-model';
 
-const tab = (id: string, path: string | null = `/${id}.md`): TabMeta => ({ id, path, dirty: false });
+const tab = (id: string, path: string | null = `/${id}.md`): TabMeta => ({
+  id,
+  path,
+  dirty: false,
+  openedAt: 0,
+  viewedAt: 0,
+  unviewed: false,
+});
 
 function list(ids: string[], activeId: string | null): TabListState {
   return { tabs: ids.map((id) => tab(id)), activeId };
@@ -70,7 +78,7 @@ describe('tab list', () => {
 
   it('UpdatesOneTabAndLeavesTheOthersAlone', () => {
     const next = updateTab(list(['a', 'b'], 'a'), 'b', { dirty: true, path: null });
-    expect(next.tabs[1]).toEqual({ id: 'b', path: null, dirty: true });
+    expect(next.tabs[1]).toEqual({ id: 'b', path: null, dirty: true, openedAt: 0, viewedAt: 0, unviewed: false });
     expect(next.tabs[0]).toEqual(tab('a'));
   });
 
@@ -97,5 +105,25 @@ describe('tab list', () => {
     expect(findByPath(s, '/a.md')?.id).toBe('a');
     expect(findByPath(s, '/zzz.md')).toBeUndefined();
     expect(activeTab(s)?.id).toBe('b');
+  });
+});
+
+describe('reorderTabs', () => {
+  it('AppliesAPermutation_KeepingActive', () => {
+    const next = reorderTabs(list(['a', 'b', 'c'], 'b'), ['c', 'a', 'b']);
+    expect(next.tabs.map((t) => t.id)).toEqual(['c', 'a', 'b']);
+    expect(next.activeId).toBe('b');
+  });
+
+  it('RefusesAnythingButAPermutation', () => {
+    const s = list(['a', 'b', 'c'], 'a');
+    expect(reorderTabs(s, ['a', 'b'])).toBe(s);
+    expect(reorderTabs(s, ['a', 'b', 'x'])).toBe(s);
+    expect(reorderTabs(s, ['a', 'a', 'b'])).toBe(s);
+  });
+
+  it('ReturnsTheSameStateForTheSameOrder', () => {
+    const s = list(['a', 'b'], 'a');
+    expect(reorderTabs(s, ['a', 'b'])).toBe(s);
   });
 });

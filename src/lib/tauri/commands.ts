@@ -68,6 +68,10 @@ export interface PendingTab {
   content: string | null;
   cursor: number;
   topLine: number;
+  /** Drawer stamps, ms since the epoch; `0` / `false` for a new tab. */
+  openedAt: number;
+  viewedAt: number;
+  unviewed: boolean;
 }
 
 /** What a window loads on mount. Matches `WindowInit` in src-tauri/src/window.rs. */

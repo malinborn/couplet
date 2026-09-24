@@ -10,6 +10,7 @@ import {
   insertAfterActive,
   neighbour,
   removeTab,
+  reorderTabs,
   replaceTab,
   setActive,
   tabByIndex,
@@ -33,6 +34,10 @@ export interface InitTab {
   content: string | null;
   cursor: number;
   topLine: number;
+  /** Drawer stamps from the session; `0` or absent: unknown — stamped now. */
+  openedAt?: number;
+  viewedAt?: number;
+  unviewed?: boolean;
 }
 
 /** One tab on the heartbeat — the shape `tabs_sync` takes. */
@@ -42,6 +47,9 @@ export interface TabReport {
   cursor: number;
   topLine: number;
   content: string | null;
+  openedAt: number;
+  viewedAt: number;
+  unviewed: boolean;
 }
 
 /** What `tab_open` answers. */
@@ -136,6 +144,13 @@ export interface TabControllerDeps {
   changed(list: TabListState): void;
   /** An operation finished — report the tabs. */
   settled(): void;
+  /** Wall clock, ms since the epoch — the drawer's stamps. */
+  now(): number;
+  /**
+   * The human is looking at this window: it has keyboard focus. What makes an
+   * activation a *view* (spec §2) — an agent activates tabs too.
+   */
+  windowFocused(): boolean;
 }
 
 /** What a background tab keeps. `state` is null until the tab was first shown. */
@@ -175,6 +190,15 @@ export function createTabController(deps: TabControllerDeps) {
   function publish(next: TabListState): void {
     list = next;
     deps.changed(list);
+  }
+
+  function newMeta(id: string, path: string | null): TabMeta {
+    return { id, path, dirty: false, openedAt: deps.now(), viewedAt: 0, unviewed: false };
+  }
+
+  /** `id` is in front of the human: viewed now, no longer unviewed. */
+  function markSeen(id: string): void {
+    if (findById(list, id)) publish(updateTab(list, id, { viewedAt: deps.now(), unviewed: false }));
   }
 
   function isEmptyUntitled(): boolean {
@@ -260,7 +284,7 @@ export function createTabController(deps: TabControllerDeps) {
       baseline,
     });
     if (tab.path !== null) deps.comments.forget(tab.path);
-    publish(updateTab(list, tab.id, { dirty }));
+    publish(updateTab(list, tab.id, deps.windowFocused() ? { dirty, viewedAt: deps.now() } : { dirty }));
   }
 
   /** Step 2: what entering `tab` will show. Nothing changes here. */
@@ -353,6 +377,7 @@ export function createTabController(deps: TabControllerDeps) {
   async function settle(tab: TabMeta, restore: Position | null, opened: boolean): Promise<void> {
     if (restore) await deps.editor.applyPosition(restore);
     await deps.rust.activate(tab.id);
+    if (deps.windowFocused()) markSeen(tab.id);
     void deps.comments.reload();
     deps.entered(tab.path, opened);
     deps.settled();
@@ -380,10 +405,14 @@ export function createTabController(deps: TabControllerDeps) {
         baseline: null,
       });
     }
+    const now = deps.now();
     const metas: TabMeta[] = tabs.map((t) => ({
       id: t.tabId,
       path: t.path,
       dirty: t.path === null && (t.content ?? '') !== '',
+      openedAt: t.openedAt || now,
+      viewedAt: t.viewedAt ?? 0,
+      unviewed: t.unviewed ?? false,
     }));
     const start = metas.some((m) => m.id === activeTabId) ? activeTabId : (metas[0]?.id ?? null);
     const found = await prepareLoadable({ tabs: metas, activeId: start });
@@ -396,7 +425,7 @@ export function createTabController(deps: TabControllerDeps) {
     // A window always shows a tab.
     const answer = await deps.rust.open(null);
     if (answer.kind !== 'created') return;
-    const tab: TabMeta = { id: answer.tabId, path: null, dirty: false };
+    const tab = newMeta(answer.tabId, null);
     publish(insertAfterActive(found.working, tab));
     await enter(tab, { kind: 'fresh', content: '', exists: false }, null, false);
   }
@@ -454,7 +483,7 @@ export function createTabController(deps: TabControllerDeps) {
       }
       return;
     }
-    const tab: TabMeta = { id: answer.tabId, path, dirty: false };
+    const tab = newMeta(answer.tabId, path);
     const shown = await showClaimed(tab, { kind: 'fresh', content, exists }, position, () => {
       const previous = activeTab(list);
       // Re-checked here, after the last await: text typed into the blank tab
@@ -545,7 +574,7 @@ export function createTabController(deps: TabControllerDeps) {
     if (!(await mayLeave())) return;
     const answer = await deps.rust.open(null);
     if (answer.kind !== 'created') return;
-    const tab: TabMeta = { id: answer.tabId, path: null, dirty: false };
+    const tab = newMeta(answer.tabId, null);
     const shown = await showClaimed(tab, { kind: 'fresh', content: '', exists: false }, null, () => {
       stashActive();
       publish(insertAfterActive(list, tab));
@@ -625,6 +654,7 @@ export function createTabController(deps: TabControllerDeps) {
     return {
       active: list.activeId,
       tabs: list.tabs.map((tab): TabReport => {
+        const stamps = { openedAt: tab.openedAt, viewedAt: tab.viewedAt, unviewed: tab.unviewed };
         if (tab.id === list.activeId) {
           return {
             tabId: tab.id,
@@ -632,6 +662,7 @@ export function createTabController(deps: TabControllerDeps) {
             cursor: live.cursor,
             topLine: live.topLine,
             content: tab.path === null ? live.content : null,
+            ...stamps,
           };
         }
         const c = cache.get(tab.id);
@@ -641,6 +672,7 @@ export function createTabController(deps: TabControllerDeps) {
           cursor: c?.cursor ?? 0,
           topLine: c?.topLine ?? 1,
           content: tab.path === null ? (c?.state?.doc.toString() ?? c?.content ?? '') : null,
+          ...stamps,
         };
       }),
     };
@@ -681,6 +713,25 @@ export function createTabController(deps: TabControllerDeps) {
     /** Save As gave the active tab a new path. */
     renameActive(path: string): void {
       if (list.activeId !== null) publish(updateTab(list, list.activeId, { path }));
+    },
+    /** The window gained or lost keyboard focus (spec §2: what counts as viewed). */
+    windowFocusChanged: (focused: boolean) =>
+      queue.run(async () => {
+        const id = list.activeId;
+        if (id === null) return;
+        if (focused) markSeen(id);
+        else publish(updateTab(list, id, { viewedAt: deps.now() }));
+        deps.settled();
+      }),
+    /**
+     * An agent's command landed on `tabId` while nobody was looking: it stays
+     * unviewed until it is active in a focused window. Synchronous — call it
+     * inside `runExclusive`, where the AI command already holds the queue.
+     */
+    markUnviewedNow(tabId: string): void {
+      if (deps.windowFocused() || !findById(list, tabId)) return;
+      publish(updateTab(list, tabId, { unviewed: true }));
+      deps.settled();
     },
     report,
   };

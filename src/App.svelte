@@ -597,6 +597,8 @@
       tabList = list;
     },
     settled: () => reportTabs(),
+    now: () => Date.now(),
+    windowFocused: () => document.hasFocus(),
   });
 
   // Rust counts this window as mounted from `get_window_init` on and delivers
