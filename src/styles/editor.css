@@ -414,15 +414,14 @@
   user-select: none;
 }
 
+/* The theme's accent (`--color-glow`, an RGB triple). It used to read an
+   undefined `--color-accent` with a violet fallback per half, which gave every
+   theme family the classic theme's violet. */
 .cm-md-code-lang {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-weight: 600;
-  color: var(--color-accent, #c4a7e7);
-}
-
-:root[data-theme$='light'] .cm-md-code-lang {
-  color: var(--color-accent, #7c3aed);
+  color: rgb(var(--color-glow));
 }
 
 .cm-md-code-copy {
@@ -437,7 +436,7 @@
 
 .cm-md-code-copy:hover {
   background: var(--color-table-border);
-  color: var(--color-text, var(--text-primary));
+  color: var(--text-primary);
 }
 
 /* Syntax token colors — dark theme (Rosé Pine) */
@@ -676,7 +675,8 @@
   cursor: pointer;
   background: none;
   border: none;
-  color: var(--color-text);
+  /* No colour of its own: `.cm-md-table-btn` below unsets it, so ⇔ takes the
+     header cell's. (It named an undefined `--color-text`, dead either way.) */
   font-size: 1em;
   padding: 0 4px;
 }
@@ -754,7 +754,7 @@
 }
 
 .cm-table-hotkeys-key {
-  font-family: var(--font-mono);
+  font-family: var(--font-code);
   font-size: 0.72rem;
   /* Full-strength text against the subtler description, so the eye finds the
    * key column first — it is what someone opening this panel came for. */
@@ -1119,7 +1119,7 @@
 .cm-md-h4::after, .cm-md-h5::after, .cm-md-h6::after {
   content: ' ▾';
   font-size: 1.3em;
-  color: var(--color-accent, #c4a7e7);
+  color: rgb(var(--color-glow));
   opacity: 0;
   transition: opacity 0.15s, text-shadow 0.15s;
   cursor: pointer;
@@ -1133,7 +1133,7 @@
 .cm-md-h1:hover::after:hover, .cm-md-h2:hover::after:hover, .cm-md-h3:hover::after:hover,
 .cm-md-h4:hover::after:hover, .cm-md-h5:hover::after:hover, .cm-md-h6:hover::after:hover {
   opacity: 1;
-  text-shadow: 0 0 8px var(--color-accent, #c4a7e7), 0 0 20px var(--color-accent, #c4a7e7);
+  text-shadow: 0 0 8px rgb(var(--color-glow)), 0 0 20px rgb(var(--color-glow));
 }
 
 /* Folded heading — show ▸ instead of ▾, always visible with glow */
@@ -1142,7 +1142,7 @@
 .cm-md-heading-folded.cm-md-h5::after, .cm-md-heading-folded.cm-md-h6::after {
   content: ' ▸';
   opacity: 0.7;
-  text-shadow: 0 0 6px var(--color-accent, #c4a7e7), 0 0 14px var(--color-accent, #c4a7e7);
+  text-shadow: 0 0 6px rgb(var(--color-glow)), 0 0 14px rgb(var(--color-glow));
 }
 
 /* Hide fold placeholder — fold state shown via heading ::after toggle */
@@ -1161,7 +1161,7 @@
 
 .cm-foldPlaceholder:hover {
   background: var(--color-table-border);
-  color: var(--color-text);
+  color: var(--text-primary);
 }
 
 /* Hide default gutter background (visible as gray bar) */
@@ -1481,7 +1481,7 @@
 
 .cm-env-key {
   font-weight: 700;
-  color: var(--color-accent);
+  color: rgb(var(--color-glow));
   /* The 20ch column aligns values across a file, but it must be allowed to give
      way in a narrow window: as a hard minimum it squeezed the value pill toward
      zero width, and with the pill free to wrap the masked secret then broke one
@@ -1499,7 +1499,7 @@
   border-radius: 4px;
   padding: 1px 8px;
   font-family: var(--font-code);
-  color: var(--color-text);
+  color: var(--color-code-text);
   /* A value is one token — it may be clipped by the row, never broken across
      lines a character at a time. */
   white-space: nowrap;
@@ -1533,11 +1533,7 @@
 
 .cm-env-copy:hover {
   background: var(--color-table-border);
-  color: var(--color-text);
-}
-
-:root[data-theme$='light'] .cm-env-key {
-  color: #7c3aed;
+  color: var(--text-primary);
 }
 
 :root[data-theme$='light'] .cm-env-value {
@@ -1576,7 +1572,7 @@
 
 .cm-shell-secret-copy:hover {
   background: var(--color-table-border);
-  color: var(--color-text);
+  color: var(--text-primary);
 }
 
 :root[data-theme$='light'] .cm-shell-secret {
@@ -1663,7 +1659,10 @@
   gap: 2px;
   padding: 2px;
   border-radius: 6px;
-  background: var(--color-bg);
+  /* A panel of its own over the diagram: it was transparent (an undefined
+     `--color-bg`), so the buttons floated on whatever the diagram drew there. */
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
   opacity: 0;
   transition: opacity 0.12s ease;
@@ -1687,8 +1686,8 @@
   border: none;
   border-radius: 4px;
   background: transparent;
-  color: var(--color-text);
-  font-family: var(--font-ui, inherit);
+  color: var(--text-primary);
+  font-family: inherit;
   font-size: 13px;
   line-height: 1;
   cursor: pointer;
