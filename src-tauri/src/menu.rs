@@ -77,6 +77,29 @@ pub struct EngineMenuItems {
     pub live_render: CheckMenuItem<Wry>,
 }
 
+/// File → "Unanswered quick looks after an hour" (spec §7): what becomes of
+/// a quick look the human saw and never answered. A radio pair whose value
+/// the frontend owns (`localStorage`) and reports with `sync_transient_menu`.
+pub struct TransientMenuItems {
+    pub keep: CheckMenuItem<Wry>,
+    pub close: CheckMenuItem<Wry>,
+}
+
+/// `(keep, close)` checkmarks for a policy; anything but `"close"` is the
+/// default, keep.
+pub fn transient_marks(policy: &str) -> (bool, bool) {
+    let close = policy == "close";
+    (!close, close)
+}
+
+impl TransientMenuItems {
+    pub fn sync(&self, policy: &str) {
+        let (keep, close) = transient_marks(policy);
+        let _ = self.keep.set_checked(keep);
+        let _ = self.close.set_checked(close);
+    }
+}
+
 /// Тумблеры меню View, состояние которых фронтенд синхронизирует при старте.
 ///
 /// Держатся отдельно от `EngineMenuItems` не для порядка: `lib.rs` читает
@@ -85,6 +108,51 @@ pub struct EngineMenuItems {
 pub struct ViewToggleItems {
     pub ocd_alignment: CheckMenuItem<Wry>,
     pub ocd_enabled: Toggle,
+    /// View → Tabs → Compact (spec §6): one-line drawer cards.
+    pub tabs_compact: CheckMenuItem<Wry>,
+    pub compact_enabled: Toggle,
+}
+
+/// Live handles to the two "Reopen…" items, so they follow the closed stack
+/// and the pending restore — macOS disables an accelerator along with its
+/// item, so without this Cmd+Shift+T would stay dead for the rest of the
+/// process on any launch that starts with nothing closed.
+pub struct SessionMenuItems {
+    /// Cmd+Shift+T: the most recently closed tab or window (`closed.rs`).
+    pub reopen_closed: tauri::menu::MenuItem<Wry>,
+    /// The previous session's windows, Safari-style: no key (tabs-questions Q1).
+    pub restore_session: tauri::menu::MenuItem<Wry>,
+}
+
+/// Which of the two items are enabled: `(reopen_closed, restore_session)`.
+/// Independent — Cmd+Shift+T never restores the session, and the session
+/// item stays on after a close, until the session is restored.
+pub fn session_items_enabled(closed_count: usize, pending_count: usize) -> (bool, bool) {
+    (closed_count > 0, pending_count > 0)
+}
+
+/// The session item's text: "Reopen 3 Windows from Last Session" while there
+/// is a session to restore, the count-free "Reopen Windows from Last Session"
+/// once there is none (the item is then disabled).
+fn restore_session_text(pending_count: usize) -> String {
+    restore_session_text_for(crate::i18n::active_language(), pending_count)
+}
+
+fn restore_session_text_for(lang: &str, pending_count: usize) -> String {
+    if pending_count > 0 {
+        crate::i18n::t_plural_for(lang, "menu.file.reopen_session", pending_count as u64)
+    } else {
+        crate::i18n::t_for(lang, "menu.file.reopen_last_session")
+    }
+}
+
+impl SessionMenuItems {
+    pub fn sync(&self, closed_count: usize, pending_count: usize) {
+        let (reopen, restore) = session_items_enabled(closed_count, pending_count);
+        let _ = self.reopen_closed.set_enabled(reopen);
+        let _ = self.restore_session.set_text(restore_session_text(pending_count));
+        let _ = self.restore_session.set_enabled(restore);
+    }
 }
 
 impl EngineMenuItems {
@@ -103,6 +171,11 @@ impl ViewToggleItems {
         let _ = self.ocd_alignment.set_checked(enabled);
         self.ocd_enabled.set(enabled);
     }
+
+    pub fn sync_tabs_compact(&self, enabled: bool) {
+        let _ = self.tabs_compact.set_checked(enabled);
+        self.compact_enabled.set(enabled);
+    }
 }
 
 /// `explicit_language` is the stored preference (`preferences::read_language`),
@@ -120,11 +193,39 @@ pub fn build_menu(
     ThemeMenuItems,
     EngineMenuItems,
     ViewToggleItems,
+    SessionMenuItems,
+    TransientMenuItems,
 )> {
+    let (reopen_enabled, restore_enabled) = session_items_enabled(0, pending_session_count);
+    let reopen_closed_item = MenuItemBuilder::with_id("reopen_closed", t("menu.file.reopen_closed"))
+        .accelerator("CmdOrCtrl+Shift+T")
+        .enabled(reopen_enabled)
+        .build(app)?;
+    let restore_session_item =
+        MenuItemBuilder::with_id("restore_session", restore_session_text(pending_session_count))
+            .enabled(restore_enabled)
+            .build(app)?;
+
+    let transient_keep =
+        CheckMenuItemBuilder::with_id("transient_ignored_keep", t("menu.file.transient_keep")).build(app)?;
+    let transient_close =
+        CheckMenuItemBuilder::with_id("transient_ignored_close", t("menu.file.transient_close")).build(app)?;
+    // Checked here for the default; the frontend's sync corrects it at start.
+    let _ = transient_keep.set_checked(true);
+    let transient_submenu = SubmenuBuilder::new(app, t("menu.file.transient_title"))
+        .item(&transient_keep)
+        .item(&transient_close)
+        .build()?;
+
     let file_menu = SubmenuBuilder::new(app, t("menu.file.title"))
         .item(
             &MenuItemBuilder::with_id("new", t("menu.file.new"))
                 .accelerator("CmdOrCtrl+N")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("new_tab", t("menu.file.new_tab"))
+                .accelerator("CmdOrCtrl+T")
                 .build(app)?,
         )
         .item(
@@ -151,16 +252,10 @@ pub fn build_menu(
         )
         .separator()
         .item(&MenuItemBuilder::with_id("recent_files", t("menu.file.recent_files")).build(app)?)
+        .item(&transient_submenu)
         .separator()
-        .item(
-            &MenuItemBuilder::with_id(
-                "reopen_session",
-                crate::i18n::t_plural("menu.file.reopen_session", pending_session_count as u64),
-            )
-            .accelerator("CmdOrCtrl+Shift+T")
-            .enabled(pending_session_count > 0)
-            .build(app)?,
-        )
+        .item(&reopen_closed_item)
+        .item(&restore_session_item)
         .build()?;
 
     let edit_menu = SubmenuBuilder::new(app, t("menu.edit.title"))
@@ -215,6 +310,45 @@ pub fn build_menu(
     let toggle_ocd_alignment =
         CheckMenuItemBuilder::with_id("toggle_ocd_alignment", t("menu.view.ocd_alignment")).build(app)?;
 
+    let tabs_compact =
+        CheckMenuItemBuilder::with_id("toggle_tabs_compact", t("menu.view.tabs_compact")).build(app)?;
+
+    // Nine literal builder chains, not a loop: the accelerator mirror test
+    // (`native-menu-accelerators.test.ts`) reads each item id as a string
+    // literal right after its builder call.
+    let tab_label = |n: u32| t("menu.view.select_tab").replace("{n}", &n.to_string());
+    let tabs_submenu = SubmenuBuilder::new(app, t("menu.view.tabs_title"))
+        // The drawer (spec §6). ⌘J is its only key; it is printed on the
+        // notch, which reads it from the mirror of this line.
+        .item(
+            &MenuItemBuilder::with_id("toggle_drawer", t("menu.view.show_tabs"))
+                .accelerator("CmdOrCtrl+J")
+                .build(app)?,
+        )
+        .item(&tabs_compact)
+        .separator()
+        .item(
+            &MenuItemBuilder::with_id("next_tab", t("menu.view.next_tab"))
+                .accelerator("Ctrl+Tab")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("prev_tab", t("menu.view.prev_tab"))
+                .accelerator("Ctrl+Shift+Tab")
+                .build(app)?,
+        )
+        .separator()
+        .item(&MenuItemBuilder::with_id("select_tab_1", tab_label(1)).accelerator("CmdOrCtrl+1").build(app)?)
+        .item(&MenuItemBuilder::with_id("select_tab_2", tab_label(2)).accelerator("CmdOrCtrl+2").build(app)?)
+        .item(&MenuItemBuilder::with_id("select_tab_3", tab_label(3)).accelerator("CmdOrCtrl+3").build(app)?)
+        .item(&MenuItemBuilder::with_id("select_tab_4", tab_label(4)).accelerator("CmdOrCtrl+4").build(app)?)
+        .item(&MenuItemBuilder::with_id("select_tab_5", tab_label(5)).accelerator("CmdOrCtrl+5").build(app)?)
+        .item(&MenuItemBuilder::with_id("select_tab_6", tab_label(6)).accelerator("CmdOrCtrl+6").build(app)?)
+        .item(&MenuItemBuilder::with_id("select_tab_7", tab_label(7)).accelerator("CmdOrCtrl+7").build(app)?)
+        .item(&MenuItemBuilder::with_id("select_tab_8", tab_label(8)).accelerator("CmdOrCtrl+8").build(app)?)
+        .item(&MenuItemBuilder::with_id("select_tab_9", tab_label(9)).accelerator("CmdOrCtrl+9").build(app)?)
+        .build()?;
+
     let view_menu = SubmenuBuilder::new(app, t("menu.view.title"))
         .item(
             &MenuItemBuilder::with_id("toggle_mode", t("menu.view.toggle_mode"))
@@ -245,6 +379,8 @@ pub fn build_menu(
         .separator()
         .item(&CheckMenuItemBuilder::with_id("toggle_line_glow", t("menu.view.line_glow")).build(app)?)
         .item(&toggle_ocd_alignment)
+        .separator()
+        .item(&tabs_submenu)
         .build()?;
 
     // Семья и половина — две независимые группы, а не восемь комбинаций:
@@ -376,12 +512,21 @@ pub fn build_menu(
         .item(&MenuItemBuilder::with_id("ai_playbook", t("menu.ai.playbook")).build(app)?)
         .build()?;
 
+    // The standard Window menu, for ⌘M. The predefined item carries the key
+    // itself (no `.accelerator("…")` string), so the drawer's «В окно…» key
+    // is ⌘G, not ⌘M — `drawer-keys.test.ts` holds both sides of that.
+    let window_menu = SubmenuBuilder::new(app, t("menu.window.title"))
+        .minimize_with_text(t("menu.window.minimize"))
+        .build()?;
+
+    // Window before AI: the AI menu stands where Help would, last.
     let menu = MenuBuilder::new(app)
         .item(&app_menu)
         .item(&file_menu)
         .item(&edit_menu)
         .item(&view_menu)
         .item(&theme_menu)
+        .item(&window_menu)
         .item(&ai_menu)
         .build()?;
 
@@ -407,7 +552,48 @@ pub fn build_menu(
     let view_toggles = ViewToggleItems {
         ocd_alignment: toggle_ocd_alignment,
         ocd_enabled: Toggle::default(),
+        tabs_compact,
+        compact_enabled: Toggle::default(),
     };
 
-    Ok((menu, theme_items, engine_items, view_toggles))
+    let session_items = SessionMenuItems {
+        reopen_closed: reopen_closed_item,
+        restore_session: restore_session_item,
+    };
+    let transient_items = TransientMenuItems { keep: transient_keep, close: transient_close };
+    Ok((menu, theme_items, engine_items, view_toggles, session_items, transient_items))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reopen_closed_follows_only_the_closed_stack() {
+        assert!(!session_items_enabled(0, 3).0, "⌘⇧T never restores the session");
+        assert!(session_items_enabled(2, 0).0);
+        assert!(!session_items_enabled(0, 0).0);
+    }
+
+    #[test]
+    fn the_session_item_stays_on_after_a_close_until_the_session_is_restored() {
+        assert_eq!(session_items_enabled(0, 3), (false, true));
+        assert_eq!(session_items_enabled(1, 3), (true, true), "a ⌘W does not take the session away");
+        assert_eq!(session_items_enabled(1, 0), (true, false), "restored: nothing left to offer");
+    }
+
+    #[test]
+    fn the_session_item_names_the_windows_it_would_open() {
+        assert_eq!(restore_session_text_for("en", 3), "Reopen 3 Windows from Last Session");
+        assert_eq!(restore_session_text_for("en", 0), "Reopen Windows from Last Session");
+        assert_eq!(restore_session_text_for("ru", 2), "Открыть 2 окна прошлой сессии");
+        assert_eq!(restore_session_text_for("ru", 0), "Открыть окна прошлой сессии");
+    }
+
+    #[test]
+    fn the_quick_look_policy_marks_one_item() {
+        assert_eq!(transient_marks("keep"), (true, false));
+        assert_eq!(transient_marks("close"), (false, true));
+        assert_eq!(transient_marks("anything else"), (true, false), "unknown means the default");
+    }
 }

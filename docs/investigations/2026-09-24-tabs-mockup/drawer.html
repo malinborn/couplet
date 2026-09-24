@@ -1,0 +1,1294 @@
+<!doctype html>
+<html lang="ru" data-theme="aurora-light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>couplet — макет ящика вкладок</title>
+<style>
+/* ───────────────────────── Fonts (bundled, relative to repo root) ───────────────────────── */
+@font-face { font-family: 'Inter'; src: url('../../../src/assets/fonts/InterVariable.woff2') format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Merriweather'; src: url('../../../src/assets/fonts/Merriweather-Regular.woff2') format('woff2'); font-weight: 400; font-display: swap; }
+@font-face { font-family: 'Merriweather'; src: url('../../../src/assets/fonts/Merriweather-Bold.woff2') format('woff2'); font-weight: 700; font-display: swap; }
+@font-face { font-family: 'Merriweather'; src: url('../../../src/assets/fonts/Merriweather-Italic.woff2') format('woff2'); font-weight: 400; font-style: italic; font-display: swap; }
+@font-face { font-family: 'Merriweather'; src: url('../../../src/assets/fonts/Merriweather-Regular-Cyrillic.woff2') format('woff2'); font-weight: 400; font-display: swap; unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+@font-face { font-family: 'Merriweather'; src: url('../../../src/assets/fonts/Merriweather-Bold-Cyrillic.woff2') format('woff2'); font-weight: 700; font-display: swap; unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+@font-face { font-family: 'Merriweather'; src: url('../../../src/assets/fonts/Merriweather-Italic-Cyrillic.woff2') format('woff2'); font-weight: 400; font-style: italic; font-display: swap; unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+@font-face { font-family: 'JetBrains Mono'; src: url('../../../src/assets/fonts/JetBrainsMono-Regular.woff2') format('woff2'); font-weight: 400; font-display: swap; }
+
+/* ───────────────────────── Theme tokens (copied from src/lib/theme/*.css) ───────────────────────── */
+:root[data-theme='light'] {
+  --bg-base: #fafaf9; --bg-surface: #f5f5f4; --text-primary: #1c1917; --text-subtle: #78716c; --text-muted: #a8a29e;
+  --highlight: #e7e5e4; --color-heading: #292524; --color-bold: #1c1917; --color-italic: #44403c; --color-link: #2563eb;
+  --color-code-bg: #f5f5f4; --color-code-text: #1c1917; --color-selection: #dbeafe; --color-border: #e7e5e4;
+  --color-blockquote-border: #a8a29e; --color-list-marker: #78716c; --color-checkbox: #2563eb; --color-strikethrough: #78716c;
+  --color-table-border: #e7e5e4; --color-glow: 124, 58, 237; --bg-overlay: rgba(250, 250, 249, 0.75); --border: #e7e5e4;
+  --heading-tone-1: #1c1917; --heading-tone-2: #292524; --heading-tone-3: #3b3532; --heading-tone-4: #524b45;
+  --font-text: 'Merriweather', Georgia, serif; --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+  /* mockup-only */
+  --desk: radial-gradient(1200px 700px at 78% 20%, #eef0f4 0%, transparent 60%), linear-gradient(160deg, #dadde3 0%, #cdd2da 100%);
+  --shadow-rgb: 0, 0, 0; --shadow-a: 0.10;
+}
+:root[data-theme='dark'] {
+  --bg-base: #191724; --bg-surface: #1f1d2e; --text-primary: #e0def4; --text-subtle: #908caa; --text-muted: #6e6a86;
+  --highlight: #403d52; --color-heading: #c4a7e7; --color-bold: #ebbcba; --color-italic: #f6c177; --color-link: #9ccfd8;
+  --color-code-bg: #1f1d2e; --color-code-text: #e0def4; --color-selection: #524f67; --color-border: #403d52;
+  --color-blockquote-border: #c4a7e7; --color-list-marker: #908caa; --color-checkbox: #c4a7e7; --color-strikethrough: #908caa;
+  --color-table-border: #403d52; --color-glow: 196, 167, 231; --bg-overlay: rgba(25, 23, 36, 0.75); --border: #403d52;
+  --heading-tone-1: #c4a7e7; --heading-tone-2: #bda2e0; --heading-tone-3: #b39cd6; --heading-tone-4: #a894c8;
+  --heading-grad-1: linear-gradient(100deg, #eb6f92 0%, #c4a7e7 42%, #9ccfd8 76%, #c4a7e7 100%);
+  --heading-grad-2: linear-gradient(100deg, #d9a0d2 0%, #c2a6e4 55%, #bda2e0 100%);
+  --heading-grad-3: linear-gradient(100deg, #c0a4e2 0%, #b7a3d9 60%, #b39cd6 100%);
+  --font-text: 'Inter', -apple-system, system-ui, sans-serif; --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+  --desk: radial-gradient(1100px 700px at 75% 15%, #2a2640 0%, transparent 60%), linear-gradient(160deg, #0f0e17 0%, #151322 100%);
+  --shadow-rgb: 0, 0, 0; --shadow-a: 0.35;
+}
+:root[data-theme='aurora-light'] {
+  --bg-base: #efeeec; --bg-surface: #e9e8e3; --text-primary: #262a45; --text-subtle: #6b6f92; --text-muted: #a19e97;
+  --highlight: #e5e4de; --color-heading: #5566ec; --color-bold: #d6438f; --color-italic: #8b6ce8; --color-link: #0d9488;
+  --color-code-bg: #e9e8e3; --color-code-text: #262a45; --color-selection: #d9ddf8; --color-border: #dddcd5;
+  --color-blockquote-border: #5566ec; --color-list-marker: #6b6f92; --color-checkbox: #0d9488; --color-strikethrough: #6b6f92;
+  --color-table-border: #dddcd5; --color-glow: 85, 102, 236; --bg-overlay: rgba(239, 238, 236, 0.75); --border: #dddcd5;
+  --heading-tone-1: #5566ec; --heading-tone-2: #5768e0; --heading-tone-3: #5a6ad9; --heading-tone-4: #5f6cc9;
+  --heading-grad-1: linear-gradient(100deg, #d6438f 0%, #7f5ce0 32%, #12849f 64%, #5566ec 100%);
+  --heading-grad-2: linear-gradient(100deg, #9b52c9 0%, #6b66e4 50%, #5768e0 100%);
+  --heading-grad-3: linear-gradient(100deg, #6478e6 0%, #5c78d8 55%, #5a6ad9 100%);
+  --font-text: 'Inter', -apple-system, system-ui, sans-serif; --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+  --desk: radial-gradient(1000px 650px at 80% 10%, #f3ece4 0%, transparent 60%), linear-gradient(150deg, #cfd9d6 0%, #d8d6d2 55%, #e2d6ca 100%);
+  --shadow-rgb: 38, 42, 69; --shadow-a: 0.10;
+}
+:root[data-theme='aurora-dark'] {
+  --bg-base: #171629; --bg-surface: #1f1e35; --text-primary: #e4e4f2; --text-subtle: #9192b3; --text-muted: #6a6b8c;
+  --highlight: #353456; --color-heading: #8f9ff5; --color-bold: #f28cc7; --color-italic: #c3a9f7; --color-link: #6fd9c0;
+  --color-code-bg: #1f1e35; --color-code-text: #e4e4f2; --color-selection: #3d3c62; --color-border: #353456;
+  --color-blockquote-border: #8f9ff5; --color-list-marker: #9192b3; --color-checkbox: #6fd9c0; --color-strikethrough: #9192b3;
+  --color-table-border: #353456; --color-glow: 143, 159, 245; --bg-overlay: rgba(23, 22, 41, 0.75); --border: #353456;
+  --heading-tone-1: #8f9ff5; --heading-tone-2: #8b9bf0; --heading-tone-3: #8795e6; --heading-tone-4: #808ed8;
+  --heading-grad-1: linear-gradient(100deg, #f78cc7 0%, #b48cf0 30%, #7edff2 62%, #8f9ff5 100%);
+  --heading-grad-2: linear-gradient(100deg, #c79ae8 0%, #9db2f2 55%, #8b9bf0 100%);
+  --heading-grad-3: linear-gradient(100deg, #97a6f0 0%, #8ea7e9 60%, #8795e6 100%);
+  --font-text: 'Inter', -apple-system, system-ui, sans-serif; --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+  --desk: radial-gradient(1100px 700px at 78% 12%, #2b2552 0%, transparent 60%), linear-gradient(160deg, #0d0c1c 0%, #16142c 100%);
+  --shadow-rgb: 0, 0, 0; --shadow-a: 0.35;
+}
+:root {
+  --ai-a: #f590e1; --ai-b: #72dcfd;
+  --brand-a: #7068d5; --brand-b: #6e8cc0; --brand-c: #7dc8c4;
+  --ai-grad: linear-gradient(100deg, var(--ai-a) 0%, var(--ai-b) 50%, var(--ai-a) 100%);
+  --ai-grad-v: linear-gradient(180deg, var(--ai-a) 0%, var(--ai-b) 50%, var(--ai-a) 100%);
+  --brand-grad: linear-gradient(180deg, var(--brand-a), var(--brand-b), var(--brand-c));
+  --ease: cubic-bezier(0.22, 0.8, 0.3, 1);
+  --ui: 'Inter', -apple-system, system-ui, sans-serif;
+  --dw: min(420px, 52%);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  overflow: hidden; font-family: var(--ui); color: var(--text-primary);
+  background: var(--desk); background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; }
+kbd { font-family: var(--ui); font-size: 10.5px; color: var(--text-muted); letter-spacing: 0.02em; }
+
+/* ───────────────────────── Outside-the-window chrome ───────────────────────── */
+.corner { position: fixed; top: 16px; right: 20px; z-index: 5000; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; width: 340px; }
+.corner-note { font-size: 11px; line-height: 1.4; color: var(--text-muted); text-align: right; padding: 0 4px; }
+.theme-switch {
+  display: flex; gap: 2px; padding: 3px;
+  background: var(--bg-surface); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 4px 18px rgba(var(--shadow-rgb), var(--shadow-a));
+}
+.theme-switch button {
+  border: 0; background: transparent; padding: 5px 10px; border-radius: 7px; font-size: 12px; color: var(--text-subtle); cursor: pointer;
+}
+.theme-switch button[aria-pressed='true'] { background: var(--bg-base); color: var(--text-primary); box-shadow: 0 1px 2px rgba(var(--shadow-rgb), .12); }
+
+.demo-panel {
+  position: fixed; right: 20px; bottom: 20px; z-index: 5000; width: 300px; padding: 14px 14px 12px;
+  background: var(--bg-surface); border: 1px solid var(--border); border-radius: 14px;
+  box-shadow: 0 8px 30px rgba(var(--shadow-rgb), var(--shadow-a));
+  font-size: 12px; color: var(--text-subtle);
+}
+.demo-panel h3 { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 10px; }
+.demo-panel .row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.demo-btn {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%;
+  border: 1px solid var(--border); background: var(--bg-base); border-radius: 8px; padding: 7px 10px;
+  font-size: 12.5px; color: var(--text-primary); cursor: pointer; text-align: left;
+  transition: border-color .15s, transform .1s;
+}
+.demo-btn:hover { border-color: var(--text-muted); }
+.demo-btn:active { transform: scale(.985); }
+.demo-btn.ai { background-image: linear-gradient(100deg, rgba(245,144,225,.16), rgba(114,220,253,.16)); }
+.demo-panel ul { list-style: none; display: grid; gap: 5px; line-height: 1.45; }
+.demo-panel li::before { content: '·'; margin-right: 6px; color: var(--text-muted); }
+
+/* ───────────────────────── Fake macOS windows ───────────────────────── */
+.win {
+  position: fixed; display: flex; flex-direction: column; overflow: hidden;
+  background: var(--bg-base); border-radius: 12px;
+  box-shadow: 0 0 0 0.5px rgba(0,0,0,.28), 0 28px 70px rgba(var(--shadow-rgb), calc(var(--shadow-a) * 2.4)), 0 6px 18px rgba(var(--shadow-rgb), var(--shadow-a));
+}
+:root[data-theme$='dark'] .win { box-shadow: 0 0 0 0.5px rgba(0,0,0,.6), inset 0 0 0 0.5px rgba(255,255,255,.07), 0 28px 70px rgba(0,0,0,.55); }
+#win1 { left: 40px; top: 48px; width: min(900px, calc(100vw - 400px)); height: min(680px, calc(100vh - 88px)); z-index: 10; }
+.titlebar {
+  flex: 0 0 38px; position: relative; display: flex; align-items: center; padding: 0 14px;
+  background: var(--bg-base); border-bottom: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+  user-select: none; -webkit-user-select: none;
+}
+.lights { display: flex; gap: 8px; position: relative; z-index: 1; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; display: block; box-shadow: inset 0 0 0 0.5px rgba(0,0,0,.18); }
+.lights i:nth-child(1) { background: #ff5f57; } .lights i:nth-child(2) { background: #febc2e; } .lights i:nth-child(3) { background: #28c840; }
+.title { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; color: var(--text-subtle); letter-spacing: -0.005em; pointer-events: none; }
+.title .wid { color: var(--text-muted); font-weight: 500; margin-left: 5px; }
+.content { position: relative; flex: 1; overflow: hidden; }
+
+/* Editor (rendered markdown, faked) */
+.editor { position: absolute; inset: 0; overflow: auto; padding: 44px 64px 90px 84px; font-family: var(--font-text); font-size: 16px; line-height: 1.7; color: var(--text-primary); scrollbar-width: thin; }
+.doc { max-width: 680px; margin: 0 auto; transition: opacity .18s ease; }
+.doc.swap { opacity: 0; }
+.doc h1, .doc h2, .doc h3, .doc h4 {
+  font-weight: 800; letter-spacing: -0.02em; line-height: 1.25;
+  background-repeat: no-repeat; background-size: 18em 100%; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+.doc h1 { font-size: 2.1em; padding: .1em 0 .25em; background-color: var(--heading-tone-1); background-image: var(--heading-grad-1, none); }
+.doc h2 { font-size: 1.5em; font-weight: 700; padding: .8em 0 .2em; background-color: var(--heading-tone-2); background-image: var(--heading-grad-2, none); }
+.doc h3 { font-size: 1.2em; font-weight: 700; padding: .6em 0 .1em; background-color: var(--heading-tone-3); background-image: var(--heading-grad-3, none); }
+.doc p { margin: .35em 0 .55em; }
+.doc strong { color: var(--color-bold); }
+.doc em { color: var(--color-italic); }
+.doc a { color: var(--color-link); text-decoration: none; border-bottom: 1px solid color-mix(in oklab, var(--color-link) 40%, transparent); }
+.doc code { font-family: var(--font-code); font-size: .84em; background: var(--color-code-bg); padding: .12em .38em; border-radius: 5px; }
+.doc pre { background: var(--color-code-bg); border-radius: 10px; padding: 14px 16px; margin: .6em 0 .9em; overflow: auto; }
+.doc pre code { background: none; padding: 0; font-size: .82em; line-height: 1.6; }
+.doc ul, .doc ol { margin: .3em 0 .7em 1.4em; }
+.doc li { margin: .18em 0; padding-left: .2em; }
+.doc li::marker { color: var(--color-list-marker); }
+.doc ul.tasks { list-style: none; margin-left: .2em; }
+.doc li.task { display: flex; gap: .6em; align-items: baseline; }
+.doc li.task .cb { flex: 0 0 auto; width: .9em; height: .9em; border-radius: 4px; border: 1.5px solid var(--color-checkbox); transform: translateY(.12em); }
+.doc li.task.done .cb { background: var(--color-checkbox); }
+.doc li.task.done > span:last-child { color: var(--color-strikethrough); text-decoration: line-through; }
+.doc blockquote { border-left: 3px solid var(--color-blockquote-border); padding: .1em 0 .1em 1em; margin: .8em 0; color: var(--text-subtle); font-style: italic; }
+.doc .muted { color: var(--text-muted); }
+
+/* AI bind button — same visual language as src/lib/AiBindButton.svelte */
+.ai-bind {
+  position: absolute; top: 130px; left: 0; z-index: 880;
+  --shown: 0; --peek: 26px;
+  transform: translateX(calc((var(--shown) - 1) * (100% - var(--peek))));
+  opacity: calc(0.72 + 0.28 * var(--shown));
+  display: flex; align-items: center; gap: 7px; white-space: nowrap;
+  border: 1px solid var(--color-table-border); border-left: none; border-radius: 0 999px 999px 0;
+  background-color: var(--bg-surface);
+  background-image: linear-gradient(104deg, rgba(var(--color-glow), .16) 0%, rgba(var(--color-glow), .07) 48%, rgba(var(--color-glow), 0) 100%);
+  box-shadow: 1px 1px 6px rgb(0 0 0 / .13);
+  font-family: var(--font-code); font-size: 12px; line-height: 1; padding: 7px 11px 7px 13px; cursor: pointer;
+  transition: transform .18s var(--ease), opacity .18s ease;
+}
+.ai-bind:hover, .ai-bind:focus-visible { --shown: 1; background-image: linear-gradient(104deg, rgba(var(--color-glow), .26) 0%, rgba(var(--color-glow), .12) 48%, rgba(var(--color-glow), .02) 100%); }
+.ai-bind .g { font-size: 11px; opacity: .85; }
+
+/* ───────────────────────── Drawer + notch ───────────────────────── */
+.scrim {
+  position: absolute; inset: 0; z-index: 850; background: var(--bg-overlay); opacity: 0; pointer-events: none;
+  transition: opacity .28s ease; -webkit-backdrop-filter: blur(1.5px); backdrop-filter: blur(1.5px);
+}
+.drawer-open .scrim { opacity: .7; pointer-events: auto; }
+
+.drawer-wrap {
+  position: absolute; top: 0; bottom: 0; left: 0; width: var(--dw); z-index: 900;
+  transform: translateX(-100%); transition: transform .34s var(--ease);
+}
+.drawer-open .drawer-wrap { transform: translateX(0); }
+
+.drawer {
+  position: absolute; top: 6px; bottom: 6px; left: 0; right: 0; display: flex; flex-direction: column;
+  background: var(--bg-surface); border: 1px solid var(--border); border-left: none; border-radius: 0 14px 14px 0;
+  box-shadow: 10px 0 40px rgba(var(--shadow-rgb), 0), 0 0 0 rgba(0,0,0,0);
+  transition: box-shadow .34s ease;
+}
+.drawer-open .drawer { box-shadow: 14px 0 44px rgba(var(--shadow-rgb), calc(var(--shadow-a) * 1.4)), 2px 0 8px rgba(var(--shadow-rgb), var(--shadow-a)); }
+
+/* The notch — the protruding tab of a paper file folder, stuck to the
+   drawer's right edge: an elongated trapezoid, wide base on the window edge,
+   narrower outer edge. At rest the drawer is off-screen, so the notch is all
+   that is left at the window edge. The trapezoid is a perspective-rotated
+   box, so border, radius, shadow and the AI gradient all follow the shape. */
+.notch {
+  position: absolute; top: 12px; left: calc(100% - 1px); width: 30px; height: 120px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  cursor: pointer; user-select: none; -webkit-user-select: none; outline: none;
+}
+.notch .shape, .mini-notch .shape {
+  position: absolute; left: 0; top: 0; width: 41px; height: 100%; overflow: hidden;
+  background: var(--bg-surface); border: 1px solid var(--border); border-left: none; border-radius: 0 9px 9px 0;
+  transform-origin: left center; transform: perspective(63px) rotateY(30deg);
+  box-shadow: 0 3px 0 -1px var(--bg-surface), 0 3px 0 0 var(--border), 4px 5px 14px rgba(var(--shadow-rgb), calc(var(--shadow-a) * 1.1));
+  transition: transform .22s var(--ease), box-shadow .6s ease, border-color .6s ease;
+}
+.notch:hover .shape, .notch:focus-visible .shape { transform: perspective(63px) rotateY(24deg); }
+.notch:focus-visible .shape { border-color: var(--text-muted); }
+.notch .wid, .mini-notch .wid { position: relative; font-family: var(--font-code); font-size: 12.5px; color: var(--text-primary); letter-spacing: -0.04em; margin-left: -3px; }
+.notch .cnt, .mini-notch .cnt { position: relative; font-size: 10.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; margin-left: -3px; }
+.notch .glow, .card .ring {
+  position: absolute; inset: -1px; border-radius: inherit; pointer-events: none; opacity: 0;
+  transition: opacity .9s ease;
+}
+.notch .glow { inset: 0; background: var(--ai-grad-v); background-size: 100% 300%; }
+.notch.ai .glow { opacity: .45; animation: shimmerV 5s ease-in-out infinite alternate; }
+:root[data-theme$='dark'] .notch.ai .glow { opacity: .3; }
+.notch.ai .cnt { color: var(--text-primary); opacity: .75; }
+.notch.ai .shape { border-color: color-mix(in oklab, var(--ai-a) 55%, var(--border)); box-shadow: 0 3px 0 -1px var(--bg-surface), 0 3px 0 0 var(--border), 4px 5px 18px rgba(245, 144, 225, .38); }
+.notch.bump .cnt { animation: bump .5s var(--ease); }
+@keyframes shimmerV { 0% { background-position: 50% 0%; } 100% { background-position: 50% 100%; } }
+@keyframes shimmer { 0% { background-position: 0% 50%; } 100% { background-position: 100% 50%; } }
+@keyframes bump { 40% { transform: scale(1.5); color: var(--text-primary); } }
+
+.drawer-head { padding: 16px 18px 10px 20px; flex: 0 0 auto; }
+.drawer-title { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 12px; }
+.drawer-title b { font-size: 13px; font-weight: 600; letter-spacing: -0.005em; }
+.drawer-title b .wno { font-family: var(--font-code); font-weight: 400; color: var(--text-subtle); margin-left: 3px; }
+.drawer-title b .cnt { font-weight: 400; color: var(--text-muted); margin-left: 2px; }
+/* One text baseline for all three header items: plain text blocks aligned by
+   the flex row's `baseline`; no inline-flex (whose baseline an SVG would steal),
+   no overflow:hidden (which moves a block's baseline to its bottom edge). */
+.drawer-title small { display: block; font-size: 11px; line-height: 1.4; color: var(--text-muted); white-space: nowrap; }
+.drawer-title .type-hint { transition: opacity .15s; }
+.drawer-title .type-hint.off { opacity: 0; }
+/* Centred «⇧ — выделить» between the title and the search hint — same size and
+   colour as the search hint. First thing to go: if it does not fit whole
+   (measured in JS, .nofit) it hides. */
+.drawer-title .sel-hint { flex: 1 1 auto; min-width: 0; padding: 0 10px; text-align: center; transition: opacity .15s; }
+.drawer-title .sel-hint.off { opacity: 0; }
+.drawer-title .sel-hint.nofit { opacity: 0; visibility: hidden; }
+/* Inline SVG magnifier: ~1em box; `vertical-align: middle` centres it on the
+   text's x-height instead of letting it define the line's baseline. */
+.mag { width: 1em; height: 1em; flex: 0 0 auto; display: block; }
+.drawer-title .type-hint .mag { display: inline-block; vertical-align: middle; margin: -0.1em 5px 0 0; }
+.search .s-ico { display: inline-flex; align-items: center; }
+.chip { display: inline-block; padding: 1px 5px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-base); color: var(--text-subtle); font-size: 10.5px; line-height: 1.35; }
+.sorts { display: flex; flex-wrap: nowrap; align-items: center; gap: 0; white-space: nowrap; }
+.sorts .lbl { font-size: 11px; color: var(--text-muted); margin-right: 2px; }
+.sorts .dot { color: var(--text-muted); opacity: .6; font-size: 11px; padding: 0 1px; }
+.sort-btn {
+  display: inline-flex; align-items: center; gap: 5px; border: 1px solid transparent; background: transparent; white-space: nowrap;
+  border-radius: 7px; padding: 3px 6px; font-size: 11.5px; color: var(--text-subtle); cursor: pointer;
+  transition: background-color .15s, border-color .15s, color .15s;
+}
+.sort-btn:hover { background: var(--bg-base); border-color: var(--border); color: var(--text-primary); }
+.sort-btn.flash { animation: flash .6s ease; }
+.sort-btn .ai-g { background: linear-gradient(100deg, var(--ai-a), var(--ai-b)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+@keyframes flash { 0% { background: color-mix(in oklab, var(--brand-a) 22%, var(--bg-base)); color: var(--text-primary); } 100% { background: transparent; } }
+
+.tab-list { position: relative; flex: 1; overflow-y: auto; overflow-x: hidden; padding: 4px 14px 14px 12px; scrollbar-width: thin; scrollbar-color: var(--highlight) transparent; }
+.tab-cards { display: flex; flex-direction: column; }
+.drop-ind {
+  position: absolute; left: 14px; right: 14px; height: 2px; border-radius: 2px; background: var(--brand-a);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--brand-a) 18%, transparent); opacity: 0; pointer-events: none;
+  transition: top .12s var(--ease), opacity .12s;
+}
+.drop-ind::before { content: ''; position: absolute; left: -4px; top: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--brand-a); }
+.drop-ind.on { opacity: 1; }
+
+/* Cards */
+.card {
+  position: relative; margin-bottom: 7px; padding: 11px 12px 11px 16px; border-radius: 11px;
+  background: var(--bg-base); border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+  cursor: default; user-select: none; -webkit-user-select: none; touch-action: none;
+  transition: transform .3s var(--ease), opacity .22s ease, height .22s var(--ease), padding .22s var(--ease), margin .22s var(--ease),
+              background-color .16s ease, border-color .16s ease, box-shadow .25s ease;
+}
+.card:hover { border-color: var(--border); }
+.card::before { /* active bar */
+  content: ''; position: absolute; left: 5px; top: 12px; bottom: 12px; width: 3px; border-radius: 3px;
+  background: var(--brand-grad); opacity: 0; transform: scaleY(.4); transition: opacity .2s, transform .25s var(--ease);
+}
+.card.active { border-color: var(--border); box-shadow: 0 1px 2px rgba(var(--shadow-rgb), .06), 0 6px 18px rgba(var(--shadow-rgb), calc(var(--shadow-a) * .7)); }
+.card.active::before { opacity: 1; transform: none; }
+.card.kb { outline: 2px solid color-mix(in oklab, var(--text-muted) 70%, transparent); outline-offset: 1px; }
+.card.expanded { transform: translateX(5px); box-shadow: 0 2px 4px rgba(var(--shadow-rgb), .06), 0 14px 32px rgba(var(--shadow-rgb), calc(var(--shadow-a) * 1.2)); z-index: 2; }
+.card.dragging { opacity: .35; }
+.card.selected { background: color-mix(in oklab, var(--brand-a) 13%, var(--bg-base)); border-color: color-mix(in oklab, var(--brand-a) 70%, transparent); }
+.card.closing { opacity: 0; transform: translateX(-30px) scale(.97); padding-top: 0; padding-bottom: 0; margin-bottom: 0; border-width: 0; overflow: hidden; }
+.card.arriving { animation: arrive .5s var(--ease); }
+@keyframes arrive { from { opacity: 0; transform: translateX(-18px); } }
+.card-head { display: flex; align-items: center; gap: 8px; min-height: 20px; }
+.card-name { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 600; letter-spacing: -0.008em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card.untitled .card-name { font-style: italic; font-weight: 500; color: var(--text-subtle); }
+.card-kbd { flex: 0 0 auto; opacity: .85; font-variant-numeric: tabular-nums; }
+.card-close {
+  flex: 0 0 auto; width: 20px; height: 20px; border-radius: 6px; border: 0; background: transparent; cursor: pointer;
+  display: grid; place-items: center; font-size: 15px; line-height: 1; color: var(--text-muted); transition: background-color .12s, color .12s;
+}
+.card-close:hover { background: var(--highlight); color: var(--text-primary); }
+.card-meta { margin-top: 2px; font-size: 11.5px; color: var(--text-muted); display: flex; gap: 6px; white-space: nowrap; overflow: hidden; }
+.card-meta .br { font-family: var(--font-code); font-size: 10.5px; }
+.card-preview {
+  margin-top: 7px; font-family: var(--font-text); font-size: 12.5px; line-height: 1.55; color: var(--text-subtle);
+  max-height: calc(1.55em * 3); overflow: hidden;
+  -webkit-mask-image: linear-gradient(#000 calc(100% - 1.3em), transparent); mask-image: linear-gradient(#000 calc(100% - 1.3em), transparent);
+  transition: max-height .38s var(--ease);
+}
+.card.expanded .card-preview { max-height: calc(1.55em * 10); }
+.card-preview > div { overflow-wrap: anywhere; }
+.card-preview b { color: var(--text-primary); font-weight: 700; }
+.card-preview code { font-family: var(--font-code); font-size: .9em; }
+.sel-dot {
+  flex: 0 0 auto; width: 0; height: 15px; border-radius: 50%; border: 1.5px solid transparent; margin-right: -8px;
+  display: grid; place-items: center; font-size: 9px; color: #fff; overflow: hidden;
+  transition: width .18s var(--ease), margin .18s var(--ease), border-color .15s, background-color .15s;
+}
+body.shift .sel-dot, .card.selected .sel-dot { width: 15px; margin-right: 0; border-color: var(--text-muted); }
+.card.selected .sel-dot { border-color: var(--brand-a); background: var(--brand-a); }
+body.shift .tab-cards .card { cursor: cell; }
+
+.ai-chip {
+  flex: 0 0 auto; font-size: 10.5px; font-weight: 600; padding: 1px 7px; border-radius: 999px;
+  background: linear-gradient(100deg, rgba(245,144,225,.22), rgba(114,220,253,.22)); color: var(--text-primary);
+  display: none;
+}
+.card.ai-unread .ai-chip { display: inline-block; }
+.card .ring {
+  padding: 1.5px; background: var(--ai-grad); background-size: 300% 100%;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude;
+}
+.card .wash { position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 0; transition: opacity .9s ease;
+  background: linear-gradient(100deg, rgba(245,144,225,.10), rgba(114,220,253,.10), rgba(245,144,225,.10)); background-size: 300% 100%; }
+.card.ai-unread .ring { opacity: .9; animation: shimmer 5s ease-in-out infinite alternate; }
+.card.ai-unread .wash { opacity: 1; animation: shimmer 5s ease-in-out infinite alternate; }
+
+.sel-bar {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 6px; margin: 0 12px; padding: 0 8px 0 12px; height: 0; overflow: hidden;
+  background: var(--bg-base); border: 1px solid transparent; border-radius: 10px; font-size: 12px; color: var(--text-subtle);
+  opacity: 0; transition: height .22s var(--ease), opacity .18s, margin .22s var(--ease), border-color .2s;
+}
+.sel-bar.on { height: 40px; opacity: 1; margin-bottom: 8px; border-color: color-mix(in oklab, var(--brand-a) 45%, transparent); }
+.sel-bar .n { flex: 1; color: var(--text-primary); font-weight: 600; white-space: nowrap; }
+.sel-bar .n small { font-weight: 400; color: var(--text-muted); margin-left: 6px; }
+.sel-bar button { border: 1px solid var(--border); background: var(--bg-surface); border-radius: 7px; padding: 4px 8px; font-size: 11.5px; cursor: pointer; white-space: nowrap; }
+.sel-bar button:hover { border-color: var(--text-muted); }
+.sel-bar button.x { border: 0; background: transparent; color: var(--text-muted); font-size: 14px; padding: 2px 5px; }
+
+.hint {
+  flex: 0 0 auto; padding: 0 18px; height: 0; overflow: hidden; opacity: 0; font-size: 11.5px; line-height: 1.5; color: var(--text-muted);
+  display: flex; align-items: center; border-top: 1px solid transparent;
+  transition: height .14s var(--ease), opacity .12s, border-color .12s; /* quick: it tracks the Shift key */
+}
+.hint.on { height: 36px; opacity: 1; border-top-color: color-mix(in oklab, var(--border) 70%, transparent); }
+.hint b { white-space: nowrap; }
+.hint b { color: var(--text-subtle); font-weight: 600; }
+
+/* Toast inside the window */
+.toast {
+  position: absolute; right: 16px; bottom: 16px; z-index: 950; max-width: 360px; padding: 9px 14px; border-radius: 10px;
+  background: var(--bg-surface); border: 1px solid var(--border); font-size: 12.5px; color: var(--text-primary);
+  box-shadow: 0 6px 22px rgba(var(--shadow-rgb), var(--shadow-a)); opacity: 0; transform: translateY(8px); pointer-events: none;
+  transition: opacity .2s, transform .25s var(--ease);
+}
+.toast.on { opacity: 1; transform: none; }
+.toast span { color: var(--text-muted); }
+
+/* Drag ghost */
+.ghost {
+  position: fixed; left: 0; top: 0; z-index: 9000; pointer-events: none; width: 300px;
+  background: var(--bg-base); border: 1px solid var(--border); border-radius: 11px; overflow: hidden;
+  box-shadow: 0 18px 44px rgba(var(--shadow-rgb), calc(var(--shadow-a) * 2)), 0 2px 6px rgba(var(--shadow-rgb), var(--shadow-a));
+  transition: width .22s var(--ease), border-radius .22s, opacity .18s, rotate .2s var(--ease);
+  rotate: -1.2deg;
+}
+.ghost.multi { box-shadow: 5px 5px 0 -1px var(--bg-base), 5px 5px 0 0 var(--border), 10px 10px 0 -2px var(--bg-base), 10px 10px 0 -1px var(--border), 0 18px 44px rgba(var(--shadow-rgb), calc(var(--shadow-a) * 2)); }
+.ghost-bar { height: 0; display: flex; align-items: center; gap: 5px; padding: 0 10px; background: var(--bg-surface); overflow: hidden; transition: height .22s var(--ease); font-size: 11px; color: var(--text-subtle); }
+.ghost-bar i { width: 8px; height: 8px; border-radius: 50%; background: var(--highlight); display: block; }
+.ghost-bar span { margin-left: auto; font-weight: 600; }
+.ghost.as-window { width: 250px; rotate: 0deg; }
+.ghost.as-window .ghost-bar { height: 24px; }
+.ghost.as-move { rotate: 0deg; outline: 2px solid var(--brand-a); }
+.ghost.as-move .ghost-bar { height: 24px; }
+.ghost.cancel { opacity: .6; }
+.ghost-body { padding: 10px 12px 11px 14px; }
+.ghost-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ghost-meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.ghost-count { position: absolute; right: 8px; bottom: 8px; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px; background: var(--brand-a); color: #fff; font-size: 11px; font-weight: 700; display: grid; place-items: center; }
+
+/* Secondary windows */
+.win.mini { width: 440px; height: 330px; animation: winIn .32s var(--ease); }
+.win.mini.leaving { animation: winOut .22s ease forwards; }
+@keyframes winIn { from { opacity: 0; transform: scale(.94); } }
+@keyframes winOut { to { opacity: 0; transform: scale(.96); } }
+.win.mini .titlebar { cursor: grab; }
+.win.mini .lights i:first-child { cursor: pointer; }
+.win.mini .editor { padding: 26px 30px 40px 52px; font-size: 13.5px; }
+.win.mini .doc h1 { font-size: 1.7em; }
+.win.mini.drop-target { box-shadow: 0 0 0 2px var(--brand-a), 0 28px 70px rgba(var(--shadow-rgb), calc(var(--shadow-a) * 2.4)); }
+.mini-notch {
+  position: absolute; top: 12px; left: -1px; width: 32px; height: 104px; z-index: 5; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  cursor: pointer; user-select: none; -webkit-user-select: none;
+}
+
+/* ── Type-to-filter ── */
+.search {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 7px; margin: 0 14px 0 12px; padding: 0 10px; height: 0; overflow: hidden; opacity: 0;
+  background: var(--bg-base); border: 1px solid transparent; border-radius: 9px; font-size: 13px;
+  transition: height .2s var(--ease), opacity .15s, margin .2s var(--ease), border-color .2s;
+}
+.search.on { height: 34px; opacity: 1; margin-bottom: 8px; border-color: var(--border); }
+.search .s-ico { color: var(--text-muted); font-size: 13px; }
+.search .s-q { white-space: pre; color: var(--text-primary); font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
+.search .caret { width: 1.5px; height: 15px; margin-left: -6px; background: var(--color-cursor, var(--text-primary)); animation: blink 1.1s steps(1) infinite; }
+.search .s-n { margin-left: auto; font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+@keyframes blink { 50% { opacity: 0; } }
+mark { background: color-mix(in oklab, var(--brand-a) 24%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; box-shadow: 0 0 0 1px color-mix(in oklab, var(--brand-a) 30%, transparent); }
+.card-preview .hit { color: var(--text-primary); }
+.card-preview .hit-l { font-family: var(--ui); font-size: 10.5px; color: var(--text-muted); margin-bottom: 1px; }
+.card.filtered-out { opacity: 0; transform: translateX(-16px); padding-top: 0; padding-bottom: 0; margin-bottom: 0; border-width: 0; overflow: hidden; }
+.card.gone { display: none; }
+.empty { display: none; padding: 34px 10px; text-align: center; font-size: 12.5px; color: var(--text-muted); }
+.empty.on { display: block; animation: arrive .3s var(--ease); }
+
+/* ── Tweak: key hint along the notch ── */
+.notch, .notch .shape { transition: height .25s var(--ease); }
+.notch .shape { transition: transform .22s var(--ease), box-shadow .6s ease, border-color .6s ease, height .25s var(--ease); }
+.notch .nk {
+  /* rotated 180°, so the bottom border lands on top — a hairline under the count */
+  display: none; position: relative; margin: 7px 0 0 -3px; padding-bottom: 7px; border-bottom: 1px solid color-mix(in oklab, var(--text-muted) 45%, transparent);
+  writing-mode: vertical-rl; transform: rotate(180deg); font-size: 11px; letter-spacing: .08em; line-height: 1; color: var(--text-muted);
+}
+body.notch-key .notch .nk { display: block; }
+.ai-bind { transition: transform .18s var(--ease), opacity .18s ease, top .25s var(--ease); }
+/* The AI button's resting protrusion equals the notch's visible depth (measured: see --notch-depth). */
+.ai-bind { --peek: var(--notch-depth, 29px); }
+
+/* ── Notch text: everything vertical, reading bottom-to-top (like the ⌘J hint) ──
+   Top-to-bottom order stays #22 · 12 · divider · ⌘J; the divider is a short
+   horizontal tick across the column (it separates stacked items). */
+.notch .wid, .notch .cnt, .mini-notch .wid, .mini-notch .cnt { writing-mode: vertical-rl; transform: rotate(180deg); line-height: 1; }
+.notch .wid { margin-bottom: 5px; }
+body.notch-key .notch { height: 150px; }
+body.notch-key .ai-bind { top: 174px; }
+/* Theme-following colours: surface/border come from tokens on .shape; the
+   number takes the theme's accent (--color-glow is each theme's accent triple),
+   with its subtle heading gradient where the theme defines one. */
+.notch .wid, .mini-notch .wid { color: rgb(var(--color-glow)); font-weight: 600; }
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .notch .wid, .mini-notch .wid {
+    background-color: rgb(var(--color-glow)); background-image: var(--heading-grad-2, none);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  }
+}
+.notch .cnt, .notch .nk, .mini-notch .cnt { color: var(--text-muted); }
+
+/* ── Tweak: View → Tabs → Compact ── */
+.card-imeta { display: none; }
+body.compact .card { padding: 7px 10px 7px 16px; margin-bottom: 4px; border-radius: 9px; }
+body.compact .card::before { top: 8px; bottom: 8px; }
+body.compact .card-meta { display: none; }
+body.compact .card-name { flex: 0 1 auto; max-width: 68%; font-size: 13px; }
+body.compact .card-imeta { display: block; flex: 1 1 0; min-width: 0; font-size: 11.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body.compact .card-imeta .br { font-family: var(--font-code); font-size: 10.5px; }
+body.compact .card-preview, body.compact .card.expanded .card-preview { margin-top: 1px; max-height: 1.55em; -webkit-mask-image: none; mask-image: none; }
+body.compact .card-preview > div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body.compact .card-preview .hit-l { display: none; }
+body.compact .card.expanded { transform: none; }
+
+/* ── Demo toggles ── */
+.toggles { display: grid; gap: 7px; margin-bottom: 12px; }
+.tgl { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--text-primary); cursor: pointer; user-select: none; -webkit-user-select: none; }
+.tgl input { position: absolute; opacity: 0; pointer-events: none; }
+.tgl .sw { flex: 0 0 auto; width: 28px; height: 16px; border-radius: 999px; background: var(--highlight); position: relative; transition: background-color .2s; }
+.tgl .sw::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--bg-base); box-shadow: 0 1px 2px rgba(0,0,0,.2); transition: transform .2s var(--ease); }
+.tgl input:checked + .sw { background: var(--brand-a); }
+.tgl input:checked + .sw::after { transform: translateX(12px); }
+.tgl input:focus-visible + .sw { outline: 2px solid var(--text-muted); outline-offset: 2px; }
+.tgl code { font-family: var(--font-code); font-size: 11.5px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .search .caret { animation: none; }
+  .notch.ai .glow, .card.ai-unread .ring, .card.ai-unread .wash { animation: none; background-position: 50% 50%; }
+  .drawer-wrap, .card, .card-preview, .scrim { transition-duration: .01s !important; }
+  .card.arriving, .win.mini { animation: none; }
+}
+</style>
+</head>
+<body class="notch-key">
+
+<div class="corner">
+  <div class="theme-switch" role="group" aria-label="Тема">
+    <button data-theme-btn="light">Light</button>
+    <button data-theme-btn="dark">Dark</button>
+    <button data-theme-btn="aurora-light">Aurora light</button>
+    <button data-theme-btn="aurora-dark">Aurora dark</button>
+  </div>
+  <p class="corner-note">Часть сочетаний браузер может перехватить сам (⌘L — адрес, ⌘R — перезагрузка). Кнопки в панели внизу работают всегда.</p>
+</div>
+
+<div class="win" id="win1" data-win="22">
+  <div class="titlebar"><div class="lights"><i></i><i></i><i></i></div><div class="title" id="title1"></div></div>
+  <div class="content" id="content1">
+    <div class="editor" id="editor1"><div class="doc" id="doc1"></div></div>
+    <button class="ai-bind" type="button" id="aiBind" title="Скопировать промпт, чтобы подключить файл к AI-агенту">
+      <span>Подключить к AI-агенту</span><span class="g" aria-hidden="true">✦</span>
+    </button>
+    <div class="scrim" id="scrim"></div>
+    <div class="drawer-wrap" id="drawerWrap">
+      <aside class="drawer" id="drawer" aria-label="Вкладки окна #22">
+        <div class="drawer-head">
+          <div class="drawer-title"><b>Окно<span class="wno">#22</span> <span class="cnt">· <span id="tabCount"></span></span></b><small class="sel-hint" id="selHint" aria-hidden="true">⇧ — выделить</small><small class="type-hint" id="typeHint"><svg class="mag" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.8" cy="6.8" r="4.8" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M10.4 10.4 14.2 14.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>печатайте для поиска</small></div>
+          <div class="sorts">
+            <span class="lbl">Разложить:</span>
+            <button class="sort-btn" data-sort="opened" title="Недавно открытые сверху">открытие <kbd>⌘L</kbd></button><span class="dot">·</span>
+            <button class="sort-btn" data-sort="viewed" title="Недавно просмотренные сверху">просмотр <kbd>⌘R</kbd></button><span class="dot">·</span>
+            <button class="sort-btn" data-sort="ai" title="Непросмотренные вкладки от ИИ сверху"><span class="ai-g">✦</span> ИИ <kbd>⌘U</kbd></button>
+          </div>
+        </div>
+        <div class="search" id="search" aria-live="polite"><span class="s-ico" aria-hidden="true"><svg class="mag" viewBox="0 0 16 16"><circle cx="6.8" cy="6.8" r="4.8" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M10.4 10.4 14.2 14.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span><span class="s-q" id="sQ"></span><span class="caret" aria-hidden="true"></span><span class="s-n" id="sN"></span></div>
+        <div class="tab-list" id="tabList"><div class="tab-cards" id="tabCards"></div><div class="empty" id="emptyRes">Ничего не найдено</div><div class="drop-ind" id="dropInd"></div></div>
+        <div class="sel-bar" id="selBar">
+          <span class="n" id="selN"></span>
+          <button id="selNewWin">В новое окно</button>
+          <button id="selClose">Закрыть выбранные</button>
+          <button class="x" id="selClear" title="Снять выделение">×</button>
+        </div>
+        <div class="hint" id="hint"><span><b>⇧ клик / протяжка</b> — выделение · <b>⌘ клик</b> — закрыть</span></div>
+      </aside>
+      <div class="notch" id="notch" role="button" tabindex="0" aria-label="Вкладки окна #22">
+        <span class="shape" aria-hidden="true"><span class="glow"></span></span>
+        <span class="wid">#22</span><span class="cnt" id="notchCnt"></span><span class="nk" aria-hidden="true">⌘J</span>
+      </div>
+    </div>
+    <div class="toast" id="toast"></div>
+  </div>
+</div>
+
+<div class="demo-panel">
+  <h3>Демо-управление</h3>
+  <div class="row">
+    <button class="demo-btn ai" id="demoAi"><span>✦ ИИ открыл вкладку в фоне</span></button>
+    <button class="demo-btn" id="demoToggle"><span>Ящик: открыть / закрыть</span><kbd>⌘J</kbd></button>
+    <button class="demo-btn" id="demoReopen"><span>Вернуть закрытую</span><kbd>⌘⇧T</kbd></button>
+    <button class="demo-btn" id="demoReset"><span>Сбросить макет</span></button>
+  </div>
+  <div class="toggles">
+    <label class="tgl"><input type="checkbox" id="tglCompact"><span class="sw"></span><span><code>View → Tabs → Compact</code></span></label>
+  </div>
+  <ul>
+    <li>Хлястик <b>#22</b> слева: навести (200 мс), клик или <kbd>⌘J</kbd></li>
+    <li>В открытом ящике просто печатайте — фильтр по имени и тексту; Esc — сброс</li>
+    <li>Задержать курсор на карточке ~0.6 с — раскроется</li>
+    <li>Тянуть карточку — порядок; за окно — новое окно; на другое окно — перенос</li>
+    <li>⇧ клик / ⇧ протяжка — выделение; ⌘ клик — закрыть</li>
+    <li>В ящике: ↑↓ Enter Esc, ⌘1…⌘9; разложить: ⌘L ⌘R ⌘U</li>
+    <li>Не на Mac вместо ⌘ работает Ctrl</li>
+  </ul>
+</div>
+
+<script>
+'use strict';
+/* ═════════════════════════ Data ═════════════════════════ */
+const SAMPLE = [
+  { id: 1, name: 'README.md', proj: 'md-mini', br: 'main', md:
+`# couplet
+Минималистичный live-preview редактор markdown для macOS. Tauri 2 + Svelte 5 + CodeMirror 6.
+## Возможности
+- Живое превью без разделения экрана
+- Mermaid-диаграммы с pan/zoom
+- \`mdmini show\` / \`mdmini edit\` — AI-агент сам открывает файлы и подсвечивает правки
+## Установка
+\`\`\`
+brew install --cask couplet
+\`\`\`
+> Документ живёт у вас на диске. couplet не источник истины — он только окно в файл.
+## Лицензия
+MIT. Шрифты Inter, Merriweather и JetBrains Mono — под OFL.` },
+  { id: 2, name: 'CLAUDE.md', proj: 'md-mini', br: 'main', md:
+`# md-mini
+Minimalist live-preview markdown editor for macOS. Tauri 2 + Svelte 5 + CodeMirror 6.
+## Commands
+- \`npm run dev\` — frontend only, Vite at localhost:1420
+- \`npm run dev:app\` — Tauri dev with a **renamed identifier**
+- \`npx vitest run --dir src\` — true test count
+## Gotchas
+**Backspace needs \`Prec.highest\`, not \`Prec.high\`.** Backspace is in the view's PendingKeys table, so the native edit lands first and is reconciled afterwards.
+**Never dispatch a CM6 transaction per animation frame.** Gestures write to the DOM and commit on a trailing debounce.` },
+  { id: 3, name: 'tabs-options.md', proj: 'md-mini', br: 'worktree/tabs-design-research', md:
+`# Вкладки: варианты
+Принцип: **агент не владеет местом**. ИИ может открыть документ, но не может отнять фокус или переставить то, что разложил человек.
+## Варианты
+1. Нативные вкладки macOS — дёшево, но таб-бар съедает 28 px всегда
+2. Ящик слева с хлястиком — ноль хрома в покое
+3. AI-стол — отдельное окно для всего, что открыл агент
+## Открытые вопросы
+- [ ] Хоткей: ⌃Tab или ⌘E?
+- [ ] Сортировка — режим или разовое действие?
+- [x] Верхний таб-бар — нет` },
+  { id: 4, name: 'deploy-plan.md', proj: 'infra', br: 'main', md:
+`# План выкладки: ai-gateway 2.4
+## Окно
+Четверг, 22:00–23:30 MSK. Freeze на остальные сервисы.
+## Шаги
+1. Снять снапшот PostgreSQL (\`pg_basebackup\` на standby)
+2. Раскатить canary на 10% через веса nginx upstream
+3. Смотреть p95 и 5xx 20 минут в Grafana
+4. Полная раскатка: \`ansible-playbook site.yml --tags gateway\`
+## Откат
+\`ansible-playbook rollback.yml -e version=2.3.7\` — около четырёх минут.` },
+  { id: 5, name: 'incident-2026-09-21.md', proj: 'infra', br: 'postmortems', md:
+`# Инцидент 2026-09-21: деградация VPN
+**Длительность:** 47 минут · **Влияние:** ~300 сотрудников без доступа к внутренним сервисам
+## Хронология
+- 09:12 — алерт \`xray_handshake_failures\` > 5%
+- 09:20 — дежурный подтверждает, эскалация
+- 09:41 — причина: истёк сертификат на edge-2
+- 09:59 — сертификат перевыпущен, трафик восстановлен
+## Действия
+- [ ] Мониторинг срока сертификатов за 14 дней
+- [ ] Runbook ротации на edge-нодах` },
+  { id: 6, name: 'ansible-hardening.md', proj: 'infra', br: 'feature/cis-baseline', md:
+`# CIS baseline для Ubuntu 24.04
+Роль \`hardening\` покрывает 112 из 140 контролей первого уровня.
+## Что ещё не закрыто
+- правила auditd для \`execve\` — шумят на CI-раннерах
+- \`/tmp\` на отдельном разделе — требует переразметки
+- AppArmor enforce для nginx
+> Security review обязателен перед мерджем — пинг AppSec.` },
+  { id: 7, name: 'ai-interface.md', proj: 'md-mini', br: 'docs', md:
+`# AI interface
+\`mdmini show\` and \`mdmini edit\` let an agent open a file in the running app and highlight what it changed.
+## JSON contract
+Every command answers with \`{ "ok": true, "window": 22 }\` or an error object with a stable \`code\`.
+## Command socket
+Line-delimited JSON over a Unix socket in the app data directory. One request per connection.` },
+  { id: 8, name: 'review-notes.md', proj: 'md-mini-worktree', br: 'feature-x', md:
+`# Ревью: feature-x
+## Блокирующее
+- \`atomic_write::save\` обойдён в \`export.rs\` — прямой \`fs::write\`
+- Нет теста на undo после repair-фильтра
+## Не блокирующее
+- \`TabDrawerState\` → \`DrawerState\`, в модуле и так понятно
+- Анимация закрытия 220 мс — можно 180` },
+  { id: 9, name: 'rebrand-plan.md', proj: 'md-mini', br: 'main', md:
+`# Ребрендинг: md-mini → couplet
+Identifier \`pro.couplet.app\`. Rust-миграция данных из \`~/Library/Application Support/md-mini/\`.
+## Этапы
+1. Иконка — **финальная** (тег \`couplet-icon-final\`)
+2. Письмо пользователям на шести языках
+3. Домен couplet.pro, редирект с md-mini.com` },
+  { id: 10, name: 'xray-rotation.md', proj: 'infra', br: 'vpn', md:
+`# Ротация ключей Xray
+Раз в 90 дней, скриптом \`rotate-reality.sh\`. Клиентские конфиги уходят через MDM.
+## Чек-лист
+- [x] Сгенерировать новые shortId
+- [ ] Обновить конфиги на edge-1 и edge-2
+- [ ] Проверить handshake из трёх регионов` },
+  { id: 11, name: 'vault-migration.md', proj: 'infra', br: 'feature/vault', md:
+`# Секреты: миграция в Vault
+Сейчас: \`.env\` на 14 серверах и GitHub Secrets. Цель — Vault с AppRole для сервисов.
+## Порядок
+1. Интеграция с Pyrus — самые старые токены
+2. Вебхуки Kaiten
+3. SMTP-релей Google Workspace
+Ротировать каждый секрет **после** переноса, не до.` },
+  { id: 12, name: 'Untitled', proj: null, br: null, md:
+`Заметки к 1:1 с DevSecOps
+- SAST в пайплайне: semgrep или CodeQL?
+- кто владеет правилами и исключениями
+- бюджет на контрактора до конца квартала` },
+];
+const AI_POOL = [
+  { name: 'pr-94-review.md', proj: 'md-mini', br: 'agent/review', md:
+`# PR #94: вкладки, итерация 1
+Агент прошёл по диффу — 14 файлов, +612 / −88.
+## Замечания
+- \`drawer.ts\` держит порядок вкладок в Svelte-сторе, а должен в сессии
+- Хоткеи сортировки не проверяют, открыт ли ящик
+- [ ] Добавить тест на ⌘⇧T после закрытия группы` },
+  { name: 'grafana-alerts-audit.md', proj: 'infra', br: 'agent/audit', md:
+`# Аудит алертов Grafana
+Из 212 правил 37 не срабатывали год, 11 срабатывают ежедневно и никто не реагирует.
+## Предложение
+- Удалить 37 молчащих правил
+- 11 шумных — поднять порог или перевести в дайджест
+- Владельца на каждое правило — поле \`team\` в лейблах` },
+  { name: 'kaiten-weekly.md', proj: 'infra', br: 'agent/digest', md:
+`# Kaiten: неделя 39
+Закрыто 23 карточки, открыто 17. Дольше всех в «Ревью» — миграция Vault (9 дней).
+## Риски
+- Контрактор уходит в отпуск с 1 октября
+- Две карточки без исполнителя в колонке «Срочно»` },
+  { name: 'dependency-report.md', proj: 'md-mini', br: 'agent/deps', md:
+`# Зависимости: отчёт
+3 пакета с известными CVE, все транзитивные, все dev-only.
+- \`vite\` 6.0.3 → 6.0.11 — path traversal в dev-сервере
+- \`tauri-plugin-shell\` — не используется, можно убрать` },
+  { name: 'nginx-tls-scan.md', proj: 'infra', br: 'agent/scan', md:
+`# TLS-скан nginx
+18 хостов, 2 всё ещё отдают TLS 1.1. Один сертификат истекает через 11 дней: \`wiki.internal\`.
+## Что сделать
+- [ ] Выключить TLS 1.1 на \`legacy-proxy-1\`, \`legacy-proxy-2\`
+- [ ] Перевыпустить \`wiki.internal\`` },
+];
+const OPENED = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];            // opening order = id
+const VIEWED = { 1: 120, 2: 96, 3: 118, 4: 90, 5: 110, 6: 80, 7: 85, 8: 70, 9: 94, 10: 60, 11: 75, 12: 114 };
+const INITIAL_ORDER = [1, 3, 2, 9, 7, 8, 4, 5, 10, 6, 11, 12];     // "manually arranged"
+
+let clock = 200;
+const tabs = new Map();
+for (const s of SAMPLE) tabs.set(s.id, { ...s, openedAt: OPENED.indexOf(s.id) + 1, viewedAt: VIEWED[s.id], aiUnread: false, aiAt: 0 });
+let nextTabId = 100, aiPoolIdx = 0, nextWinId = 23, zTop = 20;
+
+const W = { id: 22, order: [...INITIAL_ORDER], active: 1 };
+const extras = [];                   // { id, order, active, el }
+const selected = new Set();
+const closing = new Set();
+const arriving = new Set();
+const closedStack = [];              // { id, index }
+const cardEls = new Map();
+const drawer = { open: false, mode: null, everOpened: false, firstOpen: false, kb: -1, inWrap: false };
+let shiftHeld = false, gesture = null;  // gesture: {kind:'drag'|'sweep'}
+let hoverOpenTimer = 0, hoverCloseTimer = 0;
+
+/* ═════════════════════════ Helpers ═════════════════════════ */
+const $ = (s, r = document) => r.querySelector(s);
+/* ⌘ on a Mac; Ctrl only as the stand-in on other platforms (no Control combos on macOS). */
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+const modKey = e => IS_MAC ? e.metaKey : e.ctrlKey;
+/* Drawer hotkey: ⌘J (final). */
+const drawerKey = { code: 'KeyJ', alt: false, label: '⌘J' };
+/* Type-to-filter state. `view` is what the list currently shows, in display order. */
+let query = '', view = [];
+let compact = false;
+const T = id => tabs.get(id);
+const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function inline(s) {
+  const parts = esc(s).split(/(`[^`]+`)/g);
+  return parts.map(p => p.startsWith('`') && p.endsWith('`') && p.length > 1 ? `<code>${p.slice(1, -1)}</code>`
+    : p.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/\*([^*]+)\*/g, '<em>$1</em>').replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a>$1</a>')).join('');
+}
+function renderMd(md) {
+  const lines = md.split('\n'); let html = '', list = null, i = 0;
+  const openList = t => { if (list !== t) { closeList(); html += t === 'ol' ? '<ol>' : t === 'tasks' ? '<ul class="tasks">' : '<ul>'; list = t; } };
+  const closeList = () => { if (list) { html += list === 'ol' ? '</ol>' : '</ul>'; list = null; } };
+  while (i < lines.length) {
+    const l = lines[i]; let m;
+    if (l.startsWith('```')) { closeList(); const buf = []; i++; while (i < lines.length && !lines[i].startsWith('```')) buf.push(lines[i++]); i++; html += `<pre><code>${esc(buf.join('\n'))}</code></pre>`; continue; }
+    if ((m = l.match(/^(#{1,6})\s+(.*)/))) { closeList(); const n = Math.min(m[1].length, 4); html += `<h${n}>${inline(m[2])}</h${n}>`; }
+    else if ((m = l.match(/^- \[( |x)\] (.*)/))) { openList('tasks'); html += `<li class="task${m[1] === 'x' ? ' done' : ''}"><span class="cb"></span><span>${inline(m[2])}</span></li>`; }
+    else if ((m = l.match(/^- (.*)/))) { openList('ul'); html += `<li>${inline(m[1])}</li>`; }
+    else if ((m = l.match(/^\d+\. (.*)/))) { openList('ol'); html += `<li>${inline(m[1])}</li>`; }
+    else if ((m = l.match(/^> (.*)/))) { closeList(); html += `<blockquote>${inline(m[1])}</blockquote>`; }
+    else if (!l.trim()) closeList();
+    else { closeList(); html += `<p>${inline(l)}</p>`; }
+    i++;
+  }
+  closeList(); return html;
+}
+function renderPreview(md) {
+  const out = []; let inCode = false;
+  for (const l of md.split('\n')) {
+    if (l.startsWith('```')) { inCode = !inCode; continue; }
+    if (!l.trim()) continue;
+    if (inCode) { out.push(`<div><code>${esc(l)}</code></div>`); continue; }
+    let m;
+    if ((m = l.match(/^#{1,6}\s+(.*)/))) out.push(`<div><b>${esc(m[1])}</b></div>`);
+    else if ((m = l.match(/^- \[( |x)\] (.*)/))) out.push(`<div>${m[1] === 'x' ? '☑' : '☐'} ${inline(m[2])}</div>`);
+    else if ((m = l.match(/^(?:-|\d+\.) (.*)/))) out.push(`<div>• ${inline(m[1])}</div>`);
+    else if ((m = l.match(/^> (.*)/))) out.push(`<div><em>${inline(m[1])}</em></div>`);
+    else out.push(`<div>${inline(l)}</div>`);
+  }
+  return out.join('');
+}
+function plural(n, one, few, many) { const a = n % 10, b = n % 100; if (a === 1 && b !== 11) return one; if (a >= 2 && a <= 4 && (b < 12 || b > 14)) return few; return many; }
+let toastTimer = 0;
+function toast(html) { const t = $('#toast'); t.innerHTML = html; t.classList.add('on'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('on'), 2600); }
+
+/* ═════════════════════════ Rendering ═════════════════════════ */
+function renderEditor() {
+  const t = T(W.active); const doc = $('#doc1');
+  $('#title1').innerHTML = `${esc(t.name)}<span class="wid">— #22</span>`;
+  if (doc.dataset.id === String(t.id)) return;
+  doc.classList.add('swap');
+  setTimeout(() => { doc.innerHTML = renderMd(t.md); doc.dataset.id = t.id; $('#editor1').scrollTop = 0; doc.classList.remove('swap'); }, doc.dataset.id ? 120 : 0);
+}
+function fitSelHint() {
+  const el = $('#selHint'); if (!el) return;
+  el.classList.toggle('nofit', el.scrollWidth > el.clientWidth + 0.5);
+}
+window.addEventListener('resize', fitSelHint);
+if (document.fonts) document.fonts.ready.then(fitSelHint);
+/* Markdown line → plain text (for search, compact first line, content hits). */
+const plainLine = l => l.replace(/^#{1,6}\s+/, '').replace(/^- \[( |x)\] /, '').replace(/^(?:-|\d+\.|>) /, '').replace(/\*\*|`|\*/g, '').trim();
+const firstLine = md => { for (const l of md.split('\n')) { if (l.startsWith('```')) continue; const p = plainLine(l); if (p) return p; } return ''; };
+function hl(text, q) {
+  if (!q) return esc(text);
+  const lo = text.toLowerCase(), ql = q.toLowerCase(); let out = '', i = 0, j;
+  while ((j = lo.indexOf(ql, i)) !== -1) { out += esc(text.slice(i, j)) + '<mark>' + esc(text.slice(j, j + ql.length)) + '</mark>'; i = j + ql.length; }
+  return out + esc(text.slice(i));
+}
+/* Ranking: filename prefix (0) > filename substring (1) > content (2). */
+function matchTab(t, ql) {
+  const i = t.name.toLowerCase().indexOf(ql);
+  if (i === 0) return { rank: 0 };
+  if (i > 0) return { rank: 1 };
+  for (const raw of t.md.split('\n')) { const l = plainLine(raw); if (l && l.toLowerCase().includes(ql)) return { rank: 2, line: l }; }
+  return null;
+}
+function computeView() {
+  if (!query) return { ids: [...W.order], m: new Map() };
+  const ql = query.toLowerCase(), m = new Map();
+  for (const id of W.order) { const r = matchTab(T(id), ql); if (r) m.set(id, r); }
+  const ids = [...m.keys()].sort((a, b) => m.get(a).rank - m.get(b).rank || W.order.indexOf(a) - W.order.indexOf(b));
+  return { ids, m };
+}
+function hitLine(line, q) {
+  // keep the match inside the visible part of a long line
+  const j = line.toLowerCase().indexOf(q.toLowerCase());
+  const cut = j > 42 ? '…' + line.slice(j - 24) : line;
+  return hl(cut, q);
+}
+function cardHTML(t, i, mm) {
+  const meta = t.proj ? `<span>${esc(t.proj)}</span><span class="br">⎇ ${esc(t.br)}</span>` : `<span>не сохранён</span>`;
+  const imeta = t.proj ? `${esc(t.proj)} · <span class="br">⎇ ${esc(t.br)}</span>` : 'не сохранён';
+  const nameQ = mm && mm.rank < 2 ? query : '';
+  let preview;
+  if (mm && mm.rank === 2) preview = `<div class="hit-l">в тексте:</div><div class="hit">${hitLine(mm.line, query)}</div>`;
+  else if (compact) { const f = firstLine(t.md); preview = f ? `<div>${esc(f)}</div>` : ''; }
+  else preview = renderPreview(t.md);
+  return `<span class="ring"></span><span class="wash"></span>
+    <div class="card-head"><span class="sel-dot">✓</span><span class="card-name">${hl(t.name, nameQ)}</span><span class="card-imeta">${imeta}</span><span class="ai-chip">✦ от ИИ</span>
+      ${i < 9 ? `<kbd class="card-kbd">⌘${i + 1}</kbd>` : ''}<button class="card-close" type="button" aria-label="Закрыть ${esc(t.name)}" title="Закрыть (⌘-клик)">×</button></div>
+    <div class="card-meta">${meta}</div>
+    ${preview ? `<div class="card-preview">${preview}</div>` : ''}`;
+}
+/* Animated hide/show for filtered cards. */
+function setFiltered(el, hide) {
+  if (hide === el.classList.contains('filtered-out')) return;
+  clearTimeout(el._ft);
+  if (hide) {
+    clearTimeout(el._hold); el.classList.remove('expanded');
+    el.style.height = el.offsetHeight + 'px'; void el.offsetHeight;
+    el.classList.add('filtered-out'); el.style.height = '0px';
+    el._ft = setTimeout(() => el.classList.add('gone'), 230);
+  } else {
+    el.classList.remove('gone', 'filtered-out'); el.style.height = '';
+    const h = el.offsetHeight;
+    el.classList.add('filtered-out'); el.style.height = '0px'; void el.offsetHeight;
+    el.classList.remove('filtered-out'); el.style.overflow = 'hidden'; el.style.height = h + 'px';
+    el._ft = setTimeout(() => { el.style.height = ''; el.style.overflow = ''; }, 260);
+  }
+}
+function renderList() {
+  const box = $('#tabCards'); const seen = new Set();
+  const { ids, m } = computeView(); view = ids;
+  const shown = new Set(ids);
+  const all = [...ids, ...W.order.filter(id => !shown.has(id))];
+  all.forEach((id, pos) => {
+    const t = T(id); let el = cardEls.get(id);
+    if (!el) { el = document.createElement('div'); el.className = 'card'; el.dataset.id = id; wireCard(el); cardEls.set(id, el); }
+    const vis = shown.has(id), i = vis ? pos : 99, mm = m.get(id);
+    const sig = `${i < 9 ? i : 9}|${t.name}|${compact ? 1 : 0}|${mm ? query + '|' + mm.rank : ''}`;
+    if (el.dataset.sig !== sig) { el.innerHTML = cardHTML(t, i, mm); el.dataset.sig = sig; }
+    el.classList.toggle('active', id === W.active);
+    el.classList.toggle('selected', selected.has(id));
+    el.classList.toggle('ai-unread', t.aiUnread);
+    el.classList.toggle('untitled', !t.proj);
+    el.classList.toggle('kb', drawer.open && vis && drawer.kb === pos);
+    if (arriving.has(id)) { arriving.delete(id); el.classList.remove('arriving'); void el.offsetWidth; el.classList.add('arriving'); setTimeout(() => el.classList.remove('arriving'), 520); }
+    if (box.children[pos] !== el) box.insertBefore(el, box.children[pos] || null);
+    setFiltered(el, !vis);
+    seen.add(id);
+  });
+  for (const [id, el] of cardEls) if (!seen.has(id)) { el.remove(); cardEls.delete(id); }
+  $('#search').classList.toggle('on', !!query);
+  $('#typeHint').classList.toggle('off', !!query);
+  $('#selHint').classList.toggle('off', !!query);
+  fitSelHint();
+  $('#sQ').textContent = query;
+  $('#sN').textContent = query ? (ids.length ? `${ids.length} из ${W.order.length}` : '') + ' · esc — сброс' : '';
+  $('#emptyRes').classList.toggle('on', !!query && !ids.length);
+  const n = W.order.length;
+  $('#tabCount').textContent = `${n} ${plural(n, 'вкладка', 'вкладки', 'вкладок')}`;
+  $('#notchCnt').textContent = n;
+  $('#notch').classList.toggle('ai', W.order.some(id => T(id).aiUnread));
+  renderSelBar();
+}
+function renderSelBar() {
+  const n = selected.size;
+  $('#selBar').classList.toggle('on', n > 0 && drawer.open);
+  if (n) $('#selN').innerHTML = `${n} ${plural(n, 'выбрана', 'выбраны', 'выбрано')}<small title="Выделенные можно тянуть группой">⇅ тянуть</small>`;
+}
+function renderHint() { $('#hint').classList.toggle('on', drawer.open && shiftHeld); } // only while Shift is held
+function flip(mutate) {
+  const before = new Map(); cardEls.forEach((el, id) => { const r = el.getBoundingClientRect(); if (r.height > 0) before.set(id, r.top); });
+  mutate();
+  cardEls.forEach((el, id) => {
+    const b = before.get(id); if (b == null || el.classList.contains('filtered-out')) return;
+    const dy = b - el.getBoundingClientRect().top; if (Math.abs(dy) < 1) return;
+    el.style.transition = 'none'; el.style.transform = `translateY(${dy}px)`; el.getBoundingClientRect();
+    el.style.transition = ''; el.style.transform = '';
+  });
+}
+
+/* ═════════════════════════ Drawer open / close ═════════════════════════ */
+function openDrawer(mode) {
+  clearTimeout(hoverCloseTimer);
+  if (drawer.open) { if (mode === 'pinned') drawer.mode = 'pinned'; return; }
+  drawer.open = true; drawer.mode = mode;
+  if (!drawer.everOpened) { drawer.everOpened = true; drawer.firstOpen = true; }
+  drawer.kb = -1; // keyboard ring appears only once arrows are used
+  $('#content1').classList.add('drawer-open');
+  renderList(); renderHint();
+}
+function closeDrawer() {
+  if (!drawer.open) return;
+  drawer.open = false; drawer.mode = null; drawer.firstOpen = false;
+  $('#content1').classList.remove('drawer-open');
+  selected.clear(); query = '';
+  cardEls.forEach(el => { el.classList.remove('expanded'); clearTimeout(el._hold); });
+  renderList(); renderHint();
+}
+const toggleDrawer = () => drawer.open ? closeDrawer() : openDrawer('pinned');
+function scheduleHoverClose() {
+  clearTimeout(hoverCloseTimer);
+  if (!drawer.open || drawer.mode !== 'hover') return;
+  hoverCloseTimer = setTimeout(() => { if (!gesture && !drawer.inWrap && drawer.mode === 'hover') closeDrawer(); }, 320);
+}
+const wrap = $('#drawerWrap'), notch = $('#notch');
+wrap.addEventListener('pointerenter', () => { drawer.inWrap = true; clearTimeout(hoverCloseTimer); });
+wrap.addEventListener('pointerleave', () => { drawer.inWrap = false; scheduleHoverClose(); });
+notch.addEventListener('pointerenter', () => { if (!drawer.open && !gesture) hoverOpenTimer = setTimeout(() => openDrawer('hover'), 200); });
+notch.addEventListener('pointerleave', () => clearTimeout(hoverOpenTimer));
+notch.addEventListener('click', () => { clearTimeout(hoverOpenTimer); if (drawer.open && drawer.mode === 'hover') { drawer.mode = 'pinned'; return; } toggleDrawer(); });
+notch.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleDrawer(); } });
+$('#scrim').addEventListener('pointerdown', closeDrawer);
+
+/* ═════════════════════════ Tab actions ═════════════════════════ */
+function fallbackActive() {
+  if (!W.order.length) { const id = nextTabId++; tabs.set(id, { id, name: 'Untitled', proj: null, br: null, md: '', openedAt: ++clock, viewedAt: ++clock, aiUnread: false, aiAt: 0 }); W.order.push(id); }
+  W.active = W.order.reduce((best, id) => T(id).viewedAt > T(best).viewedAt ? id : best, W.order[0]);
+  T(W.active).viewedAt = ++clock;
+}
+function activate(id, { keepOpen = false } = {}) {
+  const t = T(id); if (!t) return;
+  W.active = id; t.viewedAt = ++clock;
+  if (t.aiUnread) { t.aiUnread = false; }
+  renderEditor();
+  if (keepOpen) renderList(); else { renderList(); closeDrawer(); }
+}
+function closeTabs(ids) {
+  ids = ids.filter(id => W.order.includes(id) && !closing.has(id)).sort((a, b) => W.order.indexOf(a) - W.order.indexOf(b));
+  if (!ids.length) return;
+  for (const id of ids) {
+    closing.add(id); selected.delete(id);
+    closedStack.push({ id, index: W.order.indexOf(id) });
+    const el = cardEls.get(id);
+    if (el && drawer.open) { clearTimeout(el._hold); el.classList.remove('expanded'); el.style.height = el.offsetHeight + 'px'; void el.offsetHeight; el.classList.add('closing'); el.style.height = '0px'; }
+  }
+  renderSelBar();
+  setTimeout(() => {
+    W.order = W.order.filter(x => !ids.includes(x)); ids.forEach(id => closing.delete(id));
+    ids.forEach(id => { const el = cardEls.get(id); if (el) { el.remove(); cardEls.delete(id); } });
+    if (ids.includes(W.active)) fallbackActive();
+    if (drawer.kb >= W.order.length) drawer.kb = W.order.length - 1;
+    flip(renderList); renderEditor();
+  }, drawer.open ? 230 : 0);
+  if (ids.length > 1) toast(`Закрыто ${ids.length} ${plural(ids.length, 'вкладка', 'вкладки', 'вкладок')} <span>· ⌘⇧T вернёт по одной</span>`);
+}
+function reopen() {
+  const e = closedStack.pop();
+  if (!e) { toast('Нечего возвращать'); return; }
+  const idx = Math.min(e.index, W.order.length);
+  W.order.splice(idx, 0, e.id); arriving.add(e.id);
+  W.active = e.id; T(e.id).viewedAt = ++clock;
+  flip(renderList); renderEditor();
+  toast(`Вернули <b>${esc(T(e.id).name)}</b>${closedStack.length ? ` <span>· ещё ${closedStack.length} в истории</span>` : ''}`);
+}
+function aiOpensBackground() {
+  const src = AI_POOL[aiPoolIdx++ % AI_POOL.length];
+  const id = nextTabId++;
+  const suffix = aiPoolIdx > AI_POOL.length ? ` (${Math.ceil(aiPoolIdx / AI_POOL.length)})` : '';
+  tabs.set(id, { ...src, id, name: suffix ? src.name.replace('.md', `${suffix}.md`) : src.name, openedAt: ++clock, viewedAt: 0, aiUnread: true, aiAt: clock });
+  W.order.push(id); arriving.add(id);
+  renderList();
+  notch.classList.remove('bump'); void notch.offsetWidth; notch.classList.add('bump');
+  if (drawer.open) { const el = cardEls.get(id); el && el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+}
+function sortBy(kind) {
+  const arr = [...W.order];
+  if (kind === 'opened') arr.sort((a, b) => T(b).openedAt - T(a).openedAt); // "Latest": newest opened on top
+  if (kind === 'viewed') arr.sort((a, b) => T(b).viewedAt - T(a).viewedAt);
+  if (kind === 'ai') {
+    const ai = arr.filter(id => T(id).aiUnread).sort((a, b) => T(b).aiAt - T(a).aiAt);
+    arr.splice(0, arr.length, ...ai, ...arr.filter(id => !T(id).aiUnread));
+  }
+  const kbId = view[drawer.kb];
+  flip(() => { W.order = arr; renderList(); drawer.kb = kbId == null ? -1 : view.indexOf(kbId); renderList(); });
+  const b = $(`.sort-btn[data-sort="${kind}"]`); b.classList.remove('flash'); void b.offsetWidth; b.classList.add('flash');
+  $('#tabList').scrollTo({ top: 0, behavior: 'smooth' });
+}
+document.querySelectorAll('.sort-btn').forEach(b => b.addEventListener('click', () => sortBy(b.dataset.sort)));
+
+/* ═════════════════════════ Card gestures ═════════════════════════ */
+function wireCard(el) {
+  el.addEventListener('pointerenter', () => {
+    clearTimeout(el._hold);
+    if (gesture) return;
+    el._hold = setTimeout(() => { if (!gesture && drawer.open && !el.classList.contains('closing')) el.classList.add('expanded'); }, 600);
+  });
+  el.addEventListener('pointerleave', () => { clearTimeout(el._hold); el.classList.remove('expanded'); });
+}
+const cardsBox = $('#tabCards');
+cardsBox.addEventListener('contextmenu', e => e.preventDefault());
+cardsBox.addEventListener('click', e => {
+  const x = e.target.closest('.card-close'); if (!x) return;
+  e.stopPropagation(); closeTabs([+x.closest('.card').dataset.id]);
+});
+cardsBox.addEventListener('pointerdown', e => {
+  const card = e.target.closest('.card'); if (!card || e.target.closest('.card-close')) return;
+  if (e.button !== 0) return;
+  const id = +card.dataset.id;
+  if (closing.has(id)) return;
+  e.preventDefault();
+  if (modKey(e)) { closeTabs([id]); return; }
+  if (e.shiftKey) { startSweep(id, e); return; }
+  startPress(id, card, e);
+});
+
+function startSweep(id, e) {
+  const swept = new Set();
+  const toggle = cid => { if (swept.has(cid) || closing.has(cid)) return; swept.add(cid); selected.has(cid) ? selected.delete(cid) : selected.add(cid); cardEls.get(cid)?.classList.toggle('selected', selected.has(cid)); };
+  toggle(id); renderSelBar();
+  gesture = { kind: 'sweep' }; let prevY = e.clientY;
+  cardEls.forEach(el => { clearTimeout(el._hold); el.classList.remove('expanded'); });
+  const move = ev => {
+    const y = ev.clientY, lo = Math.min(prevY, y), hi = Math.max(prevY, y);
+    for (const cid of W.order) { const r = cardEls.get(cid)?.getBoundingClientRect(); if (r && r.bottom > lo && r.top < hi) toggle(cid); }
+    prevY = y; autoScroll(y); renderSelBar();
+  };
+  const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up); gesture = null; renderSelBar(); };
+  window.addEventListener('pointermove', move); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up);
+}
+function autoScroll(y) {
+  const list = $('#tabList'), r = list.getBoundingClientRect();
+  if (y < r.top + 36) list.scrollTop -= 10; else if (y > r.bottom - 36) list.scrollTop += 10;
+}
+
+function startPress(id, card, e) {
+  const sx = e.clientX, sy = e.clientY; let dragging = false;
+  const move = ev => {
+    if (!dragging && Math.hypot(ev.clientX - sx, ev.clientY - sy) > 5) { dragging = true; beginDrag(id, card, sx, sy); }
+    if (dragging) dragMove(ev);
+  };
+  const up = ev => {
+    window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up);
+    if (dragging) dragEnd(ev); else activate(id);
+  };
+  window.addEventListener('pointermove', move); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up);
+}
+
+/* ── drag ── */
+let drag = null;
+function beginDrag(id, card, sx, sy) {
+  const ids = selected.has(id) ? W.order.filter(x => selected.has(x)) : [id];
+  const r = card.getBoundingClientRect();
+  cardEls.forEach(el => { clearTimeout(el._hold); el.classList.remove('expanded'); });
+  ids.forEach(x => cardEls.get(x)?.classList.add('dragging'));
+  const t = T(id);
+  const g = document.createElement('div'); g.className = 'ghost' + (ids.length > 1 ? ' multi' : '');
+  g.innerHTML = `<div class="ghost-bar"><i></i><i></i><i></i><span></span></div>
+    <div class="ghost-body"><div class="ghost-name">${esc(t.name)}</div><div class="ghost-meta">${t.proj ? esc(t.proj) + ' · ⎇ ' + esc(t.br) : 'не сохранён'}</div></div>
+    ${ids.length > 1 ? `<div class="ghost-count">${ids.length}</div>` : ''}`;
+  g.style.width = r.width + 'px';
+  document.body.appendChild(g);
+  drag = { ids, ghost: g, ox: sx - r.left, oy: sy - r.top, w: r.width, target: null, before: null };
+  gesture = { kind: 'drag' };
+}
+function hitTarget(x, y) {
+  const el = document.elementFromPoint(x, y);
+  if (!el) return { kind: 'desktop' };
+  if (drawer.open && el.closest('#tabList')) return query ? { kind: 'none' } : { kind: 'list' }; // no manual reorder inside a filtered view
+  const mini = el.closest('.win.mini'); if (mini && !mini.classList.contains('leaving')) return { kind: 'win', win: extras.find(w => w.el === mini) };
+  if (el.closest('#win1')) return { kind: 'none' };
+  if (el.closest('.demo-panel, .theme-switch')) return { kind: 'none' };
+  return { kind: 'desktop' };
+}
+function dragMove(ev) {
+  const g = drag.ghost, x = ev.clientX, y = ev.clientY;
+  const tgt = hitTarget(x, y); drag.target = tgt;
+  g.classList.toggle('as-window', tgt.kind === 'desktop');
+  g.classList.toggle('as-move', tgt.kind === 'win');
+  g.classList.toggle('cancel', tgt.kind === 'none');
+  const bar = g.querySelector('.ghost-bar span');
+  bar.textContent = tgt.kind === 'desktop' ? 'Новое окно' : tgt.kind === 'win' ? `→ #${tgt.win.id}` : '';
+  const ox = (tgt.kind === 'desktop' || tgt.kind === 'win') ? 40 : drag.ox, oy = (tgt.kind === 'desktop' || tgt.kind === 'win') ? 12 : drag.oy;
+  g.style.width = (tgt.kind === 'desktop' || tgt.kind === 'win') ? '250px' : drag.w + 'px';
+  g.style.transform = `translate(${x - ox}px, ${y - oy}px)`;
+  extras.forEach(w => w.el.classList.toggle('drop-target', tgt.kind === 'win' && tgt.win === w));
+  const ind = $('#dropInd');
+  if (tgt.kind === 'list') {
+    autoScroll(y);
+    const rest = W.order.filter(id => !drag.ids.includes(id));
+    let before = null, top;
+    for (const id of rest) { const el = cardEls.get(id), r = el.getBoundingClientRect(); if (y < r.top + r.height / 2) { before = id; top = el.offsetTop - 5; break; } }
+    if (before == null) { const last = cardEls.get(W.order[W.order.length - 1]); top = last.offsetTop + last.offsetHeight + 1; }
+    drag.before = before; ind.style.top = top + 'px'; ind.classList.add('on');
+  } else ind.classList.remove('on');
+}
+function dragEnd(ev) {
+  const { ids, ghost, target, before } = drag;
+  $('#dropInd').classList.remove('on');
+  extras.forEach(w => w.el.classList.remove('drop-target'));
+  ids.forEach(x => cardEls.get(x)?.classList.remove('dragging'));
+  ghost.style.opacity = '0'; setTimeout(() => ghost.remove(), 200);
+  if (target?.kind === 'list') {
+    const rest = W.order.filter(id => !ids.includes(id));
+    const idx = before == null ? rest.length : rest.indexOf(before);
+    rest.splice(idx, 0, ...ids);
+    flip(() => { W.order = rest; renderList(); });
+  } else if (target?.kind === 'win') moveToWindow(ids, target.win);
+  else if (target?.kind === 'desktop') spawnWindow(ids, ev.clientX - 40, ev.clientY - 12);
+  drag = null; gesture = null;
+  if (drawer.mode === 'hover' && !drawer.inWrap) scheduleHoverClose();
+}
+
+/* ═════════════════════════ Secondary windows ═════════════════════════ */
+function detachFromMain(ids) {
+  W.order = W.order.filter(x => !ids.includes(x));
+  ids.forEach(id => { selected.delete(id); T(id).aiUnread = false; });
+  if (!W.order.includes(W.active)) fallbackActive();
+  flip(renderList); renderEditor();
+}
+function spawnWindow(ids, x, y) {
+  const id = nextWinId++;
+  const w = { id, order: [...ids], active: ids[0] };
+  const el = document.createElement('div'); el.className = 'win mini'; el.dataset.win = id;
+  const vw = innerWidth, vh = innerHeight;
+  x = Math.max(8, Math.min(x, vw - 448)); y = Math.max(8, Math.min(y, vh - 338));
+  el.style.left = x + 'px'; el.style.top = y + 'px'; el.style.zIndex = ++zTop;
+  el.innerHTML = `<div class="titlebar"><div class="lights"><i title="Закрыть окно — вкладки вернутся в #22"></i><i></i><i></i></div><div class="title"></div></div>
+    <div class="content"><div class="editor"><div class="doc"></div></div>
+    <div class="mini-notch" title="Демо: клик листает вкладки этого окна"><span class="shape"></span><span class="wid">#${id}</span><span class="cnt"></span></div></div>`;
+  w.el = el; extras.push(w); document.body.appendChild(el);
+  wireMini(w);
+  detachFromMain(ids); T(w.active).viewedAt = ++clock;
+  renderMini(w);
+  toast(`${ids.length > 1 ? ids.length + ' ' + plural(ids.length, 'вкладка', 'вкладки', 'вкладок') : '<b>' + esc(T(ids[0]).name) + '</b>'} → новое окно <b>#${id}</b>`);
+}
+function moveToWindow(ids, w) {
+  w.order.push(...ids); w.active = ids[0]; T(ids[0]).viewedAt = ++clock;
+  detachFromMain(ids); renderMini(w);
+  w.el.style.zIndex = ++zTop;
+}
+function renderMini(w) {
+  const t = T(w.active);
+  w.el.querySelector('.title').innerHTML = `${esc(t.name)}<span class="wid">— #${w.id}</span>`;
+  w.el.querySelector('.doc').innerHTML = renderMd(t.md);
+  w.el.querySelector('.cnt').textContent = w.order.length;
+}
+function wireMini(w) {
+  const el = w.el;
+  el.addEventListener('pointerdown', () => { el.style.zIndex = ++zTop; });
+  el.querySelector('.mini-notch').addEventListener('click', () => { w.active = w.order[(w.order.indexOf(w.active) + 1) % w.order.length]; renderMini(w); });
+  el.querySelector('.lights i').addEventListener('click', e => {
+    e.stopPropagation();
+    W.order.push(...w.order); w.order.forEach(id => arriving.add(id));
+    extras.splice(extras.indexOf(w), 1); el.classList.add('leaving'); setTimeout(() => el.remove(), 230);
+    flip(renderList); toast(`Окно #${w.id} закрыто <span>· вкладки вернулись в #22 (упрощение макета)</span>`);
+  });
+  const bar = el.querySelector('.titlebar');
+  bar.addEventListener('pointerdown', e => {
+    if (e.target.closest('.lights')) return;
+    const sx = e.clientX - el.offsetLeft, sy = e.clientY - el.offsetTop; bar.style.cursor = 'grabbing';
+    const mv = ev => { el.style.left = (ev.clientX - sx) + 'px'; el.style.top = Math.max(0, ev.clientY - sy) + 'px'; };
+    const up = () => { bar.style.cursor = ''; window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); };
+    window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up);
+  });
+}
+
+/* ═════════════════════════ Selection bar ═════════════════════════ */
+$('#selClose').addEventListener('click', () => closeTabs([...selected]));
+$('#selClear').addEventListener('click', () => { selected.clear(); renderList(); });
+$('#selNewWin').addEventListener('click', () => {
+  const ids = W.order.filter(x => selected.has(x)); if (!ids.length) return;
+  const r = $('#win1').getBoundingClientRect(); const n = extras.length;
+  spawnWindow(ids, r.right + 20 + n * 26, 70 + n * 30);
+});
+
+/* ═════════════════════════ Keyboard ═════════════════════════ */
+document.addEventListener('keydown', e => {
+  if (e.key === 'Shift' && !shiftHeld) { shiftHeld = true; document.body.classList.add('shift'); renderHint(); }
+  const mod = modKey(e);
+  if (mod && !e.shiftKey && e.code === drawerKey.code && e.altKey === drawerKey.alt) { e.preventDefault(); toggleDrawer(); return; }
+  if (e.key === 'Escape' && drawer.open) {
+    e.preventDefault();
+    if (query) setQuery('');                                   // 1st Esc: clear the search
+    else if (selected.size) { selected.clear(); renderList(); }
+    else closeDrawer();                                        // next Esc: close
+    return;
+  }
+  if (mod && e.shiftKey && e.code === 'KeyT') { e.preventDefault(); reopen(); return; }
+  if (mod && !e.shiftKey && /^Digit[1-9]$/.test(e.code)) { const list = drawer.open ? view : W.order; const id = list[+e.code.slice(5) - 1]; if (id) { e.preventDefault(); activate(id); } return; }
+  if (!drawer.open) return;
+  if (mod && !e.shiftKey && !e.altKey) {
+    const k = { KeyL: 'opened', KeyR: 'viewed', KeyU: 'ai' }[e.code];
+    if (k) { e.preventDefault(); sortBy(k); return; }
+  }
+  // Type-to-filter: any printable key without ⌘/⌃/⌥ goes straight into the query.
+  if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    if (e.key === ' ' && !query) return;
+    e.preventDefault(); setQuery(query + e.key); return;
+  }
+  if (e.key === 'Backspace' && query) { e.preventDefault(); setQuery(query.slice(0, -1)); return; }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault(); if (!view.length) return;
+    const from = drawer.kb < 0 ? Math.max(0, view.indexOf(W.active)) : drawer.kb;
+    drawer.kb = Math.max(0, Math.min(view.length - 1, from + (e.key === 'ArrowDown' ? 1 : -1)));
+    renderList(); cardEls.get(view[drawer.kb])?.scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'Enter') {
+    const idx = drawer.kb >= 0 ? drawer.kb : query ? 0 : -1;
+    if (view[idx]) { e.preventDefault(); activate(view[idx]); }
+  }
+});
+function setQuery(q) {
+  query = q;
+  if (q && drawer.mode === 'hover') drawer.mode = 'pinned';   // typing commits to the drawer
+  drawer.kb = q ? 0 : -1;                                     // top result is the Enter target
+  flip(renderList);
+  $('#tabList').scrollTop = 0;
+}
+document.addEventListener('keyup', e => { if (e.key === 'Shift') { shiftHeld = false; document.body.classList.remove('shift'); renderHint(); } });
+window.addEventListener('blur', () => { shiftHeld = false; document.body.classList.remove('shift'); renderHint(); });
+
+/* ═════════════════════════ Demo controls + theme ═════════════════════════ */
+$('#demoAi').addEventListener('click', aiOpensBackground);
+$('#demoToggle').addEventListener('click', toggleDrawer);
+$('#demoReopen').addEventListener('click', reopen);
+$('#demoReset').addEventListener('click', () => location.reload());
+$('#aiBind').addEventListener('click', () => toast('<b>Промпт скопирован</b> <span>— отправьте его AI-агенту</span>'));
+notch.title = `Вкладки окна #22 — навести, клик или ${drawerKey.label}`;
+/* Demo tweak. URL ?compact=1 presets it (for screenshots). */
+const params = new URLSearchParams(location.search);
+const tglCompact = $('#tglCompact');
+function applyCompact(on) { flip(() => { compact = on; document.body.classList.toggle('compact', on); tglCompact.checked = on; renderList(); }); }
+tglCompact.addEventListener('change', () => applyCompact(tglCompact.checked));
+compact = params.get('compact') === '1'; document.body.classList.toggle('compact', compact); tglCompact.checked = compact;
+/* Align the AI button's resting protrusion with the notch's visible depth (the reference). */
+function syncNotchDepth() {
+  const shape = notch.querySelector('.shape'), host = $('#content1');
+  const depth = +(shape.getBoundingClientRect().right - host.getBoundingClientRect().left).toFixed(2);
+  if (depth > 0 && !drawer.open) document.documentElement.style.setProperty('--notch-depth', depth + 'px');
+}
+syncNotchDepth();
+function setTheme(name) {
+  document.documentElement.dataset.theme = name;
+  document.querySelectorAll('[data-theme-btn]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.themeBtn === name)));
+  try { localStorage.setItem('couplet-mockup-theme', name); } catch (_) { /* file:// may deny */ }
+}
+document.querySelectorAll('[data-theme-btn]').forEach(b => b.addEventListener('click', () => setTheme(b.dataset.themeBtn)));
+let saved = null; try { saved = localStorage.getItem('couplet-mockup-theme'); } catch (_) { /* ignore */ }
+setTheme(new URLSearchParams(location.search).get('theme') || saved || 'aurora-light');
+
+renderList(); renderEditor();
+</script>
+</body>
+</html>

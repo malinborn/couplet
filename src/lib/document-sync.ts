@@ -73,21 +73,6 @@ export function lineEndingAfterExternalChange(input: {
 }
 
 /**
- * After a failed open: should this window give back the `OpenFiles` entry Rust
- * made for `path` on its behalf?
- *
- * Only when the window holds no file. A window created for a CLI path is
- * registered as that path's owner before the frontend reads a byte; if the
- * read fails, the window stays Untitled, and a stale entry would make every
- * later open of the path focus it instead of trying again. A window that
- * already shows a document keeps it — Rust never registered the failed path
- * for it (that happens only after a successful open).
- */
-export function shouldReleaseUnopenedPath(currentFilePath: string | null): boolean {
-  return currentFilePath === null;
-}
-
-/**
  * Delay before retry `attempt` (0-based) of reading a file that could not be
  * read. Starts just past the watcher's 500ms debounce, so a non-atomic writer
  * that was caught mid-write has finished; backs off to a 5s ceiling, because

@@ -41,17 +41,56 @@ export type ToastPayload =
    */
   | { kind: 'language-error'; message: string }
   /**
-   * A document could not be opened: the read failed (not valid UTF-8,
-   * permissions) or the editor refused the text.
-   *
-   * Before this it reached `console.error` and nothing else. A CRLF file threw
-   * inside the editor, the open's catch swallowed it, and the user got an
-   * empty Untitled window with no hint that anything had been attempted; a
-   * file that is not valid UTF-8 did the same with Rust's own perfectly good
-   * explanation thrown away. Carries the file name and that message, same
-   * reasoning as `save-error`. Withdrawn by the next successful open.
+   * A tab switch or close did nothing because the document's latest edits
+   * have not reached the disk yet — a save still in flight. Not `save-error`:
+   * nothing failed and ⌘S is not the remedy, and `hasKind('save-error')` is
+   * what refuses every switch. The next successful save withdraws it.
+   */
+  | { kind: 'unsaved-blocked'; fileName: string }
+  /**
+   * A file could not be read to be shown in a tab — opened, switched to, or
+   * restored: the read failed (not valid UTF-8, permissions) or the editor
+   * refused the text. The tab is not shown (an empty buffer on that path would
+   * be autosaved over the file), and without this the key or click that asked
+   * for it did nothing visible at all — a CRLF file used to open as an empty
+   * Untitled window with the reason reaching only `console.error`. Carries the
+   * file name and that message, same reasoning as `save-error`. Not withdrawn
+   * by the next successful open: a window restoring several tabs sets a failed
+   * one aside and shows the next, which would take the toast down before it
+   * was ever read.
    */
   | { kind: 'open-error'; fileName: string; message: string }
+  /**
+   * "To new windows" (spec §6) left some tabs where they were: their window
+   * did not open, or this window still held the file. Not `open-error` —
+   * nothing failed to open here, the tabs are right there in the list — and
+   * the second case has no error text to show. `fileNames` is already the
+   * one-line list (`tabNames`); `count` picks the verb's number.
+   */
+  | { kind: 'tabs-stranded'; fileNames: string; count: number; message: string | null }
+  /**
+   * Tabs went to another window (plan 05) and the human stayed here: where
+   * they went, and «Перейти». The only toast that goes by itself (App
+   * dismisses it after a few seconds): it reports a success, and a standing
+   * one per move would pile up. `label` is the first window, `numbers` every
+   * window's `#N`.
+   */
+  | { kind: 'tabs-moved'; label: string; numbers: (number | null)[] }
+  /**
+   * Save As wrote nothing: the name picked is a file another tab holds, the
+   * tab it was picked for is gone, or the tab could not be pointed at it.
+   * Nothing failed on disk and the text is still in its tab, so not an alarm —
+   * but a save dialog that closes and changes nothing reads as a save that
+   * happened.
+   */
+  | { kind: 'save-as-blocked'; fileName: string; reason: 'held' | 'tab-gone' | 'unavailable' }
+  /**
+   * A window number the human asked for is not available (spec §3): the
+   * notch's edit picked one another window holds (`taken`), or ⌃N named a
+   * window that is not there (`missing`). Goes by itself, like `tabs-moved` —
+   * it answers a key the human just pressed.
+   */
+  | { kind: 'window-number'; reason: 'taken' | 'missing'; number: number }
   /**
    * The open file changed on disk and could not be re-read — typically a
    * non-atomic writer caught mid-write, whose half-written multibyte character
@@ -157,6 +196,12 @@ const ORDER: Record<ToastKind, number> = {
   // they have not acted on.
   'ai-watch-copied': 4,
   'ai-bind-copied': 4,
+  // A direct answer to the key the user just pressed, like the two above.
+  'unsaved-blocked': 4,
+  'tabs-stranded': 4,
+  'tabs-moved': 4,
+  'save-as-blocked': 4,
+  'window-number': 4,
   // Sorts below everything: it is the only toast that is still waiting on a
   // decision, so it belongs closest to the pointer that has to make it.
   'json-offer': 5,
@@ -191,6 +236,11 @@ export function createToastStore() {
 
     dismissKind(kind: ToastKind): void {
       entries = entries.filter((e) => e.payload.kind !== kind);
+    },
+
+    /** Whether a toast of `kind` is currently standing. */
+    hasKind(kind: ToastKind): boolean {
+      return entries.some((e) => e.payload.kind === kind);
     },
   };
 }

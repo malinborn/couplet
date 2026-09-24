@@ -1,0 +1,30 @@
+/*
+ * Tokens the tab drawer and notch share (tabs plan 03). The values are the
+ * approved mockup's (docs/investigations/2026-09-24-tabs-mockup/drawer.html,
+ * tag `tabs-mockup-approved`). No theme defines these: the AI gradient is the
+ * product's AI colour everywhere, the brand trio is the icon's. Everything
+ * else in the drawer uses the theme's own tokens.
+ */
+:root {
+  --tabs-ai-a: #f590e1;
+  --tabs-ai-b: #72dcfd;
+  --tabs-ai-grad: linear-gradient(100deg, var(--tabs-ai-a) 0%, var(--tabs-ai-b) 50%, var(--tabs-ai-a) 100%);
+  --tabs-ai-grad-v: linear-gradient(180deg, var(--tabs-ai-a) 0%, var(--tabs-ai-b) 50%, var(--tabs-ai-a) 100%);
+  --tabs-brand-a: #7068d5;
+  --tabs-brand-b: #6e8cc0;
+  --tabs-brand-c: #7dc8c4;
+  --tabs-brand-grad: linear-gradient(180deg, var(--tabs-brand-a), var(--tabs-brand-b), var(--tabs-brand-c));
+  --tabs-ease: cubic-bezier(0.22, 0.8, 0.3, 1);
+  --tabs-ui: 'Inter', -apple-system, system-ui, sans-serif;
+  --tabs-shadow-rgb: 0, 0, 0;
+  --tabs-shadow-a: 0.1;
+}
+
+:root[data-theme='aurora-light'] {
+  --tabs-shadow-rgb: 38, 42, 69;
+}
+
+/* Every dark half: dark, aurora-dark, blueprint-dark, phosphor-dark. */
+:root[data-theme$='dark'] {
+  --tabs-shadow-a: 0.35;
+}

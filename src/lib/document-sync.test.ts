@@ -3,7 +3,6 @@ import {
   canAutoSave,
   lineEndingAfterExternalChange,
   reloadRetryDelay,
-  shouldReleaseUnopenedPath,
   type SaveGate,
 } from './document-sync';
 
@@ -72,16 +71,6 @@ describe('lineEndingAfterExternalChange', () => {
     expect(
       lineEndingAfterExternalChange({ ...base, decision: 'conflict', disk: 'theirs\n' })
     ).toBe('crlf');
-  });
-});
-
-describe('shouldReleaseUnopenedPath', () => {
-  it('UntitledWindow_Releases', () => {
-    expect(shouldReleaseUnopenedPath(null)).toBe(true);
-  });
-
-  it('WindowShowingAFile_KeepsItsRegistration', () => {
-    expect(shouldReleaseUnopenedPath('/a.md')).toBe(false);
   });
 });
 

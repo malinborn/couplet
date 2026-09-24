@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { EditorState } from '@codemirror/state';
-import { addAiAsk, removeAiAsk, aiAskField, activeAskIds, AskWidget, type AskSpec } from './ai-ask';
+import { addAiAsk, removeAiAsk, clearAiAsks, aiAskField, activeAskIds, AskWidget, type AskSpec } from './ai-ask';
 
 function makeState(doc: string): EditorState {
   return EditorState.create({ doc, extensions: [aiAskField] });
@@ -75,6 +75,25 @@ describe('aiAskField', () => {
     state = state.update({ effects: removeAiAsk.of(1) }).state;
 
     expect(activeAskIds(state)).toEqual([2]);
+  });
+
+  it('clearAiAsks removes every ask widget without answering any', () => {
+    const first = makeSpec({ id: 1 });
+    const second = makeSpec({ id: 2 });
+    let state = makeState('line1\nline2\n');
+    state = state.update({
+      effects: addAiAsk.of({ spec: first, pos: state.doc.line(1).from }),
+    }).state;
+    state = state.update({
+      effects: addAiAsk.of({ spec: second, pos: state.doc.line(2).from }),
+    }).state;
+
+    state = state.update({ effects: clearAiAsks.of(null) }).state;
+
+    expect(collectWidgets(state)).toHaveLength(0);
+    expect(activeAskIds(state)).toEqual([]);
+    expect(first.onAnswer).not.toHaveBeenCalled();
+    expect(second.onAnswer).not.toHaveBeenCalled();
   });
 
   it('removing an absent id is a no-op', () => {

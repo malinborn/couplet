@@ -45,6 +45,15 @@ describe('createToastStore', () => {
     expect(store.toasts[0].payload.kind).toBe('update');
   });
 
+  it('HasKind_TrueWhileThatKindIsStanding', () => {
+    const store = createToastStore();
+    expect(store.hasKind('save-error')).toBe(false);
+    store.push({ kind: 'save-error', fileName: 'a.md', message: 'disk full' });
+    expect(store.hasKind('save-error')).toBe(true);
+    store.dismissKind('save-error');
+    expect(store.hasKind('save-error')).toBe(false);
+  });
+
   it('UpdateSortsAboveSession_RegardlessOfPushOrder', () => {
     // The update check fires 15s after launch, so insertion order would put it
     // below the session toast. Order must be explicit.
@@ -243,5 +252,21 @@ describe('createToastStore', () => {
     expect(store.toasts).toHaveLength(1);
     const payload = store.toasts[0].payload;
     expect(payload.kind === 'update' && payload.latest).toBe('v1.1.0');
+  });
+
+  it('UnsavedBlocked_IsNotASaveError', () => {
+    // `hasKind('save-error')` refuses every tab switch. A refusal that only
+    // says "the save has not landed yet" must not itself start refusing.
+    const store = createToastStore();
+    store.push({ kind: 'unsaved-blocked', fileName: 'a.md' });
+    expect(store.hasKind('save-error')).toBe(false);
+    expect(store.hasKind('unsaved-blocked')).toBe(true);
+  });
+
+  it('UnsavedBlocked_SortsBelowAFailedSave', () => {
+    const store = createToastStore();
+    store.push({ kind: 'unsaved-blocked', fileName: 'a.md' });
+    store.push({ kind: 'save-error', fileName: 'a.md', message: 'disk full' });
+    expect(store.toasts.map((t) => t.payload.kind)).toEqual(['save-error', 'unsaved-blocked']);
   });
 });

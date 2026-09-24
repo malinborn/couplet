@@ -41,6 +41,15 @@ export const addAiAsk = StateEffect.define<{ spec: AskSpec; pos: number }>();
  * (e.g. the stale-widget cleanup timer racing an already-answered click). */
 export const removeAiAsk = StateEffect.define<number>();
 
+/**
+ * Clears every pending ask widget without invoking any `onAnswer` callback.
+ * Used by a tab switch (`lib/tabs/controller.ts`) right before it replaces the document: the
+ * questions themselves are parked for the tab's return (`ai.leave`) or, when
+ * the tab closes, answered in Rust (`tab closed` / `tab released`) — this
+ * effect only takes the widget off the state that goes to the background.
+ */
+export const clearAiAsks = StateEffect.define<null>();
+
 /** Exported for tests: `eq()` structural comparison and `toDOM()` wiring. */
 export class AskWidget extends WidgetType {
   /**
@@ -226,6 +235,8 @@ export const aiAskField = StateField.define<DecorationSet>({
         deco = deco.update({
           filter: (_from, _to, value) => !(isAskWidget(value.spec.widget) && value.spec.widget.spec.id === id),
         });
+      } else if (effect.is(clearAiAsks)) {
+        deco = Decoration.none;
       }
     }
     return deco;

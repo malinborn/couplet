@@ -1212,6 +1212,7 @@ function showCellEditor(
         to: base + encodedOffset(value, to),
       };
     },
+    commit,
   });
 }
 

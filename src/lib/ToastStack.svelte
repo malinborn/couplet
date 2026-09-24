@@ -14,16 +14,25 @@
      * which owns the editor handle — this component stays presentational.
      */
     onFormatJson,
+    /** «Перейти» on a `tabs-moved` toast: bring that window forward (`reveal_other_window`). */
+    onRevealWindow,
   }: {
     store: ToastStore;
     onDismiss?: (entry: ToastEntry) => void;
     onFormatJson?: () => void;
+    onRevealWindow?: (label: string) => void;
   } = $props();
 
   function dismiss(entry: ToastEntry): void {
     store.dismiss(entry.id);
     onDismiss?.(entry);
   }
+
+  const SAVE_AS_BLOCKED_KEYS = {
+    held: 'toast.save_as_blocked.held',
+    'tab-gone': 'toast.save_as_blocked.tab_gone',
+    unavailable: 'toast.save_as_blocked.unavailable',
+  } as const;
 
   const BREW_CMD = 'brew update && brew upgrade --cask mdmini';
 
@@ -45,6 +54,13 @@
       // Opening a help document is best-effort; never surface a failure here.
     });
     dismiss(entry);
+  }
+
+  async function restoreSession(): Promise<void> {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('restore_session').catch((err: unknown) => {
+      console.error('Failed to restore session:', err);
+    });
   }
 </script>
 
@@ -92,6 +108,13 @@
             <strong>{t('toast.language_error.headline')}</strong>
           </span>
           <span class="md-toast-highlight">{toast.payload.message}</span>
+        {:else if toast.payload.kind === 'unsaved-blocked'}
+          <!-- Not an alarm: nothing failed, the save is on its way. It says
+               why the key did nothing and leaves with the save. -->
+          <span class="md-toast-text">
+            <strong>{t('toast.unsaved_blocked.headline', { fileName: toast.payload.fileName })}</strong>
+          </span>
+          <span class="md-toast-dim">{t('toast.unsaved_blocked.message')}</span>
         {:else if toast.payload.kind === 'open-error'}
           <!-- Names the file and quotes the reason (Rust's "not valid text",
                a permission error, an editor exception), because a blank
@@ -102,6 +125,43 @@
             <strong>{t('toast.open_error.headline', { fileName: toast.payload.fileName })}</strong>
           </span>
           <span class="md-toast-highlight">{toast.payload.message}</span>
+        {:else if toast.payload.kind === 'tabs-stranded'}
+          <!-- The verb agrees with how many files the line names, not with
+               the count's plural category: «a, b, c +18» is plural in
+               Russian even though 21 takes the "one" form. -->
+          <span class="md-toast-text">
+            <strong>{t(toast.payload.count === 1 ? 'toast.tabs_stranded.one' : 'toast.tabs_stranded.other', {
+              fileName: toast.payload.fileNames,
+            })}</strong>
+          </span>
+          {#if toast.payload.message}
+            <span class="md-toast-highlight">{toast.payload.message}</span>
+          {/if}
+        {:else if toast.payload.kind === 'tabs-moved'}
+          {@const moved = toast.payload}
+          <span class="md-toast-text">
+            {t('toast.tabs_moved.headline', { windows: moved.numbers.map((n) => `#${n ?? '?'}`).join(', ') })}
+          </span>
+          <button
+            class="md-toast-cmd md-toast-action"
+            onclick={() => {
+              onRevealWindow?.(moved.label);
+              dismiss(toast);
+            }}
+          >
+            {t('toast.tabs_moved.go')}
+          </button>
+        {:else if toast.payload.kind === 'save-as-blocked'}
+          <span class="md-toast-text">
+            <strong>{t('toast.save_as_blocked.headline', { fileName: toast.payload.fileName })}</strong>
+          </span>
+          <span class="md-toast-dim">{t(SAVE_AS_BLOCKED_KEYS[toast.payload.reason])}</span>
+        {:else if toast.payload.kind === 'window-number'}
+          <span class="md-toast-text"
+            >{t(toast.payload.reason === 'taken' ? 'toast.window_number.taken' : 'toast.window_number.missing', {
+              number: toast.payload.number,
+            })}</span
+          >
         {:else if toast.payload.kind === 'reload-error'}
           <!-- Says what the app is doing about it, not only what failed:
                autosave is paused so the unread disk version cannot be
@@ -141,9 +201,12 @@
           <span class="md-toast-text">
             <strong>{plural(toast.payload.count, 'toast.session.windows')}</strong>
           </span>
-          <span class="md-toast-dim">
-            {t('toast.session.reopen_prefix')} <kbd>⇧⌘T</kbd> {t('toast.session.reopen_suffix')}
-          </span>
+          <!-- A button, not a ⇧⌘T hint: ⇧⌘T reopens only what was closed; the
+               session has its own File menu item, with no key (tabs-questions
+               Q1). The `session-restored` event retires this toast. -->
+          <button class="md-toast-cmd md-toast-action" onclick={restoreSession}>
+            {t('toast.session.restore_action')}
+          </button>
         {:else if toast.payload.kind === 'ai-nudge'}
           <!-- The menu is named in the body text, not only on the button: a
                dismissed toast still delivers the one fact worth keeping.

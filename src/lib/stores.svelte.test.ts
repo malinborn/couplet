@@ -1,10 +1,20 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { invoke } from '@tauri-apps/api/core';
 import {
   createEngineStore,
   createThemeStore,
   createOcdAlignmentStore,
+  createTabsCompactStore,
+  createTransientPolicyStore,
+  createRecentFilesStore,
   createZoomStore,
+  type RecentFile,
+  type RecentSnapshot,
 } from './stores.svelte';
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(() => Promise.resolve()),
+}));
 
 /**
  * Node's built-in `localStorage` global only persists when the process is
@@ -144,6 +154,49 @@ describe('createOcdAlignmentStore', () => {
     expect(store.enabled).toBe(true);
     expect(JSON.parse(localStorage.getItem('md-mini:ocdAlignment')!)).toBe(true);
     expect(createOcdAlignmentStore().enabled).toBe(true);
+  });
+});
+
+describe('createTabsCompactStore', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('DefaultsToOff', () => {
+    expect(createTabsCompactStore().enabled).toBe(false);
+  });
+
+  // A value, not a flip: the menu event reaches every window.
+  it('SetIsIdempotent_AndPersists', () => {
+    const store = createTabsCompactStore();
+    store.set(true);
+    store.set(true);
+    expect(store.enabled).toBe(true);
+    expect(JSON.parse(localStorage.getItem('md-mini:tabsCompact')!)).toBe(true);
+    expect(createTabsCompactStore().enabled).toBe(true);
+  });
+});
+
+describe('createTransientPolicyStore', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  // Spec §7: «Оставить» is the default.
+  it('DefaultsToKeep', () => {
+    expect(createTransientPolicyStore().value).toBe('keep');
+  });
+
+  it('SetPersists', () => {
+    createTransientPolicyStore().set('close');
+    expect(JSON.parse(localStorage.getItem('md-mini:transientIgnored')!)).toBe('close');
+    expect(createTransientPolicyStore().value).toBe('close');
+  });
+
+  // A hand-edited or future value must not become «Закрыть» by accident.
+  it('AnUnknownStoredValue_MeansKeep', () => {
+    localStorage.setItem('md-mini:transientIgnored', JSON.stringify('sometimes'));
+    expect(createTransientPolicyStore().value).toBe('keep');
   });
 });
 
@@ -349,5 +402,150 @@ describe('createZoomStore', () => {
   it('LoadsAnOutOfRangeSettingClamped', () => {
     localStorage.setItem('md-mini:zoomLevel', JSON.stringify(9));
     expect(createZoomStore().level).toBe(2);
+  });
+});
+
+describe('createRecentFilesStore', () => {
+  const invokeMock = vi.mocked(invoke);
+
+  beforeEach(() => {
+    localStorage.clear();
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(() => Promise.resolve());
+  });
+
+  it('AddsToTheFrontAndDedupsByPath', () => {
+    const store = createRecentFilesStore();
+    store.add('/a.md');
+    store.add('/b.md');
+    store.add('/a.md');
+    expect(store.list.map((f) => f.path)).toEqual(['/a.md', '/b.md']);
+  });
+
+  it('CapsAtTen', () => {
+    const store = createRecentFilesStore();
+    for (let i = 0; i < 12; i++) store.add(`/f${i}.md`);
+    expect(store.list).toHaveLength(10);
+  });
+
+  it('SetListReplacesLocalStateWholesale', () => {
+    const store = createRecentFilesStore();
+    store.add('/a.md');
+    store.setList({ version: 1, files: [{ path: '/b.md', timestamp: 1 }] });
+    expect(store.list).toEqual([{ path: '/b.md', timestamp: 1 }]);
+  });
+
+  // Two concurrent adds can broadcast out of order (Rust emits after the
+  // lock is released); the older snapshot must not roll the window back.
+  it('SetListIgnoresAnOlderVersionArrivingAfterANewerOne', () => {
+    const store = createRecentFilesStore();
+    store.setList({ version: 2, files: [{ path: '/newer.md', timestamp: 2 }] });
+    store.setList({ version: 1, files: [{ path: '/older.md', timestamp: 1 }] });
+    expect(store.list).toEqual([{ path: '/newer.md', timestamp: 2 }]);
+  });
+
+  it('AddCallsRecentFilesAddIpcWithoutATimestamp', () => {
+    const store = createRecentFilesStore();
+    store.add('/a.md');
+    expect(invokeMock).toHaveBeenCalledWith('recent_files_add', { path: '/a.md' });
+  });
+
+  it('AddIgnoresAnEmptyPath', () => {
+    const store = createRecentFilesStore();
+    store.add('');
+    expect(store.list).toEqual([]);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it('AddSwallowsAnIpcFailure', async () => {
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      invokeMock.mockImplementation(() => Promise.reject(new Error('no tauri')));
+      const store = createRecentFilesStore();
+      store.add('/a.md');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(store.list.map((f) => f.path)).toEqual(['/a.md']);
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
+  });
+
+  it('NoLongerWritesLocalStorage', () => {
+    const store = createRecentFilesStore();
+    store.add('/a.md');
+    expect(localStorage.getItem('md-mini:recentFiles')).toBeNull();
+  });
+
+  it('InitImportsLegacyListAndAdoptsRustList', async () => {
+    const legacy: RecentFile[] = [{ path: '/old.md', timestamp: 1 }];
+    const rust: RecentFile[] = [{ path: '/shared.md', timestamp: 9 }];
+    localStorage.setItem('md-mini:recentFiles', JSON.stringify(legacy));
+    invokeMock.mockImplementation(() => Promise.resolve({ version: 1, files: rust }));
+    const store = createRecentFilesStore();
+    expect(store.list).toEqual(legacy);
+    await store.init();
+    expect(invokeMock).toHaveBeenCalledWith('recent_files_import', { entries: legacy });
+    expect(store.list).toEqual(rust);
+  });
+
+  it('InitDropsMalformedLegacyEntriesBeforeImport', async () => {
+    localStorage.setItem(
+      'md-mini:recentFiles',
+      JSON.stringify([{ path: '/ok.md', timestamp: 2 }, { path: 42 }, null, { path: '/neg.md', timestamp: -1 }])
+    );
+    invokeMock.mockImplementation(() => Promise.resolve({ version: 0, files: [] }));
+    await createRecentFilesStore().init();
+    expect(invokeMock).toHaveBeenCalledWith('recent_files_import', {
+      entries: [{ path: '/ok.md', timestamp: 2 }],
+    });
+  });
+
+  it('InitKeepsLegacyListWhenIpcFails', async () => {
+    const legacy: RecentFile[] = [{ path: '/old.md', timestamp: 1 }];
+    localStorage.setItem('md-mini:recentFiles', JSON.stringify(legacy));
+    invokeMock.mockImplementation(() => Promise.reject(new Error('no tauri')));
+    const store = createRecentFilesStore();
+    await store.init();
+    expect(store.list).toEqual(legacy);
+  });
+
+  function deferImport(): { resolve: (s: RecentSnapshot) => void } {
+    const handle = { resolve: (_s: RecentSnapshot) => {} };
+    invokeMock.mockImplementation((cmd) =>
+      cmd === 'recent_files_import'
+        ? new Promise<RecentSnapshot>((resolve) => {
+            handle.resolve = resolve;
+          })
+        : Promise.resolve()
+    );
+    return handle;
+  }
+
+  // A `recent-changed` event that lands while the import is in flight and is
+  // newer than the import's answer wins.
+  it('InitDoesNotOverwriteANewerBroadcastReceivedWhileImporting', async () => {
+    const pendingImport = deferImport();
+    const store = createRecentFilesStore();
+    const pending = store.init();
+    store.setList({ version: 5, files: [{ path: '/fresh.md', timestamp: 5 }] });
+    pendingImport.resolve({ version: 3, files: [{ path: '/stale.md', timestamp: 1 }] });
+    await pending;
+    expect(store.list).toEqual([{ path: '/fresh.md', timestamp: 5 }]);
+  });
+
+  // A local add during the import is not in the reply; that add's own
+  // broadcast is what brings this window up to date, not the stale reply.
+  it('InitDoesNotOverwriteALocalAddMadeWhileImporting', async () => {
+    const pendingImport = deferImport();
+    const store = createRecentFilesStore();
+    const pending = store.init();
+    store.add('/new.md');
+    pendingImport.resolve({ version: 1, files: [{ path: '/stale.md', timestamp: 1 }] });
+    await pending;
+    expect(store.list.map((f) => f.path)).toEqual(['/new.md']);
+    store.setList({ version: 1, files: [{ path: '/new.md', timestamp: 7 }] });
+    expect(store.list).toEqual([{ path: '/new.md', timestamp: 7 }]);
   });
 });

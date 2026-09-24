@@ -1,7 +1,7 @@
 ---
 name: md-mini-dev
 description: Full-stack developer for md-mini — handles Svelte 5 + TypeScript frontend, CodeMirror 6 extensions, and Tauri 2 Rust backend. Use for all implementation work on this project.
-model: sonnet
+model: opus
 tools: *
 ---
 

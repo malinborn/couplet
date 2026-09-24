@@ -27,11 +27,12 @@ export interface NativeMenuAccelerator {
 
 export const NATIVE_MENU_ACCELERATORS: readonly NativeMenuAccelerator[] = [
   { id: 'new', accelerator: 'CmdOrCtrl+N' },
+  { id: 'new_tab', accelerator: 'CmdOrCtrl+T' },
   { id: 'open', accelerator: 'CmdOrCtrl+O' },
   { id: 'save', accelerator: 'CmdOrCtrl+S' },
   { id: 'save_as', accelerator: 'CmdOrCtrl+Shift+S' },
   { id: 'close', accelerator: 'CmdOrCtrl+W' },
-  { id: 'reopen_session', accelerator: 'CmdOrCtrl+Shift+T' },
+  { id: 'reopen_closed', accelerator: 'CmdOrCtrl+Shift+T' },
   { id: 'select_all', accelerator: 'CmdOrCtrl+A' },
   { id: 'find', accelerator: 'CmdOrCtrl+F' },
   { id: 'format_json', accelerator: 'CmdOrCtrl+Shift+J' },
@@ -40,6 +41,18 @@ export const NATIVE_MENU_ACCELERATORS: readonly NativeMenuAccelerator[] = [
   { id: 'zoom_out', accelerator: 'CmdOrCtrl+Minus' },
   { id: 'zoom_reset', accelerator: 'CmdOrCtrl+0' },
   { id: 'ai_comment', accelerator: 'CmdOrCtrl+Shift+M' },
+  { id: 'next_tab', accelerator: 'Ctrl+Tab' },
+  { id: 'prev_tab', accelerator: 'Ctrl+Shift+Tab' },
+  { id: 'toggle_drawer', accelerator: 'CmdOrCtrl+J' },
+  { id: 'select_tab_1', accelerator: 'CmdOrCtrl+1' },
+  { id: 'select_tab_2', accelerator: 'CmdOrCtrl+2' },
+  { id: 'select_tab_3', accelerator: 'CmdOrCtrl+3' },
+  { id: 'select_tab_4', accelerator: 'CmdOrCtrl+4' },
+  { id: 'select_tab_5', accelerator: 'CmdOrCtrl+5' },
+  { id: 'select_tab_6', accelerator: 'CmdOrCtrl+6' },
+  { id: 'select_tab_7', accelerator: 'CmdOrCtrl+7' },
+  { id: 'select_tab_8', accelerator: 'CmdOrCtrl+8' },
+  { id: 'select_tab_9', accelerator: 'CmdOrCtrl+9' },
 ];
 
 /** The accelerator for a menu item id, or `undefined` if it carries none. */

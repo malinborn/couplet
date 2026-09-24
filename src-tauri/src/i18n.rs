@@ -137,11 +137,6 @@ pub fn t_plural_for(lang: &str, key_prefix: &str, n: u64) -> String {
     t_for(lang, &format!("{key_prefix}.{category}")).replace("{n}", &n.to_string())
 }
 
-/// `t_plural_for` against the process-wide active language.
-pub fn t_plural(key_prefix: &str, n: u64) -> String {
-    t_plural_for(active_language(), key_prefix, n)
-}
-
 // -- IPC --
 
 /// The currently active language code (one of `SUPPORTED_LANGUAGES`). Called
@@ -216,19 +211,19 @@ mod tests {
     fn reopen_session_plural_ru_uses_the_right_category_text() {
         assert_eq!(
             t_plural_for("ru", "menu.file.reopen_session", 1),
-            "Восстановить 1 окно из прошлой сессии"
+            "Открыть 1 окно прошлой сессии"
         );
         assert_eq!(
             t_plural_for("ru", "menu.file.reopen_session", 2),
-            "Восстановить 2 окна из прошлой сессии"
+            "Открыть 2 окна прошлой сессии"
         );
         assert_eq!(
             t_plural_for("ru", "menu.file.reopen_session", 5),
-            "Восстановить 5 окон из прошлой сессии"
+            "Открыть 5 окон прошлой сессии"
         );
         assert_eq!(
             t_plural_for("ru", "menu.file.reopen_session", 11),
-            "Восстановить 11 окон из прошлой сессии"
+            "Открыть 11 окон прошлой сессии"
         );
     }
 
