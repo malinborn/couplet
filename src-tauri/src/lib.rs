@@ -83,9 +83,10 @@ pub fn run() {
     // re-generated at the `.build()` call below, so both this and `.build()`
     // see the exact same identifier/product name.
     //
-    // No-op today: `migration.rs`'s rename table only matches a renamed
-    // product/identifier, not the current one. It activates on its own the
-    // moment `tauri.conf.json` / `tauri.dev.conf.json` are renamed.
+    // Live since the couplet rename: `tauri.conf.json` / `tauri.dev.conf.json`
+    // carry the `to_*` names of `migration.rs`'s rename table, so the first
+    // launch of each flavour carries md-mini's data across, and every later
+    // one is an `AlreadyDone` no-op that never takes the lock.
     //
     // `migrate_all_real` may block on a native dialog (a matching-generation
     // legacy build is running, or a migration failed) and can
@@ -417,7 +418,7 @@ pub fn run() {
                 }
             });
 
-            // Command socket for the `mdmini show`/`edit` CLI verbs. Started last —
+            // Command socket for the `couplet show`/`edit` CLI verbs. Started last —
             // it can dispatch to windows created earlier in setup, but nothing
             // earlier in setup depends on it.
             ai_socket::start(app.handle());
@@ -552,7 +553,7 @@ fn apply_language_change(app: &tauri::AppHandle, language: Option<String>) -> Re
     // process and then exits the parent — `tauri::process::restart` — so the two
     // briefly overlap. If the child's single-instance handshake reaches the parent's
     // listening socket before the parent has torn it down, the child reads that as
-    // "an instance is already running" and exits as a duplicate, and md-mini never
+    // "an instance is already running" and exits as a duplicate, and couplet never
     // comes back. Removing the socket ourselves, here, closes that window.
     tauri_plugin_single_instance::destroy(app);
     app.restart();
@@ -736,7 +737,7 @@ pub(crate) fn resolve_path(path: &str, cwd: Option<&str>) -> String {
 /// Open pending files when app is already running (Reopen event): one new
 /// window, the files as its tabs.
 fn open_pending_files(app: &tauri::AppHandle) {
-    let path = std::path::Path::new("/tmp/md-mini-pending-files");
+    let path = std::path::Path::new("/tmp/couplet-pending-files");
     if !path.exists() {
         return;
     }
@@ -757,10 +758,10 @@ fn open_pending_files(app: &tauri::AppHandle) {
     }
 }
 
-/// Load files written by the CLI wrapper script to /tmp/md-mini-pending-files:
+/// Load files written by the CLI wrapper script to /tmp/couplet-pending-files:
 /// each becomes a tab of "main", as CLI args do.
 fn load_pending_open_files(app: &tauri::AppHandle) {
-    let path = std::path::Path::new("/tmp/md-mini-pending-files");
+    let path = std::path::Path::new("/tmp/couplet-pending-files");
     if !path.exists() {
         return;
     }

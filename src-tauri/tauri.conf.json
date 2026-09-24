@@ -1,8 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "md-mini",
+  "productName": "couplet",
+  "mainBinaryName": "couplet",
   "version": "1.3.0",
-  "identifier": "com.md-mini.app",
+  "identifier": "pro.couplet.app",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -13,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Untitled — md-mini",
+        "title": "Untitled — couplet",
         "width": 900,
         "height": 700,
         "minWidth": 400,
@@ -32,7 +33,9 @@
     "active": true,
     "targets": "all",
     "resources": {
-      "../scripts/mdmini": "bin/mdmini"
+      "../scripts/couplet": "bin/couplet",
+      "../scripts/mdmini": "bin/mdmini",
+      "../scripts/coup": "bin/coup"
     },
     "icon": [
       "icons/32x32.png",

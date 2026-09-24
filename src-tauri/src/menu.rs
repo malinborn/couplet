@@ -465,9 +465,15 @@ pub fn build_menu(
         .item(&language_zh)
         .build()?;
 
-    // Заголовок подменю приложения — «md-mini» — не переводится: macOS сама
-    // подставляет туда имя бандла.
-    let app_menu = SubmenuBuilder::new(app, "md-mini")
+    // Заголовок подменю приложения не переводится: macOS сама подставляет туда
+    // имя бандла. Берём его из `productName`, а не литералом, чтобы голый
+    // бинарь `tauri dev` (у него бандла нет) не показывал прежнее имя.
+    let product_name = app
+        .config()
+        .product_name
+        .clone()
+        .unwrap_or_else(|| crate::paths::FALLBACK_PRODUCT_NAME.to_string());
+    let app_menu = SubmenuBuilder::new(app, product_name)
         .about(None)
         .separator()
         .item(&MenuItemBuilder::with_id("check_updates", t("menu.app.check_updates")).build(app)?)

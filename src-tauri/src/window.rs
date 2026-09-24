@@ -528,7 +528,7 @@ pub(crate) fn build_window(app: &AppHandle, activation: Activation) -> Result<St
         .config()
         .product_name
         .clone()
-        .unwrap_or_else(|| "md-mini".to_string());
+        .unwrap_or_else(|| crate::paths::FALLBACK_PRODUCT_NAME.to_string());
     let window_title = format!("Untitled — {}", product_name);
     let foreground = activation == Activation::Foreground;
 
@@ -571,9 +571,9 @@ fn activate_app() {
     }
 }
 
-/// Order the unfocused window `win` just below md-mini's key window, so a
+/// Order the unfocused window `win` just below couplet's key window, so a
 /// background window never covers the one the human is typing in (spec §4):
-/// `focused(false)` alone orders it front, over that window. When md-mini is
+/// `focused(false)` alone orders it front, over that window. When couplet is
 /// not the active app there is nothing to cover — `orderFront` of an inactive
 /// app's window stays behind the active app's — and nothing is done.
 ///
@@ -695,7 +695,7 @@ pub fn partition_held(
     (held, free)
 }
 
-/// A human's `mdmini a.md b.md` (spec §4): one new window holding every file
+/// A human's `couplet a.md b.md` (spec §4): one new window holding every file
 /// that is not open yet, as tabs, the last one active. When all of them are
 /// open already, the window holding the first comes forward on that tab.
 pub fn open_files_window(app: &AppHandle, paths: &[String]) {
@@ -970,7 +970,7 @@ pub fn build_restored_window(
         .config()
         .product_name
         .clone()
-        .unwrap_or_else(|| "md-mini".to_string());
+        .unwrap_or_else(|| crate::paths::FALLBACK_PRODUCT_NAME.to_string());
     let window_title = format!("Untitled — {}", product_name);
 
     let width = if snapshot.width >= 400 {

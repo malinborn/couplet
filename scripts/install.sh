@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="md-mini"
+APP_NAME="couplet"
 APP_BUNDLE="/Applications/${APP_NAME}.app"
-SYMLINK="/usr/local/bin/mdmini"
+BIN_DIR="/usr/local/bin"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "==> Building ${APP_NAME}..."
@@ -24,8 +24,11 @@ if [ -d "$APP_BUNDLE" ]; then
 fi
 cp -R "$BUILD_APP" "$APP_BUNDLE"
 
-echo "==> Installing CLI wrapper: ${SYMLINK}"
-sudo cp "${PROJECT_DIR}/scripts/mdmini" "$SYMLINK"
-sudo chmod +x "$SYMLINK"
+# Copies, never symlinks (see CLAUDE.md). `mdmini` is the former name: it
+# execs the `couplet` copied beside it.
+echo "==> Installing CLI: ${BIN_DIR}/couplet, ${BIN_DIR}/mdmini"
+sudo cp "${PROJECT_DIR}/scripts/couplet" "$BIN_DIR/couplet"
+sudo cp "${PROJECT_DIR}/scripts/mdmini" "$BIN_DIR/mdmini"
+sudo chmod +x "$BIN_DIR/couplet" "$BIN_DIR/mdmini"
 
-echo "==> Done! Run: mdmini [file.md]"
+echo "==> Done! Run: couplet [file.md]"
