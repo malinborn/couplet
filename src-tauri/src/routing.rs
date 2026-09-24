@@ -159,6 +159,68 @@ pub fn windows_now(app: &AppHandle) -> Vec<WindowListing> {
     list_windows(&reg, &order, |l| app.get_webview_window(l).is_some())
 }
 
+/// One window the carousel offers (plan 05), before its text is read —
+/// that happens outside the registry lock.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CarouselRow {
+    pub label: String,
+    pub number: Option<u32>,
+    /// The project's directory name; `None` for a window that never held a file.
+    pub project: Option<String>,
+    pub tab_count: usize,
+    pub active_path: Option<String>,
+    /// The active tab's id when it is untitled: its text is in its sidecar.
+    pub active_untitled: Option<String>,
+}
+
+/// The windows `caller`'s tabs can move to: every other live one, the most
+/// recently focused first (`focus_order`, from `FocusTracker`), windows
+/// never focused after them in label order (D8).
+pub fn carousel_rows(
+    reg: &TabRegistry,
+    focus_order: &[String],
+    caller: &str,
+    is_live: impl Fn(&str) -> bool,
+) -> Vec<CarouselRow> {
+    let rank = |label: &str| {
+        (
+            focus_order.iter().position(|l| l == label).unwrap_or(usize::MAX),
+            crate::session::label_order(label),
+        )
+    };
+    let mut rows: Vec<CarouselRow> = reg
+        .all_windows()
+        .filter(|(label, _)| label.as_str() != caller && is_live(label))
+        .map(|(label, w)| {
+            let active = w.active.as_deref().and_then(|a| w.tabs.iter().find(|t| t.id == a));
+            CarouselRow {
+                label: label.clone(),
+                number: w.number,
+                project: w.project.as_deref().map(|p| crate::git_info::dir_name(Path::new(p))),
+                tab_count: w.tabs.len(),
+                active_path: active.and_then(|t| t.path.clone()),
+                active_untitled: active.filter(|t| t.path.is_none()).map(|t| t.id.clone()),
+            }
+        })
+        .collect();
+    rows.sort_by_cached_key(|row| rank(&row.label));
+    rows
+}
+
+/// At most `max` bytes of `text`, cut back to the last line end so that no
+/// line is shown half — never inside a character.
+pub fn cut_head(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let cut = &text[..end];
+    cut.rfind('\n').map_or(cut, |i| &cut[..i]).to_string()
+}
+
 fn file_name(path: &str) -> String {
     Path::new(path)
         .file_name()
@@ -358,6 +420,53 @@ mod tests {
         let mut reg = reg(&[("editor-2", 7, Some("/p"), &["/p/a.md"])]);
         reg.set_number("main", Some(1));
         assert_eq!(route(&reg, "/p/b.md", None, "/p", &[], live), existing("editor-2"));
+    }
+
+    #[test]
+    fn the_carousel_offers_every_other_live_window_the_most_recently_focused_first() {
+        let mut reg = TabRegistry::new();
+        for (label, id) in [("main", "m"), ("editor-2", "a"), ("editor-3", "b"), ("editor-4", "c"), ("editor-5", "d")] {
+            reg.add_tab(label, id, None);
+        }
+        let order = vec!["editor-3".to_string(), "main".to_string(), "editor-5".to_string()];
+        let rows = carousel_rows(&reg, &order, "main", |l| l != "editor-5");
+        assert_eq!(
+            rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
+            vec!["editor-3", "editor-2", "editor-4"],
+            "focused before never focused; the caller and a dead window are not offered"
+        );
+    }
+
+    #[test]
+    fn a_carousel_row_names_the_windows_active_tab() {
+        let mut reg = TabRegistry::new();
+        reg.add_tab("editor-2", "a", Some("/p/a.md".into()));
+        reg.add_tab("editor-2", "b", Some("/p/b.md".into()));
+        reg.set_active("editor-2", "b");
+        reg.set_number("editor-2", Some(7));
+        reg.bind_project("editor-2", "/p".into());
+        reg.add_tab("editor-3", "u", None);
+        let rows = carousel_rows(&reg, &[], "main", |_| true);
+        assert_eq!(
+            rows[0],
+            CarouselRow {
+                label: "editor-2".into(),
+                number: Some(7),
+                project: Some("p".into()),
+                tab_count: 2,
+                active_path: Some("/p/b.md".into()),
+                active_untitled: None,
+            }
+        );
+        assert_eq!(rows[1].active_untitled.as_deref(), Some("u"));
+        assert_eq!(rows[1].project, None);
+    }
+
+    #[test]
+    fn a_thumbnail_head_is_whole_lines_within_its_budget() {
+        assert_eq!(cut_head("short", 100), "short");
+        assert_eq!(cut_head("one\ntwo\nthree", 9), "one\ntwo");
+        assert_eq!(cut_head("жжжж", 3), "ж", "never inside a character");
     }
 
     fn listed(window: u32, project: &str, files: &[Option<&str>]) -> WindowListing {

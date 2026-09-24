@@ -707,6 +707,15 @@ pub async fn reveal_window(window: tauri::WebviewWindow) -> Result<(), String> {
     window.run_on_main_thread(activate_app).map_err(|e| e.to_string())
 }
 
+/// IPC: bring window `label` forward — «Перейти» on the toast after a move
+/// (plan 05, D5). Unminimizes it, gives it key focus, activates the app.
+#[tauri::command]
+pub async fn reveal_other_window(app: AppHandle, label: String) -> Result<(), String> {
+    let win = app.get_webview_window(&label).ok_or_else(|| format!("no window {label}"))?;
+    reveal(&win);
+    win.run_on_main_thread(activate_app).map_err(|e| e.to_string())
+}
+
 /// Removes a file path from the open files tracking when a window is closed.
 /// Also cleans up any recovery file for that path.
 pub fn untrack_window(app: &AppHandle, label: &str) {

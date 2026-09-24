@@ -509,10 +509,96 @@ pub async fn tab_move(
     Ok(MoveDone { label: to, number })
 }
 
+/// How much of a window's active document its thumbnail gets.
+const HEAD_BYTES: usize = 2048;
+
+/// One carousel thumbnail (D8) — `CarouselWindow` in `lib/tabs/carousel.ts`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CarouselWindow {
+    pub label: String,
+    pub number: Option<u32>,
+    pub project: Option<String>,
+    /// The active file's branch; `None` outside git or for an untitled tab.
+    pub branch: Option<String>,
+    pub tab_count: usize,
+    pub active_path: Option<String>,
+    /// The start of the active document, whole lines, at most `HEAD_BYTES`.
+    pub head: String,
+}
+
+/// The first bytes of a file — a little more than `HEAD_BYTES`, for the cut.
+/// Empty when it cannot be read: a thumbnail is not worth an error.
+fn read_start(path: &std::path::Path) -> String {
+    use std::io::Read;
+    let mut buf = Vec::with_capacity(HEAD_BYTES + 4);
+    match std::fs::File::open(path) {
+        Ok(file) => {
+            let _ = file.take((HEAD_BYTES + 4) as u64).read_to_end(&mut buf);
+            String::from_utf8_lossy(&buf).into_owned()
+        }
+        Err(_) => String::new(),
+    }
+}
+
+/// IPC: the windows the caller's tabs can move to, for its carousel. The
+/// registry is read under its lock; the files, the sidecars and `.git/HEAD`
+/// only after it is dropped.
+#[tauri::command]
+pub async fn tab_carousel_windows(app: AppHandle, window: tauri::WebviewWindow) -> Result<Vec<CarouselWindow>, String> {
+    // Before the registry lock: binding walks the file system.
+    crate::routing::bind_missing_projects(&app);
+    let order = app.state::<crate::menu_route::FocusTracker>().order();
+    let rows = {
+        let open_files = app.state::<OpenFiles>();
+        let reg = open_files.0.lock().unwrap();
+        crate::routing::carousel_rows(&reg, &order, window.label(), live_windows(&app))
+    };
+    let session = app.state::<SessionState>();
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let text = match (&row.active_path, &row.active_untitled) {
+                (Some(path), _) => read_start(std::path::Path::new(path)),
+                (None, Some(id)) => session
+                    .snapshot_for(&row.label)
+                    .and_then(|w| w.tabs.into_iter().find(|t| &t.tab_id == id))
+                    .and_then(|t| t.untitled)
+                    .and_then(|name| crate::session::read_untitled(&name))
+                    .unwrap_or_default(),
+                (None, None) => String::new(),
+            };
+            let branch = row
+                .active_path
+                .as_deref()
+                .and_then(|p| crate::git_info::git_info(std::path::Path::new(p)))
+                .and_then(|g| g.branch);
+            CarouselWindow {
+                label: row.label,
+                number: row.number,
+                project: row.project,
+                branch,
+                tab_count: row.tab_count,
+                active_path: row.active_path,
+                head: crate::routing::cut_head(&text, HEAD_BYTES),
+            }
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ai_socket::{AiPending, AiResponse};
+
+    #[test]
+    fn a_thumbnail_reads_only_the_start_of_a_file_and_nothing_of_a_missing_one() {
+        let path = std::env::temp_dir().join(format!("mdmini-head-{}.md", crate::session::new_tab_id()));
+        std::fs::write(&path, "line\n".repeat(1000)).unwrap();
+        assert_eq!(read_start(&path).len(), HEAD_BYTES + 4);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(read_start(&path), "");
+    }
 
     fn reg_with(entries: &[(&str, &str, Option<&str>)]) -> TabRegistry {
         let mut reg = TabRegistry::new();
