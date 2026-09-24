@@ -20,9 +20,12 @@ fi
 
 if [ "$(basename "$0")" = "mdmini" ] && [ -t 2 ] && [ -z "${CLAUDECODE:-}" ]; then
   notice_dir="$HOME/Library/Caches/couplet"
-  if [ ! -e "$notice_dir/mdmini-renamed-notice" ]; then
+  notice="$notice_dir/mdmini-renamed-notice"
+  # Record first, print only if that worked: an unwritable Caches must not
+  # turn "once" into "every time". The group puts 2>/dev/null around the
+  # `>` itself — a trailing 2>/dev/null is applied after `>` has failed.
+  if [ ! -e "$notice" ] && { mkdir -p "$notice_dir" && : > "$notice"; } 2>/dev/null; then
     echo "mdmini is now couplet. This command keeps working; \`couplet\` is the new name." >&2
-    mkdir -p "$notice_dir" 2>/dev/null && : > "$notice_dir/mdmini-renamed-notice" 2>/dev/null
   fi
 fi
 
