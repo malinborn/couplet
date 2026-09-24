@@ -7,6 +7,7 @@ import { EditorSelection } from '@codemirror/state';
 import { HOVER_CLOSE_MS, HOVER_OPEN_MS } from './drawer-state';
 import type { TabListState, TabMeta } from './tab-model';
 import { GOT_MS, type CarouselWindow } from './carousel';
+import { DOUBLE_CLICK_MS, type RenumberResult } from './window-number';
 
 /*
  * The drawer's keyboard and pointer contract against a stand-in for the
@@ -45,6 +46,7 @@ interface Harness {
   windows: ReturnType<typeof vi.fn>;
   onmove: ReturnType<typeof vi.fn>;
   oncarousel: ReturnType<typeof vi.fn>;
+  onrenumber: ReturnType<typeof vi.fn>;
   destroy: () => void;
 }
 
@@ -84,6 +86,7 @@ function setup(list: TabListState = initialList()): Harness {
   const windows = vi.fn(async (): Promise<CarouselWindow[]> => []);
   const onmove = vi.fn();
   const oncarousel = vi.fn();
+  const onrenumber = vi.fn(async (): Promise<RenumberResult> => 'set');
   const component = mount(TabDrawer, {
     target,
     props: {
@@ -105,6 +108,7 @@ function setup(list: TabListState = initialList()): Harness {
       onmove,
       oncarousel,
       onrestorefocus,
+      onrenumber,
       get handle() {
         return props.handle;
       },
@@ -129,6 +133,7 @@ function setup(list: TabListState = initialList()): Harness {
     windows,
     onmove,
     oncarousel,
+    onrenumber,
     destroy: () => {
       unmount(component);
       target.remove();
@@ -976,5 +981,167 @@ describe('TabDrawer — the window carousel (plan 05)', () => {
     await settle();
     expect(option(0)).not.toBeNull();
     expect(option(1)).toBeNull();
+  });
+});
+
+describe('TabDrawer — renaming the window from the notch (spec §3)', () => {
+  function clickNumber(detail: number): void {
+    el('.wid').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail }));
+  }
+
+  function input(): HTMLInputElement | null {
+    return h.root().querySelector<HTMLInputElement>('.notch-edit');
+  }
+
+  /** The root's class, not `inert`: jsdom does not re-add an attribute Svelte set as a property. */
+  function isOpen(): boolean {
+    return h.root().classList.contains('open');
+  }
+
+  async function startEdit(): Promise<HTMLInputElement> {
+    h.handle().toggle();
+    await settle();
+    clickNumber(1);
+    clickNumber(2);
+    await settle();
+    const found = input();
+    if (!found) throw new Error('no input');
+    return found;
+  }
+
+  function typeValue(value: string): void {
+    const field = input()!;
+    field.value = value;
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+  }
+
+  it('a double-click on #N opens the input, prefilled, selected and focused; the drawer stays open', async () => {
+    vi.useFakeTimers();
+    const field = await startEdit();
+    expect(field.value).toBe('3');
+    expect(document.activeElement).toBe(field);
+    expect([field.selectionStart, field.selectionEnd]).toEqual([0, 1]);
+    vi.advanceTimersByTime(DOUBLE_CLICK_MS * 2);
+    await settle();
+    expect(isOpen(), 'the first click did not close it').toBe(true);
+  });
+
+  it('a single click on #N still closes a pinned drawer, once the double-click wait is over', async () => {
+    vi.useFakeTimers();
+    h.handle().toggle();
+    await settle();
+    clickNumber(1);
+    await settle();
+    expect(isOpen()).toBe(true);
+    vi.advanceTimersByTime(DOUBLE_CLICK_MS);
+    await settle();
+    expect(isOpen()).toBe(false);
+    expect(input()).toBeNull();
+  });
+
+  it('with the drawer closed, a click on #N opens it at once and edits nothing', async () => {
+    clickNumber(1);
+    await settle();
+    expect(isOpen()).toBe(true);
+    expect(input()).toBeNull();
+  });
+
+  it('digits and Backspace are the input\'s, not the search\'s or the editor\'s', async () => {
+    await startEdit();
+    for (const key of ['4', 'Backspace', '2']) {
+      const e = press(key, { code: key === 'Backspace' ? key : `Digit${key}` });
+      expect(e.defaultPrevented, key).toBe(false);
+    }
+    expect(query()).toBe('');
+    expect(h.editorKeys).toEqual([]);
+  });
+
+  it('a letter is refused by the input', async () => {
+    await startEdit();
+    expect(press('a').defaultPrevented).toBe(true);
+    typeValue('4a');
+    expect(input()!.value).toBe('4');
+  });
+
+  it('Enter commits: the new number is asked for, the input goes, the drawer keeps the keyboard', async () => {
+    await startEdit();
+    typeValue('42');
+    press('Enter');
+    await settle();
+    expect(h.onrenumber).toHaveBeenCalledWith(42);
+    expect(input()).toBeNull();
+    expect(isOpen()).toBe(true);
+    expect(drawerHasKeys()).toBe(true);
+  });
+
+  it('Esc cancels the edit and leaves the drawer open', async () => {
+    await startEdit();
+    typeValue('42');
+    press('Escape');
+    await settle();
+    expect(input()).toBeNull();
+    expect(h.onrenumber).not.toHaveBeenCalled();
+    expect(isOpen()).toBe(true);
+    expect(drawerHasKeys()).toBe(true);
+  });
+
+  it('blur cancels', async () => {
+    const field = await startEdit();
+    typeValue('42');
+    field.blur();
+    await settle();
+    expect(input()).toBeNull();
+    expect(h.onrenumber).not.toHaveBeenCalled();
+  });
+
+  it('a number another window holds: the input shakes and stays for another try', async () => {
+    h.onrenumber.mockResolvedValueOnce('taken');
+    await startEdit();
+    typeValue('7');
+    press('Enter');
+    await settle();
+    expect(h.onrenumber).toHaveBeenCalledWith(7);
+    expect(input()?.classList.contains('shake')).toBe(true);
+  });
+
+  it('an invalid value shakes without asking anyone', async () => {
+    await startEdit();
+    for (const value of ['0', '']) {
+      typeValue(value);
+      press('Enter');
+      await settle();
+      expect(input()?.classList.contains('shake'), JSON.stringify(value)).toBe(true);
+    }
+    expect(h.onrenumber).not.toHaveBeenCalled();
+  });
+
+  it('its own number again closes the input without asking', async () => {
+    await startEdit();
+    press('Enter');
+    await settle();
+    expect(input()).toBeNull();
+    expect(h.onrenumber).not.toHaveBeenCalled();
+  });
+
+  it('editing pins a hover-opened drawer: the pointer leaving no longer closes it', async () => {
+    vi.useFakeTimers();
+    await hoverOpen();
+    clickNumber(1);
+    clickNumber(2);
+    await settle();
+    expect(input()).not.toBeNull();
+    pointer(el('.drawer-wrap'), 'pointerleave');
+    vi.advanceTimersByTime(HOVER_CLOSE_MS * 2);
+    await settle();
+    expect(isOpen()).toBe(true);
+    expect(input()).not.toBeNull();
+  });
+
+  it('the drawer closing takes the edit with it', async () => {
+    await startEdit();
+    h.handle().close();
+    await settle();
+    expect(input()).toBeNull();
   });
 });

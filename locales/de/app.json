@@ -19,6 +19,7 @@
   "toast.save_as_blocked.held": "Diese Datei ist in einem anderen Tab geöffnet – nichts wurde geschrieben",
   "toast.save_as_blocked.tab_gone": "Der Tab, für den der Name gewählt wurde, ist geschlossen – nichts wurde geschrieben",
   "toast.save_as_blocked.unavailable": "Dieser Tab konnte den Namen nicht übernehmen – nichts wurde geschrieben",
+  "toast.window_number.taken": "Nummer #{number} ist vergeben",
 
   "toast.update.headline": "mdmini {latest} verfügbar",
   "toast.update.current": "Sie haben v{current}",
@@ -151,6 +152,7 @@
 
   "tabs.notch.title": "Tabs von Fenster #{n} — zeigen, klicken oder {key}",
   "tabs.notch.aria": "Tabs von Fenster #{n}",
+  "tabs.notch.edit_aria": "Fensternummer",
   "tabs.notch.unviewed.one": "{count} ungesehen von der KI",
   "tabs.notch.unviewed.few": "{count} ungesehen von der KI",
   "tabs.notch.unviewed.many": "{count} ungesehen von der KI",

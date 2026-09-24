@@ -19,6 +19,7 @@
   "toast.save_as_blocked.held": "Ce fichier est ouvert dans un autre onglet — rien n’a été écrit",
   "toast.save_as_blocked.tab_gone": "L’onglet pour lequel ce nom a été choisi est fermé — rien n’a été écrit",
   "toast.save_as_blocked.unavailable": "Cet onglet n’a pas pu prendre ce nom — rien n’a été écrit",
+  "toast.window_number.taken": "Le numéro #{number} est déjà pris",
 
   "toast.update.headline": "mdmini {latest} disponible",
   "toast.update.current": "vous avez la v{current}",
@@ -151,6 +152,7 @@
 
   "tabs.notch.title": "Onglets de la fenêtre #{n} — survolez, cliquez ou {key}",
   "tabs.notch.aria": "Onglets de la fenêtre #{n}",
+  "tabs.notch.edit_aria": "Numéro de fenêtre",
   "tabs.notch.unviewed.one": "{count} non vu de l’IA",
   "tabs.notch.unviewed.few": "{count} non vus de l’IA",
   "tabs.notch.unviewed.many": "{count} non vus de l’IA",

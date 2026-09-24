@@ -12,7 +12,8 @@
    * moves focus into the drawer and keeps it there: keys the drawer does not
    * use (Backspace on an empty query, Space, Tab) then land on the drawer, not
    * on the document hidden behind it; closing gives it back. ⌘J and ⌘1…⌘9 are native
-   * menu items; App.svelte forwards them through `handle`.
+   * menu items; App.svelte forwards them through `handle`. The one exception is
+   * the notch's number input (`TabNotch`): its keys are its own.
    */
   import { tick, untrack } from 'svelte';
   import { flip } from 'svelte/animate';
@@ -53,6 +54,7 @@
   import { createDrawerData, type DrawerDataDeps, type GitInfo, type TabText } from './drawer-data';
   import { dropBefore, moveIds, pastThreshold, sweptIds, type Box } from './drawer-geometry';
   import { tabName } from './tab-name';
+  import type { RenumberResult } from './window-number';
   import WindowCarousel, { type CarouselHandle } from './WindowCarousel.svelte';
   import {
     GOT_MS,
@@ -92,6 +94,7 @@
     onmove,
     oncarousel,
     onrestorefocus,
+    onrenumber,
     handle = $bindable(),
   }: {
     list: TabListState;
@@ -114,6 +117,8 @@
      * in the editor.
      */
     onrestorefocus?: () => void;
+    /** The notch's edit of `#N` (spec §3): `window_set_number`. */
+    onrenumber?: (n: number) => Promise<RenumberResult>;
     handle?: TabDrawerHandle;
   } = $props();
 
@@ -588,6 +593,8 @@
 
   function onKeyDown(e: KeyboardEvent): void {
     trackShift(e);
+    // The notch's number input takes digits, Enter, Esc and Backspace itself.
+    if (e.target instanceof Element && e.target.closest('.notch-edit')) return;
     // The IME owns the key: a composed character is not a search letter.
     if (e.isComposing || e.keyCode === 229) return;
     // While ⌘G's carousel is up every key is its own (D10) — not during the
@@ -1154,6 +1161,10 @@
       onenter={notchEnter}
       onleave={notchLeave}
       onclick={notchClick}
+      editable={ds.open}
+      {onrenumber}
+      oneditstart={pinNow}
+      oneditend={focusList}
     />
   </div>
 

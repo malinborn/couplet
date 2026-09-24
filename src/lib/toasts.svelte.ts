@@ -78,6 +78,12 @@ export type ToastPayload =
    * happened.
    */
   | { kind: 'save-as-blocked'; fileName: string; reason: 'held' | 'tab-gone' | 'unavailable' }
+  /**
+   * A window number the human asked for is not available: the notch's edit
+   * picked one another window holds (spec §3). Goes by itself, like
+   * `tabs-moved` — it answers a key the human just pressed.
+   */
+  | { kind: 'window-number'; reason: 'taken'; number: number }
   | { kind: 'update'; latest: string; current: string; highlight?: string }
   /**
    * Answers to a manual "Check for Updates…" click (#82) — the automatic
@@ -169,6 +175,7 @@ const ORDER: Record<ToastKind, number> = {
   'tabs-stranded': 4,
   'tabs-moved': 4,
   'save-as-blocked': 4,
+  'window-number': 4,
   // Sorts below everything: it is the only toast that is still waiting on a
   // decision, so it belongs closest to the pointer that has to make it.
   'json-offer': 5,

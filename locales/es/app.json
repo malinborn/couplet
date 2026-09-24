@@ -19,6 +19,7 @@
   "toast.save_as_blocked.held": "Ese archivo está abierto en otra pestaña; no se escribió nada",
   "toast.save_as_blocked.tab_gone": "La pestaña para la que se eligió el nombre está cerrada; no se escribió nada",
   "toast.save_as_blocked.unavailable": "Esta pestaña no pudo tomar ese nombre; no se escribió nada",
+  "toast.window_number.taken": "El número #{number} está ocupado",
 
   "toast.update.headline": "mdmini {latest} disponible",
   "toast.update.current": "tienes la v{current}",
@@ -151,6 +152,7 @@
 
   "tabs.notch.title": "Pestañas de la ventana #{n}: pasa el cursor, haz clic o {key}",
   "tabs.notch.aria": "Pestañas de la ventana #{n}",
+  "tabs.notch.edit_aria": "Número de ventana",
   "tabs.notch.unviewed.one": "{count} sin ver de la IA",
   "tabs.notch.unviewed.few": "{count} sin ver de la IA",
   "tabs.notch.unviewed.many": "{count} sin ver de la IA",

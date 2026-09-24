@@ -175,6 +175,7 @@ pub fn run() {
             window::focus_if_open,
             window::reveal_window,
             window::reveal_other_window,
+            window::window_set_number,
             recent::recent_files_list,
             recent::recent_files_add,
             recent::recent_files_import,

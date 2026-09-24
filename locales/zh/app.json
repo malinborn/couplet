@@ -19,6 +19,7 @@
   "toast.save_as_blocked.held": "该文件已在另一个标签页中打开，未写入任何内容",
   "toast.save_as_blocked.tab_gone": "选择该名称的标签页已关闭，未写入任何内容",
   "toast.save_as_blocked.unavailable": "此标签页无法使用该名称，未写入任何内容",
+  "toast.window_number.taken": "编号 #{number} 已被占用",
 
   "toast.update.headline": "mdmini {latest} 已发布",
   "toast.update.current": "你当前是 v{current}",
@@ -151,6 +152,7 @@
 
   "tabs.notch.title": "窗口 #{n} 的标签页 — 悬停、点击或 {key}",
   "tabs.notch.aria": "窗口 #{n} 的标签页",
+  "tabs.notch.edit_aria": "窗口编号",
   "tabs.notch.unviewed.one": "{count} 个未查看（来自 AI）",
   "tabs.notch.unviewed.few": "{count} 个未查看（来自 AI）",
   "tabs.notch.unviewed.many": "{count} 个未查看（来自 AI）",

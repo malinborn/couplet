@@ -19,6 +19,7 @@
   "toast.save_as_blocked.held": "Этот файл открыт в другой вкладке — ничего не записано",
   "toast.save_as_blocked.tab_gone": "Вкладка, для которой выбрано имя, закрыта — ничего не записано",
   "toast.save_as_blocked.unavailable": "Эта вкладка не смогла взять это имя — ничего не записано",
+  "toast.window_number.taken": "Номер #{number} занят",
 
   "toast.update.headline": "Доступна версия mdmini {latest}",
   "toast.update.current": "у вас установлена v{current}",
@@ -151,6 +152,7 @@
 
   "tabs.notch.title": "Вкладки окна #{n} — навести, клик или {key}",
   "tabs.notch.aria": "Вкладки окна #{n}",
+  "tabs.notch.edit_aria": "Номер окна",
   "tabs.notch.unviewed.one": "{count} непросмотренная от ИИ",
   "tabs.notch.unviewed.few": "{count} непросмотренные от ИИ",
   "tabs.notch.unviewed.many": "{count} непросмотренных от ИИ",

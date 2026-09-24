@@ -344,6 +344,53 @@ pub fn number_main_window(app: &AppHandle) {
     number_window(&mut reg, "main", None);
 }
 
+/// What `window_set_number` did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Renumber {
+    Set,
+    /// Another live window holds it; nothing changed.
+    Taken,
+    /// Outside 1..=99; nothing changed.
+    Invalid,
+}
+
+/// Give `label` the number `number` unless another live window holds it. An
+/// entry left by a dead window does not count, the same as for routing.
+pub fn renumber(reg: &mut TabRegistry, label: &str, number: u32, is_live: impl Fn(&str) -> bool) -> Renumber {
+    if !crate::window_numbers::is_valid(number) {
+        return Renumber::Invalid;
+    }
+    match reg.live_label_with_number(number, is_live) {
+        Some(holder) if holder != label => Renumber::Taken,
+        _ => {
+            reg.set_number(label, Some(number));
+            Renumber::Set
+        }
+    }
+}
+
+/// IPC: the calling window's new number — the notch's inline edit (spec §3).
+/// Decided under the registry lock; the session learns it after the lock is
+/// released. Routing, `ls` and the carousel read the registry, so they follow.
+#[tauri::command]
+pub async fn window_set_number(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    number: u32,
+) -> Result<Renumber, String> {
+    let label = window.label().to_string();
+    let outcome = {
+        let open_files = app.state::<OpenFiles>();
+        let mut reg = open_files.0.lock().map_err(|e| e.to_string())?;
+        renumber(&mut reg, &label, number, |l| app.get_webview_window(l).is_some())
+    };
+    if outcome == Renumber::Set {
+        app.state::<crate::session::SessionState>().set_number(&label, Some(number));
+    }
+    Ok(outcome)
+}
+
 static WINDOW_COUNTER: AtomicU32 = AtomicU32::new(1);
 
 const CASCADE_OFFSET: f64 = 30.0;
@@ -1321,6 +1368,68 @@ mod tests {
         reg.set_number("main", Some(4));
         number_if_missing(&mut reg, "main");
         assert_eq!(reg.window("main").unwrap().number, Some(4));
+    }
+
+    #[test]
+    fn renumber_takes_a_free_number() {
+        let mut reg = TabRegistry::new();
+        reg.set_number("main", Some(1));
+        reg.set_number("editor-2", Some(2));
+        assert_eq!(renumber(&mut reg, "editor-2", 7, |_| true), Renumber::Set);
+        assert_eq!(reg.window("editor-2").unwrap().number, Some(7));
+        assert_eq!(reg.numbers_in_use(), [1, 7].into_iter().collect(), "#2 is free again");
+    }
+
+    #[test]
+    fn renumber_refuses_a_number_a_live_window_holds() {
+        let mut reg = TabRegistry::new();
+        reg.set_number("main", Some(1));
+        reg.set_number("editor-2", Some(2));
+        assert_eq!(renumber(&mut reg, "editor-2", 1, |_| true), Renumber::Taken);
+        assert_eq!(reg.window("editor-2").unwrap().number, Some(2));
+    }
+
+    #[test]
+    fn renumber_ignores_a_dead_windows_entry() {
+        let mut reg = TabRegistry::new();
+        reg.set_number("editor-9", Some(5));
+        reg.set_number("main", Some(1));
+        assert_eq!(renumber(&mut reg, "main", 5, |l| l != "editor-9"), Renumber::Set);
+        assert_eq!(reg.live_label_with_number(5, |l| l != "editor-9").as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn renumber_to_its_own_number_is_a_no_op_success() {
+        let mut reg = TabRegistry::new();
+        reg.set_number("main", Some(3));
+        assert_eq!(renumber(&mut reg, "main", 3, |_| true), Renumber::Set);
+        assert_eq!(reg.window("main").unwrap().number, Some(3));
+    }
+
+    #[test]
+    fn renumber_refuses_out_of_range() {
+        let mut reg = TabRegistry::new();
+        reg.set_number("main", Some(3));
+        assert_eq!(renumber(&mut reg, "main", 0, |_| true), Renumber::Invalid);
+        assert_eq!(renumber(&mut reg, "main", 100, |_| true), Renumber::Invalid);
+        assert_eq!(reg.window("main").unwrap().number, Some(3));
+    }
+
+    #[test]
+    fn renumber_answers_lowercase_json() {
+        assert_eq!(serde_json::to_string(&Renumber::Taken).unwrap(), "\"taken\"");
+        assert_eq!(serde_json::to_string(&Renumber::Set).unwrap(), "\"set\"");
+        assert_eq!(serde_json::to_string(&Renumber::Invalid).unwrap(), "\"invalid\"");
+    }
+
+    #[test]
+    fn a_renumbered_window_is_routed_by_its_new_number() {
+        let mut reg = TabRegistry::new();
+        reg.set_number("main", Some(1));
+        reg.set_number("editor-2", Some(2));
+        renumber(&mut reg, "editor-2", 42, |_| true);
+        assert_eq!(reg.live_label_with_number(42, |_| true).as_deref(), Some("editor-2"));
+        assert_eq!(reg.live_label_with_number(2, |_| true), None);
     }
 
     #[test]

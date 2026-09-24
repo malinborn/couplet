@@ -6,8 +6,15 @@
    * count, a hairline, the drawer key. It shimmers with the AI gradient while
    * the window holds unviewed tabs; its accessible name says so in words.
    * Geometry and colours are the mockup's.
+   *
+   * With the drawer open, a double-click on `#N` turns it into a number input
+   * (spec §3): Enter asks `onrenumber`, Esc or blur cancels, a refusal shakes
+   * it. A single click on `#N` then waits out the double-click before it does
+   * what a click on the notch does; everywhere else it acts at once.
    */
+  import { tick } from 'svelte';
   import { plural, t } from '../i18n';
+  import { DOUBLE_CLICK_MS, parseWindowNumber, type RenumberResult } from './window-number';
 
   let {
     number,
@@ -19,6 +26,10 @@
     onenter,
     onleave,
     onclick,
+    editable = false,
+    onrenumber,
+    oneditstart,
+    oneditend,
   }: {
     number: number | null;
     count: number;
@@ -31,6 +42,13 @@
     onenter: () => void;
     onleave: () => void;
     onclick: () => void;
+    /** The drawer is open: `#N` can be edited. */
+    editable?: boolean;
+    onrenumber?: (n: number) => Promise<RenumberResult>;
+    /** Editing commits to the drawer, as typing a query does: a hover-opened one is pinned. */
+    oneditstart?: () => void;
+    /** The input went away; focus is wherever it fell. */
+    oneditend?: () => void;
   } = $props();
 
   const label = $derived(
@@ -45,6 +63,114 @@
 
   let shapeEl: HTMLSpanElement | undefined = $state();
   let notchEl: HTMLButtonElement | undefined = $state();
+  let widEl: HTMLSpanElement | undefined = $state();
+  let inputEl: HTMLInputElement | undefined = $state();
+
+  let editing = $state(false);
+  let draft = $state('');
+  let committing = false;
+  /** The input's centre, in the notch's containing block. */
+  let at = $state({ x: 0, y: 0 });
+  let clickTimer: ReturnType<typeof setTimeout> | undefined;
+
+  $effect(() => {
+    // The drawer closing takes the edit with it.
+    if (!editable && editing) stopEdit();
+  });
+
+  $effect(() => () => clearTimeout(clickTimer));
+
+  function onNotchClick(e: MouseEvent): void {
+    const onNumber = editable && number !== null && e.target instanceof Node && !!widEl?.contains(e.target);
+    if (!onNumber) {
+      onclick();
+      return;
+    }
+    clearTimeout(clickTimer);
+    if (e.detail >= 2) {
+      clickTimer = undefined;
+      startEdit();
+      return;
+    }
+    clickTimer = setTimeout(() => {
+      clickTimer = undefined;
+      onclick();
+    }, DOUBLE_CLICK_MS);
+  }
+
+  function startEdit(): void {
+    if (editing || !notchEl || !widEl) return;
+    at = {
+      x: notchEl.offsetLeft + widEl.offsetLeft + widEl.offsetWidth / 2,
+      y: notchEl.offsetTop + widEl.offsetTop + widEl.offsetHeight / 2,
+    };
+    draft = String(number ?? '');
+    editing = true;
+    oneditstart?.();
+    void tick().then(() => {
+      inputEl?.focus({ preventScroll: true });
+      inputEl?.select();
+    });
+  }
+
+  function stopEdit(): void {
+    if (!editing) return;
+    editing = false;
+    oneditend?.();
+  }
+
+  function shake(): void {
+    const el = inputEl;
+    if (!el) return;
+    el.classList.remove('shake');
+    void el.offsetWidth;
+    el.classList.add('shake');
+    el.select();
+  }
+
+  async function commit(): Promise<void> {
+    if (committing) return;
+    const n = parseWindowNumber(draft);
+    if (n === null) {
+      shake();
+      return;
+    }
+    if (n === number || !onrenumber) {
+      stopEdit();
+      return;
+    }
+    committing = true;
+    try {
+      const result = await onrenumber(n);
+      if (result === 'set') stopEdit();
+      else shake();
+    } finally {
+      committing = false;
+    }
+  }
+
+  function onInputKey(e: KeyboardEvent): void {
+    // The input's keys are its own: not the editor's, not the app's.
+    e.stopPropagation();
+    if (e.isComposing) return;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void commit();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      stopEdit();
+    } else if (e.key.length === 1 && !/\d/.test(e.key) && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+    }
+  }
+
+  function onInput(): void {
+    const clean = (inputEl?.value ?? '').replace(/\D/g, '').slice(0, 2);
+    if (!inputEl) return;
+    if (inputEl.value !== clean) inputEl.value = clean;
+    inputEl.classList.remove('shake');
+    draft = clean;
+  }
 
   // Restart, not just set: a class that is already on replays nothing, and
   // off-then-on inside one frame never reaches the style engine. Drop it,
@@ -89,7 +215,7 @@
   title={t('tabs.notch.title', { n: number ?? '', key: keyLabel })}
   onpointerenter={onenter}
   onpointerleave={onleave}
-  {onclick}
+  onclick={onNotchClick}
   onmousedown={(e) => {
     // A press on the button blurs the editor (WebKit), and the drawer can only
     // give focus back on close if it saw where it was when it opened.
@@ -97,10 +223,32 @@
   }}
 >
   <span class="shape" aria-hidden="true" bind:this={shapeEl}><span class="glow"></span></span>
-  <span class="wid" aria-hidden="true">#{number ?? ''}</span>
+  <span class="wid" aria-hidden="true" bind:this={widEl}>#{number ?? ''}</span>
   <span class="cnt" aria-hidden="true">{count}</span>
   <span class="nk" aria-hidden="true">{keyLabel}</span>
 </button>
+
+{#if editing}
+  <input
+    class="notch-edit"
+    type="text"
+    inputmode="numeric"
+    maxlength="2"
+    autocomplete="off"
+    spellcheck="false"
+    aria-label={t('tabs.notch.edit_aria')}
+    style:left="{at.x}px"
+    style:top="{at.y}px"
+    bind:this={inputEl}
+    value={draft}
+    oninput={onInput}
+    onkeydown={onInputKey}
+    onblur={() => {
+      if (!committing) stopEdit();
+    }}
+    onanimationend={(e) => e.currentTarget.classList.remove('shake')}
+  />
+{/if}
 
 <style>
   .notch {
@@ -250,6 +398,47 @@
     color: var(--text-muted);
   }
 
+  /* Horizontal over the vertical `#N`: two digits read better upright. */
+  .notch-edit {
+    position: absolute;
+    z-index: 1;
+    width: 3.2ch;
+    box-sizing: content-box;
+    margin: 0;
+    padding: 3px 4px;
+    transform: translate(-50%, -50%);
+    border: 1px solid var(--text-muted);
+    border-radius: 5px;
+    background: var(--bg-surface);
+    color: rgb(var(--color-glow));
+    font-family: var(--font-code);
+    font-size: 12.5px;
+    font-weight: 600;
+    text-align: center;
+    outline: none;
+    box-shadow: 0 2px 8px rgba(var(--tabs-shadow-rgb), var(--tabs-shadow-a));
+  }
+
+  .notch-edit:global(.shake) {
+    animation: shake 0.32s ease-in-out;
+  }
+
+  /* `translate(-50%, -50%)` stays in every step: the input is centred by it. */
+  @keyframes shake {
+    20% {
+      transform: translate(calc(-50% - 4px), -50%);
+    }
+    40% {
+      transform: translate(calc(-50% + 4px), -50%);
+    }
+    60% {
+      transform: translate(calc(-50% - 3px), -50%);
+    }
+    80% {
+      transform: translate(calc(-50% + 2px), -50%);
+    }
+  }
+
   @keyframes shimmerV {
     0% {
       background-position: 50% 0%;
@@ -274,6 +463,11 @@
     }
     .notch:global(.bump) .cnt {
       animation: none;
+    }
+    /* No movement: the refusal shows as a border until the next keystroke. */
+    .notch-edit:global(.shake) {
+      animation: none;
+      border-color: var(--text-primary);
     }
   }
 </style>

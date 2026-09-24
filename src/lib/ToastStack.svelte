@@ -149,6 +149,8 @@
             <strong>{t('toast.save_as_blocked.headline', { fileName: toast.payload.fileName })}</strong>
           </span>
           <span class="md-toast-dim">{t(SAVE_AS_BLOCKED_KEYS[toast.payload.reason])}</span>
+        {:else if toast.payload.kind === 'window-number'}
+          <span class="md-toast-text">{t('toast.window_number.taken', { number: toast.payload.number })}</span>
         {:else if toast.payload.kind === 'update'}
           <span class="md-toast-text">
             <strong>{t('toast.update.headline', { latest: toast.payload.latest })}</strong>

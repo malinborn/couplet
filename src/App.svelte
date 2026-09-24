@@ -35,7 +35,8 @@
   import type { TabDrawerHandle } from './lib/tabs/TabDrawer.svelte';
   import type { GitInfo } from './lib/tabs/drawer-data';
   import { tabNames } from './lib/tabs/tab-name';
-  import { createToastStore } from './lib/toasts.svelte';
+  import { createToastStore, type ToastPayload } from './lib/toasts.svelte';
+  import { WINDOW_NUMBER_TOAST_MS, renumberWindow, type RenumberResult } from './lib/tabs/window-number';
   import { shouldShowHint, nextCheckDelay } from './lib/ai-hint';
   import { previewCompartment, lineGlowCompartment } from './lib/editor/setup';
   import { stashAndUnfoldAll, restoreStashedFolds } from './lib/editor/fold-memory';
@@ -703,6 +704,21 @@
     const id = toasts.push({ kind: 'tabs-moved', label: moved[0].label, numbers: moved.map((m) => m.number) });
     // Never cleared, and needn't be: dismiss is by id, so once a newer toast replaced this one it closes nothing.
     setTimeout(() => toasts.dismiss(id), TABS_MOVED_TOAST_MS);
+  }
+
+  /** A toast that answers a key and goes by itself («Номер #N занят»). */
+  function quietToast(payload: ToastPayload): void {
+    const id = toasts.push(payload);
+    setTimeout(() => toasts.dismiss(id), WINDOW_NUMBER_TOAST_MS);
+  }
+
+  /** The notch's edit of `#N` (spec §3). */
+  function renumber(number: number): Promise<RenumberResult> {
+    return renumberWindow(number, {
+      setNumber: (n) => invoke<RenumberResult>('window_set_number', { number: n }),
+      apply: setWindowNumber,
+      toast: quietToast,
+    });
   }
 
   /** «В новые окна» (spec §6): each tab through `tab_move`, into a window of its own. */
@@ -2371,6 +2387,7 @@
     carouselOn = on;
   }}
   onrestorefocus={() => editorHandle?.view?.focus()}
+  onrenumber={renumber}
 />
 
 <TransientBar
