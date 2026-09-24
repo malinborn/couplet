@@ -1238,7 +1238,7 @@
    *
    * Runs after every rebuild of the cards. Three cases, and the third is the
    * one that matters: a thread that is `paused` with a deadline already behind
-   * it was left that way by an couplet that did not survive to commit it, and
+   * it was left that way by a couplet that did not survive to commit it, and
    * committing it here is how the app heals the file it just opened. The same
    * state also reaches agents on its own — `awaiting` in `comments.rs` reads an
    * expired pause as waiting — this only makes it prompt.

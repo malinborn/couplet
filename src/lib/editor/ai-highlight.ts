@@ -22,7 +22,7 @@ const aiPulseLine = Decoration.line({ class: 'cm-ai-pulse' });
 
 /**
  * Holds decorations for AI-driven edits: a subtle background mark on the spans
- * an `couplet ai edit` just changed, a full-width line wash on every line those
+ * a `couplet ai edit` just changed, a full-width line wash on every line those
  * spans touch (so the edit reads at a glance, not just at the exact chars),
  * and a self-describing pulse line for `couplet ai show`. Ranges are mapped
  * through user edits so highlights survive typing nearby, and a mark collapsed
