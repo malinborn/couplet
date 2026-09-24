@@ -26,7 +26,9 @@ pub struct WindowTabs {
     /// `#N` in the title; `None` only when all 99 were in use.
     pub number: Option<u32>,
     /// Its frontend has pulled `get_window_init`. Before that an event sent to
-    /// it is lost, so a file must reach it through `PendingFiles`.
+    /// it is lost, so a file must reach it through `PendingFiles`; after it, a
+    /// file arrives as an event only, so the frontend's listeners must exist
+    /// before it pulls — see `get_window_init`.
     pub mounted: bool,
 }
 

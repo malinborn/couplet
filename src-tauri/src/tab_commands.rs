@@ -2,12 +2,14 @@
 //! decided and applied here under the one `OpenFiles` lock — the pure
 //! functions are the decision, the commands wire it to a window.
 
+use std::collections::HashMap;
+
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::session::SessionState;
 use crate::tabs::TabRegistry;
-use crate::window::{self, OpenFiles};
+use crate::window::{self, OpenFiles, PendingFiles, PendingOpen};
 
 /// Who holds a path, seen from the calling window.
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -37,10 +39,12 @@ pub fn owner_for(
     }
 }
 
-/// `owner_for` said nobody: drop the entry of a dead window still holding it.
-fn drop_dead_holder(reg: &mut TabRegistry, path: &str) {
+/// `owner_for` said nobody: drop the entry of a dead window still holding it,
+/// and the payload it never came to pull.
+fn drop_dead_holder(reg: &mut TabRegistry, pending: &mut HashMap<String, PendingOpen>, path: &str) {
     if let Some((label, _)) = reg.owner_of(path) {
         reg.remove_window(&label);
+        pending.remove(&label);
     }
 }
 
@@ -65,6 +69,7 @@ pub enum TabOpened {
 /// step under one lock, so two windows opening one file cannot both get it.
 pub fn open_tab(
     reg: &mut TabRegistry,
+    pending: &mut HashMap<String, PendingOpen>,
     caller: &str,
     path: Option<&str>,
     new_id: String,
@@ -74,7 +79,7 @@ pub fn open_tab(
         match owner_for(reg, path, caller, &is_live) {
             TabOwner::ThisWindow { tab_id } => return TabOpened::ThisWindow { tab_id },
             TabOwner::OtherWindow { label } => return TabOpened::OtherWindow { label },
-            TabOwner::None => drop_dead_holder(reg, path),
+            TabOwner::None => drop_dead_holder(reg, pending, path),
         }
     }
     reg.add_tab(caller, &new_id, path.map(str::to_string));
@@ -92,11 +97,14 @@ pub enum TabClaim {
     OtherWindow {
         label: String,
     },
+    /// `tab_id` is another window's tab: nothing was claimed.
+    Refused,
 }
 
 /// Save As: point `caller`'s tab at `path`, unless another tab holds it.
 pub fn claim_path(
     reg: &mut TabRegistry,
+    pending: &mut HashMap<String, PendingOpen>,
     caller: &str,
     tab_id: &str,
     path: &str,
@@ -106,12 +114,13 @@ pub fn claim_path(
         TabOwner::ThisWindow { tab_id: holder } if holder == tab_id => return TabClaim::Claimed,
         TabOwner::ThisWindow { tab_id: holder } => return TabClaim::ThisWindow { tab_id: holder },
         TabOwner::OtherWindow { label } => return TabClaim::OtherWindow { label },
-        TabOwner::None => drop_dead_holder(reg, path),
+        TabOwner::None => drop_dead_holder(reg, pending, path),
     }
-    if !reg.set_tab_path(caller, tab_id, path) {
-        reg.add_tab(caller, tab_id, Some(path.to_string()));
+    if reg.set_tab_path(caller, tab_id, path) || reg.add_tab(caller, tab_id, Some(path.to_string())) {
+        TabClaim::Claimed
+    } else {
+        TabClaim::Refused
     }
-    TabClaim::Claimed
 }
 
 fn live_windows(app: &AppHandle) -> impl Fn(&str) -> bool + '_ {
@@ -137,8 +146,11 @@ pub async fn tab_open(
 ) -> Result<TabOpened, String> {
     let open_files = app.state::<OpenFiles>();
     let mut reg = open_files.0.lock().unwrap();
+    let pending = app.state::<PendingFiles>();
+    let mut pending = pending.0.lock().unwrap();
     Ok(open_tab(
         &mut reg,
+        &mut pending,
         window.label(),
         path.as_deref(),
         crate::session::new_tab_id(),
@@ -154,15 +166,15 @@ pub async fn tab_claim(
     path: String,
 ) -> Result<TabClaim, String> {
     let label = window.label().to_string();
-    let (claim, is_active) = {
-        let open_files = app.state::<OpenFiles>();
-        let mut reg = open_files.0.lock().unwrap();
-        let claim = claim_path(&mut reg, &label, &tab_id, &path, live_windows(&app));
-        let is_active =
-            reg.window(&label).and_then(|w| w.active.as_deref()) == Some(tab_id.as_str());
-        (claim, is_active)
+    let open_files = app.state::<OpenFiles>();
+    let mut reg = open_files.0.lock().unwrap();
+    let claim = {
+        let pending = app.state::<PendingFiles>();
+        let mut pending = pending.0.lock().unwrap();
+        claim_path(&mut reg, &mut pending, &label, &tab_id, &path, live_windows(&app))
     };
     // The watcher follows the active tab onto its new file.
+    let is_active = reg.window(&label).and_then(|w| w.active.as_deref()) == Some(tab_id.as_str());
     if claim == TabClaim::Claimed && is_active {
         window::set_watcher(&app, &label, Some(&path));
     }
@@ -171,15 +183,29 @@ pub async fn tab_claim(
 
 /// A tab that never came to show its file (an aborted open, an unreadable
 /// restored tab, a blank tab a file replaced) gives its claim back. Nothing
-/// goes onto the closed stack: nothing was closed.
+/// goes onto the closed stack: nothing was closed. Agents still waiting on
+/// its file are failed — they would otherwise be answered by whatever tab
+/// shows that file next, or never.
 #[tauri::command]
 pub async fn tab_release(
     app: AppHandle,
     window: tauri::WebviewWindow,
     tab_id: String,
 ) -> Result<(), String> {
-    let open_files = app.state::<OpenFiles>();
-    open_files.0.lock().unwrap().remove_tab(window.label(), &tab_id);
+    let label = window.label().to_string();
+    let released = {
+        let open_files = app.state::<OpenFiles>();
+        let mut reg = open_files.0.lock().unwrap();
+        let was_active = reg.window(&label).and_then(|w| w.active.as_deref()) == Some(tab_id.as_str());
+        let released = reg.remove_tab(&label, &tab_id);
+        if released.is_some() && was_active {
+            window::set_watcher(&app, &label, None);
+        }
+        released
+    };
+    if let Some(path) = released.and_then(|t| t.path) {
+        crate::ai_socket::cancel_for_tab(&app, &label, &path, "tab released");
+    }
     Ok(())
 }
 
@@ -191,15 +217,11 @@ pub async fn tab_activate(
     tab_id: String,
 ) -> Result<(), String> {
     let label = window.label().to_string();
-    let path = {
-        let open_files = app.state::<OpenFiles>();
-        let mut reg = open_files.0.lock().unwrap();
-        if !reg.set_active(&label, &tab_id) {
-            return Ok(());
-        }
-        reg.tab_path(&label, &tab_id)
-    };
-    window::set_watcher(&app, &label, path.as_deref());
+    let open_files = app.state::<OpenFiles>();
+    let mut reg = open_files.0.lock().unwrap();
+    if reg.set_active(&label, &tab_id) {
+        window::set_watcher(&app, &label, reg.tab_path(&label, &tab_id).as_deref());
+    }
     Ok(())
 }
 
@@ -215,20 +237,21 @@ pub async fn tab_close(
     top_line: usize,
 ) -> Result<(), String> {
     let label = window.label().to_string();
-    let (removed, number, was_active) = {
+    let (removed, number) = {
         let open_files = app.state::<OpenFiles>();
         let mut reg = open_files.0.lock().unwrap();
         let was_active =
             reg.window(&label).and_then(|w| w.active.as_deref()) == Some(tab_id.as_str());
         let number = reg.window(&label).and_then(|w| w.number);
-        (reg.remove_tab(&label, &tab_id), number, was_active)
+        let removed = reg.remove_tab(&label, &tab_id);
+        if removed.is_some() && was_active {
+            window::set_watcher(&app, &label, None);
+        }
+        (removed, number)
     };
     let Some(tab) = removed else {
         return Ok(());
     };
-    if was_active {
-        window::set_watcher(&app, &label, None);
-    }
 
     let session = app.state::<SessionState>();
     // At once, not at the next heartbeat: a quit in between would restore it.
@@ -279,7 +302,7 @@ mod tests {
     fn open_tab_claims_a_free_file_for_the_caller() {
         let mut reg = TabRegistry::new();
         assert_eq!(
-            open_tab(&mut reg, "main", Some("/a.md"), "t1".to_string(), |_| true),
+            open_tab(&mut reg, &mut HashMap::new(), "main", Some("/a.md"), "t1".to_string(), |_| true),
             TabOpened::Created { tab_id: "t1".to_string() }
         );
         assert_eq!(reg.owner_of("/a.md"), Some(("main".to_string(), "t1".to_string())));
@@ -289,11 +312,11 @@ mod tests {
     fn open_tab_changes_nothing_for_a_file_already_held() {
         let mut reg = reg_with(&[("main", "a", Some("/a.md")), ("editor-2", "b", Some("/b.md"))]);
         assert_eq!(
-            open_tab(&mut reg, "main", Some("/a.md"), "t9".to_string(), |_| true),
+            open_tab(&mut reg, &mut HashMap::new(), "main", Some("/a.md"), "t9".to_string(), |_| true),
             TabOpened::ThisWindow { tab_id: "a".to_string() }
         );
         assert_eq!(
-            open_tab(&mut reg, "main", Some("/b.md"), "t9".to_string(), |_| true),
+            open_tab(&mut reg, &mut HashMap::new(), "main", Some("/b.md"), "t9".to_string(), |_| true),
             TabOpened::OtherWindow { label: "editor-2".to_string() }
         );
         assert_eq!(reg.window("main").unwrap().tabs.len(), 1);
@@ -303,17 +326,34 @@ mod tests {
     fn open_tab_takes_over_a_file_whose_window_is_gone() {
         let mut reg = reg_with(&[("editor-2", "b", Some("/b.md"))]);
         assert_eq!(
-            open_tab(&mut reg, "main", Some("/b.md"), "t1".to_string(), |l| l != "editor-2"),
+            open_tab(&mut reg, &mut HashMap::new(), "main", Some("/b.md"), "t1".to_string(), |l| l != "editor-2"),
             TabOpened::Created { tab_id: "t1".to_string() }
         );
         assert!(reg.window("editor-2").is_none(), "the stale window entry is dropped");
     }
 
     #[test]
+    fn taking_over_from_a_dead_window_drops_the_payload_it_never_pulled() {
+        let mut reg = reg_with(&[("editor-2", "b", Some("/b.md"))]);
+        let mut pending = HashMap::from([
+            ("editor-2".to_string(), PendingOpen::single_file("b".to_string(), "/b.md".to_string())),
+            ("editor-3".to_string(), PendingOpen::default()),
+        ]);
+        open_tab(&mut reg, &mut pending, "main", Some("/b.md"), "t1".to_string(), |l| l != "editor-2");
+        assert!(!pending.contains_key("editor-2"));
+        assert!(pending.contains_key("editor-3"), "other windows' payloads are untouched");
+
+        let mut reg = reg_with(&[("editor-2", "b", Some("/b.md")), ("main", "a", None)]);
+        let mut pending = HashMap::from([("editor-2".to_string(), PendingOpen::default())]);
+        assert_eq!(claim_path(&mut reg, &mut pending, "main", "a", "/b.md", |l| l != "editor-2"), TabClaim::Claimed);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
     fn open_tab_without_a_path_always_creates_an_untitled_tab() {
         let mut reg = reg_with(&[("main", "a", None)]);
         assert_eq!(
-            open_tab(&mut reg, "main", None, "t2".to_string(), |_| true),
+            open_tab(&mut reg, &mut HashMap::new(), "main", None, "t2".to_string(), |_| true),
             TabOpened::Created { tab_id: "t2".to_string() }
         );
         assert_eq!(reg.window("main").unwrap().tabs.len(), 2);
@@ -322,20 +362,20 @@ mod tests {
     #[test]
     fn claim_path_points_the_tab_at_a_free_file() {
         let mut reg = reg_with(&[("main", "a", None)]);
-        assert_eq!(claim_path(&mut reg, "main", "a", "/new.md", |_| true), TabClaim::Claimed);
+        assert_eq!(claim_path(&mut reg, &mut HashMap::new(), "main", "a", "/new.md", |_| true), TabClaim::Claimed);
         assert_eq!(reg.tab_path("main", "a").as_deref(), Some("/new.md"));
-        assert_eq!(claim_path(&mut reg, "main", "a", "/new.md", |_| true), TabClaim::Claimed, "idempotent");
+        assert_eq!(claim_path(&mut reg, &mut HashMap::new(), "main", "a", "/new.md", |_| true), TabClaim::Claimed, "idempotent");
     }
 
     #[test]
     fn claim_path_never_takes_a_file_another_tab_holds() {
         let mut reg = reg_with(&[("main", "a", None), ("main", "b", Some("/b.md")), ("editor-2", "x", Some("/x.md"))]);
         assert_eq!(
-            claim_path(&mut reg, "main", "a", "/b.md", |_| true),
+            claim_path(&mut reg, &mut HashMap::new(), "main", "a", "/b.md", |_| true),
             TabClaim::ThisWindow { tab_id: "b".to_string() }
         );
         assert_eq!(
-            claim_path(&mut reg, "main", "a", "/x.md", |_| true),
+            claim_path(&mut reg, &mut HashMap::new(), "main", "a", "/x.md", |_| true),
             TabClaim::OtherWindow { label: "editor-2".to_string() }
         );
         assert_eq!(reg.tab_path("main", "a"), None);
@@ -344,8 +384,16 @@ mod tests {
     #[test]
     fn claim_path_registers_a_tab_the_registry_does_not_know() {
         let mut reg = TabRegistry::new();
-        assert_eq!(claim_path(&mut reg, "main", "late", "/a.md", |_| true), TabClaim::Claimed);
+        assert_eq!(claim_path(&mut reg, &mut HashMap::new(), "main", "late", "/a.md", |_| true), TabClaim::Claimed);
         assert_eq!(reg.owner_of("/a.md"), Some(("main".to_string(), "late".to_string())));
+    }
+
+    #[test]
+    fn claim_path_with_a_foreign_tab_id_claims_nothing() {
+        let mut reg = reg_with(&[("editor-2", "x", None)]);
+        assert_eq!(claim_path(&mut reg, &mut HashMap::new(), "main", "x", "/a.md", |_| true), TabClaim::Refused);
+        assert!(!reg.contains_path("/a.md"));
+        assert_eq!(reg.window("editor-2").unwrap().tabs[0].path, None);
     }
 
     #[test]
@@ -364,5 +412,6 @@ mod tests {
         );
         assert_eq!(serde_json::to_string(&TabOwner::None).unwrap(), r#"{"kind":"none"}"#);
         assert_eq!(serde_json::to_string(&TabClaim::Claimed).unwrap(), r#"{"kind":"claimed"}"#);
+        assert_eq!(serde_json::to_string(&TabClaim::Refused).unwrap(), r#"{"kind":"refused"}"#);
     }
 }

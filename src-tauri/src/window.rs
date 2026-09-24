@@ -100,6 +100,17 @@ pub fn window_init(
 }
 
 /// IPC command: what this window shows on mount. Replaces `get_pending_file`.
+///
+/// The contract with the frontend:
+/// - Its `open-file` and `reopen-tab` listeners are registered — awaited —
+///   BEFORE this is called. The window counts as mounted from here on, and a
+///   file for it arrives as one of those events instead of in this payload;
+///   one arriving before the listeners exist is lost.
+/// - The tabs returned are already registered. The frontend calls
+///   `tab_activate` for the active one (that is what points the watcher at
+///   it) and never `tab_open` for any of them.
+/// - A tab from `open-file` / `reopen-tab` is not registered: it goes through
+///   `tab_open`, which checks ownership and claims it.
 #[tauri::command]
 pub async fn get_window_init(
     app: AppHandle,
@@ -193,6 +204,9 @@ pub fn hand_over_tab(app: &AppHandle, label: &str, tab: PendingTab) -> Handover 
 /// Point `label`'s one watcher at `path`, or stop watching (`None`, or a file
 /// that does not exist yet). Background tabs are not watched; returning to
 /// one compares its file with what it held when it was left.
+///
+/// The tab commands call this with the `OpenFiles` lock held, so two of them
+/// for one window cannot leave the watcher on the tab that lost.
 pub fn set_watcher(app: &AppHandle, label: &str, path: Option<&str>) {
     let watcher = path.and_then(|p| {
         crate::watcher::watch_file(app, label.to_string(), p.to_string()).ok()
@@ -210,6 +224,9 @@ pub fn set_watcher(app: &AppHandle, label: &str, path: Option<&str>) {
 }
 
 /// Holds active file watchers keyed by window label. Dropping a watcher stops watching.
+///
+/// Lock order: `OpenFiles` → `PendingFiles` → `FileWatchers`; nothing is
+/// locked while this one is held.
 pub struct FileWatchers(pub Mutex<HashMap<String, RecommendedWatcher>>);
 
 impl FileWatchers {
@@ -407,6 +424,8 @@ pub fn untrack_window(app: &AppHandle, label: &str) {
     let paths: Vec<String> = {
         let open_files = app.state::<OpenFiles>();
         let mut reg = open_files.0.lock().unwrap();
+        // A window closed before it mounted never pulled its payload.
+        app.state::<PendingFiles>().0.lock().unwrap().remove(label);
         reg.remove_window(label)
             .map(|w| w.tabs.into_iter().filter_map(|t| t.path).collect())
             .unwrap_or_default()

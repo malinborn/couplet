@@ -238,7 +238,10 @@ impl Default for ClosedStack {
     }
 }
 
-/// What `reopen-tab` carries to a live window.
+/// What `reopen-tab` carries to a mounted window. The tab is not registered:
+/// the frontend opens it through `tab_open` at this caret, and must have its
+/// listener in place before it pulls `get_window_init` — an entry sent to a
+/// window without one is gone.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReopenTab {
