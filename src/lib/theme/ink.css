@@ -37,7 +37,6 @@
   --color-list-marker: #8a84a0;
   --color-checkbox: #e8563f;
   --color-table-border: #dad6e4;
-  --color-table-header-bg: #e6e3ee;
   --color-table-even-bg: #ebe9f1;
   --table-header-grad: linear-gradient(135deg, #f3dde0 0%, #ebe3ee 50%, #e4e0ee 100%);
   --table-header-text: #1f1b2e;
@@ -91,7 +90,6 @@
   --color-list-marker: #9a8f98;
   --color-checkbox: #ff8a6a;
   --color-table-border: #362f4a;
-  --color-table-header-bg: #27223a;
   --color-table-even-bg: #231e33;
   --table-header-grad: linear-gradient(135deg, #3a2238 0%, #2c2340 45%, #262038 100%);
   --table-header-text: #ff8a6a;

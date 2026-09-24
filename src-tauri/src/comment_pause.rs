@@ -130,6 +130,17 @@ pub fn commit_document(doc: &Path) {
     }
 }
 
+/// IPC command: commit whatever a document's comment pauses were mid-typing.
+/// A tab switch (`lib/tabs/controller.ts`) calls this for the document it is
+/// about to leave, so a countdown started a moment before the switch is handed
+/// over instead of ticking down inside a window that no longer shows that
+/// document.
+#[tauri::command]
+pub async fn commit_document_pauses(path: String) -> Result<(), String> {
+    commit_document(Path::new(&path));
+    Ok(())
+}
+
 /// Commit every pause on every document the app still has open.
 ///
 /// This is the answer to "who flips the status if the app is closed five
@@ -147,22 +158,22 @@ pub fn commit_all_open(app: &tauri::AppHandle) {
     }
 }
 
-/// The document a window is showing, if it has one.
-pub fn document_of_window(app: &tauri::AppHandle, label: &str) -> Option<PathBuf> {
+/// Every document a window holds, in any tab.
+pub fn documents_of_window(app: &tauri::AppHandle, label: &str) -> Vec<PathBuf> {
     let open_files = app.state::<crate::window::OpenFiles>();
-    let map = open_files.0.lock().ok()?;
-    map.iter()
-        .find(|(_, window)| window.as_str() == label)
-        .map(|(path, _)| PathBuf::from(path))
+    let Ok(reg) = open_files.0.lock() else {
+        return Vec::new();
+    };
+    reg.paths_of(label).into_iter().map(PathBuf::from).collect()
 }
 
 /// Every document currently open in a window.
 fn open_documents(app: &tauri::AppHandle) -> Vec<PathBuf> {
     let open_files = app.state::<crate::window::OpenFiles>();
-    let Ok(map) = open_files.0.lock() else {
+    let Ok(reg) = open_files.0.lock() else {
         return Vec::new();
     };
-    map.keys().map(PathBuf::from).collect()
+    reg.paths().into_iter().map(PathBuf::from).collect()
 }
 
 #[cfg(test)]

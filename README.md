@@ -4,11 +4,11 @@ A markdown editor for macOS where you and your AI agent work in the same open do
 
 mdmini contains no AI of its own and talks to no cloud. It exposes a local Unix socket and a stdio MCP server; the intelligence is whatever agent you already use — Claude Code, or anything that speaks MCP or can run a shell command. Nothing leaves your machine.
 
-[![Release](https://img.shields.io/github/v/release/malinborn/mdmini?color=blue)](https://github.com/malinborn/mdmini/releases)
+[![Release](https://img.shields.io/github/v/release/malinborn/couplet?color=blue)](https://github.com/malinborn/couplet/releases)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/malinborn/mdmini)](https://github.com/malinborn/mdmini/stargazers)
+[![Stars](https://img.shields.io/github/stars/malinborn/couplet)](https://github.com/malinborn/couplet/stargazers)
 
-**[Website](https://md-mini.com)** · **[Releases](https://github.com/malinborn/mdmini/releases)** · **[AI interface reference](docs/ai-interface.md)**
+**[Website](https://md-mini.com)** · **[Releases](https://github.com/malinborn/couplet/releases)** · **[AI interface reference](docs/ai-interface.md)**
 
 ![mdmini](docs/screenshot.png)
 
@@ -20,7 +20,7 @@ brew trust malinborn/mdmini
 brew install --cask mdmini
 ```
 
-Or download the universal `.dmg` from [Releases](https://github.com/malinborn/mdmini/releases) — one build for Apple Silicon and Intel.
+Or download the universal `.dmg` from [Releases](https://github.com/malinborn/couplet/releases) — one build for Apple Silicon and Intel.
 
 Upgrade later with:
 

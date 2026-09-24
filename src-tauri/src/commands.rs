@@ -1,19 +1,7 @@
 use crate::atomic_write::{self, NewFileMode};
 use std::fs;
 use std::path::Path;
-use tauri::{command, AppHandle, Emitter, Manager};
-
-/// Returns and removes the pending payload for the calling window, if any.
-/// Called by the frontend in onMount to pick up files passed via CLI args,
-/// a new-window open, or a session restore.
-#[command]
-pub async fn get_pending_file(
-    window: tauri::Window,
-    state: tauri::State<'_, crate::window::PendingFiles>,
-) -> Result<Option<crate::window::PendingOpen>, String> {
-    let mut map = state.0.lock().map_err(|e| e.to_string())?;
-    Ok(map.remove(window.label()))
-}
+use tauri::{command, AppHandle, Emitter};
 
 #[command]
 pub async fn read_file(path: String) -> Result<String, String> {
@@ -94,11 +82,38 @@ pub async fn sync_ocd_alignment_menu(
     Ok(())
 }
 
+/// Sets View → Tabs → Compact to the frontend's persisted flag — the same
+/// start-up sync as `sync_ocd_alignment_menu`, for the same reason: `lib.rs`
+/// sends windows this toggle's value from `ViewToggleItems`, not "flip it".
+#[command]
+pub async fn sync_tabs_compact_menu(
+    state: tauri::State<'_, crate::menu::ViewToggleItems>,
+    enabled: bool,
+) -> Result<(), String> {
+    state.sync_tabs_compact(enabled);
+    Ok(())
+}
+
+/// Sets File → quick looks' radio pair to the frontend's policy (`"keep"` |
+/// `"close"`). Called at start and after every click: macOS toggles the
+/// clicked item natively, and this corrects the pair.
+#[command]
+pub async fn sync_transient_menu(
+    state: tauri::State<'_, crate::menu::TransientMenuItems>,
+    policy: String,
+) -> Result<(), String> {
+    state.sync(&policy);
+    Ok(())
+}
+
 /// Broadcasts a `/theme` slash-command commit to every window, over the same
-/// `menu-event` path a native Theme-menu click already uses (see `lib.rs`'s
-/// "Broadcast all other menu events to all windows"). `App.svelte`'s
-/// `menu-event` switch is unchanged by this: it cannot tell this call apart
-/// from a real click on the Theme menu.
+/// `menu-event` path a native Theme-menu click already uses (`MenuRoute::Broadcast`
+/// in `lib.rs`). `App.svelte`'s `menu-event` switch is unchanged by this: it
+/// cannot tell this call apart from a real click on the Theme menu.
+///
+/// One `app.emit` per id, not one per window: a window's `emit` is itself a
+/// broadcast, so a loop over the windows would deliver each id N times to each
+/// of N windows (see the CLAUDE.md gotcha).
 ///
 /// A concrete theme needs two ids — family and half — because the native
 /// menu only ever changes one of them per click, while a `/theme` commit
@@ -114,9 +129,7 @@ pub async fn broadcast_theme(
 ) -> Result<(), String> {
     let ids = theme_event_ids(family, half, follow_system)?;
     for id in &ids {
-        for (_label, win) in app.webview_windows() {
-            let _ = win.emit("menu-event", id);
-        }
+        let _ = app.emit("menu-event", id);
     }
     Ok(())
 }

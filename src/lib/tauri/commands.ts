@@ -3,13 +3,28 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import type { ConcreteTheme, ThemeFamily, ThemeHalf } from '../theme-resolve';
 import type { EditorEngine } from '../stores.svelte';
 import type { CommentThread } from '../comment-format';
+import type { InboxItem } from '../tabs/agent-inbox';
+import { applyLineEnding, fromDisk, type DiskDocument, type LineEnding } from '../line-endings';
 
-export async function readFile(path: string): Promise<string> {
-  return invoke<string>('read_file', { path });
+/**
+ * Read a document from disk, normalized to LF for the editor.
+ *
+ * The one read boundary for document text: the raw string from `read_file`
+ * never reaches the editor, because CM6 would normalize `\r\n` itself and
+ * every length computed from the raw string would then be wrong — see
+ * `line-endings.ts`. `fallback` is the ending to assume when the file has no
+ * line break at all.
+ */
+export async function readDocument(path: string, fallback: LineEnding = 'lf'): Promise<DiskDocument> {
+  return fromDisk(await invoke<string>('read_file', { path }), fallback);
 }
 
-export async function writeFile(path: string, content: string): Promise<void> {
-  return invoke('write_file', { path, content });
+/**
+ * Write editor (LF) text to disk in the file's own line ending — the mirror of
+ * `readDocument`, and the one write boundary for document text.
+ */
+export async function writeDocument(path: string, text: string, lineEnding: LineEnding): Promise<void> {
+  return invoke('write_file', { path, content: applyLineEnding(text, lineEnding) });
 }
 
 export async function fileExists(path: string): Promise<boolean> {
@@ -64,6 +79,16 @@ export function syncOcdAlignmentMenu(enabled: boolean): void {
   invoke('sync_ocd_alignment_menu', { enabled }).catch(() => {});
 }
 
+/** Sets View → Tabs → Compact; harmless no-op outside Tauri. */
+export function syncTabsCompactMenu(enabled: boolean): void {
+  invoke('sync_tabs_compact_menu', { enabled }).catch(() => {});
+}
+
+/** Sets File → quick looks' radio pair; harmless no-op outside Tauri. */
+export function syncTransientMenu(policy: 'keep' | 'close'): void {
+  invoke('sync_transient_menu', { policy }).catch(() => {});
+}
+
 const FILE_FILTERS = [
   { name: 'All Supported', extensions: ['md', 'markdown', 'txt', 'csv', 'json', 'yml', 'yaml', 'toml', 'py', 'rs', 'ts', 'js', 'sh', 'env'] },
   { name: 'Markdown', extensions: ['md', 'markdown', 'txt'] },
@@ -88,13 +113,41 @@ export async function showSaveDialog(defaultName?: string): Promise<string | nul
   return result as string | null;
 }
 
-/** Matches `PendingOpen` in src-tauri/src/window.rs. */
-export interface PendingOpen {
+/** One tab a window opens with. Matches `PendingTab` in src-tauri/src/window.rs. */
+export interface PendingTab {
+  tabId: string;
   path: string | null;
+  /** Text of an untitled tab being restored. */
   content: string | null;
   cursor: number;
   topLine: number;
+  /** Drawer stamps, ms since the epoch; `0` / `false` for a new tab. */
+  openedAt: number;
+  viewedAt: number;
+  unviewed: boolean;
+  /** A quick look carried by a move between windows (plan 05); `false` otherwise. */
+  transient: boolean;
+  transientSeenAt: number;
+  /** What waited for the tab in its old window's agent inbox; absent unless it moved. */
+  inbox?: InboxItem[];
 }
+
+/** What a window loads on mount. Matches `WindowInit` in src-tauri/src/window.rs. */
+export interface WindowInit {
+  /** `#N`; null when all 99 were taken. */
+  number: number | null;
+  tabs: PendingTab[];
+  activeTabId: string | null;
+}
+
+/** What `tab_claim` answers (Save As). Matches `TabClaim` in src-tauri/src/tab_commands.rs. */
+export type TabClaim =
+  /** `path`: the file as the registry spells it (normalized) — the tab takes that one. */
+  | { kind: 'claimed'; path?: string | null }
+  | { kind: 'this-window'; tabId: string }
+  | { kind: 'other-window'; label: string }
+  /** The tab id is another window's: nothing was claimed. */
+  | { kind: 'refused' };
 
 /**
  * Comment threads of a document, read from its `.mdmini_comments_<doc>.md`

@@ -16,6 +16,12 @@ function hidePopup(): void {
   document.removeEventListener('click', onOutsideClick, true);
 }
 
+/** Close the gutter "+" popup, if open. Called before the window swaps documents. */
+export function hideHoverMenu(): void {
+  hidePopup();
+  activeView = null;
+}
+
 function onOutsideClick(e: MouseEvent): void {
   if (activePopup && !activePopup.contains(e.target as Node)) {
     hidePopup();

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { minimalEdit } from './cell-edit-session';
+import { describe, it, expect, vi } from 'vitest';
+import { minimalEdit, setCellEditSession, activeCellEditSession } from './cell-edit-session';
 
 /**
  * `minimalEdit` is what keeps Cmd+Z meaningful inside a cell edit overlay
@@ -61,5 +61,33 @@ describe('minimalEdit', () => {
   it('handles a pure deletion', () => {
     const edit = minimalEdit('a**b**c', 'a**b**');
     expect(edit).toEqual({ from: 6, to: 7, insert: '' });
+  });
+});
+
+/**
+ * The published session is what a tab switch (`lib/tabs/controller.ts`) reaches the overlay through
+ * before it replaces the document, so the registry must hand back the very
+ * `commit` the overlay registered. The overlay's own commit is DOM (see above).
+ */
+describe('activeCellEditSession().commit', () => {
+  it('reaches the commit the overlay published', () => {
+    const commit = vi.fn();
+    const textarea = {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as HTMLTextAreaElement;
+    setCellEditSession({
+      textarea,
+      replace: vi.fn(),
+      commitAndMap: vi.fn(() => ({ from: 0, to: 0 })),
+      commit,
+    });
+    try {
+      activeCellEditSession()?.commit();
+      expect(commit).toHaveBeenCalledOnce();
+    } finally {
+      setCellEditSession(null);
+    }
+    expect(activeCellEditSession()).toBeNull();
   });
 });

@@ -9,8 +9,12 @@ import {
   type ThemeHalf,
   type ConcreteTheme,
 } from './theme-resolve';
+import { invoke } from '@tauri-apps/api/core';
 import { t } from './i18n';
 import { applyWindowZoom, clampZoom, stepZoom } from './window-zoom';
+import { windowTitle } from './window-title';
+import type { TransientPolicy } from './tabs/controller';
+import type { LineEnding } from './line-endings';
 
 /**
  * Third mode added alongside the original binary `live-preview | raw`:
@@ -258,6 +262,37 @@ export function createLineGlowStore() {
   };
 }
 
+/** View → Tabs → Compact (spec §6): one-line drawer cards. Off by default. */
+export function createTabsCompactStore() {
+  let enabled = $state<boolean>(loadSetting('tabsCompact', false));
+
+  return {
+    get enabled() {
+      return enabled;
+    },
+    set(value: boolean) {
+      enabled = value;
+      saveSetting('tabsCompact', enabled);
+    },
+  };
+}
+
+/** File → «Короткие показы без ответа через час» (spec §7): keep them, or close them. */
+export function createTransientPolicyStore() {
+  const stored = loadSetting<unknown>('transientIgnored', 'keep');
+  let policy = $state<TransientPolicy>(stored === 'close' ? 'close' : 'keep');
+
+  return {
+    get value(): TransientPolicy {
+      return policy;
+    },
+    set(value: TransientPolicy) {
+      policy = value;
+      saveSetting('transientIgnored', policy);
+    },
+  };
+}
+
 /**
  * Масштаб всего окна. Шаг и применение живут в `window-zoom.ts` — здесь только
  * состояние и его сохранение.
@@ -311,10 +346,27 @@ export function setProductName(name: string): void {
   if (name) productName = name;
 }
 
+/** `#N` of this window, from `get_window_init`. */
+let windowNumber = $state<number | null>(null);
+
+export function setWindowNumber(n: number | null): void {
+  windowNumber = n;
+}
+
+/** `#N` of this window; reactive when read from a template or an effect. */
+export function getWindowNumber(): number | null {
+  return windowNumber;
+}
+
 export function createFileState() {
   let filePath = $state<string | null>(null);
   let isDirty = $state(false);
   let lastSavedAt = $state<number | null>(null);
+  // Line ending the open file uses on disk. The buffer is always LF (see
+  // `line-endings.ts`); this is what a save converts back to, so a CRLF file
+  // stays CRLF. A fresh window starts at LF, which is also what an untitled
+  // document gets saved as.
+  let lineEnding = $state<LineEnding>('lf');
 
   return {
     get filePath() {
@@ -329,6 +381,12 @@ export function createFileState() {
     set isDirty(v: boolean) {
       isDirty = v;
     },
+    get lineEnding() {
+      return lineEnding;
+    },
+    set lineEnding(v: LineEnding) {
+      lineEnding = v;
+    },
     get lastSavedAt() {
       return lastSavedAt;
     },
@@ -336,8 +394,8 @@ export function createFileState() {
       lastSavedAt = v;
     },
     get title() {
-      const name = filePath ? filePath.split('/').pop() : t('ui.untitled');
-      return `${isDirty ? '\u25cf ' : ''}${t('ui.window_title', { name, product: productName })}`;
+      const name = filePath ? (filePath.split('/').pop() ?? filePath) : t('ui.untitled');
+      return windowTitle({ name, dirty: isDirty, number: windowNumber, product: productName });
     },
   };
 }
@@ -347,19 +405,85 @@ export interface RecentFile {
   timestamp: number;
 }
 
+/**
+ * A window's pre-Rust `localStorage` copy is whatever an older build wrote,
+ * so it is filtered to entries Rust's `Vec<RecentFile>` will deserialize —
+ * one bad entry would otherwise reject the whole import.
+ */
+function isRecentFile(value: unknown): value is RecentFile {
+  if (typeof value !== 'object' || value === null) return false;
+  const { path, timestamp } = value as Record<string, unknown>;
+  return (
+    typeof path === 'string' &&
+    path !== '' &&
+    typeof timestamp === 'number' &&
+    Number.isSafeInteger(timestamp) &&
+    timestamp >= 0
+  );
+}
+
+/**
+ * The `md-mini:recentFiles` key is read, never written or removed: it is the
+ * one-time import source, and left intact it is also what a rollback to a
+ * pre-Rust build would still find.
+ */
+function loadLegacyRecentFiles(): RecentFile[] {
+  const raw = loadSetting<unknown>('recentFiles', []);
+  return Array.isArray(raw) ? raw.filter(isRecentFile) : [];
+}
+
+/** Rust's list plus the version it was taken at (`recent.rs::RecentSnapshot`).
+ * Broadcasts can arrive out of order; a lower version is always older. */
+export interface RecentSnapshot {
+  version: number;
+  files: RecentFile[];
+}
+
 export function createRecentFilesStore() {
-  let files = $state<RecentFile[]>(loadSetting('recentFiles', []));
+  // Starts from the old localStorage copy so the panel is non-empty on the
+  // very first paint; `init()` (called once from `onMount`) replaces this
+  // with the Rust-backed list moments later, one-time-importing this copy
+  // if Rust's own store is still empty.
+  let files = $state<RecentFile[]>(loadLegacyRecentFiles());
+  // Highest Rust version applied so far; -1 until the first snapshot.
+  let version = -1;
+  // Counts local adds, so an `init()` reply computed before one of them does
+  // not erase it — the add's own broadcast is what brings the list up to date.
+  let localAdds = 0;
 
   return {
     get list() {
       return files;
     },
     add(path: string) {
-      files = [
-        { path, timestamp: Date.now() },
-        ...files.filter((f) => f.path !== path),
-      ].slice(0, 10);
-      saveSetting('recentFiles', files);
+      if (path === '') return;
+      // Optimistic insert; Rust stamps its own time and broadcasts the result.
+      files = [{ path, timestamp: Date.now() }, ...files.filter((f) => f.path !== path)].slice(0, 10);
+      localAdds++;
+      invoke('recent_files_add', { path }).catch(() => {});
+    },
+    /** Applies a `recent-changed` broadcast, unless a snapshot at least as new
+     * was already applied — a late event must not roll the window back. */
+    setList(snapshot: RecentSnapshot) {
+      if (snapshot.version <= version) return;
+      version = snapshot.version;
+      files = snapshot.files;
+    },
+    /** Pulls the Rust-backed list, one-time-importing this window's
+     * localStorage copy if Rust's own store is still empty. Call once, from
+     * `onMount`. Outside Tauri the legacy copy simply stays. */
+    async init(): Promise<void> {
+      const legacy = files;
+      const addsBefore = localAdds;
+      let snapshot: RecentSnapshot;
+      try {
+        snapshot = await invoke<RecentSnapshot>('recent_files_import', { entries: legacy });
+      } catch {
+        return;
+      }
+      if (localAdds !== addsBefore || snapshot.version < version) return;
+      version = snapshot.version;
+      files = snapshot.files;
     },
   };
 }

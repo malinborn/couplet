@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { EditorState } from '@codemirror/state';
-import { resolveShowTarget, changedLineRanges, docRangesForLineRanges } from './ai-commands';
+import { EditorState, Text } from '@codemirror/state';
+import { history, undo, undoDepth } from '@codemirror/commands';
+import {
+  resolveShowTarget,
+  changedLineRanges,
+  docRangesForLineRanges,
+  buildAiEdit,
+  applyAiEditToState,
+} from './ai-commands';
+import { aiHighlightField, aiHighlightRanges } from './editor/ai-highlight';
 import { computeReplacement, computeChangedLineRanges } from './editor/content-diff';
 
 function makeState(doc: string): EditorState {
@@ -8,6 +16,13 @@ function makeState(doc: string): EditorState {
 }
 
 describe('resolveShowTarget', () => {
+  it('matches a CRLF find against the LF buffer', () => {
+    // An agent that read a Windows file from disk sends `\r\n` in `find`; the
+    // buffer never holds one.
+    const state = makeState('alpha\nbeta\ngamma\n');
+    expect(resolveShowTarget(state, { line: null, find: 'beta\r\ngamma' })).toBe(6);
+  });
+
   it('resolves a 1-based line to the start of that line', () => {
     const state = makeState('line1\nline2\nline3\n');
     expect(resolveShowTarget(state, { line: 2, find: null })).toBe(state.doc.line(2).from);
@@ -136,5 +151,83 @@ describe('docRangesForLineRanges', () => {
     for (const r of ranges) {
       expect(doc.sliceString(r.from, r.to)).not.toContain('\n');
     }
+  });
+});
+
+describe('buildAiEdit', () => {
+  it('NothingToDoForIdenticalContent', () => {
+    expect(buildAiEdit(makeState('a\nb'), 'a\nb')).toBeNull();
+  });
+
+  it('DescribesTheChangeItsLinesAndItsHighlight', () => {
+    const edit = buildAiEdit(makeState('a\nb\nc'), 'a\nB\nc');
+    expect(edit).not.toBeNull();
+    expect(edit!.changedLines).toEqual([[2, 2]]);
+    expect(edit!.from).toBe(2);
+    expect(edit!.highlights).toEqual([{ from: 2, to: 3 }]);
+  });
+
+  it('APureDeletionReportsTheLineItLandsOn_AndHighlightsNothing', () => {
+    const edit = buildAiEdit(makeState('a\nb\nc'), 'a\nc');
+    expect(edit!.changedLines).toEqual([[2, 2]]);
+    expect(edit!.highlights).toEqual([]);
+  });
+
+  it('CrlfAndLoneCrContentIsMeasuredAsTheDocumentWillHoldIt', () => {
+    // CM6 splits lines on \r\n and \r as well: a highlight measured on the raw
+    // text drifts by one per line and ends past the end of the document.
+    const crlf = buildAiEdit(makeState('a\nb\nc'), 'A\r\nb\r\nc\r\nd\r\ne');
+    expect(crlf!.changes.apply(Text.of(['a', 'b', 'c'])).toString()).toBe('A\nb\nc\nd\ne');
+    // Three of five lines changed: over BLOCK_REWRITE_THRESHOLD, one block,
+    // ending exactly at the end of the 9-character document.
+    expect(crlf!.highlights).toEqual([{ from: 0, to: 9 }]);
+    expect(crlf!.changedLines).toEqual([[1, 5]]);
+
+    const cr = buildAiEdit(makeState('a\nb\nc'), 'a\rB\rc');
+    expect(cr!.highlights).toEqual([{ from: 2, to: 3 }]);
+    expect(cr!.changedLines).toEqual([[2, 2]]);
+  });
+
+  it('CrlfContentEqualToTheDocumentIsNoEdit', () => {
+    expect(buildAiEdit(makeState('a\nb'), 'a\r\nb')).toBeNull();
+  });
+});
+
+describe('applyAiEditToState', () => {
+  const state = () => EditorState.create({ doc: 'a\nb\nc', extensions: [history(), aiHighlightField] });
+
+  it('AppliesTheEditWithItsHighlight_AndItIsUndoable', () => {
+    const out = applyAiEditToState(state(), 'a\nB\nc', false);
+    expect(out!.state.doc.toString()).toBe('a\nB\nc');
+    expect(aiHighlightRanges(out!.state)).toEqual([{ from: 2, to: 3 }]);
+    const undone: { state: EditorState | null } = { state: null };
+    undo({ state: out!.state, dispatch: (tr) => { undone.state = tr.state; } });
+    expect(undone.state?.doc.toString()).toBe('a\nb\nc');
+  });
+
+  it('WithShowTheCaretGoesToTheChange', () => {
+    expect(applyAiEditToState(state(), 'a\nB\nc', true)!.state.selection.main.head).toBe(2);
+    expect(applyAiEditToState(state(), 'a\nB\nc', false)!.state.selection.main.head).toBe(0);
+  });
+
+  it('NullWhenNothingChanges', () => {
+    expect(applyAiEditToState(state(), 'a\nb\nc', true)).toBeNull();
+  });
+
+  it('CrlfContentAppliesWithoutARangeError', () => {
+    const out = applyAiEditToState(state(), 'A\r\nb\r\nc\r\nd\r\ne', false);
+    expect(out!.state.doc.toString()).toBe('A\nb\nc\nd\ne');
+    expect(aiHighlightRanges(out!.state)).toEqual([{ from: 0, to: 9 }]);
+  });
+
+  it('IsItsOwnUndoStep_EvenRightAfterTheHumanTyped', () => {
+    // Within newGroupDelay (500 ms) and adjacent: history would fold the
+    // agent's edit into the human's keystroke, and one Cmd+Z would take both.
+    const typed = state().update({ changes: { from: 5, insert: 'x' }, userEvent: 'input.type' }).state;
+    const out = applyAiEditToState(typed, 'a\nb\ncxy', false);
+    expect(undoDepth(out!.state)).toBe(2);
+    const undone: { state: EditorState | null } = { state: null };
+    undo({ state: out!.state, dispatch: (tr) => { undone.state = tr.state; } });
+    expect(undone.state?.doc.toString()).toBe('a\nb\ncx');
   });
 });

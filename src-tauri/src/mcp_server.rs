@@ -134,13 +134,12 @@ fn handle_message(line: &str, config: &McpConfig) -> Option<String> {
     }
 }
 
-/// The tools exposed over MCP — `show`, `edit`, and `ask`, one-to-one with
-/// the command socket's verbs.
+/// The tools exposed over MCP — the command socket's verbs plus the local comment tools.
 fn tools_list() -> Value {
     json!([
         {
             "name": "show",
-            "description": "Open a file in md-mini (the user's markdown editor), focus its window, and optionally scroll to a location with a pulse highlight — use it to point the user at a specific place. `line` and `find` are mutually exclusive.",
+            "description": "Open a file in md-mini (the user's markdown editor) as a tab and optionally scroll to a location with a pulse highlight — use it to point the user at a specific place. `line` and `find` are mutually exclusive. The answer names the `window` (#N) it landed in: pass it back as `window_binding` in later calls. `focus` (default true) makes the tab active and brings its window forward; `focus: false` opens it in the background, where it shimmers until the user looks. The tab the user is typing in is never taken from them, and no other window comes forward while they type — then the answer says `focused: false`. With `transient` the tab asks the user «Close / Keep» by itself. Reuse the returned window; use transient for quick looks.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -155,6 +154,20 @@ fn tools_list() -> Value {
                     "find": {
                         "type": "string",
                         "description": "First-occurrence text search to scroll to. Mutually exclusive with `line`."
+                    },
+                    "window_binding": {
+                        "type": "integer",
+                        "description": "The #N of the window to open it in — a `window` an earlier answer returned. A number no window has is an error listing the open windows. Omitted: the file's own tab if it is open, else a window of the file's project, else a new window."
+                    },
+                    "focus": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "true: make the tab active and bring its window forward. false: open it in the background."
+                    },
+                    "transient": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "A quick look: the tab asks the user «Close / Keep» by itself, answered locally — nothing more comes back to you."
                     }
                 },
                 "required": ["path"]
@@ -177,6 +190,10 @@ fn tools_list() -> Value {
                     "show": {
                         "type": "boolean",
                         "description": "Also scroll to the changed span."
+                    },
+                    "window_binding": {
+                        "type": "integer",
+                        "description": "The #N of the window to use — a `window` an earlier answer returned. Omitted: routed like `show`. An edit or a question for a tab in the background lands there without switching to it."
                     }
                 },
                 "required": ["path", "content"]
@@ -225,6 +242,10 @@ fn tools_list() -> Value {
                         "type": "boolean",
                         "default": false,
                         "description": "Also offer a free-text field: the user may type a custom answer instead of (single mode) or alongside (`multi`) picking options. A typed answer comes back as `custom` in the response."
+                    },
+                    "window_binding": {
+                        "type": "integer",
+                        "description": "The #N of the window to use — a `window` an earlier answer returned. Omitted: routed like `show`. An edit or a question for a tab in the background lands there without switching to it."
                     }
                 },
                 "required": ["path", "question", "options"]
@@ -255,6 +276,26 @@ fn tools_list() -> Value {
                     "text": {"type": "string", "description": "The reply text."}
                 },
                 "required": ["path", "id", "text"]
+            }
+        },
+        {
+            "name": "close",
+            "description": "Close the tab holding a file in md-mini — saved first, the way ⌘W closes it; ⌘⇧T brings it back. Refused while it has unsaved changes or while the user is typing in it. A file that is not open is an error.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path of the file whose tab to close."}
+                },
+                "required": ["path"]
+            }
+        },
+        {
+            "name": "windows",
+            "description": "List md-mini's windows: number (#N), project (git toplevel, or the directory outside git), their tabs and which one is active, and the window the user was in last. The same as `mdmini ls --json`. Use it to choose a `window_binding`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
             }
         }
     ])
@@ -311,6 +352,11 @@ fn handle_tools_call(id: Value, params: &Value, config: &McpConfig) -> String {
             Ok(req) => req,
             Err(msg) => return error_response(id, -32602, msg),
         },
+        "close" => match build_close_request(&arguments) {
+            Ok(req) => req,
+            Err(msg) => return error_response(id, -32602, msg),
+        },
+        "windows" => AiRequest::Windows { v: 1 },
         other => return error_response(id, -32602, format!("unknown tool: {}", other)),
     };
 
@@ -321,6 +367,13 @@ fn handle_tools_call(id: Value, params: &Value, config: &McpConfig) -> String {
         }
         Err(msg) => tool_result_response(id, &AiResponse::error(msg), true),
     }
+}
+
+fn window_binding(arguments: &Value) -> Option<u32> {
+    arguments
+        .get("window_binding")
+        .and_then(Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
 }
 
 fn build_show_request(arguments: &Value) -> Result<AiRequest, String> {
@@ -341,6 +394,9 @@ fn build_show_request(arguments: &Value) -> Result<AiRequest, String> {
         path: crate::resolve_path(path, None),
         line,
         find,
+        window_binding: window_binding(arguments),
+        focus: arguments.get("focus").and_then(Value::as_bool),
+        transient: arguments.get("transient").and_then(Value::as_bool).unwrap_or(false),
     })
 }
 
@@ -375,6 +431,7 @@ fn build_edit_request(arguments: &Value) -> Result<AiRequest, AiResponse> {
         path: crate::resolve_path(path, None),
         content: content.to_string(),
         show,
+        window_binding: window_binding(arguments),
     })
 }
 
@@ -424,7 +481,16 @@ fn build_ask_request(arguments: &Value) -> Result<AiRequest, String> {
         timeout_secs,
         multi,
         free_text,
+        window_binding: window_binding(arguments),
     })
+}
+
+fn build_close_request(arguments: &Value) -> Result<AiRequest, String> {
+    let path = arguments
+        .get("path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "missing required argument: path".to_string())?;
+    Ok(AiRequest::Close { v: 1, path: crate::resolve_path(path, None) })
 }
 
 /// Send one request over the command socket and read back one response line,
@@ -594,13 +660,15 @@ mod tests {
         let response = handle_message(request, &test_config()).unwrap();
         let v: Value = serde_json::from_str(&response).unwrap();
         let tools = v["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 7);
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"show"));
         assert!(names.contains(&"edit"));
         assert!(names.contains(&"ask"));
         assert!(names.contains(&"question"));
         assert!(names.contains(&"answer"));
+        assert!(names.contains(&"close"));
+        assert!(names.contains(&"windows"));
         for tool in tools {
             assert!(!tool["description"].as_str().unwrap().is_empty());
             assert_eq!(tool["inputSchema"]["type"], json!("object"));
@@ -704,7 +772,8 @@ mod tests {
         let req: Value = serde_json::from_str(&req_line).unwrap();
         assert_eq!(req["v"], json!(1));
         assert_eq!(req["cmd"], json!("show"));
-        assert_eq!(req["path"], json!("/tmp/a.md"));
+        // Sent in its one spelling: `/private/tmp/a.md` on macOS.
+        assert_eq!(req["path"], json!(crate::resolve_path("/tmp/a.md", None)));
         assert_eq!(req["line"], json!(5));
 
         let _ = std::fs::remove_file(&path);
@@ -951,5 +1020,115 @@ mod tests {
         assert!(text.contains("status=answered"));
         assert!(text.contains("**agent** ·"));
         assert!(text.contains("Ответ."));
+    }
+
+    fn call(name: &str, arguments: Value, config: &McpConfig) -> Value {
+        let request = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": name, "arguments": arguments}
+        });
+        serde_json::from_str(&handle_message(&request.to_string(), config).unwrap()).unwrap()
+    }
+
+    fn fake(canned: AiResponse) -> (McpConfig, mpsc::Receiver<String>, PathBuf) {
+        let (path, rx) = spawn_fake_socket(canned);
+        (McpConfig { socket_path: path.clone(), allow_launch: false }, rx, path)
+    }
+
+    fn sent(rx: &mpsc::Receiver<String>) -> Value {
+        serde_json::from_str(&rx.recv_timeout(Duration::from_secs(2)).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn show_tells_the_agent_to_reuse_the_window_and_use_transient() {
+        let tools = tools_list();
+        let show = tools.as_array().unwrap().iter().find(|t| t["name"] == json!("show")).unwrap();
+        let description = show["description"].as_str().unwrap();
+        assert!(
+            description.contains("Reuse the returned window; use transient for quick looks"),
+            "{description}"
+        );
+        assert_eq!(show["inputSchema"]["properties"]["focus"]["default"], json!(true));
+    }
+
+    #[test]
+    fn show_passes_window_binding_focus_and_transient() {
+        let (config, rx, path) = fake(AiResponse::ok());
+        call("show", json!({"path": "/tmp/a.md", "window_binding": 7, "focus": false, "transient": true}), &config);
+        let req = sent(&rx);
+        assert_eq!(
+            (req["window_binding"].clone(), req["focus"].clone(), req["transient"].clone()),
+            (json!(7), json!(false), json!(true))
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_old_show_call_sends_exactly_the_old_request() {
+        let (config, rx, path) = fake(AiResponse::ok());
+        call("show", json!({"path": "/tmp/a.md", "line": 5}), &config);
+        let req = sent(&rx);
+        for key in ["window_binding", "focus", "transient"] {
+            assert!(req.get(key).is_none(), "{key} must not be sent when the caller did not give it: {req}");
+        }
+        assert_eq!(req["line"], json!(5));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_window_and_focused_fields_reach_the_agent() {
+        let (config, _rx, path) = fake(AiResponse { ok: true, window: Some(7), focused: Some(false), ..Default::default() });
+        let v = call("show", json!({"path": "/tmp/a.md"}), &config);
+        assert_eq!(v["result"]["content"][0]["text"], json!(r#"{"ok":true,"window":7,"focused":false}"#));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn edit_and_ask_pass_a_window_binding() {
+        let (config, rx, path) = fake(AiResponse::ok());
+        call("edit", json!({"path": "/tmp/a.md", "content": "x", "window_binding": 3}), &config);
+        assert_eq!(sent(&rx)["window_binding"], json!(3));
+        let _ = std::fs::remove_file(&path);
+        let (config, rx, path) = fake(AiResponse { ok: true, answer: Some("A".to_string()), ..Default::default() });
+        call("ask", json!({"path": "/tmp/a.md", "question": "Q?", "options": ["A", "B"], "window_binding": 4}), &config);
+        assert_eq!(sent(&rx)["window_binding"], json!(4));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn close_sends_the_path() {
+        let (config, rx, path) = fake(AiResponse::ok());
+        let v = call("close", json!({"path": "/tmp/a.md"}), &config);
+        assert_eq!(v["result"]["isError"], json!(false));
+        let req = sent(&rx);
+        // Sent in its one spelling: `/private/tmp/a.md` on macOS.
+        assert_eq!(
+            (req["cmd"].clone(), req["path"].clone()),
+            (json!("close"), json!(crate::resolve_path("/tmp/a.md", None)))
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn close_without_a_path_is_invalid_params() {
+        let v = call("close", json!({}), &test_config());
+        assert_eq!(v["error"]["code"], json!(-32602));
+    }
+
+    #[test]
+    fn windows_returns_the_listing() {
+        let listing = ai_socket::WindowListing {
+            window: Some(3),
+            project: Some("md-mini".to_string()),
+            project_path: Some("/r/md-mini".to_string()),
+            last_focused: true,
+            tabs: vec![ai_socket::ListedTab { path: Some("/r/a.md".to_string()), active: true }],
+        };
+        let (config, rx, path) = fake(AiResponse { ok: true, windows: Some(vec![listing]), ..Default::default() });
+        let v = call("windows", json!({}), &config);
+        let text = v["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with(r#"{"ok":true,"windows":[{"window":3,"project":"md-mini""#), "{text}");
+        assert_eq!(sent(&rx)["cmd"], json!("windows"));
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -414,15 +414,14 @@
   user-select: none;
 }
 
+/* The theme's accent (`--color-glow`, an RGB triple). It used to read an
+   undefined `--color-accent` with a violet fallback per half, which gave every
+   theme family the classic theme's violet. */
 .cm-md-code-lang {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-weight: 600;
-  color: var(--color-accent, #c4a7e7);
-}
-
-:root[data-theme$='light'] .cm-md-code-lang {
-  color: var(--color-accent, #7c3aed);
+  color: rgb(var(--color-glow));
 }
 
 .cm-md-code-copy {
@@ -437,7 +436,7 @@
 
 .cm-md-code-copy:hover {
   background: var(--color-table-border);
-  color: var(--color-text, var(--text-primary));
+  color: var(--text-primary);
 }
 
 /* Syntax token colors — dark theme (Rosé Pine) */
@@ -676,7 +675,8 @@
   cursor: pointer;
   background: none;
   border: none;
-  color: var(--color-text);
+  /* No colour of its own: `.cm-md-table-btn` below unsets it, so ⇔ takes the
+     header cell's. (It named an undefined `--color-text`, dead either way.) */
   font-size: 1em;
   padding: 0 4px;
 }
@@ -754,7 +754,7 @@
 }
 
 .cm-table-hotkeys-key {
-  font-family: var(--font-mono);
+  font-family: var(--font-code);
   font-size: 0.72rem;
   /* Full-strength text against the subtler description, so the eye finds the
    * key column first — it is what someone opening this panel came for. */
@@ -1119,7 +1119,7 @@
 .cm-md-h4::after, .cm-md-h5::after, .cm-md-h6::after {
   content: ' ▾';
   font-size: 1.3em;
-  color: var(--color-accent, #c4a7e7);
+  color: rgb(var(--color-glow));
   opacity: 0;
   transition: opacity 0.15s, text-shadow 0.15s;
   cursor: pointer;
@@ -1133,7 +1133,7 @@
 .cm-md-h1:hover::after:hover, .cm-md-h2:hover::after:hover, .cm-md-h3:hover::after:hover,
 .cm-md-h4:hover::after:hover, .cm-md-h5:hover::after:hover, .cm-md-h6:hover::after:hover {
   opacity: 1;
-  text-shadow: 0 0 8px var(--color-accent, #c4a7e7), 0 0 20px var(--color-accent, #c4a7e7);
+  text-shadow: 0 0 8px rgb(var(--color-glow)), 0 0 20px rgb(var(--color-glow));
 }
 
 /* Folded heading — show ▸ instead of ▾, always visible with glow */
@@ -1142,7 +1142,7 @@
 .cm-md-heading-folded.cm-md-h5::after, .cm-md-heading-folded.cm-md-h6::after {
   content: ' ▸';
   opacity: 0.7;
-  text-shadow: 0 0 6px var(--color-accent, #c4a7e7), 0 0 14px var(--color-accent, #c4a7e7);
+  text-shadow: 0 0 6px rgb(var(--color-glow)), 0 0 14px rgb(var(--color-glow));
 }
 
 /* Hide fold placeholder — fold state shown via heading ::after toggle */
@@ -1161,7 +1161,7 @@
 
 .cm-foldPlaceholder:hover {
   background: var(--color-table-border);
-  color: var(--color-text);
+  color: var(--text-primary);
 }
 
 /* Hide default gutter background (visible as gray bar) */
@@ -1260,11 +1260,17 @@
   flex-shrink: 0;
 }
 
-/* ===== Find & Replace Panel ===== */
+/* ===== Find & Replace Panel =====
+   Theme tokens only (src/lib/theme/): these rules once read --color-text,
+   --color-accent and --color-bg, which no theme defines — every declaration
+   using them was dropped, and the field and its focus ring fell back to the
+   browser's defaults. The accent is `--color-glow` (an RGB triple). Borders on
+   the buttons are an inset shadow, so they take no room: the layout is the
+   one the panel had without them. */
 .cm-panels {
   background: var(--color-code-bg) !important;
   border-bottom: 1px solid var(--color-table-border);
-  color: var(--color-text);
+  color: var(--text-primary);
   font-family: var(--font-code);
   font-size: 0.85em;
 }
@@ -1276,43 +1282,70 @@
 
 .cm-panels .cm-panel input[type="text"],
 .cm-panels .cm-textfield {
-  background: var(--color-bg);
-  color: var(--color-text);
-  border: 1px solid var(--color-table-border);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  caret-color: var(--color-cursor);
+  border: 1px solid var(--border);
   border-radius: 4px;
   padding: 4px 8px;
   font-family: var(--font-code);
   font-size: 0.9em;
   outline: none;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.cm-panels .cm-panel input[type="text"]::placeholder,
+.cm-panels .cm-textfield::placeholder {
+  color: var(--text-subtle);
+  opacity: 1;
 }
 
 .cm-panels .cm-panel input[type="text"]:focus,
 .cm-panels .cm-textfield:focus {
-  border-color: var(--color-accent);
-  box-shadow: 0 0 0 1px var(--color-accent);
+  border-color: rgb(var(--color-glow));
+  box-shadow: 0 0 0 2px rgba(var(--color-glow), 0.28);
 }
 
 .cm-panels .cm-panel button,
 .cm-panels .cm-button {
-  background: var(--color-table-border);
-  color: var(--color-text);
+  background: var(--bg-base);
+  color: var(--text-primary);
   border: none;
+  box-shadow: inset 0 0 0 1px var(--border);
   border-radius: 4px;
   padding: 4px 10px;
   font-family: var(--font-code);
   font-size: 0.85em;
   cursor: pointer;
-  transition: background 0.15s;
+  transition:
+    background 0.15s,
+    box-shadow 0.15s;
 }
 
 .cm-panels .cm-panel button:hover,
 .cm-panels .cm-button:hover {
-  background: var(--color-accent);
-  color: var(--color-bg);
+  background: var(--highlight);
+  box-shadow: inset 0 0 0 1px var(--text-muted);
+}
+
+/* Above CodeMirror's own `&light .cm-button:active` gradient (0,3,0). */
+.cm-panels .cm-panel .cm-button:active,
+.cm-panels .cm-panel button.cm-button:active {
+  background: rgba(var(--color-glow), 0.2);
+  background-image: none;
+  box-shadow: inset 0 0 0 1px rgba(var(--color-glow), 0.6);
+}
+
+.cm-panels .cm-panel button:focus-visible,
+.cm-panels .cm-button:focus-visible {
+  outline: 2px solid rgba(var(--color-glow), 0.7);
+  outline-offset: 1px;
 }
 
 .cm-panels .cm-panel label {
-  color: var(--color-text);
+  color: var(--text-primary);
   font-size: 0.85em;
   display: inline-flex;
   align-items: center;
@@ -1320,11 +1353,16 @@
 }
 
 .cm-panels .cm-panel input[type="checkbox"] {
-  accent-color: var(--color-accent);
+  accent-color: rgb(var(--color-glow));
+}
+
+/* Native controls (an unchecked checkbox) follow a dark theme, not the OS. */
+:root[data-theme$='dark'] .cm-panels {
+  color-scheme: dark;
 }
 
 .cm-panels .cm-panel .cm-panel-close {
-  color: var(--color-text);
+  color: var(--text-primary);
   cursor: pointer;
   padding: 2px 6px;
   border-radius: 4px;
@@ -1332,6 +1370,51 @@
 
 .cm-panels .cm-panel .cm-panel-close:hover {
   background: var(--color-table-border);
+}
+
+/* The Find bar's «×». CodeMirror's base theme styles it at (0,4,0) —
+   `.ͼ1 .cm-panel.cm-search [name=close]`: transparent, `font: inherit`,
+   absolute at the top right — which left a 13px glyph nobody noticed, and
+   beat the generic button rule above. This selector is (0,4,1). A 28×28
+   hit area centred on the Find row; the panel keeps room for it on the
+   right so a narrow window wraps the row instead of sliding under it. */
+.cm-panels .cm-panel.cm-search {
+  padding-right: 40px;
+}
+
+.cm-panels .cm-panel.cm-search button[name="close"] {
+  top: 3px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0 0 2px;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-subtle);
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
+  font-size: 21px;
+  font-weight: 400;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.cm-panels .cm-panel.cm-search button[name="close"]:hover {
+  box-shadow: none;
+  background: rgba(var(--color-glow), 0.18);
+  color: var(--text-primary);
+}
+
+.cm-panels .cm-panel.cm-search button[name="close"]:focus-visible {
+  outline: 2px solid rgba(var(--color-glow), 0.7);
+  outline-offset: 1px;
 }
 
 /* Search match highlights */
@@ -1398,7 +1481,7 @@
 
 .cm-env-key {
   font-weight: 700;
-  color: var(--color-accent);
+  color: rgb(var(--color-glow));
   /* The 20ch column aligns values across a file, but it must be allowed to give
      way in a narrow window: as a hard minimum it squeezed the value pill toward
      zero width, and with the pill free to wrap the masked secret then broke one
@@ -1416,7 +1499,7 @@
   border-radius: 4px;
   padding: 1px 8px;
   font-family: var(--font-code);
-  color: var(--color-text);
+  color: var(--color-code-text);
   /* A value is one token — it may be clipped by the row, never broken across
      lines a character at a time. */
   white-space: nowrap;
@@ -1450,11 +1533,7 @@
 
 .cm-env-copy:hover {
   background: var(--color-table-border);
-  color: var(--color-text);
-}
-
-:root[data-theme$='light'] .cm-env-key {
-  color: #7c3aed;
+  color: var(--text-primary);
 }
 
 :root[data-theme$='light'] .cm-env-value {
@@ -1493,7 +1572,7 @@
 
 .cm-shell-secret-copy:hover {
   background: var(--color-table-border);
-  color: var(--color-text);
+  color: var(--text-primary);
 }
 
 :root[data-theme$='light'] .cm-shell-secret {
@@ -1580,7 +1659,10 @@
   gap: 2px;
   padding: 2px;
   border-radius: 6px;
-  background: var(--color-bg);
+  /* A panel of its own over the diagram: it was transparent (an undefined
+     `--color-bg`), so the buttons floated on whatever the diagram drew there. */
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
   opacity: 0;
   transition: opacity 0.12s ease;
@@ -1604,8 +1686,8 @@
   border: none;
   border-radius: 4px;
   background: transparent;
-  color: var(--color-text);
-  font-family: var(--font-ui, inherit);
+  color: var(--text-primary);
+  font-family: inherit;
   font-size: 13px;
   line-height: 1;
   cursor: pointer;

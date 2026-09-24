@@ -28,6 +28,6 @@ brew install --cask mdmini
 ## Links
 
 - Website: https://couplet.pro/
-- Source: https://github.com/malinborn/mdmini
-- Releases: https://github.com/malinborn/mdmini/releases
+- Source: https://github.com/malinborn/couplet
+- Releases: https://github.com/malinborn/couplet/releases
 - License: GPL-3.0

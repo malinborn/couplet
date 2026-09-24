@@ -6,13 +6,16 @@ Lets an AI agent (Claude Code and similar) drive a running md-mini window direct
 
 | Command | Behavior |
 |---------|----------|
-| `mdmini show <file> [--line N \| --find "text"]` | Open the file (or focus its existing window) and scroll the target into view with a ~1.6s pulse highlight. `--line` is 1-based, clamped to the document. `--find` locates the first substring match (case-sensitive). Neither flag → just open/focus, no scroll. `--line` and `--find` are mutually exclusive. |
-| `cat new.md \| mdmini edit <file> [--show] [--allow-empty]` | Read the **complete** new document content from stdin, diff it against the live buffer, apply only the changed span, and highlight it. `--show` additionally scrolls the change into view. If the file isn't open yet, md-mini opens a window for it first, then applies the edit. Empty stdin is refused by default (`--allow-empty` to intentionally clear the buffer) — see below. |
-| `mdmini ask <file> --question TEXT --option TEXT [--option TEXT ...] [--multi] [--free-text] [--at-line N \| --at-find TEXT] [--timeout SECS]` | Post `TEXT` as a question with 2-6 option buttons (one per `--option`, repeatable) inside the file's document, **blocking until the user answers**, and return the choice. Single-choice (default): blocks until one click, returns the chosen option's text as `answer`. `--multi`: checkbox mode — the user may check any number of options (including none) and confirms, returning the checked options as `answers` (an array; `[]` is a valid explicit "confirmed none"). `--free-text`: also offers a free-text field — a typed answer comes back as `custom`, alongside `answers` in `--multi` mode. `--at-line`/`--at-find` (mutually exclusive) place the question near a location, same semantics as `show`'s `--line`/`--find`. `--timeout` bounds the wait, default 300s, clamped to 10-3600s. The file must already be open, or exist on disk — unlike `edit`, `ask` cannot "start a new file". |
+| `mdmini show <file> [--line N \| --find "text"] [-t N] [-b \| -f] [--transient]` | Open the file as a tab (or switch to its tab) and scroll the target into view with a ~1.6s pulse highlight. `--line` is 1-based, clamped to the document. `--find` locates the first substring match (case-sensitive). Neither flag → just open/focus, no scroll. `--line` and `--find` are mutually exclusive. `-t N` names the window; `-b` keeps the tab in the background, `-f` (the default) switches to it; `--transient` makes a tab this `show` opened a quick look. Routed and landed as described in **Windows, tabs and routing** below. |
+| `cat new.md \| mdmini edit <file> [--show] [--allow-empty] [-t N]` | Read the **complete** new document content from stdin, diff it against the live buffer, apply only the changed span, and highlight it. `--show` additionally scrolls the change into view. If the file isn't open yet, md-mini opens it as a tab first, then applies the edit. Empty stdin is refused by default (`--allow-empty` to intentionally clear the buffer) — see below. Never switches tabs. Routed and landed as described in **Windows, tabs and routing** below. |
+| `mdmini ask <file> --question TEXT --option TEXT [--option TEXT ...] [--multi] [--free-text] [--at-line N \| --at-find TEXT] [--timeout SECS] [-t N]` | Post `TEXT` as a question with 2-6 option buttons (one per `--option`, repeatable) inside the file's document, **blocking until the user answers**, and return the choice. Single-choice (default): blocks until one click, returns the chosen option's text as `answer`. `--multi`: checkbox mode — the user may check any number of options (including none) and confirms, returning the checked options as `answers` (an array; `[]` is a valid explicit "confirmed none"). `--free-text`: also offers a free-text field — a typed answer comes back as `custom`, alongside `answers` in `--multi` mode. `--at-line`/`--at-find` (mutually exclusive) place the question near a location, same semantics as `show`'s `--line`/`--find`. `--timeout` bounds the wait, default 300s, clamped to 10-3600s. The file must already be open, or exist on disk — unlike `edit`, `ask` cannot "start a new file". Never switches tabs. Routed and landed as described in **Windows, tabs and routing** below. |
+| `mdmini <file>... [-t N] [-b \| -f]` | Open files as tabs. A human's plain `mdmini a.md b.md` opens **one new window** with the files as tabs (a file already open stays where it is; when every file is open already, the window holding the first comes forward on it). With `-t N`, `-b`, `-f`, or when called by an agent (`CLAUDECODE` set, non-empty), the open is **routed** (below) through the command socket, one request per file, and prints one line: `{"ok":true,"window":7,"focused":false,"opened":[{"path":…,"window":7,"focused":false}]}` (`window`/`focused` of the first file). An agent's open lands in the background unless `-f`; a human's `-t N` in focus unless `-b`. At most 50 files per call (`too many files: …`, exit 2). A file the app refuses is reported in `error` and the rest still open. |
+| `mdmini ls [--json]` | The open windows: `#N`, project, tabs, one line each. `--json`: `{"ok":true,"windows":[…]}`, the same listing as MCP `windows`. Never launches the app. |
+| `mdmini close <file>` | Close the tab holding `<file>` the ⌘W way (saved first; ⌘⇧T brings it back). Refused while the tab has unsaved changes, or while the user is typing in it. Never launches the app. |
 | `mdmini question [<file>]` | List the open comment threads the user has left in documents — id, status, anchor line, quoted fragment, and the whole thread. With a path, only that document; without one, everything under the current directory. **Local and offline** — reads the comment files directly, so it works with md-mini closed. See "Comments: the reverse direction" below. |
 | `mdmini answer <file> --id ID` | Append a reply to thread `ID` from stdin and mark it `answered`. Local and offline, same as `question`. Refuses empty stdin. |
 | `mdmini watch [<dir>]` | Long-running: watch a directory tree (default: the current directory) for comment files and print **one line per newly-open thread**. Meant to be handed to a Claude Code Monitor, which turns each line into an interruption in the live session. Local and offline. |
-| `mdmini mcp [--socket PATH]` | Run a stdio MCP server exposing `show`/`edit`/`ask`/`question`/`answer` as MCP tools instead of CLI verbs — see "MCP server" below. |
+| `mdmini mcp [--socket PATH]` | Run a stdio MCP server exposing `show`/`edit`/`ask`/`question`/`answer`/`close`/`windows` as MCP tools instead of CLI verbs — see "MCP server" below. |
 | `mdmini help` | Print a complete reference of every `mdmini` verb (opening files, `show`, `edit`, `ask`, `question`, `answer`, `watch`, `mcp`, `help`, `agent`) plus the JSON response contract and exit codes. Local and offline — no running app required. |
 | `mdmini agent [--mcp]` | Print a ready-to-paste instruction block for an AI agent's instruction file (CLAUDE.md, AGENTS.md, etc.). Without `--mcp`: the CLI-syntax show/edit/ask reference — see below. With `--mcp`: a shorter behavioral snippet for agents already connected via `mdmini mcp`, where the tools are self-describing and what's missing is usage culture — see "MCP server" below. Local and offline either way. |
 
@@ -25,9 +28,15 @@ cat new.md | mdmini edit notes.md --show
 mdmini ask notes.md --question "Ship it?" --option Yes --option No
 mdmini ask notes.md --question "Which reviewers?" --option A --option B --option C --multi
 mdmini ask notes.md --question "Ship it?" --option Yes --option No --free-text
+mdmini show notes.md --find "## Deploy" -t 7 --transient
+mdmini notes.md report.md          # a human: one new window, two tabs
+mdmini ls
+mdmini close notes.md
 ```
 
-All three verbs accept `--socket <path>` to target a non-default command socket (dev builds — see below).
+`show`, `edit`, `ask`, `ls`, `close` and a routed open accept `--socket <path>` to target a non-default command socket (dev builds — see below).
+
+**After updating md-mini, re-run `scripts/install.sh`** if you installed the CLI by hand. It *copies* `scripts/mdmini` to `/usr/local/bin/mdmini`, and an older copy knows nothing of `ls` and `close`: it treats them as file names and opens a document called `ls`. Homebrew users are unaffected — the cask links the script bundled with the app.
 
 Always send the **full** new document on stdin for `edit`, not a diff or patch — md-mini computes the diff itself against what's currently in the buffer.
 
@@ -35,11 +44,12 @@ By default, `edit` refuses empty stdin — `{"ok": false, "error": "refusing to 
 
 ## JSON response contract
 
-One line of JSON on stdout, always. No JSON on stderr.
+One line of JSON on stdout, always. No JSON on stderr. A human (no `CLAUDECODE`) also gets the error of a routed open, `ls` or `close` in words on stderr.
 
 ```jsonc
 // show, success
 {"ok": true}
+{"ok": true, "window": 7, "focused": true}   // since tabs: every answer that came from a window names it
 
 // edit, success — one [start, end] pair per changed span, 1-based inclusive line numbers,
 // in the resulting document. Empty array if the content was already identical.
@@ -60,7 +70,19 @@ One line of JSON on stdout, always. No JSON on stderr.
 
 // error (any verb)
 {"ok": false, "error": "target not found"}
+
+// show that landed in the background (focus: false, or the user was typing in another tab or window)
+{"ok": true, "window": 7, "focused": false}
+
+// edit of a background tab — applied there and saved at once
+{"ok": true, "changed_lines": [[12, 15]], "window": 7, "focused": false}
+
+// mdmini ls --json / MCP windows
+{"ok": true, "windows": [{"window": 7, "project": "md-mini", "project_path": "/Users/…/md-mini", "last_focused": true,
+  "tabs": [{"path": "/Users/…/md-mini/README.md", "active": true}, {"path": null, "active": false}]}]}
 ```
+
+`window` is filled in by Rust from the registry for every answer a window gave (`ai_respond`), `ask` answers included; an error Rust gives itself before any window is involved (`file does not exist`, `path must be absolute`, a dead window number) has none. `focused` says whether the tab is its window's active tab afterwards; `ask` answers carry no `focused`. In `windows`, `project` is the directory name of the project root (`null` for a window that never held a file), `path: null` is an untitled tab, and `last_focused` marks the window the user was in last.
 
 `changed_lines` holds one `[start, end]` pair per changed region, 1-based inclusive, in the resulting document. Edits scattered across the file report several pairs, not one span covering everything between the first and last of them. A region is either the lines that actually differ, or — when a block was created or rewritten wholesale — the whole block. A pure deletion has no resulting lines to name, so it reports the single line the deletion point now sits on.
 
@@ -69,8 +91,8 @@ One line of JSON on stdout, always. No JSON on stderr.
 | Code | Meaning |
 |------|---------|
 | `0` | Request reached md-mini and succeeded (`"ok":true`). |
-| `1` | Request reached md-mini but it rejected it (`"ok":false"`), or the CLI's own read timed out waiting for a reply after the socket accepted the request (`{"ok":false,"error":"timeout waiting for response"}`) — 10s for `show`/`edit`, the (clamped) `ask` timeout plus 10s for `ask`. |
-| `2` | Usage error (bad flags, missing file arg, unknown verb), `edit` refused empty stdin without `--allow-empty`, `ask` given no `--question` or an `--option` count outside 2-6, or md-mini isn't running / didn't start in time (`{"ok":false,"error":"md-mini is not running"}` or `"md-mini did not start in time"`). |
+| `1` | Request reached md-mini but it rejected it (`"ok":false"`), or the CLI's own read timed out waiting for a reply after the socket accepted the request (`{"ok":false,"error":"timeout waiting for response"}`) — 10s for `show`/`edit`/`close`/`ls` and each file of a routed open, the (clamped) `ask` timeout plus 10s for `ask`. |
+| `2` | Usage error (bad flags, missing file arg, unknown verb), `edit` refused empty stdin without `--allow-empty`, `ask` given no `--question` or an `--option` count outside 2-6, `-t` without a plain window number, `-b` with `-f`, more than 50 files for one open, or md-mini isn't running / didn't start in time (`{"ok":false,"error":"md-mini is not running"}` or `"md-mini did not start in time"`). |
 
 ## Socket protocol
 
@@ -83,11 +105,17 @@ Request shapes (`"v":1` is a protocol version, reserved for a future MCP wrapper
 {"v": 1, "cmd": "show", "path": "/abs/file.md", "line": null, "find": "## Deploy"}
 {"v": 1, "cmd": "edit", "path": "/abs/file.md", "content": "<full new document>", "show": false}
 {"v": 1, "cmd": "ask", "path": "/abs/file.md", "question": "Ship it?", "options": ["Yes", "No"], "line": null, "find": null, "timeout_secs": 300, "multi": false, "free_text": false}
+{"v": 1, "cmd": "show", "path": "/abs/file.md", "line": 42, "window_binding": 7, "focus": false, "transient": true}
+{"v": 1, "cmd": "open", "path": "/abs/file.md", "window_binding": 7, "focus": true}
+{"v": 1, "cmd": "close", "path": "/abs/file.md"}
+{"v": 1, "cmd": "windows"}
 ```
+
+`window_binding` (also on `edit` and `ask`), `focus` and `transient` are optional and omitted when unset — a request without them behaves exactly as before (`show` takes the view). `focus` defaults to `true` on `show` and to `false` on `open` (the CLI always sends it: an agent's open is background, a human's focused); `edit`, `ask` and `close` never switch tabs. Every answer that came from a window carries `window`, and `focused` says whether the tab is that window's active tab afterwards. `windows` is answered by Rust itself, without asking any window.
 
 `ask`'s `timeout_secs` defaults to `300` and is clamped server-side to `10..=3600`; `question` must be non-empty and `options` must have 2 to 6 non-empty entries, checked before any window is touched. `multi` (default `false`, omittable) switches the response shape from a single `answer` string to an `answers` array; `free_text` (default `false`, omittable) additionally offers a free-text field, whose typed value comes back as `custom` — see the JSON response contract above.
 
-`path` must be absolute — the CLI resolves relative paths against the current directory (and canonicalizes them) before sending.
+`path` must be absolute: a relative one is refused with `{"ok":false,"error":"path must be absolute"}` — the app's own working directory means nothing to the caller. The CLI resolves relative paths against the current directory before sending. Every path is then brought to **one spelling** (`path_norm::normalize_path`: `.`/`..` resolved, symlinks resolved on the part that exists, so `/tmp/a.md` is `/private/tmp/a.md`) — the same spelling the CLI, the tab commands, session restore and ⌘⇧T use, so one file is one tab however the caller wrote it. Case is **not** folded: on a case-insensitive APFS volume `/x/A.md` and `/x/a.md` are still two spellings.
 
 Socket path, derived from the product name (same dev/release isolation rule as the app data directory):
 
@@ -98,25 +126,28 @@ Socket path, derived from the product name (same dev/release isolation rule as t
 
 Created with `0600` permissions on startup (`ai_socket::start`, spawned at the end of Rust `setup`, on its own background thread). A stale socket file left behind by a prior run that didn't exit cleanly (`kill -9`) is unlinked and rebound automatically — no manual cleanup needed, unlike the single-instance socket. Removed on both clean-exit paths (`RunEvent::ExitRequested` and `RunEvent::Exit` — see `remove_socket` in `ai_socket.rs`).
 
-Server-side, a request that reaches a live window but gets no frontend reply within its wait — **8s** for `show`/`edit`, the (clamped) `timeout_secs` for `ask` — returns `{"ok":false,"error":"timeout waiting for editor"}` (window closed mid-request, or frozen, or for `ask`, nobody clicked in time). The CLI itself gives up after **10s** (**timeout + 10s** for `ask`) with `"timeout waiting for response"` if it never gets a line back at all.
+Server-side, a request that reaches a live window but gets no frontend reply within its wait — **8s** for `show`/`edit`/`open`/`close`, the (clamped) `timeout_secs` for `ask`, counted from the moment the request arrived — returns `{"ok":false,"error":"timeout waiting for editor"}` (window closed mid-request, or frozen, or for `ask`, nobody clicked in time). The CLI itself gives up after **10s** (**timeout + 10s** for `ask`) with `"timeout waiting for response"` if it never gets a line back at all.
 
 ### Routing to a window
 
-Requests are dispatched to the window that owns `path`, looked up in the existing `OpenFiles` registry:
+Every window has a number (`#7` in its title) and a **project**. The number is the lowest one no live window holds when the window is made, so a closed window's number goes to the next new window: an old `window_binding` / `-t N` reaches whatever window holds `N` now. The human can also renumber a window from its notch; routing reads the registry, so `-t` follows the new number at once and the old one is free. The project is the git toplevel of the first file it held (a worktree is its own project; outside git, that file's directory). It is bound once, lazily (`routing::bind_missing_projects`), never rebound when that file closes, and restored with the session.
 
-- `show` on a path that doesn't exist on disk fails immediately with `{"ok":false,"error":"file does not exist"}`, without going through the open-window path at all. `edit` is unaffected — a nonexistent path there still opens a fresh window and applies the edit as a new file. `ask` takes the middle ground: it fails the same way only when the file is **both** not already open **and** missing from disk — an already-open file with no matching path on disk (e.g. deleted after opening) still routes normally.
-- File already open → the payload is emitted as an `ai-command` event to that window; the frontend answers by invoking `ai_respond` with the same request id, which the socket listener correlates back to the waiting connection.
-- File not open → md-mini opens a new window for it on the main thread (`window::open_file_window`), polls `OpenFiles` for up to 2s for the new window's label, and queues the command for it. The new window's frontend drains its queue once, on mount, via `ai_pull_pending`. If the window never registers within 2s, the request fails with `"failed to open window for file"`. If the window is closed before it ever mounts to pull that queue, the queued command is failed with `"window closed before the command was delivered"` instead of hanging until the listener timeout.
+- `show` on a path that doesn't exist on disk fails immediately with `{"ok":false,"error":"file does not exist"}`, without going through the open-window path at all. `edit` is unaffected — a nonexistent path there still opens a tab and applies the edit as a new file. `ask` takes the middle ground: it fails the same way only when the file is **both** not already open **and** missing from disk — an already-open file with no matching path on disk (e.g. deleted after opening) still routes normally.
+- Where a request goes (`routing::route`, spec §5): **(1)** `window_binding` → the live window holding that number; a number no live window holds is an error listing the open windows, three files each (`no window #12. Open windows:` then `  #3   md-mini  README.md, CLAUDE.md, tabs-design.md …`) — checked first, even for a file that is open. **(2)** The file is already open → its tab, even when `window_binding` names another window (one file is one tab, app-wide; the answer's `window` says where it really is). **(3)** A live window whose project is the file's → a new tab there, in the most recently focused such window (never-focused ones: `main` first, then by label). **(4)** Otherwise the app's first window while it still is as it started (no project, no file tab — so a cold-start `mdmini -b file` does not leave an empty Untitled beside a new window), else a new window — built without activating the app unless the command may take the view (`show` with focus, a focused open).
+- An existing window gets the payload as an `ai-command` event and answers with `ai_respond` — accepted only from the window it was delivered to (`AiPending::respond_from`); another window's answer is refused and the request keeps waiting. A new window is built on the main thread and pulls its commands with `ai_pull_pending` on mount. If it cannot be built within 2s, the request fails with `"failed to open window for file"`. If the window is closed before it ever mounts to pull that queue, the queued command is failed with `"window closed before the command was delivered"` instead of hanging until the listener timeout.
+- `close` goes to the window holding the file (`file is not open` when none does) and never opens anything. It is registered without a path, so the tab it closes does not fail it with `tab closed`.
 - Once a request has been **delivered** to a window (emitted or pulled from the queue on mount) but the window closes before the frontend ever answers it — most relevant to `ask`, which can sit waiting on a click for minutes — `window::untrack_window` calls `AiPending::cancel_for_window`, which fails every entry registered under that window's label with `{"ok":false,"error":"window closed"}` instead of leaving the caller to wait out the full timeout.
-- Each socket connection is served on its own thread and blocks on its own reply channel, but that is not the same as one-command-per-window serialization — two connections can dispatch to the same window concurrently. What actually prevents two concurrent `edit`s from clobbering each other is the frontend: `handleAiCommand`'s edit branch reads the document and calls `dispatch` synchronously, with no `await` in between.
+- Each socket connection is served on its own thread and blocks on its own reply channel, but that is not the same as one-command-per-window serialization — two connections can dispatch to the same window concurrently. What actually prevents two concurrent `edit`s from clobbering each other is the frontend: every command runs one at a time in the window's tab queue (`agent-commands.ts`, inside `runExclusive`), and the live edit reads the document and calls `dispatch` synchronously, with no `await` in between.
 
 ## Launch-if-not-running flow
 
-`scripts/mdmini` handles `show`/`edit`/`ask` before falling into the normal file-open path:
+`scripts/mdmini` handles `show`/`edit`/`ask` and routed opens before falling into the normal file-open path:
 
-1. If the command socket already exists (`-S "$CMD_SOCK"`) → skip straight to step 3.
-2. Otherwise `open /Applications/md-mini.app` (no pending-files handoff needed — the request itself carries the file) and poll for the socket every 0.1s, up to 5s. Times out with `{"ok":false,"error":"md-mini did not start in time"}`, exit 2.
-3. `exec "$BIN" ai "$@"` — hands off to the binary's own CLI client (`run_ai_cli` in `ai_socket.rs`), which does the actual socket round-trip. stdin passes through untouched, so `cat new.md | mdmini edit file.md` still works after the launch wait.
+1. If the command socket file exists, ask it whether anyone listens (`ai ls --json`; exit 2 = nobody accepted the connection) and remove it if not — a socket left by a crashed app would make every command hang until its own read times out. Asked of the socket, not the process list: `md-mini mcp` and `md-mini ai watch` run the same binary.
+2. If the socket is (now) missing, launch the app and poll for the socket every 0.1s, up to 5s (no pending-files handoff needed — the request itself carries the file). Times out with `{"ok":false,"error":"md-mini did not start in time"}`, exit 2. A command that lands in the background — `edit`, `show -b`, an agent's open without `-f`, any `-b` open — launches with `open -g`, so a cold start does not bring md-mini to the front either. `ask` launches with plain `open`: its question should be in front of the user.
+3. `exec "$BIN" ai "$@"` (`ai open "$@"` for a routed open) — hands off to the binary's own CLI client (`run_ai_cli` in `ai_socket.rs`), which does the actual socket round-trip. stdin passes through untouched, so `cat new.md | mdmini edit file.md` still works after the launch wait.
+
+`ls` and `close` skip steps 1–2: they only mean something to a running app, so they never launch it and answer `md-mini is not running` instead.
 
 The `ai` subcommand is intercepted in `main.rs` before Tauri initializes anything — `mdmini ai show|edit ...` never starts a second GUI instance.
 
@@ -127,7 +158,9 @@ The `ai` subcommand is intercepted in `main.rs` before Tauri initializes anythin
   - the **next** `edit` command (installs its own range, replacing the old one), or
   - pressing **Esc** in the editor (`aiHighlightKeymap`; a no-op, falling through to other Esc handlers, if there's nothing to clear).
   - Not persisted across app restarts — it's in-memory CM6 state (`aiHighlightField`), not saved with the document.
-- Edits go through the same single-span `ChangeSet` + scroll-snapshot mechanism as an external file reload, but — unlike a reload — stay a normal, undoable history step: an AI edit is content the user didn't author, and Cmd+Z is how they reject it. (Contrast an external-reload or session-restore transaction, which does use `Transaction.addToHistory.of(false)`.) The document-changed listener still fires normally, so the edit still marks the file dirty and schedules the regular autosave — the file on disk catches up like any other in-app edit.
+- Edits go through the same single-span `ChangeSet` + scroll-snapshot mechanism as an external file reload, but — unlike a reload — stay a normal, undoable history step: an AI edit is content the user didn't author, and Cmd+Z is how they reject it. (Contrast an external-reload or session-restore transaction, which does use `Transaction.addToHistory.of(false)`.) The document-changed listener still fires normally, so the edit still marks the file dirty and schedules the regular autosave — the file on disk catches up like any other in-app edit. The edit is its own undo step (`isolateHistory`): one ⌘Z never takes a keystroke of the user's along with it. An edit of a **background** tab is applied to that tab's cached state and written to disk at once instead (a background tab has no autosave); the highlight and the undo step are there when the tab is shown.
+- A `show` while the user is typing in that very tab moves neither the caret nor the view: only the pulse plays, so a target outside the visible part of the document is not brought into view. The answer is still `"focused":true` — the tab is the active one.
+- **Line endings are the file's, not the edit's.** The live buffer is always LF: md-mini normalizes `\r\n` and lone `\r` when a file is read, and converts back to the file's own convention (detected at open, the most frequent ending wins) when it saves. `edit` content and `show --find` text are normalized the same way before they touch the buffer, so an agent may send either ending. The flip side: an `edit` cannot change a file's line endings. Content that differs from the buffer only in its endings is a no-op (`changed_lines: []`), and a CRLF file stays CRLF on disk no matter what the agent sends. To convert a file, rewrite it on disk outside md-mini; the window follows a change that only touches endings.
 
 ## Comments: the reverse direction
 
@@ -301,7 +334,7 @@ Generic `mcpServers` config (Claude Desktop, other MCP clients):
 | `initialize` | Echoes the client's `protocolVersion` back (defaults to `2025-06-18` if absent). Result includes `capabilities: {"tools": {}}` and `serverInfo: {"name": "mdmini", "version": "<crate version>"}`. |
 | `notifications/initialized` | Notification, no response. |
 | `ping` | `{}`. |
-| `tools/list` | Returns the `show`, `edit`, and `ask` tools, each with a JSON Schema `inputSchema`. |
+| `tools/list` | Returns the `show`, `edit`, `ask`, `question`, `answer`, `close` and `windows` tools, each with a JSON Schema `inputSchema`. |
 | `tools/call` | Dispatches to the command socket — see below. |
 
 Any other method that carries an `id` gets a JSON-RPC `-32601` ("method not found") error. A message with no `id` at all is treated as a notification and never gets a response, regardless of method. Malformed JSON gets a `-32700` ("parse error") response with `id: null`.
@@ -310,9 +343,11 @@ Any other method that carries an `id` gets a JSON-RPC `-32601` ("method not foun
 
 Same shapes as the CLI verbs, as MCP tools:
 
-- **`show`** — `path` (string, required, absolute), `line` (integer, 1-based) or `find` (string, first-occurrence text search); `line` and `find` are mutually exclusive.
-- **`edit`** — `path` (string, required), `content` (string, required, the **complete** new document), `show` (boolean, scroll to the change on completion). Empty `content` is refused with the same message the CLI gives for empty stdin — there's no `--allow-empty` equivalent over MCP, since an agent should never *mean* to send an empty document.
-- **`ask`** — `path` (string, required), `question` (string, required), `options` (array of string, required, 2-6 entries), `line` (integer, 1-based) or `find` (string), mutually exclusive, `timeout_secs` (integer, default 300, clamped to 10-3600), `multi` (boolean, default `false`), `free_text` (boolean, default `false`). Blocks the `tools/call` response until the user answers. Single-choice (default): returns the chosen option's text as `answer`. `multi: true`: checkbox mode — the user may check any number of options (including none) and confirms; returns the checked options as `answers` (an array; `[]` is a valid explicit "confirmed none") instead of `answer`. `free_text: true`: also offers a free-text field — the user may type a custom answer instead of (single mode) or alongside (`multi`) picking options; a typed answer comes back as `custom`. Missing `path`/`question`/`options` is a JSON-RPC `-32602` ("invalid params") error, same as `show`'s missing `path` — the question/option-count and empty-string validation happens socket-side and comes back as a normal `isError: true` tool result instead. **Note:** a long `timeout_secs` may exceed the calling MCP client's own request timeout — pick a value the client can actually wait for.
+- **`show`** — `path` (string, required, absolute), `line` (integer, 1-based) or `find` (string, first-occurrence text search); `line` and `find` are mutually exclusive. `window_binding` (integer), `focus` (boolean, default `true`), `transient` (boolean, default `false`) — see **Windows, tabs and routing**; the answer carries `window` and `focused`. The description ends "Reuse the returned window; use transient for quick looks."
+- **`edit`** — `path` (string, required), `content` (string, required, the **complete** new document), `show` (boolean, scroll to the change on completion), `window_binding` (integer). Empty `content` is refused with the same message the CLI gives for empty stdin — there's no `--allow-empty` equivalent over MCP, since an agent should never *mean* to send an empty document.
+- **`ask`** — `path` (string, required), `question` (string, required), `options` (array of string, required, 2-6 entries), `line` (integer, 1-based) or `find` (string), mutually exclusive, `timeout_secs` (integer, default 300, clamped to 10-3600), `multi` (boolean, default `false`), `free_text` (boolean, default `false`), `window_binding` (integer). Blocks the `tools/call` response until the user answers. Single-choice (default): returns the chosen option's text as `answer`. `multi: true`: checkbox mode — the user may check any number of options (including none) and confirms; returns the checked options as `answers` (an array; `[]` is a valid explicit "confirmed none") instead of `answer`. `free_text: true`: also offers a free-text field — the user may type a custom answer instead of (single mode) or alongside (`multi`) picking options; a typed answer comes back as `custom`. Missing `path`/`question`/`options` is a JSON-RPC `-32602` ("invalid params") error, same as `show`'s missing `path` — the question/option-count and empty-string validation happens socket-side and comes back as a normal `isError: true` tool result instead. **Note:** a long `timeout_secs` may exceed the calling MCP client's own request timeout — pick a value the client can actually wait for.
+- **`close`** — `path` (string, required). The ⌘W path for that file's tab; same refusals as `mdmini close`.
+- **`windows`** — no arguments. The listing `mdmini ls --json` prints: `window`, `project`, `project_path`, `last_focused`, `tabs[{path, active}]`.
 
 `tools/call` builds the matching command-socket request (`{"v":1,"cmd":...}`), sends it, and wraps the raw `AiResponse` JSON line as the tool result text:
 
@@ -347,6 +382,11 @@ An agent connected over MCP already gets `show`/`edit`/`ask` as self-describing 
 - After edits, the changed span stays highlighted until the user presses Esc or you edit again — use `show: true` on the edit when they should see the change immediately.
 - Respect their attention: batch related questions into one `ask` with options rather than many small ones; timeouts/dismissals mean "not now", not failure — fall back to chat.
 - `edit` takes the COMPLETE new document, never a diff; md-mini diffs internally and preserves their scroll position and undo history.
+- Windows: every answer names the `window` (#N) it landed in. Pass it back as `window_binding` to keep working in that window; call `windows` to see what is open (projects, tabs) and pick one. Without a binding a file goes to its own tab if it is open anywhere, else to a window of its project, else to a new window.
+- `show` switches to the tab by default; `focus: false` opens it in the background, where it shimmers until the user looks. A user who is typing always keeps their tab, and while they type in one window no other window comes forward — the answer then says `focused: false`: tell them where to look instead of retrying. If they are typing in that very tab, the answer is `focused: true` but nothing moves: the target only pulses.
+- `transient: true` is for a quick look — something they glance at once. The tab asks them «Close / Keep» by itself; leave it off for documents you will keep working in.
+- An `edit` of a background tab is applied and saved there, highlighted when they open it; an `ask` for one waits there until they do, and its timeout still counts from the call.
+- Close what you opened and no longer need with `close` — hygiene, not isolation.
 
 ### Comments the user leaves for you
 
@@ -366,12 +406,16 @@ Run `mdmini agent` to print this block along with a list of common instruction-f
 
 If `mdmini` is available, use it to point at things in the user's open editor and to push edits into the live buffer, instead of only writing files to disk:
 
-- `mdmini show <file> --line N` — scroll to line N in the open window and pulse-highlight it.
+- `mdmini show <file> --line N` — scroll to line N in the file's tab and pulse-highlight it.
 - `mdmini show <file> --find "some text"` — same, but locate the first match of the text instead of a line number.
 - `cat new-content.md | mdmini edit <file> [--show]` — replace the file's live buffer with the **complete** new content read from stdin. md-mini diffs it against what's on screen, applies only the changed span, and highlights it. `--show` also scrolls to the change.
 - `mdmini ask <file> --question "..." --option A --option B [--option ...]` — post a question with 2-6 option buttons inside the document and block until the user clicks one; prints `{"ok":true,"answer":"A"}` with the chosen option's text. Add `--multi` for checkbox mode (any number of options, including none, checked and confirmed) — prints `{"ok":true,"answers":["A","C"]}` instead. Add `--free-text` to also let the user type a custom answer — prints `{"ok":true,"custom":"..."}` (or alongside `answers` in `--multi` mode) when they do.
+- `mdmini <file>` — open a file as a tab. From you (an agent, `CLAUDECODE` set) it opens in the background: the tab shimmers until the user looks; `-f` brings it to the front. When the user should read something now, use `mdmini show <file>` (or `-f`).
+- `mdmini ls` — the open windows: number, project, tabs (`--json` for machine-readable output). `mdmini close <file>` — close a tab you opened and no longer need.
 
-All three verbs print one line of JSON to stdout: `{"ok":true}` (plus `"changed_lines":[[start,end]]` for `edit`, `"answer":"..."` for `ask`, `"answers":[...]` for `ask --multi`, or `"custom":"..."` for a typed `ask --free-text` answer) on success, `{"ok":false,"error":"..."}` on failure. Exit code 0 = success, 1 = md-mini rejected the request, 2 = md-mini isn't running or the command was malformed. If the target file isn't already open, `edit`/`show` open a new window for it automatically — the file must already exist on disk (`ask` requires the same: already open, or existing on disk). Always send the full document on stdin for `edit`, never a diff.
+Windows: every answer names the window it landed in — `{"ok":true,"window":7,"focused":true}`. Pass `-t 7` to `show`/`edit`/`ask`/`mdmini <file>` to keep working in that window. Without `-t` a file goes to its own tab if it is open (wherever that is — the answer's `window` says where), else to a window of its project (the git toplevel), else to a new window. The tab the user is typing in is never taken from them, and while they type in one md-mini window no other window comes forward: `"focused":false` means your show landed in the background — tell them where to look instead of retrying. If they are typing in that very tab, the answer is `"focused":true` but nothing moves: the target only pulses, possibly off-screen. An `edit` of a background tab is applied and saved there; an `ask` for one waits there until they open it, and its timeout still counts from the call. Use `mdmini show <file> --transient` for a quick look: the tab asks them "Close / Keep" by itself.
+
+All verbs print one line of JSON to stdout: `{"ok":true}` (plus `"window"`/`"focused"`, `"changed_lines":[[start,end]]` for `edit`, `"answer":"..."` for `ask`, `"answers":[...]` for `ask --multi`, or `"custom":"..."` for a typed `ask --free-text` answer) on success, `{"ok":false,"error":"..."}` on failure. Exit code 0 = success, 1 = md-mini rejected the request, 2 = md-mini isn't running or the command was malformed. If the target file isn't open yet, `edit`/`show` open it as a tab by the rule above — for `show` it must already exist on disk (`ask` requires the same: already open, or existing on disk). Always send the full document on stdin for `edit`, never a diff.
 
 ### Comments the user leaves for you
 
@@ -380,6 +424,8 @@ The user can also comment on a fragment of a document and expect you to answer. 
 - `mdmini question [<file>]` — list open threads (id, status, anchor, quoted fragment, replies). Without a path, everything under the current directory.
 - `echo "reply" | mdmini answer <file> --id c-7f3a2c` — append your reply and mark the thread answered.
 - `mdmini watch [<dir>]` — long-running; prints one line per newly-open thread.
+
+A thread the user is still typing has `status=paused` and is deliberately invisible to both `question` and `watch` — you are told about it about twenty seconds after they stop typing, or the moment they press "send now". So a comment can exist for half a minute before you hear about it, and that is working as intended, not a delivery failure.
 
 If your harness can react to a stream (Claude Code: `Monitor({command: "mdmini watch", description: "new mdmini comments", persistent: true})`), arm it once per session and you get woken in this same session, with your context intact, instead of polling. `persistent: true` matters: without it the monitor dies after five minutes and its silence looks exactly like "no comments". Also add a `Stop` hook running `mdmini question` that blocks the turn while anything is open — a monitor that emits too much is stopped by the harness without telling you, and the hook is what stops comments piling up unseen.
 
@@ -410,17 +456,60 @@ payload rather than a separate event means a command drained from `AiQueue` by a
 didn't exist yet carries it too. Exactly one command per install can ever carry the flag; a
 rejected request never burns it.
 
+## Windows, tabs and routing
+
+Windows hold tabs, and one file is open in at most one tab in the whole app. Every window has a number (`#7` in its title) and a project; **Routing to a window** above says which window a request goes to. How it then lands there (`lib/tabs/agent-landing.ts`, carried out by `lib/tabs/agent-commands.ts`):
+
+| Situation | What happens |
+|---|---|
+| The file is the window's active tab | Handled in the live view, as always; `"focused":true`. |
+| … and the user is typing in it | Still handled there, but neither the caret nor the view moves: a `show` only pulses (an off-screen target stays off-screen), an `ask` appears without scrolling to it, an `edit --show` does not lead to the change. `"focused":true`. |
+| `show` (focus is its default) or a focused open of a background tab | The window switches to it and comes forward — **unless the user is typing in this window, or in another one** (see **Typing in another window** below), or the active tab shows another agent's question: then it lands in the background, `"focused":false`. A switch the window cannot make right now (the active tab's save has not landed) also lands in the background, never an error. |
+| `show` with `focus: false` (`-b`) | The tab opens (or stays) in the background and shimmers until the user looks. A `line`/`find` target is checked now (`target not found` at once), the caret is placed there, and the pulse plays when the tab is shown. `"focused":false`. |
+| `edit` of a background tab | Applied to that tab and **saved at once**; the highlight and undo are there when it is opened. `"focused":false`. A failed write changes nothing: `could not save the background tab: …`. |
+| `ask` for a background tab | The tab shimmers; the question appears when the user opens the tab. The timeout counts from the request, not from the showing: a question whose time ran out while it waited is not shown at all. (Known gap: the window measures the deadline from when *it* received the command, so a question that waited in a queue can stay clickable a few seconds after Rust answered `timeout waiting for editor`; a click then is lost.) |
+| The user leaves a tab showing a pending `ask` | The question stays with the tab (which shimmers) and comes back when they return. No error. |
+| The user moves the tab to another window (the drawer's window carousel, ⌘G) | Nothing changes for the agent: no `tab released`, no error. A pending request goes with the tab and is answered from its new window; a question waiting for the tab waits there; the next response carries the new `window`, and routing finds the file there. A command already on its way to the old window is handed on to the new one. The new window does not come forward. |
+| The tab holding a pending request is closed | `tab closed`. A tab that never came to show its file (unreadable when its window opened, or the open was abandoned): `tab released`. Its window closed: `window closed`. A question waiting for that tab is forgotten with it. |
+| A file open nowhere | Routed (above). In a window of its project it becomes a new background tab (unless the command takes the view). With no such window, an agent's open or `edit` gets a new window built **without activating the app**: its only tab is active there, so the command acts at once, and the window's notch shimmers until the user comes to it. An `ask` that needs a new window brings it **forward and activates the app** — its question would otherwise wait unseen while its timeout runs — unless the user is typing in some md-mini window, when it too is built behind. |
+| `show(transient: true)` (`--transient`) that opened the tab | A **quick look**. While it is the active tab a bar over the document asks the user «Close / Keep», answered locally: Close is ⌘W (⌘⇧T brings it back), Keep makes it an ordinary tab, and so does any change the user makes to the document. Seen and unanswered for an hour, it is kept or closed per File → "Unanswered Quick Looks After an Hour" (default: Keep), checked every minute. The hour starts when the user first has it in front of them (again, when an agent landed on it while it was unseen); an unseen one never expires, and the active tab of any window — focused or not — never expires under the reader's eyes. A tab the user already had never becomes a quick look. Kept across a restart: the hour goes on counting from the first view before it, and one that expired while md-mini was not running is kept or closed by the policy within a minute of launch (background tabs only). A quick look closed and brought back with ⌘⇧T is an ordinary tab. |
+| `close` | The ⌘W path for that file's tab: saved first, ⌘⇧T brings it back. `file is not open` / `the tab has unsaved changes` / `the user is typing in this tab` (the active tab only). Closing a window's last tab answers first, then closes the window. An agent never closes an untitled tab — a path cannot name one, and the window refuses one anyway (`an agent never closes an untitled tab`). |
+
+**Typing** is concrete: a key without ⌘/⌃ that is not a lone modifier, into an editable element of this window, within the last 2 seconds, while the window has keyboard focus (`lib/tabs/typing.ts`). Arrow keys and other navigation count too — erring on the side of leaving the user alone.
+
+**Typing in another window** counts too: every window reports its typing to Rust (`note_typing`, at most every 500 ms), and while the user typed in some window within the last 2 s (plus that 500 ms, so a late report never shortens it) no agent command brings any *other* window forward. A `show`/focused open for another window then lands there as if it were `focus: false` — no tab switch, no raised window — and a file open nowhere gets its new window built behind. The answer says `"focused":false` even when the file is that window's active tab: the window is not in front of the user. A command for the window they are typing in follows the rows above (`src-tauri/src/typing.rs`).
+
+Commands arriving while a window is switching tabs wait for the switch instead of failing (they run in the window's tab queue). A command that waited there and was answered meanwhile — its tab was closed, or it timed out — is dropped without acting. If the window cannot ask Rust whether the request is still waited on, it does nothing and answers `could not confirm the request is still pending` — never guessing either way.
+
+Any agent command that lands on a tab which is not the active tab of a focused window marks that tab **unviewed**: its drawer card and the window's notch shimmer, with a "✦ from AI" label, until the user has the tab in front of them in a focused window. Nothing about the command's answer changes.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `{"ok":false,"error":"md-mini is not running"}`, exit 2 | Couldn't connect to the command socket. | Run the command again (the wrapper auto-launches the app); if it recurs, check the app actually started (`ps aux \| grep md-mini`) and that no crash left a stale socket blocking the port — the app rebinds stale sockets automatically on startup, so just relaunch it. |
 | `{"ok":false,"error":"md-mini did not start in time"}`, exit 2 | App didn't finish launching within the wrapper's 5s poll. | Launch it manually once (`open /Applications/md-mini.app`) and retry. |
-| `{"ok":false,"error":"window does not own this file"}` | The request's `path` doesn't exactly match the path the target window has open (symlink, relative-vs-canonical, or the file is genuinely open in a different window / not open at all and routing raced). | Pass the same absolute, canonicalized path used to open the file; avoid symlinks. |
 | `{"ok":false,"error":"target not found"}` (`show`) | `--find` text isn't a substring of the current buffer (exact, case-sensitive match). | Check the text against the file's current content — it may have changed since you last read it. |
 | `{"ok":false,"error":"file does not exist"}` (`show`, `ask`) | Target path doesn't exist on disk (`show`), or doesn't exist on disk **and** isn't already open (`ask`). | `show` requires the file to already exist; `ask` requires it to already exist or already be open. `edit` has no such restriction — it opens a window and applies the edit as a new file. |
 | `{"ok":false,"error":"question must not be empty"}` / `"options must have between 2 and 6 entries"` / `"options must not be empty"` (`ask`), exit `1` | The request's `question` was blank, or `options` had fewer than 2 / more than 6 entries, or contained a blank entry. CLI catches the option-count case earlier as a usage error (exit `2`); the rest reach the socket and come back this way. | Fix the `--question`/`--option` values (CLI) or the MCP tool call's `question`/`options` arguments. |
 | `{"ok":false,"error":"window closed"}` (`ask`) | The window the question was posted to closed before the user clicked an option. | Ask again once the file is open, or check why the window closed. |
+| `{"ok":false,"error":"tab closed"}` (`show`, `edit`, `ask`) | The tab holding the file was closed before the request was answered (or before a queued request was delivered). | Re-send; `mdmini show <file>` reopens it. |
+| `{"ok":false,"error":"tab released"}` (`show`, `edit`, `ask`) | The tab that was to show the file never came to show it — its file could not be read when the window opened, or the open was abandoned — so the request had nowhere to land. | Check the file is readable, then re-send. |
+| `{"ok":false,"error":"could not open the tab"}` | The file could not be read to open or switch to its tab (permissions, not valid text). | Check the file. |
+| `{"ok":false,"error":"path must be absolute"}` | A raw socket or MCP request sent a relative path. | Send an absolute path; the CLI resolves relative ones for you. |
+| `{"ok":false,"error":"no window #12. Open windows: …"}` | `window_binding` / `-t` names a number no live window holds. | Pick one from the list in the message (or `mdmini ls`). Numbers are reused (lowest free first), so this error only means the number is free right now — an old number that a new window took routes there without an error. |
+| `"focused":false` on a `show` you wanted in front | The user was typing — in that window or any other md-mini window — or another agent's question was on screen. md-mini never takes their tab or raises a window over the one they type in. | Tell them where to look; the tab shimmers until they do. |
+| `show` answers `"focused":true` but the view did not move | The user is typing in that very tab: only the pulse plays, the caret and the view stay put. | Tell them where to look. |
+| `{"ok":false,"error":"file is not open"}` (`close`) | No window holds that file. | Nothing to close. |
+| `{"ok":false,"error":"file is not open in this window"}` (`close`) | The tab left the window between Rust's lookup and the window's (rare), and the request could not be forwarded: no other window holds the file now (it was closed, not moved), or the request was no longer this window's to hand on. A tab that moved takes the request with it (`ai_forward`) and never produces this. | Check with `mdmini ls`. |
+| `{"ok":false,"error":"the user is typing in this tab"}` (`close`) | The tab is the active one and the user typed into it in the last two seconds. | Try again later, or leave it open. |
+| `{"ok":false,"error":"the tab has unsaved changes"}` (`close`) | Its latest save has not landed (or the disk refused it — see the app's save-error notice). | Retry in a moment. |
+| `{"ok":false,"error":"an agent never closes an untitled tab"}` (`close`) | Defensive: the tab found for the path has no file. | Nothing to do — untitled tabs are the user's. |
+| `{"ok":false,"error":"could not save the background tab: …"}` (`edit`) | The edit was for a background tab and writing the file failed; nothing was changed. | Check the file's permissions. |
+| `{"ok":false,"error":"the file is open in another window"}` | The file went to another window between routing and landing (moved, or opened there), and forwarding failed: that window closed meanwhile, the request was no longer this window's to hand on, or the app could not be asked. Normally the request is forwarded there (`ai_forward`) and answered from it, with no error. | Re-send: routing now finds it. |
+| `{"ok":false,"error":"could not confirm the request is still pending"}` | The window could not ask the app whether anyone still waits for this request, so it did nothing rather than guess. | Re-send. |
+| `{"ok":false,"error":"too many files: N (at most 50 at once)"}`, exit `2` | `mdmini <files>` was given more than 50 files (a stray glob). | Open fewer at once. |
+| `mdmini ls` / `mdmini close` open a document called `ls` / `close` | `/usr/local/bin/mdmini` is a copy from before tabs (`scripts/install.sh` copies, it does not link). | Re-run `scripts/install.sh`. Homebrew installs are unaffected. |
 | `{"ok":false,"error":"refusing to apply empty content (use --allow-empty)"}`, exit `2` (`edit`) | stdin was empty and `--allow-empty` wasn't passed. | Pass `--allow-empty` if clearing the file is actually intended; otherwise check what produced the empty stdin. |
 | `{"ok":false,"error":"timeout waiting for editor"}` | Socket accepted the request, but the frontend didn't answer within 8s (window frozen or closed mid-request). | Check the app isn't hung; retry. |
 | `{"ok":false,"error":"timeout waiting for response"}`, exit 1 | CLI's own 10s wait for any reply line expired. | App likely crashed after accepting the connection; check for a crash and relaunch. |

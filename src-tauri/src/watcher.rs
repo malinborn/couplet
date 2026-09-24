@@ -93,9 +93,13 @@ pub fn watch_file(
                                     .first()
                                     .map(|p| p.display().to_string())
                                     .unwrap_or_else(|| watched_path.clone());
-                                let _ = window.emit("comments-changed", &payload);
+                                let _ = window.emit_to(window_label.as_str(), "comments-changed", &payload);
                             } else {
-                                let _ = window.emit("file-changed-externally", &watched_path);
+                                let _ = window.emit_to(
+                                    window_label.as_str(),
+                                    "file-changed-externally",
+                                    &watched_path,
+                                );
                             }
                         } else {
                             break;
@@ -110,19 +114,4 @@ pub fn watch_file(
     });
 
     Ok(watcher)
-}
-
-/// IPC command: start watching a file for the calling window.
-#[tauri::command]
-pub async fn start_watching(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
-    path: String,
-) -> Result<(), String> {
-    let label = window.label().to_string();
-    let watcher = watch_file(&app, label.clone(), path)?;
-    let watchers = app.state::<crate::window::FileWatchers>();
-    let mut wmap = watchers.0.lock().unwrap();
-    wmap.insert(label, watcher);
-    Ok(())
 }

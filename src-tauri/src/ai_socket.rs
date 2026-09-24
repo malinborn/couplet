@@ -8,11 +8,11 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -31,6 +31,16 @@ pub enum AiRequest {
         line: Option<usize>,
         #[serde(default)]
         find: Option<String>,
+        /// `#N` of the window to open it in (spec §5 step 1). Absent: routed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window_binding: Option<u32>,
+        /// Make the tab active and bring its window forward. Absent: `true` —
+        /// what every `show` did before tabs (spec §5).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        focus: Option<bool>,
+        /// A quick look (spec §7): the tab asks «Close / Keep» by itself.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        transient: bool,
     },
     Edit {
         #[allow(dead_code)] // protocol version, reserved for the future MCP wrapper
@@ -39,6 +49,9 @@ pub enum AiRequest {
         content: String,
         #[serde(default)]
         show: bool,
+        /// `#N` of the window to open it in (spec §5 step 1). Absent: routed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window_binding: Option<u32>,
     },
     Ask {
         #[allow(dead_code)] // protocol version, reserved for the future MCP wrapper
@@ -63,7 +76,82 @@ pub enum AiRequest {
         /// options-only behavior for callers who omit the field.
         #[serde(default)]
         free_text: bool,
+        /// `#N` of the window to open it in (spec §5 step 1). Absent: routed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window_binding: Option<u32>,
     },
+    /// Open a file as a tab — `mdmini <file>` from an agent, or with
+    /// `-t`/`-b`/`-f` (spec §4). Routed like `show`.
+    Open {
+        #[allow(dead_code)] // protocol version, reserved for the future MCP wrapper
+        v: u32,
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window_binding: Option<u32>,
+        /// The CLI decides it (a human's `-t` focuses, an agent's open does not).
+        #[serde(default)]
+        focus: bool,
+    },
+    /// Close the tab holding `path` — the ⌘W way (spec §8).
+    Close {
+        #[allow(dead_code)] // protocol version, reserved for the future MCP wrapper
+        v: u32,
+        path: String,
+    },
+    /// The window listing — `mdmini ls`, MCP `windows`.
+    Windows {
+        #[allow(dead_code)] // protocol version, reserved for the future MCP wrapper
+        v: u32,
+    },
+}
+
+impl AiRequest {
+    fn path(&self) -> &str {
+        match self {
+            AiRequest::Show { path, .. }
+            | AiRequest::Edit { path, .. }
+            | AiRequest::Ask { path, .. }
+            | AiRequest::Open { path, .. }
+            | AiRequest::Close { path, .. } => path,
+            AiRequest::Windows { .. } => "",
+        }
+    }
+
+    /// The path to normalize at the socket's door; `None` for `windows`.
+    fn path_mut(&mut self) -> Option<&mut String> {
+        match self {
+            AiRequest::Show { path, .. }
+            | AiRequest::Edit { path, .. }
+            | AiRequest::Ask { path, .. }
+            | AiRequest::Open { path, .. }
+            | AiRequest::Close { path, .. } => Some(path),
+            AiRequest::Windows { .. } => None,
+        }
+    }
+
+    /// Whether the command may take the view. `show` does by default, `open`
+    /// when the CLI says so; `edit`, `ask` and `close` never switch tabs.
+    fn focus(&self) -> bool {
+        match self {
+            AiRequest::Show { focus, .. } => focus.unwrap_or(true),
+            AiRequest::Open { focus, .. } => *focus,
+            AiRequest::Edit { .. } | AiRequest::Ask { .. } | AiRequest::Close { .. } | AiRequest::Windows { .. } => false,
+        }
+    }
+
+    fn transient(&self) -> bool {
+        matches!(self, AiRequest::Show { transient: true, .. })
+    }
+
+    fn window_binding(&self) -> Option<u32> {
+        match self {
+            AiRequest::Show { window_binding, .. }
+            | AiRequest::Edit { window_binding, .. }
+            | AiRequest::Ask { window_binding, .. }
+            | AiRequest::Open { window_binding, .. } => *window_binding,
+            AiRequest::Close { .. } | AiRequest::Windows { .. } => None,
+        }
+    }
 }
 
 /// Default `ask` timeout when the request omits `timeout_secs` — five minutes
@@ -146,6 +234,20 @@ pub struct AiResponse {
     /// `tool_result_response`, как это уже сделано для `answer`/`answers`/`custom`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub threads: Option<Vec<crate::comments::Located>>,
+    /// The `#N` of the window that handled the request (spec §5): an agent
+    /// passes it back as `window_binding`. Filled in by `ai_respond`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<u32>,
+    /// The tab is its window's active tab after the command. `false`: it
+    /// landed in the background (the tab shimmers until it is seen).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focused: Option<bool>,
+    /// The window listing — `windows` / `mdmini ls --json` only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub windows: Option<Vec<WindowListing>>,
+    /// Every tab a multi-file `mdmini <files>` opened — that CLI call only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opened: Option<Vec<OpenedTab>>,
 }
 
 impl AiResponse {
@@ -155,28 +257,42 @@ impl AiResponse {
     // CLI client (Task 5) to construct local responses with.
     #[allow(dead_code)]
     pub fn ok() -> Self {
-        Self {
-            ok: true,
-            error: None,
-            changed_lines: None,
-            answer: None,
-            answers: None,
-            custom: None,
-            threads: None,
-        }
+        Self { ok: true, ..Default::default() }
     }
 
     pub fn error(msg: impl Into<String>) -> Self {
-        Self {
-            ok: false,
-            error: Some(msg.into()),
-            changed_lines: None,
-            answer: None,
-            answers: None,
-            custom: None,
-            threads: None,
-        }
+        Self { ok: false, error: Some(msg.into()), ..Default::default() }
     }
+}
+
+/// One tab in the window listing.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ListedTab {
+    /// `None`: an untitled tab.
+    pub path: Option<String>,
+    pub active: bool,
+}
+
+/// One window as `mdmini ls --json` and MCP `windows` report it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WindowListing {
+    /// `#N`; `None` only when all 99 numbers were taken.
+    pub window: Option<u32>,
+    /// The project's directory name; `None` for a window that never held a file.
+    pub project: Option<String>,
+    /// The project's root, absolute — what routing compares.
+    pub project_path: Option<String>,
+    /// The window the human was in last.
+    pub last_focused: bool,
+    pub tabs: Vec<ListedTab>,
+}
+
+/// One tab a routed `mdmini <files>` opened.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OpenedTab {
+    pub path: String,
+    pub window: Option<u32>,
+    pub focused: bool,
 }
 
 /// Command socket path for a product name: release `/tmp/md_mini_cmd.sock`, dev
@@ -287,14 +403,19 @@ fn handle_connection(app: &AppHandle, stream: UnixStream) {
                     _ => Duration::from_secs(8),
                 };
                 let (tx, rx) = mpsc::channel::<AiResponse>();
-                let id = dispatch(app, req, tx);
+                let dispatched = dispatch(app, req, tx);
                 match rx.recv_timeout(wait) {
-                    Ok(resp) => resp,
+                    Ok(mut resp) => {
+                        if dispatched.quiet {
+                            quiet_answer(&mut resp);
+                        }
+                        resp
+                    }
                     Err(_) => {
                         // Drop the waiting entry so a response that arrives after
                         // we've given up on it is a harmless no-op instead of a
                         // permanent leak in `AiPending`'s map.
-                        app.state::<AiPending>().cancel(id);
+                        app.state::<AiPending>().cancel(dispatched.id);
                         AiResponse::error("timeout waiting for editor")
                     }
                 }
@@ -312,13 +433,21 @@ fn handle_connection(app: &AppHandle, stream: UnixStream) {
     }
 }
 
+/// One request waiting on the frontend.
+struct PendingEntry {
+    /// The window it was delivered (or queued) to.
+    label: String,
+    /// The document it is about. `None` only for a request that never had one.
+    path: Option<String>,
+    tx: mpsc::Sender<AiResponse>,
+}
+
 /// Requests waiting on a response from the frontend, keyed by an id the
-/// frontend echoes back via the `ai_respond` command. Each entry also carries
-/// the label of the window the request was delivered to, so a window closing
-/// before it answers can fail exactly its own pending entries (see
-/// `cancel_for_window`) instead of leaking until the listener's own timeout.
+/// frontend echoes back via `ai_respond`. Each carries the window and the
+/// document it is about, so closing a window — or one tab of it — fails
+/// exactly its own requests instead of leaving them to time out.
 pub struct AiPending {
-    map: Mutex<HashMap<u64, (String, mpsc::Sender<AiResponse>)>>,
+    map: Mutex<HashMap<u64, PendingEntry>>,
     next: AtomicU64,
 }
 
@@ -344,49 +473,149 @@ impl AiPending {
         self.next.fetch_add(1, Ordering::SeqCst)
     }
 
-    /// Register a waiting request under `id` (from `alloc_id`), tagged with
-    /// the label of the window it was delivered to.
-    fn register(&self, id: u64, label: impl Into<String>, tx: mpsc::Sender<AiResponse>) {
-        self.map.lock().unwrap().insert(id, (label.into(), tx));
+    /// Register a waiting request under `id` (from `alloc_id`) before the
+    /// payload is delivered, so a response can never arrive first.
+    fn register(
+        &self,
+        id: u64,
+        label: impl Into<String>,
+        path: Option<String>,
+        tx: mpsc::Sender<AiResponse>,
+    ) {
+        self.map.lock().unwrap().insert(
+            id,
+            PendingEntry {
+                label: label.into(),
+                path,
+                tx,
+            },
+        );
     }
 
     /// Deliver a response to the connection waiting on `id`. An unknown id is a
     /// no-op — the request may have already timed out and been dropped.
     pub fn respond(&self, id: u64, response: AiResponse) {
-        if let Some((_, tx)) = self.map.lock().unwrap().remove(&id) {
-            let _ = tx.send(response);
+        if let Some(entry) = self.map.lock().unwrap().remove(&id) {
+            let _ = entry.tx.send(response);
+        }
+    }
+
+    /// `respond` for an answer from a window's frontend: delivered only when
+    /// `label` is the window the request was delivered to. Another window
+    /// could otherwise answer — or dismiss — an agent's question it never
+    /// showed. A refused answer leaves the request waiting; an id nobody
+    /// waits on any more is a no-op, as for `respond`.
+    pub fn respond_from(&self, id: u64, label: &str, response: AiResponse) -> Result<(), String> {
+        let mut map = self.map.lock().unwrap();
+        match map.get(&id) {
+            None => Ok(()),
+            Some(entry) if entry.label != label => {
+                Err(format!("request {id} was not delivered to window {label}"))
+            }
+            Some(_) => {
+                if let Some(entry) = map.remove(&id) {
+                    let _ = entry.tx.send(response);
+                }
+                Ok(())
+            }
         }
     }
 
     /// Remove a waiting request without delivering anything — used once the
     /// caller has already given up (the socket listener's own timeout), so a
-    /// `respond` that arrives afterwards for the same id finds nothing to
-    /// deliver instead of resurrecting a stale sender that nobody is
-    /// receiving on anymore.
+    /// later `respond` for the same id finds nothing to deliver.
     pub fn cancel(&self, id: u64) {
         self.map.lock().unwrap().remove(&id);
     }
 
-    /// Fail every entry registered under `label` with "window closed" and
-    /// remove them — called from `window::untrack_window` so an `ask` (or any
-    /// other still-pending request) delivered to a window that then closes
-    /// before answering doesn't hang the caller for the full timeout.
-    pub fn cancel_for_window(&self, label: &str) {
+    /// Whether someone is still waiting on `id`: not answered, cancelled, or
+    /// given up on by its own timeout.
+    pub fn is_pending(&self, id: u64) -> bool {
+        self.map.lock().unwrap().contains_key(&id)
+    }
+
+    /// Fail every entry matching `matches` with `error` and remove them.
+    fn fail_where(&self, error: &str, matches: impl Fn(&PendingEntry) -> bool) {
         let mut map = self.map.lock().unwrap();
         let ids: Vec<u64> = map
             .iter()
-            .filter(|(_, (l, _))| l == label)
+            .filter(|(_, entry)| matches(entry))
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
-            if let Some((_, tx)) = map.remove(&id) {
-                let _ = tx.send(AiResponse::error("window closed"));
+            if let Some(entry) = map.remove(&id) {
+                let _ = entry.tx.send(AiResponse::error(error));
             }
         }
     }
+
+    /// Fail every entry of a window that closed — `window::untrack_window`.
+    pub fn cancel_for_window(&self, label: &str) {
+        self.fail_where("window closed", |e| e.label == label);
+    }
+
+    /// Fail every entry of `label` about `path` — the tab was closed or
+    /// released. An entry with no path is never matched.
+    pub fn cancel_for_window_and_path(&self, label: &str, path: &str, error: &str) {
+        self.fail_where(error, |e| e.label == label && e.path.as_deref() == Some(path));
+    }
+
+    /// The tab holding `path` moved from window `from` to `to` (`tab_move`):
+    /// its agents wait on `to` from now on — an answer from there is
+    /// accepted (`respond_from`), closing `to` fails them, closing `from`
+    /// no longer does. Called under the `OpenFiles` lock (lock order
+    /// `OpenFiles → AiPending`; nothing takes them the other way round).
+    /// Returns how many requests followed the file.
+    pub fn relabel(&self, from: &str, to: &str, path: &str) -> usize {
+        let mut map = self.map.lock().unwrap();
+        let mut n = 0;
+        for entry in map.values_mut().filter(|e| e.label == from && e.path.as_deref() == Some(path)) {
+            entry.label = to.to_string();
+            n += 1;
+        }
+        n
+    }
+
+    /// Hand request `id` to window `to`: it reached `from` for a file `to`
+    /// holds now — its tab moved there, or was claimed there meanwhile.
+    /// Only while someone still waits on it and it is `from`'s, or already
+    /// `to`'s (a move relabelled it). `false`: nothing changed.
+    pub fn hand_to(&self, id: u64, from: &str, to: &str) -> bool {
+        let mut map = self.map.lock().unwrap();
+        match map.get_mut(&id) {
+            Some(entry) if entry.label == from || entry.label == to => {
+                entry.label = to.to_string();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    #[cfg(test)]
+    fn label_of(&self, id: u64) -> Option<String> {
+        self.map.lock().unwrap().get(&id).map(|e| e.label.clone())
+    }
+
+    /// A waiting request, for tests in other modules (`register` is private).
+    #[cfg(test)]
+    pub(crate) fn register_waiting(&self, label: &str, path: Option<&str>) -> (u64, mpsc::Receiver<AiResponse>) {
+        let (tx, rx) = mpsc::channel();
+        let id = self.alloc_id();
+        self.register(id, label, path.map(str::to_string), tx);
+        (id, rx)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.map.lock().unwrap().len()
+    }
 }
 
-/// Commands for windows created by an AI request, pulled by the frontend on mount.
+/// Commands for windows whose frontend has not mounted yet, pulled once by
+/// `ai_pull_pending` after `get_window_init`.
+///
+/// Lock order: `OpenFiles` → `AiQueue`, never the reverse — `deliver` pushes
+/// while holding the registry lock, see `queue_unless_mounted`.
 pub struct AiQueue(pub Mutex<HashMap<String, Vec<AiCommandPayload>>>);
 
 impl Default for AiQueue {
@@ -413,6 +642,18 @@ impl AiQueue {
     pub fn pull(&self, label: &str) -> Vec<AiCommandPayload> {
         self.0.lock().unwrap().remove(label).unwrap_or_default()
     }
+
+    /// Take out every command queued for `label` about `path`.
+    pub fn drop_for(&self, label: &str, path: &str) -> Vec<AiCommandPayload> {
+        let mut map = self.0.lock().unwrap();
+        let Some(queued) = map.get_mut(label) else {
+            return Vec::new();
+        };
+        let (dropped, kept): (Vec<_>, Vec<_>) =
+            std::mem::take(queued).into_iter().partition(|p| p.path == path);
+        *queued = kept;
+        dropped
+    }
 }
 
 /// Fail every AI command still queued for a window that's closing before its
@@ -434,13 +675,24 @@ pub fn cancel_queued_for_window(app: &AppHandle, label: &str) {
     }
 }
 
+/// Fail everything addressed to one document of one window — pending and
+/// queued alike — with `error`. A queued command left in place would be
+/// pulled and applied after its agent had already been told it failed.
+pub fn cancel_for_tab(app: &AppHandle, label: &str, path: &str, error: &str) {
+    let pending = app.state::<AiPending>();
+    for payload in app.state::<AiQueue>().drop_for(label, path) {
+        pending.respond(payload.id, AiResponse::error(error));
+    }
+    pending.cancel_for_window_and_path(label, path, error);
+}
+
 /// The event payload sent to the owning window as `ai-command`, and the shape
 /// queued in `AiQueue` for a window still being created.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiCommandPayload {
     pub id: u64,
-    pub cmd: String, // "show" | "edit" | "ask"
+    pub cmd: String, // "show" | "edit" | "ask" | "open" | "close"
     pub path: String,
     pub line: Option<usize>,
     pub find: Option<String>,
@@ -463,24 +715,211 @@ pub struct AiCommandPayload {
     /// lives. Rides the payload rather than being a separate event so a command
     /// pulled from `AiQueue` by a window that did not exist yet carries it too.
     pub first_use: bool,
+    /// The command may take the view (see `AiRequest::focus`). `false` while
+    /// the human types in another window (`quiet_payload`); the frontend still
+    /// keeps it in the background while they type in this one (spec §5).
+    pub focus: bool,
+    /// `show(transient: true)` — spec §7.
+    pub transient: bool,
+    /// Rust opened this file's tab for this very command (a new window): a
+    /// quick look may mark only a tab it opened.
+    pub fresh: bool,
 }
 
-/// How long to wait for `open_file_window` (run on the main thread) to register
-/// the new window's label in `OpenFiles` before giving up on a freshly opened file.
+/// How an AI command reaches its window — see `queue_unless_mounted`.
+#[derive(Debug)]
+enum Delivery {
+    /// Waiting in `AiQueue` for the window to pull it.
+    Queued,
+    /// The window has mounted: send it as an event.
+    Emit(AiCommandPayload),
+    /// The window is no longer registered: it closed.
+    Gone,
+}
+
+/// Queue `payload` for `label` while its frontend has not mounted; hand it
+/// back to be emitted once it has.
+///
+/// Called with the `OpenFiles` lock held. `get_window_init` marks a window
+/// mounted under that lock and `ai_pull_pending` runs after it, so a command
+/// is queued only while the pull is still to come: an event sent before the
+/// mount is lost, and one queued after the pull is never pulled.
+fn queue_unless_mounted(
+    reg: &crate::tabs::TabRegistry,
+    queue: &AiQueue,
+    label: &str,
+    payload: AiCommandPayload,
+) -> Delivery {
+    if reg.window(label).is_none() {
+        return Delivery::Gone;
+    }
+    if reg.is_mounted(label) {
+        return Delivery::Emit(payload);
+    }
+    queue.push(label, payload);
+    Delivery::Queued
+}
+
+/// Deliver `payload` to `label`. Its id must already be registered in
+/// `AiPending`: a delivery that fails answers it with an error at once.
+fn deliver(app: &AppHandle, label: &str, payload: AiCommandPayload) {
+    let id = payload.id;
+    let delivery = {
+        let open_files = app.state::<window::OpenFiles>();
+        let reg = open_files.0.lock().unwrap();
+        queue_unless_mounted(&reg, &app.state::<AiQueue>(), label, payload)
+    };
+    let error = match delivery {
+        Delivery::Queued => return,
+        // `emit_to`, not `emit`: a broadcast reaches every window, and one
+        // that does not own the file would race to answer with an error.
+        Delivery::Emit(payload) => match app.emit_to(label, "ai-command", &payload) {
+            Ok(()) => return,
+            Err(_) => "failed to deliver to window",
+        },
+        Delivery::Gone => "window closed before the command was delivered",
+    };
+    app.state::<AiPending>().respond(id, AiResponse::error(error));
+}
+
+/// How long to wait for the open (run on the main thread) to report which
+/// window took the file before giving up on a freshly opened file.
 const OPEN_WINDOW_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Route a parsed request to the window that owns the file, opening one first if
-/// it isn't open yet, and arrange for the response to come back on `tx`.
-/// Returns the id registered for this request in `AiPending` — `0` (never a
-/// real id, since `AiPending::next` starts at 1) if the request was answered
-/// directly on `tx` without ever registering, so the caller's later
-/// `AiPending::cancel(id)` on timeout is a harmless no-op.
-fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u64 {
-    let path = match &req {
-        AiRequest::Show { path, .. } => path.clone(),
-        AiRequest::Edit { path, .. } => path.clone(),
-        AiRequest::Ask { path, .. } => path.clone(),
+/// The event payload for `req`, delivered as `ai-command`.
+fn payload_for(req: &AiRequest, id: u64, first_use: bool) -> AiCommandPayload {
+    let mut p = AiCommandPayload {
+        id,
+        first_use,
+        cmd: String::new(),
+        path: req.path().to_string(),
+        line: None,
+        find: None,
+        content: None,
+        show: false,
+        question: None,
+        options: Vec::new(),
+        timeout_secs: 0,
+        multi: false,
+        free_text: false,
+        focus: req.focus(),
+        transient: req.transient(),
+        fresh: false,
     };
+    match req {
+        AiRequest::Show { line, find, .. } => {
+            p.cmd = "show".to_string();
+            p.line = *line;
+            p.find = find.clone();
+        }
+        AiRequest::Edit { content, show, .. } => {
+            p.cmd = "edit".to_string();
+            p.content = Some(content.clone());
+            p.show = *show;
+        }
+        AiRequest::Ask { question, options, line, find, timeout_secs, multi, free_text, .. } => {
+            p.cmd = "ask".to_string();
+            p.question = Some(question.clone());
+            p.options = options.clone();
+            p.line = *line;
+            p.find = find.clone();
+            p.timeout_secs = clamp_ask_timeout(*timeout_secs);
+            p.multi = *multi;
+            p.free_text = *free_text;
+        }
+        AiRequest::Open { .. } => p.cmd = "open".to_string(),
+        AiRequest::Close { .. } => p.cmd = "close".to_string(),
+        // Answered by Rust itself, never delivered to a window.
+        AiRequest::Windows { .. } => p.cmd = "windows".to_string(),
+    }
+    p
+}
+
+/// What `dispatch` did with a request.
+#[derive(Debug, PartialEq, Eq)]
+struct Dispatched {
+    /// The id registered for it in `AiPending` — `0` (never a real id, since
+    /// `AiPending::next` starts at 1) if it was answered directly on `tx`
+    /// without ever registering, so the caller's later `AiPending::cancel(id)`
+    /// on timeout is a harmless no-op.
+    id: u64,
+    /// Typing in another window kept it from coming forward (`quiet_payload`):
+    /// its answer goes through `quiet_answer`.
+    quiet: bool,
+}
+
+impl Dispatched {
+    const ANSWERED: Dispatched = Dispatched { id: 0, quiet: false };
+}
+
+/// Q10: a command that may take the view loses it while the human types in
+/// another window (`typing::blocks_raise`) — the window it reaches then keeps
+/// it in the background, and a window built for it is built behind. `true`:
+/// it was downgraded. A command that never takes the view is left alone.
+fn quiet_payload(payload: &mut AiCommandPayload, typing_elsewhere: bool) -> bool {
+    if !payload.focus || !typing_elsewhere {
+        return false;
+    }
+    payload.focus = false;
+    true
+}
+
+/// The answer to a downgraded command: its tab may be its window's active one
+/// (the file already was, or a new window holds only it), but that window did
+/// not come forward — for the agent it landed in the background, and
+/// `"focused":false` tells it to point the human there instead of retrying.
+fn quiet_answer(response: &mut AiResponse) {
+    if response.focused == Some(true) {
+        response.focused = Some(false);
+    }
+}
+
+/// How the window built for `req` comes up — step 4, no window took it.
+/// `focus` is the payload's, after Q10's downgrade (`quiet_payload`): a
+/// command that may take the view brings its window forward (spec §4), any
+/// other is built behind. An `ask` is the exception (tabs-questions Q7): its
+/// question stands in that new window while its timeout runs, so the window
+/// comes forward and the app activates — unless the human types somewhere
+/// (Q10), when it too is built behind.
+///
+/// A file claimed elsewhere while the window was being built is the one case
+/// where a foreground `ask` raises a window it did not create: its holder,
+/// the way a foreground open does (`window::try_open_file_window_with`).
+fn new_window_activation(req: &AiRequest, focus: bool, typing_elsewhere: bool) -> window::Activation {
+    let ask_raises = matches!(req, AiRequest::Ask { .. }) && !typing_elsewhere;
+    if focus || ask_raises {
+        window::Activation::Foreground
+    } else {
+        window::Activation::Background
+    }
+}
+
+/// Route a parsed request to its window (spec §5 — see `routing::route`),
+/// opening one first if needed, and arrange for the response to come back on `tx`.
+fn dispatch(app: &AppHandle, mut req: AiRequest, tx: mpsc::Sender<AiResponse>) -> Dispatched {
+    // MCP and raw clients converge on the spelling the CLI resolves to, so
+    // one file is one tab however the caller wrote it.
+    if let Some(path) = req.path_mut() {
+        match request_path(path) {
+            Ok(normalized) => *path = normalized,
+            Err(e) => {
+                let _ = tx.send(AiResponse::error(e));
+                return Dispatched::ANSWERED;
+            }
+        }
+    }
+    match &req {
+        AiRequest::Windows { .. } => {
+            let mut resp = AiResponse::ok();
+            resp.windows = Some(crate::routing::windows_now(app));
+            let _ = tx.send(resp);
+            return Dispatched::ANSWERED;
+        }
+        AiRequest::Close { .. } => return Dispatched { id: dispatch_close(app, &req, tx), quiet: false },
+        _ => {}
+    }
+
+    let path = req.path().to_string();
 
     // `show` on a path that doesn't exist would otherwise fall through to
     // `open_file_window`, happily creating a new empty window for a file that
@@ -489,7 +928,7 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
     // normal "start a new file" request.
     if matches!(&req, AiRequest::Show { .. }) && !std::path::Path::new(&path).exists() {
         let _ = tx.send(AiResponse::error("file does not exist"));
-        return 0;
+        return Dispatched::ANSWERED;
     }
 
     if let AiRequest::Ask {
@@ -498,7 +937,7 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
     {
         if let Err(msg) = validate_ask(question, options) {
             let _ = tx.send(AiResponse::error(msg));
-            return 0;
+            return Dispatched::ANSWERED;
         }
         // Unlike `edit`, `ask` has no "start a new file" meaning — a question
         // about a file that neither exists on disk nor is already open (which
@@ -506,14 +945,26 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
         // answered.
         let already_open = {
             let open_files = app.state::<window::OpenFiles>();
-            let map = open_files.0.lock().unwrap();
-            map.contains_key(&path)
+            let reg = open_files.0.lock().unwrap();
+            reg.contains_path(&path)
         };
         if !already_open && !std::path::Path::new(&path).exists() {
             let _ = tx.send(AiResponse::error("file does not exist"));
-            return 0;
+            return Dispatched::ANSWERED;
         }
     }
+
+    // Where it goes (spec §5), decided before anything is allocated: a dead
+    // window number is answered here and must not burn the first-use toast.
+    let target = match crate::routing::route_now(app, &path, req.window_binding()) {
+        crate::routing::Route::DeadNumber(number) => {
+            let listing = crate::routing::windows_now(app);
+            let _ = tx.send(AiResponse::error(crate::routing::dead_number_error(number, &listing)));
+            return Dispatched::ANSWERED;
+        }
+        crate::routing::Route::Existing(label) => Some(label),
+        crate::routing::Route::NewWindow => None,
+    };
 
     // The id is handed to the frontend in the payload before we know which
     // window will own the response — `AiPending::register` (which needs that
@@ -526,132 +977,221 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
     let first_use = crate::onboarding::mark_connected(
         app.config().version.as_deref().unwrap_or("0.0.0"),
     );
-    let payload = AiCommandPayload {
-        id,
-        first_use,
-        cmd: match &req {
-            AiRequest::Show { .. } => "show".to_string(),
-            AiRequest::Edit { .. } => "edit".to_string(),
-            AiRequest::Ask { .. } => "ask".to_string(),
-        },
-        path: path.clone(),
-        line: match &req {
-            AiRequest::Show { line, .. } => *line,
-            AiRequest::Edit { .. } => None,
-            AiRequest::Ask { line, .. } => *line,
-        },
-        find: match &req {
-            AiRequest::Show { find, .. } => find.clone(),
-            AiRequest::Edit { .. } => None,
-            AiRequest::Ask { find, .. } => find.clone(),
-        },
-        content: match &req {
-            AiRequest::Show { .. } => None,
-            AiRequest::Edit { content, .. } => Some(content.clone()),
-            AiRequest::Ask { .. } => None,
-        },
-        show: match &req {
-            AiRequest::Show { .. } => false,
-            AiRequest::Edit { show, .. } => *show,
-            AiRequest::Ask { .. } => false,
-        },
-        question: match &req {
-            AiRequest::Ask { question, .. } => Some(question.clone()),
-            _ => None,
-        },
-        options: match &req {
-            AiRequest::Ask { options, .. } => options.clone(),
-            _ => Vec::new(),
-        },
-        timeout_secs: match &req {
-            AiRequest::Ask { timeout_secs, .. } => clamp_ask_timeout(*timeout_secs),
-            _ => 0,
-        },
-        multi: match &req {
-            AiRequest::Ask { multi, .. } => *multi,
-            _ => false,
-        },
-        free_text: match &req {
-            AiRequest::Ask { free_text, .. } => *free_text,
-            _ => false,
-        },
-    };
+    let mut payload = payload_for(&req, id, first_use);
+    // Q10: the human types in another window. Nothing comes forward for this
+    // command — no tab switch, no raised window, a new one built behind —
+    // and its answer says so (`quiet_answer`).
+    let typing_elsewhere = crate::typing::blocks_raise_now(app, target.as_deref());
+    let quiet = quiet_payload(&mut payload, typing_elsewhere);
 
-    let existing_label = {
-        let open_files = app.state::<window::OpenFiles>();
-        let map = open_files.0.lock().unwrap();
-        map.get(&path).cloned()
-    };
-
-    if let Some(label) = existing_label {
-        if let Some(win) = app.get_webview_window(&label) {
-            app.state::<AiPending>().register(id, label.clone(), tx);
-            // emit() broadcasts to every window — a window that does not own the
-            // file would race to answer with an error. Target the owner only.
-            if win.emit_to(label.as_str(), "ai-command", &payload).is_ok() {
-                return id;
-            }
-            // Registered but never delivered — fail now instead of leaking
-            // until the connection's own timeout.
-            app.state::<AiPending>()
-                .respond(id, AiResponse::error("failed to deliver to window"));
-            return id;
-        }
-        // Label was in OpenFiles but the window is already gone (closed between
-        // the lookup above and here) — fall through and open a fresh one.
+    if let Some(label) = target {
+        app.state::<AiPending>().register(id, label.clone(), Some(path), tx);
+        deliver(app, &label, payload);
+        return Dispatched { id, quiet };
     }
 
-    // Not open yet. Window creation must happen on the main thread — this
-    // listener runs on a background thread per connection.
+    // Step 4: a window of its own, in the background unless the command may
+    // take the view (spec §4). Window creation must happen on the main
+    // thread — this listener runs on a background thread per connection —
+    // and its outcome comes back on `opened_rx`: the file may have been
+    // opened elsewhere since `route_now`, and then this command's tab is the
+    // one the human already had.
+    let activation = new_window_activation(&req, payload.focus, typing_elsewhere);
+    let (opened_tx, opened_rx) = mpsc::channel();
+    let ticket = Arc::new(OpenTicket::new());
+    let ticket_for_open = Arc::clone(&ticket);
     let handle = app.clone();
     let path_for_open = path.clone();
     if app
-        .run_on_main_thread(move || window::open_file_window(&handle, Some(path_for_open)))
+        .run_on_main_thread(move || {
+            if ticket_for_open.start() {
+                let _ = opened_tx.send(window::try_open_file_window_with(&handle, Some(path_for_open), activation));
+            }
+        })
         .is_err()
     {
         let _ = tx.send(AiResponse::error("failed to open window for file"));
-        return id;
+        return Dispatched { id, quiet };
+    }
+    let outcome = match opened_rx.recv_timeout(OPEN_WINDOW_TIMEOUT) {
+        Ok(outcome) => Some(outcome),
+        // The open started before the deadline: it is building the window
+        // right now, and that window must get the command.
+        Err(mpsc::RecvTimeoutError::Timeout) if !ticket.abandon() => opened_rx.recv().ok(),
+        Err(_) => None,
+    };
+    let label = match outcome {
+        Some(Ok(opened)) => land_on(opened, &mut payload),
+        Some(Err(e)) => {
+            eprintln!("ai: failed to open a window for {path}: {e}");
+            let _ = tx.send(AiResponse::error("failed to open window for file"));
+            return Dispatched { id, quiet };
+        }
+        None => {
+            let _ = tx.send(AiResponse::error("failed to open window for file"));
+            return Dispatched { id, quiet };
+        }
+    };
+    app.state::<AiPending>().register(id, label.clone(), Some(path), tx);
+    deliver(app, &label, payload);
+    Dispatched { id, quiet }
+}
+
+/// A request's path in its one spelling (`path_norm::normalize_path`). It
+/// must be absolute: this process's own directory means nothing to the
+/// caller, and resolving against it would open some other file. A `..` that
+/// survives normalization would name a file by a spelling nobody else uses.
+fn request_path(raw: &str) -> Result<String, String> {
+    let path = Path::new(raw);
+    if !path.is_absolute() {
+        return Err("path must be absolute".to_string());
+    }
+    let normalized = crate::path_norm::normalize_path(path);
+    if normalized.components().any(|c| c == std::path::Component::ParentDir) {
+        return Err("path must be absolute".to_string());
+    }
+    Ok(normalized.to_string_lossy().into_owned())
+}
+
+/// `close`: to the window holding the file. Registered **without a path**:
+/// the tab it closes fails its document's agents (`cancel_for_tab`), and this
+/// request must not be one of them. No first-use toast — nothing is shown.
+///
+/// Only a file tab can be named by a path, so an agent's `close` can never
+/// reach an untitled tab (spec §8). Rust closes nothing here: the window's
+/// frontend decides, the ⌘W way.
+fn dispatch_close(app: &AppHandle, req: &AiRequest, tx: mpsc::Sender<AiResponse>) -> u64 {
+    let owner = {
+        let open_files = app.state::<window::OpenFiles>();
+        let reg = open_files.0.lock().unwrap();
+        reg.label_of(req.path())
+    }
+    .filter(|label| app.get_webview_window(label).is_some());
+    let Some(label) = owner else {
+        let _ = tx.send(AiResponse::error("file is not open"));
+        return 0;
+    };
+    let id = app.state::<AiPending>().alloc_id();
+    app.state::<AiPending>().register(id, label.clone(), None, tx);
+    deliver(app, &label, payload_for(req, id, false));
+    id
+}
+
+/// A main-thread open the connection thread may give up on. Exactly one side
+/// wins: the open starts, or the wait abandons it — an agent answered
+/// "failed to open" never gets a window built for it afterwards.
+struct OpenTicket(AtomicU8);
+
+impl OpenTicket {
+    const WAITING: u8 = 0;
+    const STARTED: u8 = 1;
+    const ABANDONED: u8 = 2;
+
+    fn new() -> Self {
+        Self(AtomicU8::new(Self::WAITING))
     }
 
-    // `open_file_window` registers the new label in `OpenFiles` synchronously,
-    // but on the main thread — poll briefly from here rather than racing it.
-    let deadline = Instant::now() + OPEN_WINDOW_TIMEOUT;
-    loop {
-        let label = {
-            let open_files = app.state::<window::OpenFiles>();
-            let map = open_files.0.lock().unwrap();
-            map.get(&path).cloned()
-        };
-        if let Some(label) = label {
-            app.state::<AiPending>().register(id, label.clone(), tx);
-            app.state::<AiQueue>().push(&label, payload);
-            return id;
+    /// The open may run. `false`: it was abandoned, and must not.
+    fn start(&self) -> bool {
+        self.0
+            .compare_exchange(Self::WAITING, Self::STARTED, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    /// Give up on the open. `false`: it has started, and its result is coming.
+    fn abandon(&self) -> bool {
+        self.0
+            .compare_exchange(Self::WAITING, Self::ABANDONED, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+}
+
+/// The window `opened` put the file in. `fresh` only for a tab created for
+/// this very command: a quick look must never mark a tab the human already
+/// had (spec §7).
+fn land_on(opened: window::Opened, payload: &mut AiCommandPayload) -> String {
+    match opened {
+        window::Opened::Created(label) => {
+            payload.fresh = true;
+            label
         }
-        if Instant::now() >= deadline {
-            let _ = tx.send(AiResponse::error("failed to open window for file"));
-            return id;
-        }
-        std::thread::sleep(Duration::from_millis(20));
+        window::Opened::Existing(label) => label,
     }
 }
 
 /// IPC command: deliver the frontend's answer to an AI command back to the CLI
-/// connection waiting on it.
+/// connection waiting on it — only from the window it was delivered to — with
+/// that window's `#N` added (spec §5).
 #[tauri::command]
-pub async fn ai_respond(app: AppHandle, id: u64, response: AiResponse) -> Result<(), String> {
-    app.state::<AiPending>().respond(id, response);
-    Ok(())
+pub async fn ai_respond(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    id: u64,
+    mut response: AiResponse,
+) -> Result<(), String> {
+    let label = window.label().to_string();
+    // The registry guard drops at the end of this block, before `AiPending`
+    // is locked: the two are never held together.
+    {
+        let open_files = app.state::<window::OpenFiles>();
+        let reg = open_files.0.lock().unwrap();
+        stamp_window(&reg, &label, &mut response);
+    }
+    app.state::<AiPending>().respond_from(id, &label, response)
+}
+
+/// Set `response.window` to `label`'s `#N` from the registry — always, over
+/// whatever the frontend sent: the number an agent binds to next must be the
+/// one Rust knows. `None` for a window that has no number.
+fn stamp_window(reg: &crate::tabs::TabRegistry, label: &str, response: &mut AiResponse) {
+    response.window = reg.window(label).and_then(|w| w.number);
+}
+
+/// IPC command: whether the command `id` still has an agent waiting on it. A
+/// command can wait in the frontend's tab queue past its cancellation (the
+/// tab it was for was closed or released) or its timeout; applied then, it would
+/// act for an agent that was already told it failed.
+#[tauri::command]
+pub async fn ai_is_pending(app: AppHandle, id: u64) -> Result<bool, String> {
+    Ok(app.state::<AiPending>().is_pending(id))
 }
 
 /// IPC command: drain the AI commands queued for the calling window — commands
 /// that arrived for a file before its window existed. Called once on mount,
-/// like `get_pending_file`.
+/// like `get_window_init`.
 #[tauri::command]
 pub async fn ai_pull_pending(
     window: tauri::Window,
     state: tauri::State<'_, AiQueue>,
 ) -> Result<Vec<AiCommandPayload>, String> {
     Ok(state.pull(window.label()))
+}
+
+/// IPC: a command reached this window for a file another live window holds
+/// now (plan 05, D12). Delivered there when its request can be handed over
+/// (`AiPending::hand_to`). `false`: nothing was forwarded — the caller
+/// answers the agent itself, as before.
+#[tauri::command]
+pub async fn ai_forward(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    payload: AiCommandPayload,
+) -> Result<bool, String> {
+    let caller = window.label().to_string();
+    let holder = {
+        let open_files = app.state::<window::OpenFiles>();
+        let reg = open_files.0.lock().unwrap();
+        reg.label_of(&payload.path)
+    }
+    .filter(|label| label != &caller && app.get_webview_window(label).is_some());
+    let Some(holder) = holder else {
+        return Ok(false);
+    };
+    if !app.state::<AiPending>().hand_to(payload.id, &caller, &holder) {
+        return Ok(false);
+    }
+    deliver(&app, &holder, payload);
+    Ok(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -676,10 +1216,15 @@ enum CliVerb {
     Show {
         line: Option<usize>,
         find: Option<String>,
+        window: Option<u32>,
+        /// `-b` → `Some(false)`, `-f` → `Some(true)`; absent: the default (focus).
+        focus: Option<bool>,
+        transient: bool,
     },
     Edit {
         show: bool,
         allow_empty: bool,
+        window: Option<u32>,
     },
     Ask {
         question: String,
@@ -689,7 +1234,18 @@ enum CliVerb {
         timeout_secs: u64,
         multi: bool,
         free_text: bool,
+        window: Option<u32>,
     },
+    /// `mdmini <files> [-t N] [-b | -f]` routed through the socket (spec §4).
+    Open {
+        paths: Vec<String>,
+        window: Option<u32>,
+        focus: Option<bool>,
+    },
+    /// `mdmini ls [--json]`.
+    Ls { json: bool },
+    /// `mdmini close <file>`.
+    Close,
     /// Local, offline: prints the full CLI reference. No file arg, no flags.
     Help,
     /// Local, offline: prints the agent-onboarding instruction block. No file
@@ -706,7 +1262,30 @@ enum CliVerb {
     Watch,
 }
 
-const USAGE: &str = "usage: mdmini ai show <file> [--line N | --find TEXT] [--socket PATH]\n       mdmini ai edit <file> [--show] [--allow-empty] [--socket PATH]\n       mdmini ai ask <file> --question TEXT --option TEXT [--option TEXT ...] [--multi] [--free-text] [--at-line N | --at-find TEXT] [--timeout SECS] [--socket PATH]\n       mdmini ai help\n       mdmini ai agent [--mcp]\n       mdmini ai question [<file>]\n       mdmini ai answer <file> --id ID\n       mdmini ai watch [<dir>]";
+const USAGE: &str = "usage: mdmini ai show <file> [--line N | --find TEXT] [-t N] [-b | -f] [--transient] [--socket PATH]\n       mdmini ai edit <file> [--show] [--allow-empty] [-t N] [--socket PATH]\n       mdmini ai ask <file> --question TEXT --option TEXT [--option TEXT ...] [--multi] [--free-text] [--at-line N | --at-find TEXT] [--timeout SECS] [-t N] [--socket PATH]\n       mdmini ai open <file>... [-t N] [-b | -f] [--socket PATH]\n       mdmini ai ls [--json] [--socket PATH]\n       mdmini ai close <file> [--socket PATH]\n       mdmini ai help\n       mdmini ai agent [--mcp]\n       mdmini ai question [<file>]\n       mdmini ai answer <file> --id ID\n       mdmini ai watch [<dir>]";
+
+/// `-t N` / `--window N`: a window number, plain digits from 1 (spec §3: the
+/// CLI has no `#`).
+fn parse_window(value: Option<&String>) -> Result<u32, String> {
+    let v = value.ok_or("-t requires a window number")?;
+    // `parse` alone would also take `+7`.
+    let digits = !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit());
+    match v.parse::<u32>() {
+        Ok(n) if digits && n >= 1 => Ok(n),
+        _ => Err(format!("invalid window number: {v}")),
+    }
+}
+
+/// `-b` / `-f` into `slot`; both on one command is an error.
+fn set_focus(slot: &mut Option<bool>, value: bool) -> Result<(), String> {
+    match *slot {
+        Some(existing) if existing != value => Err("-b and -f are mutually exclusive".to_string()),
+        _ => {
+            *slot = Some(value);
+            Ok(())
+        }
+    }
+}
 
 /// Parse the CLI args that follow the `ai` verb dispatch in `main.rs`, i.e.
 /// `["show", "<file>", "--line", "42"]` or `["edit", "<file>", "--show"]`.
@@ -777,6 +1356,38 @@ fn parse_cli_args(args: &[String]) -> Result<CliArgs, String> {
             socket: None,
         });
     }
+    if verb == "open" {
+        let mut paths = Vec::new();
+        let mut window = None;
+        let mut focus = None;
+        let mut socket = None;
+        while let Some(arg) = iter.next() {
+            match arg.as_str() {
+                "-t" | "--window" => window = Some(parse_window(iter.next())?),
+                "-b" | "--background" => set_focus(&mut focus, false)?,
+                "-f" | "--focus" => set_focus(&mut focus, true)?,
+                "--socket" => socket = Some(iter.next().ok_or("--socket requires a value")?.clone()),
+                other if other.starts_with('-') => return Err(format!("unknown flag: {other}")),
+                _ => paths.push(arg.clone()),
+            }
+        }
+        if paths.is_empty() {
+            return Err("open needs at least one file".to_string());
+        }
+        return Ok(CliArgs { path: String::new(), verb: CliVerb::Open { paths, window, focus }, socket });
+    }
+    if verb == "ls" {
+        let mut json = false;
+        let mut socket = None;
+        while let Some(arg) = iter.next() {
+            match arg.as_str() {
+                "--json" => json = true,
+                "--socket" => socket = Some(iter.next().ok_or("--socket requires a value")?.clone()),
+                other => return Err(format!("ls takes only --json and --socket: unexpected {other}")),
+            }
+        }
+        return Ok(CliArgs { path: String::new(), verb: CliVerb::Ls { json }, socket });
+    }
 
     let path = iter.next().ok_or_else(|| USAGE.to_string())?.clone();
     let mut socket: Option<String> = None;
@@ -785,6 +1396,9 @@ fn parse_cli_args(args: &[String]) -> Result<CliArgs, String> {
         "show" => {
             let mut line: Option<usize> = None;
             let mut find: Option<String> = None;
+            let mut window = None;
+            let mut focus = None;
+            let mut transient = false;
             while let Some(arg) = iter.next() {
                 match arg.as_str() {
                     "--line" => {
@@ -798,6 +1412,10 @@ fn parse_cli_args(args: &[String]) -> Result<CliArgs, String> {
                         let v = iter.next().ok_or("--find requires a value")?;
                         find = Some(v.clone());
                     }
+                    "-t" | "--window" => window = Some(parse_window(iter.next())?),
+                    "-b" | "--background" => set_focus(&mut focus, false)?,
+                    "-f" | "--focus" => set_focus(&mut focus, true)?,
+                    "--transient" => transient = true,
                     "--socket" => {
                         let v = iter.next().ok_or("--socket requires a value")?;
                         socket = Some(v.clone());
@@ -810,17 +1428,19 @@ fn parse_cli_args(args: &[String]) -> Result<CliArgs, String> {
             }
             Ok(CliArgs {
                 path,
-                verb: CliVerb::Show { line, find },
+                verb: CliVerb::Show { line, find, window, focus, transient },
                 socket,
             })
         }
         "edit" => {
             let mut show = false;
             let mut allow_empty = false;
+            let mut window = None;
             while let Some(arg) = iter.next() {
                 match arg.as_str() {
                     "--show" => show = true,
                     "--allow-empty" => allow_empty = true,
+                    "-t" | "--window" => window = Some(parse_window(iter.next())?),
                     "--socket" => {
                         let v = iter.next().ok_or("--socket requires a value")?;
                         socket = Some(v.clone());
@@ -830,7 +1450,7 @@ fn parse_cli_args(args: &[String]) -> Result<CliArgs, String> {
             }
             Ok(CliArgs {
                 path,
-                verb: CliVerb::Edit { show, allow_empty },
+                verb: CliVerb::Edit { show, allow_empty, window },
                 socket,
             })
         }
@@ -842,8 +1462,10 @@ fn parse_cli_args(args: &[String]) -> Result<CliArgs, String> {
             let mut timeout_secs = default_ask_timeout();
             let mut multi = false;
             let mut free_text = false;
+            let mut window = None;
             while let Some(arg) = iter.next() {
                 match arg.as_str() {
+                    "-t" | "--window" => window = Some(parse_window(iter.next())?),
                     "--question" => {
                         let v = iter.next().ok_or("--question requires a value")?;
                         question = Some(v.clone());
@@ -895,9 +1517,19 @@ fn parse_cli_args(args: &[String]) -> Result<CliArgs, String> {
                     timeout_secs: clamp_ask_timeout(timeout_secs),
                     multi,
                     free_text,
+                    window,
                 },
                 socket,
             })
+        }
+        "close" => {
+            while let Some(arg) = iter.next() {
+                match arg.as_str() {
+                    "--socket" => socket = Some(iter.next().ok_or("--socket requires a value")?.clone()),
+                    other => return Err(format!("unknown flag: {other}")),
+                }
+            }
+            Ok(CliArgs { path, verb: CliVerb::Close, socket })
         }
         other => Err(format!("unknown command: {}", other)),
     }
@@ -918,14 +1550,19 @@ fn refuse_empty_edit(content: &str, allow_empty: bool) -> Option<AiResponse> {
     }
 }
 
-/// Print `response` to stdout and return the process exit code: `0` if it
-/// deserializes to an `ok: true` `AiResponse`, `1` otherwise.
-fn print_response_and_exit_code(response_json: &str) -> i32 {
-    println!("{}", response_json);
+/// The process exit code for a response line: `0` if it deserializes to an
+/// `ok: true` `AiResponse`, `1` otherwise.
+fn exit_code_for(response_json: &str) -> i32 {
     match serde_json::from_str::<AiResponse>(response_json) {
         Ok(resp) if resp.ok => 0,
         _ => 1,
     }
+}
+
+/// Print `response` to stdout and return the process exit code.
+fn print_response_and_exit_code(response_json: &str) -> i32 {
+    println!("{response_json}");
+    exit_code_for(response_json)
 }
 
 /// Full reference for every `mdmini` verb — printed by `mdmini help`. Single
@@ -939,10 +1576,12 @@ fn help_text() -> String {
     r###"mdmini — minimalist live-preview markdown editor for macOS
 
 USAGE
-  mdmini <file>...                          Open one or more files (or focus existing windows)
-  mdmini show <file> [--line N | --find TEXT] [--socket PATH]
-  mdmini edit <file> [--show] [--allow-empty] [--socket PATH] < new-content
-  mdmini ask <file> --question TEXT --option TEXT [--option TEXT ...] [--multi] [--free-text] [--at-line N | --at-find TEXT] [--timeout SECS] [--socket PATH]
+  mdmini <file>... [-t N] [-b | -f]         Open files as tabs (see "Opening files")
+  mdmini show <file> [--line N | --find TEXT] [-t N] [-b | -f] [--transient] [--socket PATH]
+  mdmini edit <file> [--show] [--allow-empty] [-t N] [--socket PATH] < new-content
+  mdmini ask <file> --question TEXT --option TEXT [--option TEXT ...] [--multi] [--free-text] [--at-line N | --at-find TEXT] [--timeout SECS] [-t N] [--socket PATH]
+  mdmini ls [--json]
+  mdmini close <file>
   mdmini question [<file>]
   mdmini answer <file> --id ID < reply-text
   mdmini watch [<dir>]
@@ -952,10 +1591,35 @@ USAGE
 
 OPENING FILES
   mdmini notes.md report.md
-      Opens each file in its own window (or focuses it if already open).
-      Relative paths are resolved against the current directory. If md-mini
-      isn't running, it is launched via `open`; an already-running instance
-      receives the file list over a single-instance socket.
+      Opens the files as tabs of one new window; a file already open is
+      focused where it is. Relative paths are resolved against the current
+      directory. If md-mini isn't running, it is launched via `open`; an
+      already-running instance receives the file list over a single-instance
+      socket.
+  mdmini notes.md -t 7        A tab in window #7, focused.
+  mdmini notes.md -t 7 -b     The same in the background: the tab shimmers,
+                              focus stays where it was.
+  mdmini notes.md -b          In the background, routed (see "Windows").
+  With CLAUDECODE set (an agent), `mdmini <file>` is routed and opens in the
+  background by default; -f opens it in focus. A routed open prints one line
+  of JSON: {"ok":true,"window":7,"focused":false,"opened":[...]}.
+
+WINDOWS
+  Every window has a number (#7 in its title) and a project: the git
+  toplevel of the first file it held (a worktree is its own project), or
+  that file's directory outside git.
+  mdmini ls [--json]
+      The open windows: number, project, tabs. --json prints
+      {"ok":true,"windows":[{"window":7,"project":"md-mini",...}]}.
+  mdmini close <file>
+      Closes the tab holding <file>, saved first. Refused while it has
+      unsaved changes, or while the user is typing in it.
+  Routing, for show, edit, ask and routed opens:
+    -t N  → window #N (a number no window has is an error that lists the
+            open windows); a file already open → its tab, wherever it is;
+            a window of the file's project → a new tab there (the one
+            focused last); otherwise a new window.
+  "window" in every answer is the #N to pass back with -t.
 
 SHOW — point at a location in an already-open (or newly opened) window
   mdmini show <file> [--line N | --find "text"] [--socket PATH]
@@ -966,7 +1630,16 @@ SHOW — point at a location in an already-open (or newly opened) window
     --find TEXT     Locate the first substring match (case-sensitive).
                     Mutually exclusive with --line.
     --socket PATH   Talk to a non-default command socket (see "Dev builds").
-  Neither flag: just opens/focuses the file, no scroll.
+    -t N, --window N  Open it in window #N (see "Windows").
+    -b, --background  Do not switch to it: it opens (or stays) in the
+                      background and shimmers until the user looks.
+    -f, --focus       Switch to it and bring its window forward (default).
+    --transient       A quick look: the tab asks the user "Close / Keep" by
+                      itself; nothing comes back to you.
+  The tab the user is typing in is never taken from them: while they type
+  (in any md-mini window), show lands in the background, brings no window
+  forward, and answers "focused":false.
+  Neither --line nor --find: just opens/focuses the file, no scroll.
 
   Examples:
     mdmini show notes.md --line 42
@@ -982,9 +1655,12 @@ EDIT — replace the live buffer with new content, diffed and highlighted
     --show          Also scroll the changed span into view.
     --allow-empty   Permit empty stdin (otherwise refused — see below).
     --socket PATH   Talk to a non-default command socket.
+    -t N            Window #N (see "Windows").
 
   Always send the FULL new document on stdin, never a diff/patch — md-mini
   computes the diff itself against the live buffer.
+  An edit to a background tab is applied there and saved at once; the user
+  sees it highlighted, with undo, when they open the tab.
 
   Empty stdin is refused by default:
     {"ok":false,"error":"refusing to apply empty content (use --allow-empty)"}
@@ -1021,12 +1697,15 @@ ASK — post a question with option buttons, block until the user answers
     --timeout SECS    How long to wait for an answer. Default 300, clamped
                        to 10-3600.
     --socket PATH     Talk to a non-default command socket.
+    -t N              Window #N (see "Windows").
   Neither --at-line nor --at-find: the question appears at the current view.
 
   Examples:
     mdmini ask notes.md --question "Ship it?" --option Yes --option No
     mdmini ask notes.md --question "Which reviewers?" --option A --option B --option C --multi
     mdmini ask notes.md --question "Ship it?" --option Yes --option No --free-text
+  An ask for a background tab waits there (the tab shimmers) and appears
+  when the user opens it. The timeout still counts from now.
 
 COMMENTS — the reverse direction: the user comments, you answer
   mdmini question [<file>]
@@ -1065,11 +1744,13 @@ COMMENTS — the reverse direction: the user comments, you answer
     echo "Because nginx was broken on that host." | mdmini answer docs/spec.md --id c-7f3a2c
 
 JSON RESPONSE CONTRACT
-  show, edit, and ask each print exactly one line of JSON to stdout, never
-  stderr.
+  show, edit, ask, close, ls --json and a routed open each print exactly one
+  line of JSON to stdout. Without CLAUDECODE (a human), the error of a routed
+  open, close or ls is also said in words on stderr.
 
-    show, success:                    {"ok":true}
-    edit, success:                    {"ok":true,"changed_lines":[[12,15]]}
+    show, success:                    {"ok":true,"window":7,"focused":true}
+    show in the background:           {"ok":true,"window":7,"focused":false}
+    edit, success:                    {"ok":true,"changed_lines":[[12,15]],"window":7,"focused":true}
     edit, no-op (identical content):  {"ok":true,"changed_lines":[]}
     ask, success:                     {"ok":true,"answer":"Yes"}
     ask --multi, success:             {"ok":true,"answers":["A","C"]}
@@ -1137,12 +1818,16 @@ pub(crate) const AGENT_SNIPPET: &str = r#"## md-mini AI interface
 
 If `mdmini` is available, use it to point at things in the user's open editor and to push edits into the live buffer, instead of only writing files to disk:
 
-- `mdmini show <file> --line N` — scroll to line N in the open window and pulse-highlight it.
+- `mdmini show <file> --line N` — scroll to line N in the file's tab and pulse-highlight it.
 - `mdmini show <file> --find "some text"` — same, but locate the first match of the text instead of a line number.
 - `cat new-content.md | mdmini edit <file> [--show]` — replace the file's live buffer with the **complete** new content read from stdin. md-mini diffs it against what's on screen, applies only the changed span, and highlights it. `--show` also scrolls to the change.
 - `mdmini ask <file> --question "..." --option A --option B [--option ...]` — post a question with 2-6 option buttons inside the document and block until the user clicks one; prints `{"ok":true,"answer":"A"}` with the chosen option's text. Add `--multi` for checkbox mode (any number of options, including none, checked and confirmed) — prints `{"ok":true,"answers":["A","C"]}` instead. Add `--free-text` to also let the user type a custom answer — prints `{"ok":true,"custom":"..."}` (or alongside `answers` in `--multi` mode) when they do.
+- `mdmini <file>` — open a file as a tab. From you (an agent, `CLAUDECODE` set) it opens in the background: the tab shimmers until the user looks; `-f` brings it to the front. When the user should read something now, use `mdmini show <file>` (or `-f`).
+- `mdmini ls` — the open windows: number, project, tabs (`--json` for machine-readable output). `mdmini close <file>` — close a tab you opened and no longer need.
 
-All three verbs print one line of JSON to stdout: `{"ok":true}` (plus `"changed_lines":[[start,end]]` for `edit`, `"answer":"..."` for `ask`, `"answers":[...]` for `ask --multi`, or `"custom":"..."` for a typed `ask --free-text` answer) on success, `{"ok":false,"error":"..."}` on failure. Exit code 0 = success, 1 = md-mini rejected the request, 2 = md-mini isn't running or the command was malformed. If the target file isn't already open, `edit`/`show` open a new window for it automatically — the file must already exist on disk (`ask` requires the same: already open, or existing on disk). Always send the full document on stdin for `edit`, never a diff.
+Windows: every answer names the window it landed in — `{"ok":true,"window":7,"focused":true}`. Pass `-t 7` to `show`/`edit`/`ask`/`mdmini <file>` to keep working in that window. Without `-t` a file goes to its own tab if it is open (wherever that is — the answer's `window` says where), else to a window of its project (the git toplevel), else to a new window. The tab the user is typing in is never taken from them, and while they type in one md-mini window no other window comes forward: `"focused":false` means your show landed in the background — tell them where to look instead of retrying. If they are typing in that very tab, the answer is `"focused":true` but nothing moves: the target only pulses, possibly off-screen. An `edit` of a background tab is applied and saved there; an `ask` for one waits there until they open it, and its timeout still counts from the call. Use `mdmini show <file> --transient` for a quick look: the tab asks them "Close / Keep" by itself.
+
+All verbs print one line of JSON to stdout: `{"ok":true}` (plus `"window"`/`"focused"`, `"changed_lines":[[start,end]]` for `edit`, `"answer":"..."` for `ask`, `"answers":[...]` for `ask --multi`, or `"custom":"..."` for a typed `ask --free-text` answer) on success, `{"ok":false,"error":"..."}` on failure. Exit code 0 = success, 1 = md-mini rejected the request, 2 = md-mini isn't running or the command was malformed. If the target file isn't open yet, `edit`/`show` open it as a tab by the rule above — for `show` it must already exist on disk (`ask` requires the same: already open, or existing on disk). Always send the full document on stdin for `edit`, never a diff.
 
 ### Comments the user leaves for you
 
@@ -1197,6 +1882,11 @@ pub(crate) const MCP_AGENT_SNIPPET: &str = r#"## md-mini via MCP — how to use 
 - After edits, the changed span stays highlighted until the user presses Esc or you edit again — use `show: true` on the edit when they should see the change immediately.
 - Respect their attention: batch related questions into one `ask` with options rather than many small ones; timeouts/dismissals mean "not now", not failure — fall back to chat.
 - `edit` takes the COMPLETE new document, never a diff; md-mini diffs internally and preserves their scroll position and undo history.
+- Windows: every answer names the `window` (#N) it landed in. Pass it back as `window_binding` to keep working in that window; call `windows` to see what is open (projects, tabs) and pick one. Without a binding a file goes to its own tab if it is open anywhere, else to a window of its project, else to a new window.
+- `show` switches to the tab by default; `focus: false` opens it in the background, where it shimmers until the user looks. A user who is typing always keeps their tab, and while they type in one window no other window comes forward — the answer then says `focused: false`: tell them where to look instead of retrying. If they are typing in that very tab, the answer is `focused: true` but nothing moves: the target only pulses.
+- `transient: true` is for a quick look — something they glance at once. The tab asks them «Close / Keep» by itself; leave it off for documents you will keep working in.
+- An `edit` of a background tab is applied and saved there, highlighted when they open it; an `ask` for one waits there until they do, and its timeout still counts from the call.
+- Close what you opened and no longer need with `close` — hygiene, not isolation.
 
 ### Comments the user leaves for you
 
@@ -1216,6 +1906,153 @@ fn mcp_agent_text() -> String {
         {}",
         INSTRUCTION_FILE_LOCATIONS, MCP_AGENT_SNIPPET
     )
+}
+
+/// `CLAUDECODE` set and non-empty: an agent is calling (spec §4). Claude Code
+/// sets `1`; any non-empty value counts.
+fn is_agent(claudecode: Option<&str>) -> bool {
+    claudecode.is_some_and(|v| !v.is_empty())
+}
+
+/// A human reads errors, not JSON: say it on stderr too (stdout keeps the
+/// one JSON line of the contract).
+fn tell_human(response_line: &str) {
+    if let Ok(resp) = serde_json::from_str::<AiResponse>(response_line) {
+        if let Some(error) = resp.error {
+            eprintln!("mdmini: {error}");
+        }
+    }
+}
+
+/// One request and its one response line, over a fresh connection. `Err`
+/// carries the JSON line to print and the exit code, for a request that never
+/// reached the app or never got an answer.
+fn exchange(socket_path: &Path, request: &AiRequest) -> Result<String, (String, i32)> {
+    let fail = |msg: String, code: i32| (serde_json::to_string(&AiResponse::error(msg)).unwrap(), code);
+    let mut stream =
+        UnixStream::connect(socket_path).map_err(|_| fail("md-mini is not running".to_string(), 2))?;
+    // `ask` blocks server-side on a human clicking a button, so the CLI's own
+    // read timeout must cover that wait (plus 10s of margin) instead of the
+    // fixed 10s used for everything else.
+    let read_timeout = match request {
+        AiRequest::Ask { timeout_secs, .. } => Duration::from_secs(timeout_secs + 10),
+        _ => Duration::from_secs(10),
+    };
+    let _ = stream.set_read_timeout(Some(read_timeout));
+    let mut line = serde_json::to_string(request).map_err(|e| fail(format!("failed to encode request: {e}"), 1))?;
+    line.push('\n');
+    stream
+        .write_all(line.as_bytes())
+        .map_err(|_| fail("md-mini is not running".to_string(), 2))?;
+    let mut reader = BufReader::new(stream);
+    let mut response_line = String::new();
+    match reader.read_line(&mut response_line) {
+        Ok(0) | Err(_) => Err(fail("timeout waiting for response".to_string(), 1)),
+        Ok(_) => Ok(response_line.trim().to_string()),
+    }
+}
+
+/// One line for several opens: `window`/`focused` of the first tab, every tab in `opened`.
+fn open_summary(opened: Vec<OpenedTab>, error: Option<String>) -> AiResponse {
+    AiResponse {
+        ok: error.is_none(),
+        error,
+        window: opened.first().and_then(|t| t.window),
+        focused: opened.first().map(|t| t.focused),
+        opened: Some(opened),
+        ..Default::default()
+    }
+}
+
+/// The most files one `mdmini <files>` opens: each is a round trip and a tab,
+/// and a stray glob should not fill the app.
+const MAX_OPEN_FILES: usize = 50;
+
+/// One `open` per file through `send`, summed up in one answer and its exit
+/// code. A file the app refuses is reported and the rest still open; a
+/// transport failure (the app went away, no answer) stops there, and the
+/// answer still lists what had opened — with the transport's exit code.
+fn open_all(
+    paths: &[String],
+    window: Option<u32>,
+    focus: bool,
+    mut send: impl FnMut(&AiRequest) -> Result<String, (String, i32)>,
+) -> (AiResponse, i32) {
+    if paths.len() > MAX_OPEN_FILES {
+        let msg = format!("too many files: {} (at most {MAX_OPEN_FILES} at once)", paths.len());
+        return (AiResponse::error(msg), 2);
+    }
+    let mut opened = Vec::new();
+    let mut first_error = None;
+    let mut transport_code = None;
+    for path in paths {
+        let abs = crate::resolve_path(path, None);
+        let request = AiRequest::Open { v: 1, path: abs.clone(), window_binding: window, focus };
+        let resp = match send(&request) {
+            Ok(line) => serde_json::from_str::<AiResponse>(&line)
+                .unwrap_or_else(|e| AiResponse::error(format!("failed to parse response: {e}"))),
+            Err((line, code)) => {
+                transport_code = Some(code);
+                serde_json::from_str::<AiResponse>(&line).unwrap_or_else(|_| AiResponse::error(line))
+            }
+        };
+        if resp.ok {
+            opened.push(OpenedTab { path: abs, window: resp.window, focused: resp.focused.unwrap_or(false) });
+        } else if first_error.is_none() {
+            first_error = resp.error;
+        }
+        if transport_code.is_some() {
+            break;
+        }
+    }
+    let summary = open_summary(opened, first_error);
+    let code = transport_code.unwrap_or(if summary.ok { 0 } else { 1 });
+    (summary, code)
+}
+
+/// `mdmini <files>` routed: one `open` per file, one summary line.
+fn run_open(socket_path: &Path, paths: &[String], window: Option<u32>, focus: bool, agent: bool) -> i32 {
+    let (summary, code) = open_all(paths, window, focus, |request| exchange(socket_path, request));
+    let line = serde_json::to_string(&summary).unwrap();
+    println!("{line}");
+    if code != 0 && !agent {
+        tell_human(&line);
+    }
+    code
+}
+
+/// `mdmini ls`: the listing as text, or the JSON answer with `--json`.
+fn run_ls(socket_path: &Path, json: bool) -> i32 {
+    let line = match exchange(socket_path, &AiRequest::Windows { v: 1 }) {
+        Ok(line) => line,
+        Err((line, code)) => {
+            println!("{line}");
+            // The text listing is for a human: say it in words as well.
+            if !json {
+                tell_human(&line);
+            }
+            return code;
+        }
+    };
+    if json {
+        return print_response_and_exit_code(&line);
+    }
+    match serde_json::from_str::<AiResponse>(&line) {
+        Ok(resp) if resp.ok => {
+            let windows = resp.windows.unwrap_or_default();
+            if windows.is_empty() {
+                println!("No windows are open.");
+            } else {
+                println!("{}", crate::routing::format_listing(&windows, None, ""));
+            }
+            0
+        }
+        _ => {
+            println!("{line}");
+            tell_human(&line);
+            1
+        }
+    }
 }
 
 /// Entry point for `mdmini ai <verb> ...`, called from `main.rs` before Tauri
@@ -1292,6 +2129,21 @@ pub fn run_ai_cli(args: Vec<String>) -> i32 {
         _ => {}
     }
 
+    let socket_path = parsed
+        .socket
+        .clone()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET_PATH));
+    let agent = is_agent(std::env::var("CLAUDECODE").ok().as_deref());
+    match &parsed.verb {
+        // A human's `-t` focuses; an agent's open lands in the background (spec §4).
+        CliVerb::Open { paths, window, focus } => {
+            return run_open(&socket_path, paths, *window, focus.unwrap_or(!agent), agent)
+        }
+        CliVerb::Ls { json } => return run_ls(&socket_path, *json),
+        _ => {}
+    }
+
     let abs_path = crate::resolve_path(&parsed.path, None);
 
     let content = if matches!(parsed.verb, CliVerb::Edit { .. }) {
@@ -1313,27 +2165,23 @@ pub fn run_ai_cli(args: Vec<String>) -> i32 {
     }
 
     let request = match parsed.verb {
-        CliVerb::Show { line, find } => AiRequest::Show {
+        CliVerb::Show { line, find, window, focus, transient } => AiRequest::Show {
             v: 1,
             path: abs_path,
             line,
             find,
+            window_binding: window,
+            focus,
+            transient,
         },
-        CliVerb::Edit { show, .. } => AiRequest::Edit {
+        CliVerb::Edit { show, window, .. } => AiRequest::Edit {
             v: 1,
             path: abs_path,
             content: content.unwrap_or_default(),
             show,
+            window_binding: window,
         },
-        CliVerb::Ask {
-            question,
-            options,
-            line,
-            find,
-            timeout_secs,
-            multi,
-            free_text,
-        } => AiRequest::Ask {
+        CliVerb::Ask { question, options, line, find, timeout_secs, multi, free_text, window } => AiRequest::Ask {
             v: 1,
             path: abs_path,
             question,
@@ -1343,77 +2191,36 @@ pub fn run_ai_cli(args: Vec<String>) -> i32 {
             timeout_secs,
             multi,
             free_text,
+            window_binding: window,
         },
-        CliVerb::Help
+        CliVerb::Close => AiRequest::Close { v: 1, path: abs_path },
+        CliVerb::Open { .. }
+        | CliVerb::Ls { .. }
+        | CliVerb::Help
         | CliVerb::Agent { .. }
         | CliVerb::Question
         | CliVerb::Answer { .. }
         | CliVerb::Watch => {
-            unreachable!("local verbs return early above, before this match")
+            unreachable!("handled above, before this match")
         }
     };
 
-    let socket_path = parsed
-        .socket
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET_PATH));
-
-    let mut stream = match UnixStream::connect(&socket_path) {
-        Ok(s) => s,
-        Err(_) => {
-            println!(
-                "{}",
-                serde_json::to_string(&AiResponse::error("md-mini is not running")).unwrap()
-            );
-            return 2;
+    let is_close = matches!(request, AiRequest::Close { .. });
+    match exchange(&socket_path, &request) {
+        Ok(line) => {
+            let code = print_response_and_exit_code(&line);
+            if code != 0 && is_close && !agent {
+                tell_human(&line);
+            }
+            code
         }
-    };
-
-    // `ask` blocks server-side on a human clicking a button, so the CLI's own
-    // read timeout must cover that wait (plus 10s of margin) instead of the
-    // fixed 10s used for show/edit's near-immediate replies.
-    let read_timeout = match &request {
-        AiRequest::Ask { timeout_secs, .. } => Duration::from_secs(timeout_secs + 10),
-        _ => Duration::from_secs(10),
-    };
-    let _ = stream.set_read_timeout(Some(read_timeout));
-
-    let mut request_line = match serde_json::to_string(&request) {
-        Ok(s) => s,
-        Err(e) => {
-            println!(
-                "{}",
-                serde_json::to_string(&AiResponse::error(format!(
-                    "failed to encode request: {}",
-                    e
-                )))
-                .unwrap()
-            );
-            return 1;
+        Err((line, code)) => {
+            println!("{line}");
+            if is_close && !agent {
+                tell_human(&line);
+            }
+            code
         }
-    };
-    request_line.push('\n');
-
-    if stream.write_all(request_line.as_bytes()).is_err() {
-        println!(
-            "{}",
-            serde_json::to_string(&AiResponse::error("md-mini is not running")).unwrap()
-        );
-        return 2;
-    }
-
-    let mut reader = BufReader::new(stream);
-    let mut response_line = String::new();
-    match reader.read_line(&mut response_line) {
-        Ok(0) | Err(_) => {
-            println!(
-                "{}",
-                serde_json::to_string(&AiResponse::error("timeout waiting for response"))
-                    .unwrap()
-            );
-            1
-        }
-        Ok(_) => print_response_and_exit_code(response_line.trim()),
     }
 }
 
@@ -1642,7 +2449,267 @@ mod tests {
             multi: false,
             free_text: false,
             first_use: false,
+            focus: false,
+            transient: false,
+            fresh: false,
         }
+    }
+
+    #[test]
+    fn a_show_without_the_tab_fields_keeps_todays_behaviour() {
+        let req = parse_request(r#"{"v":1,"cmd":"show","path":"/a.md","line":3,"find":null}"#).unwrap();
+        match &req {
+            AiRequest::Show { window_binding, focus, transient, .. } => {
+                assert_eq!(*window_binding, None);
+                assert_eq!(*focus, None);
+                assert!(!transient);
+            }
+            _ => panic!("expected Show"),
+        }
+        assert!(req.focus(), "an old show still takes the view");
+        assert!(!req.transient());
+    }
+
+    #[test]
+    fn edit_and_ask_without_the_tab_fields_parse_and_never_take_the_view() {
+        let edit = parse_request(r#"{"v":1,"cmd":"edit","path":"/a.md","content":"x"}"#).unwrap();
+        let ask = parse_request(
+            r#"{"v":1,"cmd":"ask","path":"/a.md","question":"Q?","options":["A","B"]}"#,
+        )
+        .unwrap();
+        for req in [&edit, &ask] {
+            assert!(!req.focus(), "edit and ask never switch tabs");
+            assert!(!req.transient());
+        }
+    }
+
+    #[test]
+    fn the_tab_fields_parse() {
+        let req = parse_request(
+            r#"{"v":1,"cmd":"show","path":"/a.md","window_binding":7,"focus":false,"transient":true}"#,
+        )
+        .unwrap();
+        match &req {
+            AiRequest::Show { window_binding, .. } => assert_eq!(*window_binding, Some(7)),
+            _ => panic!("expected Show"),
+        }
+        assert!(!req.focus());
+        assert!(req.transient());
+    }
+
+    #[test]
+    fn an_old_style_request_serializes_exactly_as_before() {
+        let req = AiRequest::Show {
+            v: 1,
+            path: "/a.md".to_string(),
+            line: Some(3),
+            find: None,
+            window_binding: None,
+            focus: None,
+            transient: false,
+        };
+        assert_eq!(
+            serde_json::to_string(&req).unwrap(),
+            r#"{"cmd":"show","v":1,"path":"/a.md","line":3,"find":null}"#
+        );
+    }
+
+    #[test]
+    fn a_response_without_window_or_focused_serializes_as_before() {
+        assert_eq!(serde_json::to_string(&AiResponse::ok()).unwrap(), r#"{"ok":true}"#);
+        let r = AiResponse { ok: true, window: Some(7), focused: Some(false), ..Default::default() };
+        assert_eq!(serde_json::to_string(&r).unwrap(), r#"{"ok":true,"window":7,"focused":false}"#);
+    }
+
+    #[test]
+    fn the_payload_carries_focus_and_transient_for_the_frontend() {
+        let show = parse_request(r#"{"v":1,"cmd":"show","path":"/a.md","transient":true}"#).unwrap();
+        let p = payload_for(&show, 9, false);
+        assert_eq!((p.id, p.cmd.as_str(), p.focus, p.transient, p.fresh), (9, "show", true, true, false));
+        let json = serde_json::to_string(&p).unwrap();
+        for key in [r#""focus":true"#, r#""transient":true"#, r#""fresh":false"#] {
+            assert!(json.contains(key), "{key} missing in {json}");
+        }
+        let ask = parse_request(
+            r#"{"v":1,"cmd":"ask","path":"/a.md","question":"Q?","options":["A","B"],"timeout_secs":5}"#,
+        )
+        .unwrap();
+        let p = payload_for(&ask, 1, false);
+        assert_eq!((p.cmd.as_str(), p.focus, p.timeout_secs), ("ask", false, 10), "timeout clamped");
+    }
+
+    #[test]
+    fn typing_in_another_window_takes_the_view_from_a_focusing_command_only() {
+        let show = parse_request(r#"{"v":1,"cmd":"show","path":"/a.md"}"#).unwrap();
+        let mut p = payload_for(&show, 1, false);
+        assert!(!quiet_payload(&mut p, false), "nobody types elsewhere: untouched");
+        assert!(p.focus);
+        assert!(quiet_payload(&mut p, true));
+        assert!(!p.focus, "the window keeps it in the background, a new one is built behind");
+
+        let open = parse_request(r#"{"v":1,"cmd":"open","path":"/a.md","focus":true}"#).unwrap();
+        let mut p = payload_for(&open, 2, false);
+        assert!(quiet_payload(&mut p, true));
+        assert!(!p.focus);
+
+        for line in [
+            r#"{"v":1,"cmd":"show","path":"/a.md","focus":false}"#,
+            r#"{"v":1,"cmd":"open","path":"/a.md"}"#,
+            r#"{"v":1,"cmd":"edit","path":"/a.md","content":"x","show":true}"#,
+            r#"{"v":1,"cmd":"ask","path":"/a.md","question":"Q?","options":["A","B"]}"#,
+        ] {
+            let mut p = payload_for(&parse_request(line).unwrap(), 3, false);
+            assert!(!quiet_payload(&mut p, true), "never took the view, nothing to downgrade: {line}");
+        }
+    }
+
+    #[test]
+    fn a_new_window_for_an_ask_comes_forward_unless_the_human_types() {
+        use crate::window::Activation::{Background, Foreground};
+        let ask = parse_request(r#"{"v":1,"cmd":"ask","path":"/a.md","question":"Q?","options":["A","B"]}"#).unwrap();
+        assert_eq!(new_window_activation(&ask, false, false), Foreground, "Q7: the question is in front");
+        assert_eq!(new_window_activation(&ask, false, true), Background, "Q10: typing keeps it behind");
+
+        let edit = parse_request(r#"{"v":1,"cmd":"edit","path":"/a.md","content":"x"}"#).unwrap();
+        let open = parse_request(r#"{"v":1,"cmd":"open","path":"/a.md"}"#).unwrap();
+        let show_bg = parse_request(r#"{"v":1,"cmd":"show","path":"/a.md","focus":false}"#).unwrap();
+        for req in [&edit, &open, &show_bg] {
+            assert_eq!(new_window_activation(req, false, false), Background, "other verbs unchanged: {req:?}");
+        }
+        let show = parse_request(r#"{"v":1,"cmd":"show","path":"/a.md"}"#).unwrap();
+        let mut p = payload_for(&show, 1, false);
+        assert_eq!(new_window_activation(&show, p.focus, false), Foreground);
+        quiet_payload(&mut p, true);
+        assert_eq!(new_window_activation(&show, p.focus, true), Background, "downgraded by typing");
+    }
+
+    #[test]
+    fn a_downgraded_answer_says_it_is_not_in_front() {
+        let mut live = AiResponse { ok: true, focused: Some(true), ..Default::default() };
+        quiet_answer(&mut live);
+        assert_eq!(live.focused, Some(false), "active in its window, but that window stayed behind");
+        let mut background = AiResponse { ok: true, focused: Some(false), ..Default::default() };
+        quiet_answer(&mut background);
+        assert_eq!(background.focused, Some(false));
+        let mut error = AiResponse::error("target not found");
+        quiet_answer(&mut error);
+        assert_eq!(error.focused, None, "an error gains no `focused`");
+    }
+
+    #[test]
+    fn only_a_tab_opened_for_the_command_is_fresh() {
+        let show = parse_request(r#"{"v":1,"cmd":"show","path":"/a.md","transient":true}"#).unwrap();
+        let mut p = payload_for(&show, 1, false);
+        assert_eq!(land_on(window::Opened::Existing("main".to_string()), &mut p), "main");
+        assert!(!p.fresh, "the file was open already: the human's tab never becomes a quick look");
+        assert_eq!(land_on(window::Opened::Created("editor-4".to_string()), &mut p), "editor-4");
+        assert!(p.fresh);
+    }
+
+    #[test]
+    fn an_abandoned_open_never_starts() {
+        let ticket = OpenTicket::new();
+        assert!(ticket.abandon());
+        assert!(!ticket.start(), "the agent was told it failed: no window is built after all");
+    }
+
+    #[test]
+    fn a_started_open_cannot_be_abandoned() {
+        let ticket = OpenTicket::new();
+        assert!(ticket.start());
+        assert!(!ticket.abandon(), "the wait goes on for the window being built");
+        assert!(!ticket.start(), "it starts once");
+    }
+
+    #[test]
+    fn an_answer_is_taken_only_from_the_window_the_request_went_to() {
+        let pending = AiPending::new();
+        let (id, rx) = waiting(&pending, "editor-2", Some("/a.md"));
+        assert!(pending.respond_from(id, "editor-3", AiResponse::ok()).is_err());
+        assert!(pending.is_pending(id), "a refused answer leaves the request waiting");
+        assert!(rx.try_recv().is_err());
+        pending.respond_from(id, "editor-2", AiResponse::ok()).unwrap();
+        assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap().ok);
+        assert!(
+            pending.respond_from(id, "editor-2", AiResponse::ok()).is_ok(),
+            "an answer after the request is gone is a harmless no-op"
+        );
+    }
+
+    #[test]
+    fn the_window_number_in_an_answer_always_comes_from_the_registry() {
+        let mut reg = crate::tabs::TabRegistry::new();
+        reg.set_number("editor-2", Some(4));
+        reg.set_number("editor-3", None);
+        let mut numbered = AiResponse { ok: true, window: Some(99), ..Default::default() };
+        stamp_window(&reg, "editor-2", &mut numbered);
+        assert_eq!(numbered.window, Some(4), "a frontend-supplied number is replaced");
+        let mut unnumbered = AiResponse { ok: true, window: Some(99), ..Default::default() };
+        stamp_window(&reg, "editor-3", &mut unnumbered);
+        assert_eq!(unnumbered.window, None, "a window without a number answers none");
+    }
+
+    #[test]
+    fn an_ask_parked_in_a_background_tab_is_answered_by_its_window_later() {
+        // Nothing about a tab going to the background touches `AiPending`: the
+        // entry waits until its window answers, however many switches later.
+        let pending = AiPending::new();
+        let (id, rx) = waiting(&pending, "editor-2", Some("/b.md"));
+        pending.cancel_for_window_and_path("editor-2", "/a.md", "tab closed");
+        assert!(pending.is_pending(id), "another tab closing leaves it alone");
+        let answer = AiResponse { ok: true, answer: Some("Yes".to_string()), ..Default::default() };
+        pending.respond_from(id, "editor-2", answer).unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap().answer.as_deref(), Some("Yes"));
+    }
+
+    #[test]
+    fn a_parked_ask_fails_clearly_when_its_tab_or_its_window_closes() {
+        let pending = AiPending::new();
+        let (_, tab_rx) = waiting(&pending, "editor-2", Some("/b.md"));
+        let (_, window_rx) = waiting(&pending, "editor-3", Some("/c.md"));
+        pending.cancel_for_window_and_path("editor-2", "/b.md", "tab closed");
+        pending.cancel_for_window("editor-3");
+        assert_eq!(tab_rx.recv_timeout(Duration::from_secs(1)).unwrap().error.as_deref(), Some("tab closed"));
+        assert_eq!(
+            window_rx.recv_timeout(Duration::from_secs(1)).unwrap().error.as_deref(),
+            Some("window closed")
+        );
+    }
+
+    #[test]
+    fn a_command_for_an_unmounted_window_waits_in_the_queue() {
+        let mut reg = crate::tabs::TabRegistry::new();
+        reg.add_tab("editor-3", "t", Some("/tmp/a.md".to_string()));
+        let queue = AiQueue::new();
+        assert!(matches!(
+            queue_unless_mounted(&reg, &queue, "editor-3", test_payload("show")),
+            Delivery::Queued
+        ));
+        assert_eq!(queue.pull("editor-3").len(), 1, "pulled after get_window_init");
+    }
+
+    #[test]
+    fn a_command_for_a_mounted_window_is_emitted_never_queued() {
+        let mut reg = crate::tabs::TabRegistry::new();
+        reg.add_tab("editor-3", "t", Some("/tmp/a.md".to_string()));
+        reg.mark_mounted("editor-3");
+        let queue = AiQueue::new();
+        match queue_unless_mounted(&reg, &queue, "editor-3", test_payload("edit")) {
+            Delivery::Emit(p) => assert_eq!(p.cmd, "edit"),
+            other => panic!("expected Emit, got {other:?}"),
+        }
+        assert!(queue.pull("editor-3").is_empty(), "a queue nobody pulls again");
+    }
+
+    #[test]
+    fn a_command_for_a_window_no_longer_registered_is_not_queued() {
+        let reg = crate::tabs::TabRegistry::new();
+        let queue = AiQueue::new();
+        assert!(matches!(
+            queue_unless_mounted(&reg, &queue, "editor-3", test_payload("ask")),
+            Delivery::Gone
+        ));
+        assert!(queue.pull("editor-3").is_empty());
     }
 
     #[test]
@@ -1659,45 +2726,159 @@ mod tests {
         assert!(queue.pull("editor-3").is_empty());
     }
 
+    /// Register a waiting request for `label`/`path`, returning its id and receiver.
+    fn waiting(
+        pending: &AiPending,
+        label: &str,
+        path: Option<&str>,
+    ) -> (u64, mpsc::Receiver<AiResponse>) {
+        let (tx, rx) = mpsc::channel();
+        let id = pending.alloc_id();
+        pending.register(id, label, path.map(str::to_string), tx);
+        (id, rx)
+    }
+
     #[test]
     fn respond_routes_to_waiting_request() {
         let pending = AiPending::new();
-        let (tx, rx) = mpsc::channel();
-        let id = pending.alloc_id();
-        pending.register(id, "editor-1", tx);
-
+        let (id, rx) = waiting(&pending, "editor-1", Some("/a.md"));
         pending.respond(id, AiResponse::ok());
-        let received = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert!(received.ok);
-
+        assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap().ok);
+        assert_eq!(pending.len(), 0);
         // Unknown id is a no-op — must not panic or block.
         pending.respond(9999, AiResponse::error("ignored"));
     }
 
     #[test]
-    fn cancel_for_window_responds_window_closed_to_matching_entries_only() {
+    fn is_pending_until_answered_cancelled_or_given_up_on() {
         let pending = AiPending::new();
+        let (answered, _rx1) = waiting(&pending, "editor-1", Some("/a.md"));
+        let (cancelled, _rx2) = waiting(&pending, "editor-1", Some("/b.md"));
+        let (timed_out, _rx3) = waiting(&pending, "editor-1", Some("/c.md"));
+        assert!(pending.is_pending(answered));
+        assert!(!pending.is_pending(9999), "an id nobody registered");
 
-        let (tx_a, rx_a) = mpsc::channel();
-        let id_a = pending.alloc_id();
-        pending.register(id_a, "editor-1", tx_a);
+        pending.respond(answered, AiResponse::ok());
+        pending.cancel_for_window_and_path("editor-1", "/b.md", "switched away from this document");
+        pending.cancel(timed_out);
 
-        let (tx_b, rx_b) = mpsc::channel();
-        let id_b = pending.alloc_id();
-        pending.register(id_b, "editor-2", tx_b);
+        assert!(!pending.is_pending(answered));
+        assert!(!pending.is_pending(cancelled));
+        assert!(!pending.is_pending(timed_out));
+    }
 
+    #[test]
+    fn cancel_for_window_fails_that_windows_entries_only() {
+        let pending = AiPending::new();
+        let (_, rx_a) = waiting(&pending, "editor-1", Some("/a.md"));
+        let (_, rx_b) = waiting(&pending, "editor-2", Some("/a.md"));
         pending.cancel_for_window("editor-1");
-
-        let received = rx_a.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert!(!received.ok);
-        assert_eq!(received.error.as_deref(), Some("window closed"));
-
-        // The other window's pending entry is untouched.
+        let a = rx_a.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(a.error.as_deref(), Some("window closed"));
         assert!(rx_b.try_recv().is_err());
-
-        // Cancelling an already-cancelled or unknown label is a no-op.
-        pending.cancel_for_window("editor-1");
+        assert_eq!(pending.len(), 1);
         pending.cancel_for_window("no-such-window");
+    }
+
+    #[test]
+    fn cancel_for_window_and_path_fails_only_the_matching_document() {
+        let pending = AiPending::new();
+        let (_, rx_a) = waiting(&pending, "editor-1", Some("/tmp/a.md"));
+        let (_, rx_b) = waiting(&pending, "editor-1", Some("/tmp/b.md"));
+        let (_, rx_other) = waiting(&pending, "editor-2", Some("/tmp/a.md"));
+        let (_, rx_none) = waiting(&pending, "editor-1", None);
+
+        pending.cancel_for_window_and_path("editor-1", "/tmp/a.md", "tab closed");
+
+        let a = rx_a.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(a.error.as_deref(), Some("tab closed"));
+        assert!(rx_b.try_recv().is_err(), "another document in the same window");
+        assert!(rx_other.try_recv().is_err(), "the same path in another window");
+        assert!(rx_none.try_recv().is_err(), "an entry without a path is never matched");
+        assert_eq!(pending.len(), 3);
+    }
+
+    #[test]
+    fn relabel_hands_a_moved_documents_agents_to_the_target_window() {
+        let pending = AiPending::new();
+        let (moved, rx) = waiting(&pending, "main", Some("/a.md"));
+        let (_other_doc, _rx2) = waiting(&pending, "main", Some("/b.md"));
+        assert_eq!(pending.relabel("main", "editor-2", "/a.md"), 1);
+        assert!(
+            pending.respond_from(moved, "main", AiResponse::ok()).is_err(),
+            "the old window no longer answers it"
+        );
+        pending.cancel_for_window("main");
+        assert!(pending.is_pending(moved), "closing the old window does not fail it");
+        pending.respond_from(moved, "editor-2", AiResponse::ok()).unwrap();
+        assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap().ok);
+    }
+
+    #[test]
+    fn relabel_leaves_other_windows_and_pathless_requests_alone() {
+        let pending = AiPending::new();
+        let (elsewhere, _r1) = waiting(&pending, "editor-3", Some("/a.md"));
+        let (pathless, _r2) = waiting(&pending, "main", None);
+        assert_eq!(pending.relabel("main", "editor-2", "/a.md"), 0);
+        assert_eq!(pending.label_of(elsewhere).as_deref(), Some("editor-3"));
+        assert_eq!(pending.label_of(pathless).as_deref(), Some("main"), "a close request has no document to follow");
+    }
+
+    #[test]
+    fn hand_to_takes_a_request_of_the_caller_or_already_of_the_holder_only() {
+        let pending = AiPending::new();
+        let (mine, _r1) = waiting(&pending, "main", Some("/a.md"));
+        let (relabelled, _r2) = waiting(&pending, "editor-2", Some("/b.md"));
+        let (theirs, _r3) = waiting(&pending, "editor-3", Some("/c.md"));
+        assert!(pending.hand_to(mine, "main", "editor-2"));
+        assert_eq!(pending.label_of(mine).as_deref(), Some("editor-2"));
+        assert!(pending.hand_to(relabelled, "main", "editor-2"), "a move relabelled it already");
+        assert!(!pending.hand_to(theirs, "main", "editor-2"), "another window's request is not ours to give");
+        assert_eq!(pending.label_of(theirs).as_deref(), Some("editor-3"));
+        assert!(!pending.hand_to(9999, "main", "editor-2"), "nobody waits");
+    }
+
+    #[test]
+    fn a_command_payload_comes_back_from_the_frontend_as_it_went() {
+        let p = AiCommandPayload {
+            id: 7,
+            cmd: "ask".into(),
+            path: "/a.md".into(),
+            line: Some(2),
+            find: None,
+            content: None,
+            show: false,
+            question: Some("Q?".into()),
+            options: vec!["Yes".into()],
+            timeout_secs: 30,
+            multi: false,
+            free_text: true,
+            first_use: false,
+            focus: false,
+            transient: false,
+            fresh: true,
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        let back: AiCommandPayload = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&back).unwrap(), json);
+    }
+
+    #[test]
+    fn queue_drop_for_removes_only_that_windows_payloads_for_that_path() {
+        let queue = AiQueue::new();
+        let mut a = test_payload("edit");
+        a.id = 1;
+        let mut b = test_payload("show");
+        b.id = 2;
+        b.path = "/b.md".to_string();
+        queue.push("editor-3", a);
+        queue.push("editor-3", b);
+        queue.push("editor-4", test_payload("show"));
+
+        let dropped = queue.drop_for("editor-3", "/a.md");
+        assert_eq!(dropped.iter().map(|p| p.id).collect::<Vec<_>>(), vec![1]);
+        assert_eq!(queue.pull("editor-3").iter().map(|p| p.id).collect::<Vec<_>>(), vec![2]);
+        assert_eq!(queue.pull("editor-4").len(), 1);
     }
 
     fn args(parts: &[&str]) -> Vec<String> {
@@ -1710,7 +2891,7 @@ mod tests {
         assert_eq!(parsed.path, "/a.md");
         assert_eq!(parsed.socket, None);
         match parsed.verb {
-            CliVerb::Show { line, find } => {
+            CliVerb::Show { line, find, .. } => {
                 assert_eq!(line, Some(42));
                 assert_eq!(find, None);
             }
@@ -1731,7 +2912,7 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.socket, Some("/tmp/custom.sock".to_string()));
         match parsed.verb {
-            CliVerb::Show { line, find } => {
+            CliVerb::Show { line, find, .. } => {
                 assert_eq!(line, None);
                 assert_eq!(find, Some("hello world".to_string()));
             }
@@ -1760,7 +2941,7 @@ mod tests {
         assert_eq!(parsed.path, "/a.md");
         assert_eq!(parsed.socket, Some("/tmp/s.sock".to_string()));
         match parsed.verb {
-            CliVerb::Edit { show, allow_empty } => {
+            CliVerb::Edit { show, allow_empty, .. } => {
                 assert!(show);
                 assert!(allow_empty);
             }
@@ -1772,7 +2953,7 @@ mod tests {
     fn ai_cli_args_edit_defaults_show_and_allow_empty_false() {
         let parsed = parse_cli_args(&args(&["edit", "/a.md"])).unwrap();
         match parsed.verb {
-            CliVerb::Edit { show, allow_empty } => {
+            CliVerb::Edit { show, allow_empty, .. } => {
                 assert!(!show);
                 assert!(!allow_empty);
             }
@@ -1812,6 +2993,7 @@ mod tests {
                 timeout_secs,
                 multi,
                 free_text,
+                ..
             } => {
                 assert_eq!(question, "Ship it?");
                 assert_eq!(
@@ -1994,6 +3176,9 @@ mod tests {
         assert!(text.contains("\"custom\""));
         assert!(text.contains("--mcp"));
         assert!(text.contains("--id"));
+        for flag in ["-t N", "--background", "--focus", "--transient", "mdmini ls", "mdmini close", "CLAUDECODE", "\"window\""] {
+            assert!(text.contains(flag), "help text missing {flag}");
+        }
         // The three comment verbs are useless to an agent that doesn't learn
         // they work with the app closed, and Monitor is useless without the
         // flag — so the help text is asserted to say both.
@@ -2008,6 +3193,9 @@ mod tests {
         assert!(text.contains("AGENTS.md"));
         assert!(text.contains("## md-mini AI interface"));
         assert!(text.contains("--mcp"), "should point at agent --mcp for MCP setups");
+        for needle in ["-t 7", "mdmini ls", "mdmini close", "--transient", "\"focused\":false"] {
+            assert!(text.contains(needle), "agent snippet missing {needle}");
+        }
     }
 
     #[test]
@@ -2025,6 +3213,9 @@ mod tests {
         // This is a behavioral snippet, not CLI syntax — it should not carry
         // the `mdmini ask <file> --question ...` shell-command shape.
         assert!(!text.contains("mdmini ask <file>"));
+        for needle in ["window_binding", "`windows`", "`close`", "transient", "focused: false"] {
+            assert!(text.contains(needle), "MCP snippet missing {needle}");
+        }
     }
 
     #[test]
@@ -2082,9 +3273,10 @@ mod tests {
         let pending = AiPending::new();
         let (tx, rx) = mpsc::channel();
         let id = pending.alloc_id();
-        pending.register(id, "editor-1", tx);
+        pending.register(id, "editor-1", None, tx);
 
         pending.cancel(id);
+        assert_eq!(pending.len(), 0);
         // A response that arrives after the caller gave up must not be
         // delivered — the receiver should see nothing, ever.
         pending.respond(id, AiResponse::ok());
@@ -2150,5 +3342,204 @@ mod tests {
     fn answer_without_id_is_a_usage_error() {
         let args = vec!["answer".to_string(), "/repo/spec.md".to_string()];
         assert!(parse_cli_args(&args).is_err());
+    }
+
+    #[test]
+    fn ai_cli_args_open_takes_files_and_flags() {
+        let parsed = parse_cli_args(&args(&["open", "a.md", "b.md", "-t", "7", "-b", "--socket", "/s.sock"])).unwrap();
+        assert_eq!(parsed.socket.as_deref(), Some("/s.sock"));
+        assert_eq!(
+            parsed.verb,
+            CliVerb::Open { paths: vec!["a.md".to_string(), "b.md".to_string()], window: Some(7), focus: Some(false) }
+        );
+        let plain = parse_cli_args(&args(&["open", "a.md", "--focus"])).unwrap();
+        assert_eq!(plain.verb, CliVerb::Open { paths: vec!["a.md".to_string()], window: None, focus: Some(true) });
+    }
+
+    #[test]
+    fn ai_cli_args_open_needs_a_file_and_knows_its_flags() {
+        assert!(parse_cli_args(&args(&["open", "-b"])).unwrap_err().contains("at least one file"));
+        assert!(parse_cli_args(&args(&["open", "a.md", "--nope"])).unwrap_err().contains("unknown flag"));
+    }
+
+    #[test]
+    fn ai_cli_args_background_and_focus_are_mutually_exclusive() {
+        for verb in ["open", "show"] {
+            let err = parse_cli_args(&args(&[verb, "a.md", "-b", "-f"])).unwrap_err();
+            assert!(err.contains("mutually exclusive"), "{verb}: {err}");
+        }
+    }
+
+    #[test]
+    fn ai_cli_args_a_window_number_is_plain_digits_from_1() {
+        for bad in ["0", "x", "#7", "-3"] {
+            let err = parse_cli_args(&args(&["open", "a.md", "-t", bad])).unwrap_err();
+            assert!(err.contains("invalid window number"), "{bad}: {err}");
+        }
+        assert!(parse_cli_args(&args(&["open", "a.md", "-t"])).unwrap_err().contains("-t requires"));
+    }
+
+    #[test]
+    fn ai_cli_args_ls_parses_json_and_nothing_else() {
+        assert_eq!(parse_cli_args(&args(&["ls"])).unwrap().verb, CliVerb::Ls { json: false });
+        let parsed = parse_cli_args(&args(&["ls", "--json", "--socket", "/s.sock"])).unwrap();
+        assert_eq!((parsed.verb, parsed.socket.as_deref()), (CliVerb::Ls { json: true }, Some("/s.sock")));
+        assert!(parse_cli_args(&args(&["ls", "a.md"])).is_err());
+    }
+
+    #[test]
+    fn ai_cli_args_close_needs_a_file() {
+        let parsed = parse_cli_args(&args(&["close", "/a.md"])).unwrap();
+        assert_eq!((parsed.path.as_str(), parsed.verb), ("/a.md", CliVerb::Close));
+        assert!(parse_cli_args(&args(&["close"])).is_err());
+    }
+
+    #[test]
+    fn ai_cli_args_show_takes_a_window_focus_and_transient() {
+        let parsed = parse_cli_args(&args(&["show", "/a.md", "--line", "3", "-t", "4", "-b", "--transient"])).unwrap();
+        assert_eq!(
+            parsed.verb,
+            CliVerb::Show { line: Some(3), find: None, window: Some(4), focus: Some(false), transient: true }
+        );
+    }
+
+    #[test]
+    fn ai_cli_args_edit_and_ask_take_a_window() {
+        let edit = parse_cli_args(&args(&["edit", "/a.md", "--window", "2"])).unwrap();
+        assert!(matches!(edit.verb, CliVerb::Edit { window: Some(2), .. }));
+        let ask = parse_cli_args(&args(&["ask", "/a.md", "--question", "Q?", "--option", "A", "--option", "B", "-t", "5"])).unwrap();
+        assert!(matches!(ask.verb, CliVerb::Ask { window: Some(5), .. }));
+    }
+
+    #[test]
+    fn an_agent_is_whoever_has_claudecode_set() {
+        assert!(!is_agent(None));
+        assert!(!is_agent(Some("")));
+        assert!(is_agent(Some("1")));
+        assert!(is_agent(Some("yes")));
+    }
+
+    #[test]
+    fn the_open_summary_names_the_first_window_and_every_tab() {
+        let tabs = vec![
+            OpenedTab { path: "/a.md".to_string(), window: Some(7), focused: false },
+            OpenedTab { path: "/b.md".to_string(), window: Some(7), focused: false },
+        ];
+        let ok = open_summary(tabs.clone(), None);
+        assert_eq!(
+            serde_json::to_string(&ok).unwrap(),
+            r#"{"ok":true,"window":7,"focused":false,"opened":[{"path":"/a.md","window":7,"focused":false},{"path":"/b.md","window":7,"focused":false}]}"#
+        );
+        let failed = open_summary(tabs, Some("no window #9".to_string()));
+        assert!(!failed.ok);
+        assert_eq!(failed.error.as_deref(), Some("no window #9"));
+    }
+
+    #[test]
+    fn open_close_and_windows_requests_parse_with_their_defaults() {
+        let open = parse_request(r#"{"v":1,"cmd":"open","path":"/a.md"}"#).unwrap();
+        assert_eq!((open.focus(), open.window_binding(), open.path()), (false, None, "/a.md"));
+        let open = parse_request(r#"{"v":1,"cmd":"open","path":"/a.md","window_binding":3,"focus":true}"#).unwrap();
+        assert_eq!((open.focus(), open.window_binding()), (true, Some(3)));
+        assert_eq!(payload_for(&open, 1, false).cmd, "open");
+        let close = parse_request(r#"{"v":1,"cmd":"close","path":"/a.md"}"#).unwrap();
+        assert_eq!((payload_for(&close, 2, false).cmd.as_str(), close.focus()), ("close", false));
+        assert!(matches!(parse_request(r#"{"v":1,"cmd":"windows"}"#).unwrap(), AiRequest::Windows { .. }));
+    }
+
+    fn files(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("/nope-open/{i}.md")).collect()
+    }
+
+    fn opened_in_7() -> Result<String, (String, i32)> {
+        Ok(r#"{"ok":true,"window":7,"focused":false}"#.to_string())
+    }
+
+    #[test]
+    fn a_transport_failure_mid_list_keeps_what_opened_and_its_exit_code() {
+        let mut calls = 0;
+        let (summary, code) = open_all(&files(3), None, false, |_| {
+            calls += 1;
+            match calls {
+                1 => opened_in_7(),
+                _ => Err((r#"{"ok":false,"error":"md-mini is not running"}"#.to_string(), 2)),
+            }
+        });
+        assert_eq!((calls, code), (2, 2), "stops at the failure, exits with the transport's code");
+        assert!(!summary.ok);
+        assert_eq!(summary.error.as_deref(), Some("md-mini is not running"));
+        assert_eq!(summary.opened.unwrap().iter().map(|t| t.path.as_str()).collect::<Vec<_>>(), vec!["/nope-open/0.md"]);
+        assert_eq!(summary.window, Some(7));
+    }
+
+    #[test]
+    fn a_refused_file_is_reported_and_the_rest_still_open() {
+        let mut calls = 0;
+        let (summary, code) = open_all(&files(3), Some(7), true, |req| {
+            calls += 1;
+            assert!(matches!(req, AiRequest::Open { window_binding: Some(7), focus: true, .. }));
+            if calls == 2 {
+                Ok(r#"{"ok":false,"error":"could not read the file"}"#.to_string())
+            } else {
+                opened_in_7()
+            }
+        });
+        assert_eq!((calls, code), (3, 1));
+        assert_eq!(summary.error.as_deref(), Some("could not read the file"));
+        assert_eq!(summary.opened.map(|o| o.len()), Some(2));
+    }
+
+    #[test]
+    fn at_most_fifty_files_open_at_once() {
+        let (summary, code) = open_all(&files(51), None, false, |_| panic!("nothing is sent"));
+        assert_eq!(code, 2);
+        assert_eq!(summary.error.as_deref(), Some("too many files: 51 (at most 50 at once)"));
+        let (summary, code) = open_all(&files(50), None, false, |_| opened_in_7());
+        assert_eq!((summary.ok, code), (true, 0));
+    }
+
+    #[test]
+    fn a_request_path_must_be_absolute_and_comes_out_normalized() {
+        for bad in ["", "a.md", "./a.md", "../a.md"] {
+            assert_eq!(request_path(bad), Err("path must be absolute".to_string()), "{bad:?}");
+        }
+        assert_eq!(request_path("/nope-x/../nope-a.md").as_deref(), Ok("/nope-a.md"));
+        assert_eq!(request_path("/nope-x/./nope-a.md").as_deref(), Ok("/nope-x/nope-a.md"));
+    }
+
+    #[test]
+    fn every_path_carrying_request_is_normalized_and_windows_is_not() {
+        let mut req = parse_request(r#"{"v":1,"cmd":"close","path":"/x/../a.md"}"#).unwrap();
+        *req.path_mut().unwrap() = request_path(req.path()).unwrap();
+        assert_eq!(req.path(), "/a.md");
+        for line in [
+            r#"{"v":1,"cmd":"show","path":"/a"}"#,
+            r#"{"v":1,"cmd":"edit","path":"/a","content":""}"#,
+            r#"{"v":1,"cmd":"ask","path":"/a","question":"Q","options":["A","B"]}"#,
+            r#"{"v":1,"cmd":"open","path":"/a"}"#,
+        ] {
+            assert!(parse_request(line).unwrap().path_mut().is_some(), "{line}");
+        }
+        assert!(AiRequest::Windows { v: 1 }.path_mut().is_none());
+    }
+
+    #[test]
+    fn a_stale_socket_file_is_not_running_exit_2() {
+        // What `scripts/mdmini` probes with `ai ls --json` after a crash: the
+        // file is there, nobody accepts on it.
+        let path = std::env::temp_dir().join(format!("mdmini-stale-{}.sock", crate::session::new_tab_id()));
+        drop(UnixListener::bind(&path).unwrap());
+        assert!(path.exists());
+        let (_, code) = exchange(&path, &AiRequest::Windows { v: 1 }).unwrap_err();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn exchange_reports_a_socket_nobody_listens_on_as_not_running() {
+        let (line, code) = exchange(Path::new("/tmp/mdmini_test_nobody_listens.sock"), &AiRequest::Windows { v: 1 })
+            .unwrap_err();
+        assert_eq!(code, 2);
+        assert_eq!(line, r#"{"ok":false,"error":"md-mini is not running"}"#);
     }
 }

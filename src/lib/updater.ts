@@ -11,7 +11,18 @@
 
 import { invoke } from '@tauri-apps/api/core';
 
-const GITHUB_REPO = 'malinborn/mdmini';
+/**
+ * Every build up to 1.3.x shipped with `malinborn/mdmini` baked in, and those
+ * copies will poll that address forever. They keep seeing releases only because
+ * GitHub answers a renamed repo's API path with a 301 that `fetch` follows —
+ * CORS-clean, since the redirect itself carries `access-control-allow-origin: *`
+ * and `Accept` is a safelisted header, so there is no preflight to trip on.
+ *
+ * The redirect lives exactly as long as the old name stays free. **Never create
+ * a repository called `malinborn/mdmini` again**: every installed old version
+ * would silently stop seeing updates, with no channel left to tell them.
+ */
+const GITHUB_REPO = 'malinborn/couplet';
 const CHECK_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
 const CHECK_INTERVAL = 60 * 60 * 1000; // 1 hour
 const FIRST_CHECK_DELAY = 15_000;

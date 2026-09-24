@@ -30,7 +30,7 @@ const MENU_RS = fileURLToPath(new URL('../../../src-tauri/src/menu.rs', import.m
  *
  * Chunking on `with_id(` rather than matching one big regex is what makes this
  * survive the file's two call shapes — the one-line `with_id("new", "New")` and
- * the multi-line one that computes its label (`reopen_session`). Each chunk
+ * the multi-line one that computes its label (`restore_session`). Each chunk
  * runs to the next item, so an `.accelerator(...)` can only be attributed to
  * the item it is chained onto.
  */

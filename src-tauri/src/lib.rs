@@ -9,37 +9,48 @@ compile_error!("mcp-bridge must never be enabled in a release build");
 
 pub mod ai_socket;
 pub mod atomic_write;
+mod closed;
 pub mod comment_pause;
 pub mod comments;
 mod commands;
 mod dock_icon;
+mod git_info;
 mod i18n;
 mod locale;
 pub mod mcp_server;
 mod menu;
+mod menu_route;
 mod migration;
 mod onboarding;
+mod path_norm;
 mod paths;
 mod preferences;
+mod recent;
 mod recovery;
+mod routing;
 mod session;
+mod tab_commands;
+mod tabs;
+mod typing;
 mod updater;
 pub mod watch;
 mod watcher;
 mod window;
+mod window_numbers;
 
 use tauri::{Emitter, Manager};
 use tauri_plugin_cli::CliExt;
 use session::SessionState;
 use updater::UpdateState;
-use window::{FileWatchers, OpenFiles, PendingFiles, PendingOpen};
+use window::{FileWatchers, OpenFiles, PendingFiles, PendingTab};
 
 /// Новое значение тумблера — то, которое рассылается окнам.
 ///
 /// `None` для всего, что тумблером не является: такие события уходят как есть.
 /// Здесь только пункты, чьё значение фронтенд сообщает при старте
-/// (`sync_theme_menu`, `sync_ocd_alignment_menu`) — без этого `Toggle` не с
-/// чего было бы начинать. `toggle_line_glow` такой синхронизации не имеет и
+/// (`sync_theme_menu`, `sync_ocd_alignment_menu`, `sync_tabs_compact_menu`) —
+/// без этого `Toggle` не с чего было бы начинать. `toggle_line_glow` такой
+/// синхронизации не имеет и
 /// потому сюда не включён; он до сих пор рассылает «переключи» и ведёт себя
 /// соответственно, когда окон больше одного.
 fn toggle_value(app: &tauri::AppHandle, id: &str) -> Option<bool> {
@@ -50,6 +61,9 @@ fn toggle_value(app: &tauri::AppHandle, id: &str) -> Option<bool> {
         "toggle_ocd_alignment" => app
             .try_state::<menu::ViewToggleItems>()
             .map(|s| s.ocd_enabled.flip()),
+        "toggle_tabs_compact" => app
+            .try_state::<menu::ViewToggleItems>()
+            .map(|s| s.compact_enabled.flip()),
         _ => None,
     }
 }
@@ -92,20 +106,21 @@ pub fn run() {
     // feature the builder is never reassigned.
     #[cfg_attr(not(feature = "mcp-bridge"), allow(unused_mut))]
     let mut builder = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            // argv[0] is the binary path — skip it
-            let file_args: Vec<String> = argv.into_iter().skip(1).collect();
-
-            if file_args.is_empty() {
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            // argv[0] is the binary path — skip it. Relative paths are the
+            // caller's: resolved against its working directory, not ours.
+            let files: Vec<String> = argv
+                .into_iter()
+                .skip(1)
+                .filter(|arg| !arg.starts_with('-'))
+                .map(|path| resolve_path(&path, Some(cwd.as_str())))
+                .collect();
+            if files.is_empty() {
                 // No files — open a new empty window
                 window::open_file_window(app, None);
             } else {
-                for path in file_args {
-                    if !path.starts_with('-') {
-                        let abs_path = resolve_path(&path, None);
-                        window::open_file_window(app, Some(abs_path));
-                    }
-                }
+                // One new window with every file as a tab (spec §4).
+                window::open_files_window(app, &files);
             }
         }))
         .plugin(tauri_plugin_cli::init())
@@ -130,35 +145,57 @@ pub fn run() {
         .manage(PendingFiles::new())
         .manage(FileWatchers::new())
         .manage(SessionState::new())
+        .manage(closed::ClosedStack::new())
+        .manage(menu_route::FocusTracker::new())
         .manage(UpdateState::new())
         .manage(ai_socket::AiPending::new())
         .manage(ai_socket::AiQueue::new())
+        .manage(typing::TypingClock::new())
         .invoke_handler(tauri::generate_handler![
             commands::read_file,
             commands::write_file,
             commands::file_exists,
-            commands::get_pending_file,
             commands::comment_threads,
             commands::comment_reply,
             commands::comment_resolve,
             comment_pause::comment_start,
             comment_pause::comment_write_reply,
             comment_pause::comment_commit,
+            comment_pause::commit_document_pauses,
+            window::get_window_init,
+            tab_commands::tab_owner,
+            tab_commands::tab_open,
+            tab_commands::tab_claim,
+            tab_commands::tab_release,
+            tab_commands::tab_activate,
+            tab_commands::tab_close,
+            tab_commands::tab_move,
+            tab_commands::tab_carousel_windows,
+            git_info::tab_git_info,
             window::open_file_window_cmd,
-            window::register_open_file,
+            window::focus_if_open,
+            window::reveal_window,
+            window::reveal_other_window,
+            window::window_set_number,
+            window::window_reveal_number,
+            recent::recent_files_list,
+            recent::recent_files_add,
+            recent::recent_files_import,
             recovery::save_recovery,
             recovery::delete_recovery,
             recovery::check_recovery,
-            session::update_session_document,
+            session::tabs_sync,
             session::pending_session_count,
             session::restore_session,
             updater::claim_update_checker,
             updater::report_update,
             updater::dismiss_update,
             updater::pending_update,
-            watcher::start_watching,
             ai_socket::ai_respond,
             ai_socket::ai_pull_pending,
+            ai_socket::ai_is_pending,
+            ai_socket::ai_forward,
+            typing::note_typing,
             onboarding::ai_nudge_pending,
             onboarding::ai_nudge_dismiss,
             onboarding::ai_open_getting_started,
@@ -166,6 +203,8 @@ pub fn run() {
             commands::sync_dock_icon,
             commands::sync_engine_menu,
             commands::sync_ocd_alignment_menu,
+            commands::sync_tabs_compact_menu,
+            commands::sync_transient_menu,
             commands::broadcast_theme,
             i18n::resolved_language,
         ])
@@ -174,6 +213,15 @@ pub fn run() {
             // build owns. A dev build must never share `recovery/` or `session.json`
             // with an installed release one.
             paths::init(app.config().product_name.as_deref().unwrap_or(paths::FALLBACK_PRODUCT_NAME));
+
+            // Managed here, not on the builder: `RecentFiles::load()` reads
+            // `recent.json`, and before `paths::init` `app_data_dir()` answers the
+            // release directory — a dev build would load the installed app's list.
+            // No IPC reaches a command before `setup` returns.
+            app.manage(recent::RecentFiles::load());
+            // Before anything can register a file to `main` (CLI args, the
+            // pending-files list) and before its frontend asks for its number.
+            window::number_main_window(app.handle());
 
             // Locale resolution: stored preference -> system locale -> "en".
             // Must run before `menu::build_menu` — the menu's labels come from
@@ -213,12 +261,14 @@ pub fn run() {
                 }
             };
 
-            let (menu, theme_items, engine_items, view_toggles) =
+            let (menu, theme_items, engine_items, view_toggles, session_menu_items, transient_items) =
                 menu::build_menu(app.handle(), pending_count, explicit_language.as_deref())?;
             app.set_menu(menu)?;
             app.manage(theme_items);
             app.manage(view_toggles);
             app.manage(engine_items);
+            app.manage(session_menu_items);
+            app.manage(transient_items);
 
             let app_handle = app.handle().clone();
             app.on_menu_event(move |_app, event| {
@@ -230,8 +280,16 @@ pub fn run() {
                     return;
                 }
 
-                // Restore windows in Rust, like "new" — it creates windows.
-                if id == "reopen_session" {
+                // Restore windows in Rust, like "new" — they create windows.
+                // Cmd+Shift+T brings back only what was closed; the previous
+                // session has an item of its own, Safari-style (tabs-questions Q1).
+                if id == "reopen_closed" {
+                    closed::reopen_closed(&app_handle);
+                    closed::refresh_reopen_item(&app_handle);
+                    return;
+                }
+                if id == "restore_session" {
+                    // Refreshes the items itself.
                     session::restore_pending(&app_handle);
                     return;
                 }
@@ -257,38 +315,10 @@ pub fn run() {
                     return;
                 }
 
-                // "Comment on Selection" acts on a specific document's
-                // selection, so it goes to the focused window only — same
-                // reasoning as "close" below. The generic path at the bottom
-                // broadcasts to every window, which is right for global
-                // preferences (theme, zoom) but here would drop a draft comment
-                // card into every open document at once.
-                // "Comment on Selection" acts on one document's selection, so
-                // it needs exactly one handler to run exactly once — which the
-                // generic path below cannot give it.
-                //
-                // Two traps, both learned the hard way. First, `is_focused()`
-                // queried here is not reliable: the menu bar is what the OS
-                // considers active, and gating on it silently swallowed the
-                // command. Second, the generic path emits per window in a
-                // loop, and `onMenuEvent` listens *globally* — and a global
-                // listener's target is `Any`, so it also receives targeted
-                // emits (the same trap `onAiCommand` documents). With two
-                // windows open, one menu click therefore arrived twice in each
-                // window and created a draft card per delivery.
-                //
-                // So: emit once, app-wide, and let the frontend ignore it
-                // unless its own window has focus. That is the only place
-                // where focus is actually knowable.
-                if id == "ai_comment" {
-                    let _ = _app.emit("menu-event", &id);
-                    return;
-                }
-
-                // Manual "Check for Updates…". Must reach exactly one window,
-                // for the same reason "ai_comment" is not routed through the
-                // per-window broadcast loop at the bottom of this handler:
-                // that loop would fire one GitHub request per open window.
+                // Manual "Check for Updates…". Must reach exactly one window —
+                // one GitHub request, not one per open window — and the one
+                // that owns the update poll, which the generic `Focused` route
+                // at the bottom of this handler does not know about.
                 //
                 // A bare `app.emit` does NOT do this — it broadcasts to every
                 // registered listener regardless of target label (an unfiltered
@@ -297,14 +327,14 @@ pub fn run() {
                 // actually restricts delivery to one window, the same primitive
                 // `ai_socket.rs` uses to route a command to the window that owns
                 // its file. The update-checker claim holder is the natural
-                // target since it already owns update work; fall back to any
-                // window if no claim has been made yet (e.g. the poll hasn't
-                // started).
+                // target since it already owns update work; fall back to the
+                // window a document action would go to if no claim has been
+                // made yet (e.g. the poll hasn't started).
                 if id == "check_updates" {
                     let target = _app
                         .state::<UpdateState>()
                         .checker_label()
-                        .or_else(|| _app.webview_windows().keys().next().cloned());
+                        .or_else(|| focused_window(_app));
                     if let Some(label) = target {
                         let _ = _app.emit_to(label.as_str(), "check-updates-requested", ());
                     }
@@ -334,26 +364,13 @@ pub fn run() {
                     return;
                 }
 
-                // Handle "close" — close the focused window directly from Rust
-                if id == "close" {
-                    for (_label, win) in _app.webview_windows() {
-                        if win.is_focused().unwrap_or(false) {
-                            let _ = win.close();
-                            break;
-                        }
-                    }
-                    return;
-                }
-
                 // Галочка обязана нести значение, а не команду «переключи».
                 //
                 // Ниже событие рассылается во все окна, и каждое применяет его
                 // к своей копии настройки. Для radio-пункта это безвредно: N
                 // окон выставляют одно и то же значение. Для тумблера — нет:
                 // N окон переключают его N раз, и с двумя открытыми окнами
-                // галочка на экране не меняется вовсе. Это родня того, что уже
-                // описано выше про `ai_comment`, только там дублировалась
-                // доставка, а здесь — сам эффект.
+                // галочка на экране не меняется вовсе.
                 //
                 // Значение берётся из `Toggle`, а не из самого пункта меню:
                 // macOS применяет щелчок уже после нашего обработчика, и пункт
@@ -364,9 +381,15 @@ pub fn run() {
                     None => id,
                 };
 
-                // Broadcast all other menu events to all windows
-                for (_label, win) in _app.webview_windows() {
-                    let _ = win.emit("menu-event", &id);
+                match menu_route::menu_route(&id) {
+                    menu_route::MenuRoute::Broadcast => {
+                        let _ = _app.emit("menu-event", &id);
+                    }
+                    menu_route::MenuRoute::Focused => {
+                        if let Some(label) = focused_window(_app) {
+                            let _ = _app.emit_to(label.as_str(), "menu-event", &id);
+                        }
+                    }
                 }
             });
 
@@ -416,18 +439,41 @@ pub fn run() {
                     // comes to. So the pause is ended here, while the window
                     // still knows which document it was showing.
                     let app = window.app_handle();
-                    if let Some(doc) = comment_pause::document_of_window(app, window.label()) {
+                    for doc in comment_pause::documents_of_window(app, window.label()) {
                         comment_pause::commit_document(&doc);
                     }
                 }
                 tauri::WindowEvent::Destroyed => {
                     let app = window.app_handle();
                     let label = window.label();
+                    app.state::<menu_route::FocusTracker>().forget(label);
+                    let session_state = app.state::<SessionState>();
+                    // Before `remove` and `untrack_window` below erase what
+                    // this window held. The registry lock is released before
+                    // `record_window_close` takes the stack's — see
+                    // `ClosedStack` on lock order.
+                    let closing = {
+                        let open_files = app.state::<OpenFiles>();
+                        let reg = open_files.0.lock().unwrap();
+                        reg.window(label).cloned()
+                    };
+                    if let Some(tabs) = closing {
+                        let stack = app.state::<closed::ClosedStack>();
+                        if closed::record_window_close(&session_state, &stack, label, &tabs) > 0 {
+                            closed::refresh_reopen_item(app);
+                        }
+                    }
                     // No-op while quitting, so an exit keeps every window.
-                    app.state::<SessionState>().remove(label);
+                    session_state.remove(label);
                     // Hand the update poll to a surviving window.
                     app.state::<UpdateState>().release(label);
                     window::untrack_window(app, label);
+                }
+                tauri::WindowEvent::Focused(true) => {
+                    window
+                        .app_handle()
+                        .state::<menu_route::FocusTracker>()
+                        .focused(window.label());
                 }
                 tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
                     let app = window.app_handle();
@@ -448,45 +494,13 @@ pub fn run() {
     app.run(|_app_handle, event| {
         match event {
             tauri::RunEvent::Opened { urls } => {
-                for url in &urls {
-                    if let Ok(path) = url.to_file_path() {
-                        if let Some(path_str) = path.to_str() {
-                            let file_path = path_str.to_string();
-                            // Check if "main" window is empty (not tracking a file)
-                            let main_is_empty = {
-                                let open_files = _app_handle.state::<window::OpenFiles>();
-                                let map = open_files.0.lock().unwrap();
-                                !map.values().any(|v| v == "main")
-                            };
-                            if main_is_empty {
-                                // Reuse "main" — store in PendingFiles + OpenFiles
-                                let pending = _app_handle.state::<window::PendingFiles>();
-                                let mut pmap = pending.0.lock().unwrap();
-                                pmap.insert(
-                                    "main".to_string(),
-                                    PendingOpen::from_path(file_path.clone()),
-                                );
-                                drop(pmap);
-                                let open_files = _app_handle.state::<window::OpenFiles>();
-                                let mut map = open_files.0.lock().unwrap();
-                                map.insert(file_path.clone(), "main".to_string());
-                                drop(map);
-                                // Emit in case frontend is already loaded
-                                if let Some(win) = _app_handle.get_webview_window("main") {
-                                    let _ = win.emit("open-file", &file_path);
-                                    let _ = win.set_focus();
-                                }
-                                // Start watcher
-                                if let Ok(watcher) = crate::watcher::watch_file(_app_handle, "main".to_string(), file_path) {
-                                    let watchers = _app_handle.state::<window::FileWatchers>();
-                                    let mut wmap = watchers.0.lock().unwrap();
-                                    wmap.insert("main".to_string(), watcher);
-                                }
-                            } else {
-                                window::open_file_window(_app_handle, Some(file_path));
-                            }
-                        }
-                    }
+                let paths: Vec<String> = urls
+                    .iter()
+                    .filter_map(|url| url.to_file_path().ok())
+                    .filter_map(|path| path.to_str().map(str::to_string))
+                    .collect();
+                if !paths.is_empty() {
+                    open_os_files(_app_handle.clone(), paths);
                 }
             }
             tauri::RunEvent::Reopen { .. } => {
@@ -574,44 +588,178 @@ fn save_session_on_exit(app: &tauri::AppHandle) {
     let _ = session::write_session(&snapshot);
 }
 
-/// Hand a file to the `main` window and register it as open.
+/// The window a document-scoped menu action belongs to — see `menu_route`.
 ///
-/// `OpenFiles` is what every dedup check consults — `open_file_window`'s focus
-/// path and `open_restored_window`'s. Registering only in `PendingFiles`, as the
-/// CLI paths used to, leaves the file the app launched with invisible to both, so
-/// opening it a second time or restoring a session that contains it silently
-/// produces a duplicate window.
-fn assign_file_to_main(app: &tauri::AppHandle, path: String) {
-    let pending = app.state::<PendingFiles>();
-    pending
-        .0
-        .lock()
-        .unwrap()
-        .insert("main".to_string(), PendingOpen::from_path(path.clone()));
-
-    let open_files = app.state::<OpenFiles>();
-    open_files.0.lock().unwrap().insert(path, "main".to_string());
+/// Only a window the user can see is a candidate. With every window minimized
+/// the app stays active with no key window, and the tracker still names the
+/// last one — ⌘W would close it and ⌘S would save a document nobody is looking
+/// at. No candidate means the action does nothing.
+fn focused_window(app: &tauri::AppHandle) -> Option<String> {
+    let live: Vec<String> = app
+        .webview_windows()
+        .into_iter()
+        .filter(|(_, w)| w.is_visible().unwrap_or(true) && !w.is_minimized().unwrap_or(false))
+        .map(|(label, _)| label)
+        .collect();
+    let last = app.state::<menu_route::FocusTracker>().last();
+    menu_route::menu_target(last.as_deref(), &live)
 }
 
-/// Resolve a potentially relative path to an absolute path.
+/// Files the OS handed over (`RunEvent::Opened`: Finder, Open With, a drop on
+/// the Dock icon), routed by project (`window::route_opened_file`, Q4).
+///
+/// Off the main thread: normalizing a path, binding projects and finding the
+/// file's own walk directories, and on a slow or network volume that would
+/// freeze every window. Each file's open then runs on the main thread (window
+/// creation belongs there) and is waited for before the next file is routed,
+/// so a second file of the same new project finds the window the first one
+/// built. Locks as everywhere: the tracker's and the registry's one at a time,
+/// none held across the walk or the hop.
+fn open_os_files(app: tauri::AppHandle, paths: Vec<String>) {
+    tauri::async_runtime::spawn_blocking(move || {
+        for raw in paths {
+            let file_path = resolve_path(&raw, None);
+            routing::bind_missing_projects(&app);
+            let file_project = routing::project_of(&file_path);
+            let order = app.state::<menu_route::FocusTracker>().order();
+            let route = {
+                let open_files = app.state::<window::OpenFiles>();
+                let reg = open_files.0.lock().unwrap();
+                window::route_opened_file(&reg, &file_path, &file_project, &order, |label| {
+                    app.get_webview_window(label).is_some()
+                })
+            };
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let handle = app.clone();
+            let hopped = app.run_on_main_thread(move || {
+                open_routed(&handle, route, file_path);
+                let _ = done_tx.send(());
+            });
+            if hopped.is_err() {
+                return;
+            }
+            let _ = done_rx.recv();
+        }
+    });
+}
+
+/// Act on one `route_opened_file` decision. A human's open: the window it
+/// lands in comes forward.
+fn open_routed(app: &tauri::AppHandle, route: window::OpenedRoute, file_path: String) {
+    match route {
+        window::OpenedRoute::FocusExisting(label) => {
+            if let Some(win) = app.get_webview_window(&label) {
+                window::reveal(&win);
+                // The file may sit in a background tab there; that window
+                // activates it through its own open path.
+                let _ = win.emit_to(label.as_str(), "open-file", &file_path);
+            }
+        }
+        window::OpenedRoute::ProjectWindow(label) => {
+            if assign_file_to(app, &label, file_path) {
+                if let Some(win) = app.get_webview_window(&label) {
+                    window::reveal(&win);
+                }
+            }
+        }
+        window::OpenedRoute::UseMain => {
+            assign_file_to_main(app, file_path);
+        }
+        window::OpenedRoute::NewWindow => {
+            window::open_file_window(app, Some(file_path));
+        }
+    }
+}
+
+/// Give the `main` window a tab for `path`.
+///
+/// Before its frontend mounts, an event would be lost: the tab is registered
+/// in `OpenFiles` — every dedup check consults it, so a tab only in
+/// `PendingFiles` is invisible to them and opening the file again produces a
+/// duplicate window — and waits in main's pending payload. A tab, not a
+/// replacement: launch arguments may add several. Once mounted, main gets
+/// `open-file` and opens and claims the tab itself.
+///
+/// Returns `false` when another live window already holds the file: that
+/// window is brought forward instead and main is left untouched.
+fn assign_file_to_main(app: &tauri::AppHandle, path: String) -> bool {
+    assign_file_to(app, "main", path)
+}
+
+/// `assign_file_to_main` for any window `label` — a Finder open landing in
+/// its project's window (tabs-questions Q4).
+fn assign_file_to(app: &tauri::AppHandle, label: &str, path: String) -> bool {
+    let tab = PendingTab {
+        tab_id: session::new_tab_id(),
+        path: Some(path.clone()),
+        content: None,
+        cursor: 0,
+        top_line: 1,
+        ..Default::default()
+    };
+    match window::hand_over_tab(app, label, tab) {
+        window::Handover::Pending => true,
+        window::Handover::Mounted => {
+            // `emit_to`, not `emit`: a bare `emit` reaches every window.
+            if let Some(win) = app.get_webview_window(label) {
+                let _ = win.emit_to(label, "open-file", &path);
+                let _ = win.set_focus();
+            }
+            true
+        }
+        window::Handover::Held(owner) => {
+            eprintln!("assign_file_to: {path} is held by {owner}; focusing it instead of {label}");
+            if let Some(win) = app.get_webview_window(&owner) {
+                window::reveal(&win);
+            }
+            false
+        }
+    }
+}
+
+/// Resolve a potentially relative path to an absolute one, in its one
+/// spelling (`path_norm::normalize_path`) — absolute paths included.
 pub(crate) fn resolve_path(path: &str, cwd: Option<&str>) -> String {
     let p = std::path::Path::new(path);
-    if p.is_absolute() {
-        return path.to_string();
-    }
-    let base = match cwd {
-        Some(c) => std::path::PathBuf::from(c),
-        None => std::env::current_dir().unwrap_or_default(),
+    let joined = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        match cwd {
+            Some(c) => std::path::PathBuf::from(c),
+            None => std::env::current_dir().unwrap_or_default(),
+        }
+        .join(p)
     };
-    base.join(p)
-        .canonicalize()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| base.join(path).to_string_lossy().to_string())
+    path_norm::normalize_path(&joined).to_string_lossy().into_owned()
 }
 
-/// Open pending files when app is already running (Reopen event).
-/// Each file gets a new window since "main" already exists.
+/// Open pending files when app is already running (Reopen event): one new
+/// window, the files as its tabs.
 fn open_pending_files(app: &tauri::AppHandle) {
+    let path = std::path::Path::new("/tmp/md-mini-pending-files");
+    if !path.exists() {
+        return;
+    }
+    let contents = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let _ = std::fs::remove_file(path);
+
+    let files: Vec<String> = contents
+        .lines()
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+        .map(|f| resolve_path(f, None))
+        .collect();
+    if !files.is_empty() {
+        window::open_files_window(app, &files);
+    }
+}
+
+/// Load files written by the CLI wrapper script to /tmp/md-mini-pending-files:
+/// each becomes a tab of "main", as CLI args do.
+fn load_pending_open_files(app: &tauri::AppHandle) {
     let path = std::path::Path::new("/tmp/md-mini-pending-files");
     if !path.exists() {
         return;
@@ -625,67 +773,25 @@ fn open_pending_files(app: &tauri::AppHandle) {
     for line in contents.lines() {
         let file = line.trim();
         if !file.is_empty() {
-            window::open_file_window(app, Some(file.to_string()));
+            // The wrapper writes absolute paths; this gives them their one spelling.
+            assign_file_to_main(app, resolve_path(file, None));
         }
     }
 }
 
-/// Load files written by the CLI wrapper script to /tmp/md-mini-pending-files.
-/// Uses the same PendingFiles mechanism as CLI args — first file goes into "main" window.
-fn load_pending_open_files(app: &tauri::AppHandle) {
-    let path = std::path::Path::new("/tmp/md-mini-pending-files");
-    if !path.exists() {
-        return;
-    }
-    let contents = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    let _ = std::fs::remove_file(path);
-
-    let pending = app.state::<PendingFiles>();
-    let mut map = pending.0.lock().unwrap();
-    let already_has_main = map.contains_key("main");
-
-    let mut first = !already_has_main; // only use "main" slot if CLI args didn't take it
-    drop(map);
-
-    for line in contents.lines() {
-        let file = line.trim();
-        if file.is_empty() {
-            continue;
-        }
-        if first {
-            first = false;
-            assign_file_to_main(app, file.to_string());
-        } else {
-            window::open_file_window(app, Some(file.to_string()));
-        }
-    }
-}
-
-/// Handle CLI file arguments on initial launch.
-/// The first file is loaded into the existing "main" window via PendingFiles;
-/// any additional files each get a new window (also via PendingFiles).
+/// Handle CLI file arguments on initial launch: every file is a tab of the
+/// "main" window, pulled via PendingFiles on mount (spec §4: one window, the
+/// files as tabs).
 fn handle_cli_args(app: &tauri::AppHandle) {
     if let Ok(matches) = app.cli().matches() {
         if let Some(files_arg) = matches.args.get("files") {
             if let serde_json::Value::Array(arr) = &files_arg.value {
-                let mut first = true;
                 for val in arr {
                     if let serde_json::Value::String(path) = val {
                         if path.is_empty() {
                             continue;
                         }
-                        let abs_path = resolve_path(path.as_str(), None);
-                        if first {
-                            first = false;
-                            // The "main" window pulls this on mount.
-                            assign_file_to_main(app, abs_path);
-                        } else {
-                            // Additional files each get a new window.
-                            window::open_file_window(app, Some(abs_path));
-                        }
+                        assign_file_to_main(app, resolve_path(path.as_str(), None));
                     }
                 }
             }

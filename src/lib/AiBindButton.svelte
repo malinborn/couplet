@@ -56,7 +56,9 @@
 <style>
   .ai-bind-button {
     position: fixed;
-    top: 12px;
+    /* Under the notch (spec §6: «Под язычком — существующая кнопка ИИ»):
+       the notch's 12px top + 150px height + the same 12px gap. */
+    top: 174px;
     left: 0;
     z-index: 880;
 
@@ -75,8 +77,11 @@
      * opacity was measurably present and visually absent — it did not register
      * in a screenshot of the dark theme at all, which for a button whose only
      * job is to be noticed is the same as not shipping it.
+     * Since tabs plan 03 it is the notch's measured visible depth (TabNotch
+     * sets --notch-depth, ≈25.8px), so notch and button are the same width and
+     * read as one column at the edge; 26px is only the first-paint fallback.
      */
-    --peek: 26px;
+    --peek: var(--notch-depth, 26px);
     transform: translateX(calc((var(--shown) - 1) * (100% - var(--peek))));
     opacity: calc(0.72 + 0.28 * var(--shown));
 

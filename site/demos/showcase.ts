@@ -74,7 +74,7 @@ npm run build:dev && open dist/md-mini-dev.app
 
 ## Once it's out the door
 
-The rollout is *gradual*, never **instant**, and it is ~~definitely not~~ absolutely not something we push on a Friday. Watch the crash rate in \`metrics.dashboard\`, and keep the [release notes](https://github.com/malinborn/mdmini/releases) open in a second window.
+The rollout is *gradual*, never **instant**, and it is ~~definitely not~~ absolutely not something we push on a Friday. Watch the crash rate in \`metrics.dashboard\`, and keep the [release notes](https://github.com/malinborn/couplet/releases) open in a second window.
 
 1. Announce the build
 2. Watch the first hour of crash reports

@@ -2,16 +2,22 @@
   import { onMount } from 'svelte';
   import Editor from './lib/editor/Editor.svelte';
   import type { EditorHandle } from './lib/editor/Editor.svelte';
-  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createFileState, createRecentFilesStore, setProductName } from './lib/stores.svelte';
+  import type { ViewUpdate } from '@codemirror/view';
+  import { isHumanEdit } from './lib/editor/human-edit';
+  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createTabsCompactStore, createTransientPolicyStore, createFileState, createRecentFilesStore, setProductName, setWindowNumber, getWindowNumber } from './lib/stores.svelte';
   import { getName } from '@tauri-apps/api/app';
-  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncDockIcon, syncEngineMenu, syncOcdAlignmentMenu, broadcastTheme, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type PendingOpen } from './lib/tauri/commands';
+  import { readDocument, writeDocument, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncDockIcon, syncEngineMenu, syncOcdAlignmentMenu, broadcastTheme, syncTabsCompactMenu, syncTransientMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type TabClaim, type WindowInit } from './lib/tauri/commands';
   import { concreteTheme, halfOf, type ThemeFamily } from './lib/theme-resolve';
   import type { ThemeControl } from './lib/editor/slash-theme';
   import {
     onMenuEvent,
     onOpenFile,
+    onReopenTab,
+    onTabsArrive,
+    onWindowNumber,
     onFileChangedExternally,
     onSessionRestored,
+    onRecentChanged,
     onUpdateAvailable,
     onUpdateDismissed,
     onCheckUpdatesRequested,
@@ -27,33 +33,55 @@
   import ToastStack from './lib/ToastStack.svelte';
   import AiHintBadge from './lib/AiHintBadge.svelte';
   import AiBindButton from './lib/AiBindButton.svelte';
-  import { createToastStore } from './lib/toasts.svelte';
+  import TabDrawer from './lib/tabs/TabDrawer.svelte';
+  import TransientBar from './lib/tabs/TransientBar.svelte';
+  import type { TabDrawerHandle } from './lib/tabs/TabDrawer.svelte';
+  import type { GitInfo } from './lib/tabs/drawer-data';
+  import { tabNames } from './lib/tabs/tab-name';
+  import { createToastStore, type ToastPayload } from './lib/toasts.svelte';
+  import {
+    WINDOW_NUMBER_TOAST_MS,
+    ctrlDigitHandler,
+    renumberWindow,
+    type RenumberResult,
+    type RevealResult,
+  } from './lib/tabs/window-number';
   import { shouldShowHint, nextCheckDelay } from './lib/ai-hint';
   import { previewCompartment, lineGlowCompartment } from './lib/editor/setup';
   import { stashAndUnfoldAll, restoreStashedFolds } from './lib/editor/fold-memory';
   import { EditorView, highlightActiveLine } from '@codemirror/view';
-  import { ChangeSet, Text, type StateEffect } from '@codemirror/state';
+  import type { StateEffect } from '@codemirror/state';
   import { livePreviewPlugin } from './lib/editor/preview/plugin';
   import { LIVE_PREVIEW, LIVE_RENDER, flavourFacet } from './lib/editor/preview/flavour';
   import { liveRenderExtensions } from './lib/editor/live-render';
   import { envPreviewPlugin } from './lib/editor/preview/env';
   import { shellSecretsPlugin } from './lib/editor/preview/shell-secrets';
-  import { MARKDOWN_EXTENSIONS, isShellConfig } from './lib/editor/file-language';
+  import { findCodeLanguage, previewKindFor } from './lib/editor/file-language';
   import { reinitializeTheme } from './lib/editor/preview/mermaid';
-  import { computeReplacement, computeChangedLineRanges } from './lib/editor/content-diff';
   import { resolveExternalChange } from './lib/external-change';
-  import {
-    resolveShowTarget,
-    changedLineRanges,
-    docRangesForLineRanges,
-  } from './lib/ai-commands';
+  import { createAutoSaveScheduler } from './lib/autosave';
+  import { resolveShowTarget, buildAiEdit, aiEditTransaction } from './lib/ai-commands';
+  import { normalizeLineEndings, type LineEnding } from './lib/line-endings';
+  import { canAutoSave, lineEndingAfterExternalChange, reloadRetryDelay } from './lib/document-sync';
   import {
     setAiHighlights,
     pulseAiLine,
     clearAiHighlights,
     aiHighlightRanges,
   } from './lib/editor/ai-highlight';
-  import { addAiAsk, removeAiAsk } from './lib/editor/ai-ask';
+  import { activeAskIds, addAiAsk, removeAiAsk } from './lib/editor/ai-ask';
+  import type { TabOwner } from './lib/switch-document';
+  import { activeCellEditSession } from './lib/editor/cell-edit-session';
+  import { closeSearchPanel } from '@codemirror/search';
+  import { hideHoverMenu } from './lib/editor/hover-menu';
+  import { createTabController, type DiskOptions, type MoveDone, type OpenAnswer, type Stranded } from './lib/tabs/controller';
+  import { AGENT_ERRORS, createAgentCommands, type AgentResponse, type AskResult } from './lib/tabs/agent-commands';
+  import { createTypingTracker } from './lib/tabs/typing';
+  import { emptyTabList, type TabListState } from './lib/tabs/tab-model';
+  import type { CarouselWindow, MoveTarget } from './lib/tabs/carousel';
+  import { stripLeavingState } from './lib/tabs/tab-cache';
+  import { decideSaveAs } from './lib/tabs/save-as';
+  import { createCommentWriter, adoptStartedDraft } from './lib/comment-writer';
   import {
     addAiComment,
     aiCommentField,
@@ -90,6 +118,7 @@
   import './lib/theme/ink.css';
   import './styles/global.css';
   import './styles/editor.css';
+  import './styles/tabs.css';
 
   const theme = createThemeStore();
   const engine = createEngineStore();
@@ -145,14 +174,24 @@
   const zoom = createZoomStore();
   const lineGlow = createLineGlowStore();
   const ocdAlignment = createOcdAlignmentStore();
+  const tabsCompact = createTabsCompactStore();
+  const transientPolicy = createTransientPolicyStore();
   const fileState = createFileState();
   const recentFiles = createRecentFilesStore();
   const toasts = createToastStore();
 
   let showRecentFiles = $state(false);
   let activePreview: 'markdown' | 'env' | 'code' | 'shell' = $state('markdown');
+  // This window's tabs, for the drawer. The controller owns the truth; this
+  // is its last published copy.
+  let tabList = $state<TabListState>(emptyTabList());
+  // The bar shows while the active tab is a quick look (spec §7).
+  const activeQuickLook = $derived(
+    tabList.tabs.find((tab) => tab.id === tabList.activeId)?.transient === true ? tabList.activeId : null
+  );
 
   let editorHandle: EditorHandle | undefined = $state(undefined);
+  let drawerHandle: TabDrawerHandle | undefined = $state(undefined);
 
   // --- AI-edit highlight hint (bottom-left "Esc" nudge) ---
   const AI_HINT_SEEN_KEY = 'md-mini.ai-hint-seen';
@@ -226,7 +265,6 @@
   }
 
   // --- Timers ---
-  let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let recoveryInterval: ReturnType<typeof setInterval> | null = null;
 
   // Disk baseline: content as we last read it from, or wrote it to, disk.
@@ -240,34 +278,79 @@
   // it always compares against the disk state the save actually produced.
   let currentSave: Promise<void> | null = null;
   // Bumped at the start of every `doSave`, so a reader can tell whether a save
-  // landed while it was mid-await (e.g. mid-`readFile`) even though by the
+  // landed while it was mid-await (e.g. mid-`readDocument`) even though by the
   // time it checks `currentSave` is already back to null.
   let saveGeneration = 0;
   // Coalesces external-change events that arrive while the conflict dialog is
   // already up (FSEvents can fire more than once for one write).
   let conflictDialogOpen = false;
+  // The last read of this window's file failed while the file still existed
+  // (a non-atomic writer caught mid-write, invalid UTF-8, permissions). Until a
+  // read succeeds, disk holds a version the window has never seen, so
+  // automatic saves are paused — see `canAutoSave`. The watcher's leading-edge
+  // debounce may drop the follow-up event, so the read is retried on a timer.
+  let diskUnreadable = false;
+  let reloadRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let reloadRetryAttempt = 0;
 
-  function handleChange(doc: string) {
-    fileState.isDirty = true;
-    scheduleAutoSave();
+  function saveGate() {
+    return {
+      isDirty: fileState.isDirty,
+      filePath: fileState.filePath,
+      conflictDialogOpen,
+      diskUnreadable,
+    };
   }
 
-  // --- Auto-save (300ms debounce) ---
-  function scheduleAutoSave(): void {
-    if (autoSaveTimer !== null) {
-      clearTimeout(autoSaveTimer);
+  /** The file could not be re-read: pause autosave, say so, try again later. */
+  function markDiskUnreadable(path: string, err: unknown): void {
+    diskUnreadable = true;
+    console.error('Reload failed:', err);
+    toasts.push({
+      kind: 'reload-error',
+      fileName: path.split('/').pop() ?? path,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    if (reloadRetryTimer !== null) clearTimeout(reloadRetryTimer);
+    reloadRetryTimer = setTimeout(() => {
+      reloadRetryTimer = null;
+      void handleExternalChange(path);
+    }, reloadRetryDelay(reloadRetryAttempt++));
+  }
+
+  /**
+   * Disk and window agree again — a read succeeded, a save landed, or the
+   * window moved on to another file. Returns whether autosave had been paused.
+   */
+  function endDiskUnreadable(): boolean {
+    const was = diskUnreadable;
+    diskUnreadable = false;
+    reloadRetryAttempt = 0;
+    if (reloadRetryTimer !== null) {
+      clearTimeout(reloadRetryTimer);
+      reloadRetryTimer = null;
     }
-    autoSaveTimer = setTimeout(() => {
-      autoSaveTimer = null;
-      // Saving now would write the buffer over the disk state the open
-      // conflict dialog is asking the user about — the dialog's own "Yes"
-      // path needs that state to still be there when it re-reads the file.
-      if (conflictDialogOpen) return;
-      if (fileState.isDirty && fileState.filePath) {
-        performSave();
-      }
-    }, 300);
+    toasts.dismissKind('reload-error');
+    return was;
   }
+
+  function handleChange(_doc: string, update: ViewUpdate) {
+    fileState.isDirty = true;
+    autoSave.schedule();
+    // Editing a quick look is working in it: «Оставить» (spec §7).
+    if (isHumanEdit(update)) tabs.humanEdited();
+  }
+
+  // --- Auto-save (300ms debounce). `performSave` is declared below, but
+  // `function` declarations are hoisted, so referencing it here is safe. ---
+  const autoSave = createAutoSaveScheduler({
+    delayMs: 300,
+    // Not while the conflict dialog is up (its "Yes" re-reads the disk state
+    // it is asking about) and not while the file is unreadable (the unread
+    // version would be overwritten) — see `canAutoSave`.
+    shouldSave: () => canAutoSave(saveGate()),
+    save: performSave,
+  });
 
   async function performSave(): Promise<void> {
     if (!fileState.filePath) return;
@@ -289,9 +372,13 @@
 
   async function doSave(path: string): Promise<void> {
     saveGeneration += 1;
+    // `content` stays LF: it is what the buffer holds, so it is also what the
+    // dirty check and the disk baseline below compare against. Only the bytes
+    // that reach the disk carry the file's own line ending.
     const content = editorHandle?.view?.state.doc.toString() ?? '';
+    const lineEnding = fileState.lineEnding;
     try {
-      await writeFile(path, content);
+      await writeDocument(path, content, lineEnding);
       // A window can switch to a different file (Cmd+O) while this write is
       // in flight; the bookkeeping below belongs to `path`, not to whatever
       // file the window holds by the time the write resolves.
@@ -310,6 +397,10 @@
         dismissedDisk = null;
         // A previous failure is over the moment a save lands.
         toasts.dismissKind('save-error');
+        toasts.dismissKind('unsaved-blocked');
+        // So is an unreadable disk: it now holds exactly what we wrote. Only
+        // an explicit ⌘S gets here while it was paused.
+        endDiskUnreadable();
       }
       // Clean up recovery file on successful save
       await invoke('delete_recovery', { path }).catch(() => {});
@@ -340,38 +431,65 @@
     const name = fileState.filePath
       ? fileState.filePath.split('/').pop()
       : t('ui.untitled_filename');
+    // The dialog holds back the human, not an agent: a tab switch can land
+    // while it is open, and the name picked belongs to the tab it was opened
+    // for. The tab queue is not held meanwhile — agents keep working.
+    const tabId = tabs.list.activeId;
     const path = await showSaveDialog(name);
     if (!path) return;
-    fileState.filePath = path;
-    await performSave();
-    recentFiles.add(path);
+    const fileName = path.split('/').pop() ?? path;
+    await tabs.runExclusive(async () => {
+      if (tabId === null || !tabs.list.tabs.some((tab) => tab.id === tabId)) {
+        toasts.push({ kind: 'save-as-blocked', fileName, reason: 'tab-gone' });
+        return;
+      }
+      if (tabs.list.activeId !== tabId) {
+        // The human's choice wins over the agent's switch. A refusal has
+        // already said why (unsaved-blocked, save-error, open-error).
+        if ((await tabs.activateNow(tabId)) !== 'ok') return;
+      }
+      // Claimed before anything is written: the tab must own `path` first, or
+      // a file another tab holds ends up in two autosaving editors.
+      const claim = await invoke<TabClaim>('tab_claim', { tabId, path }).catch((err: unknown) => {
+        console.error('tab_claim failed:', err);
+        return null;
+      });
+      const step = decideSaveAs(claim, path);
+      if (step.kind === 'blocked') {
+        toasts.push({ kind: 'save-as-blocked', fileName, reason: step.reason });
+        if (step.focusOtherWindow) {
+          await invoke('focus_if_open', { path }).catch(logTabIpc('focus_if_open'));
+        }
+        return;
+      }
+      fileState.filePath = step.path;
+      tabs.renameActive(step.path);
+      await performSave();
+      // The claim pointed the watcher at the path before the save created it,
+      // and a file that does not exist yet is not watched.
+      await invoke('tab_activate', { tabId }).catch(logTabIpc('tab_activate'));
+      recentFiles.add(step.path);
+    });
   }
 
   async function handleOpen(): Promise<void> {
     const path = await showOpenDialog();
     if (!path) return;
-    try {
-      const content = await readFile(path);
-      fileState.filePath = path;
-      // Register this window as the owner of `path` in the Rust-side
-      // `OpenFiles` map and (re)start its watcher. Without this, a file
-      // opened via the dialog into an already-open window is invisible to
-      // every dedup/routing check that consults `OpenFiles` (AI commands,
-      // "already open" focus-instead-of-duplicate), and never gets watched
-      // for external changes either.
-      invoke('register_open_file', { path }).catch(() => {});
-      diskBaseline = content;
-      dismissedDisk = null;
-      // After replaceContent: its dispatch re-dirties the buffer via
-      // handleChange (a real edit as far as CM6 is concerned), so isDirty
-      // must be cleared afterwards — clearing it first just gets it flipped
-      // back on and triggers a pointless autosave 300ms after open.
-      editorHandle?.replaceContent(content);
-      fileState.isDirty = false;
-      recentFiles.add(path);
-    } catch (err) {
-      console.error('Open failed:', err);
-    }
+    await openTab(path);
+  }
+
+  /**
+   * Say that a document could not be opened. Until this, every such failure
+   * was a `console.error` — which meant an empty Untitled window and no hint
+   * that a file had been asked for at all.
+   */
+  function reportOpenError(path: string, err: unknown): void {
+    console.error('Open failed:', err);
+    toasts.push({
+      kind: 'open-error',
+      fileName: path.split('/').pop() ?? path,
+      message: err instanceof Error ? err.message : String(err),
+    });
   }
 
   function handleNew(): void {
@@ -388,60 +506,379 @@
     });
   }
 
-  async function handleOpenFilePath(path: string): Promise<void> {
+  /**
+   * Say why a switch or close did nothing when the buffer it would have left
+   * is still not on disk.
+   *
+   * With the conflict dialog up there is nothing to add — the dialog is the
+   * reason, and it is on screen. A real write failure already has its own
+   * `save-error` toast with the OS's message, and a file that could not be
+   * re-read its `reload-error` one. What is left is a save that has simply not
+   * landed yet.
+   */
+  function reportSwitchBlockedByUnsaved(): void {
+    // An unreadable disk has its own standing toast, which says ⌘S.
+    if (conflictDialogOpen || diskUnreadable || toasts.hasKind('save-error')) return;
+    const path = fileState.filePath ?? '';
+    toasts.push({ kind: 'unsaved-blocked', fileName: path.split('/').pop() ?? path });
+  }
+
+  /**
+   * Write every comment box typed into for `path` now, before the window
+   * stops showing it.
+   *
+   * The debounced write would otherwise fire after the switch — and a draft,
+   * whose anchor lives only in `commentDrafts`, would then reach the sidecar
+   * as a reply to a thread that does not exist, losing the text. Returns
+   * whether everything typed is now on disk; a failure has already raised the
+   * `comment-error` toast.
+   */
+  async function flushCommentsFor(path: string): Promise<boolean> {
+    for (const [id, entry] of [...commentPending]) {
+      if (entry.path === path) await writeComment(id);
+    }
+    return ![...commentPending.values()].some(
+      (e) => e.path === path && e.text.trim() !== '' && e.text !== e.saved
+    );
+  }
+
+  /** Drop the app-side comment state of `path` once its pauses are committed. */
+  function forgetCommentsFor(path: string): void {
+    for (const [id, entry] of [...commentPending]) {
+      if (entry.path === path) forgetCommentPending(id);
+    }
+    for (const [id, entry] of [...commentCountdowns]) {
+      if (entry.path === path) disarmCommentCountdown(id);
+    }
+    // A different document means different comments; drafts belonged to the
+    // file we just left and must not reappear anchored in this one.
+    commentDrafts = new Map();
+    commentEditable = new Map();
+    commentFocus = null;
+  }
+
+  /** Make `path` the active document for every singleton that follows the active tab. */
+  function setActiveDocument(
+    path: string | null,
+    dirty: boolean,
+    baseline: string | null,
+    lineEnding: LineEnding
+  ): void {
+    // Carried by the tab itself, never looked up by path: a file opened under
+    // another spelling than the registry's would find nothing and save as LF.
+    fileState.lineEnding = lineEnding;
+    // An unreadable disk belonged to the document that is leaving; the one
+    // arriving was read to be shown, or is the same one read again.
+    endDiskUnreadable();
+    fileState.filePath = path;
+    fileState.isDirty = dirty;
+    diskBaseline = baseline;
+    dismissedDisk = null;
+    activePreview = previewKindFor(path);
+  }
+
+  /**
+   * Re-apply this window's configuration for `path` to the state just swapped
+   * in — cached ones included, whose compartments hold whatever they held when
+   * they were left.
+   */
+  function applyDocumentConfig(path: string | null): void {
+    const kind = previewKindFor(path);
+    const basename = path?.split('/').pop()?.toLowerCase() ?? '';
+    const ext = path?.split('.').pop()?.toLowerCase() ?? '';
+    if (kind === 'env') {
+      editorHandle?.setEnvMode(true);
+    } else if (kind === 'markdown') {
+      editorHandle?.setEnvMode(false);
+      void editorHandle?.setCodeMode(null);
+    } else {
+      editorHandle?.setEnvMode(false);
+      void editorHandle?.setCodeMode(ext, basename).then((applied) => {
+        // Only for the state that asked: a language that lands after a newer
+        // swap or mode is dropped, and so is this.
+        if (applied) applyPreviewConfig();
+      });
+      // `setCodeMode` adds the class only once its language has loaded; a
+      // tab coming back from the background would otherwise flash unstyled.
+      if (findCodeLanguage(basename, ext)) {
+        editorHandle?.view?.dom.classList.add('cm-code-file-mode');
+      }
+    }
+    // `setCodeMode(null)` and `setEnvMode(true)` reconfigure the preview
+    // compartment themselves, with no flavour facet and no live-render
+    // bundle; the engine's own configuration goes on top (see
+    // `applyPreviewConfig`).
+    applyPreviewConfig();
+    applyLineGlow();
+    // The state's own path field: the `$effect` below only re-runs when
+    // `fileState.filePath` changes, and two untitled tabs share `null`.
+    editorHandle?.setDocumentPath(path);
+  }
+
+  /**
+   * Clean the live state for the background, and close what belongs to the
+   * window rather than the tab: the search panel, the gutter menu (a module
+   * singleton holding the view), the JSON offer's toast, the Recent panel.
+   */
+  function stripForBackground(): void {
+    const view = editorHandle?.view;
+    if (view) {
+      stripLeavingState(view, themeControl);
+      closeSearchPanel(view);
+    }
+    hideHoverMenu();
+    toasts.dismissKind('json-offer');
+    showRecentFiles = false;
+  }
+
+  /**
+   * A file that cannot be read is not shown — an empty buffer on its path
+   * would be autosaved over it — so the read's failure is the only thing the
+   * human would otherwise never see.
+   */
+  async function readingForTab<T>(path: string, read: () => Promise<T>): Promise<T> {
     try {
-      const exists = await fileExists(path);
-      if (exists) {
-        const content = await readFile(path);
-        editorHandle?.replaceContent(content);
-        diskBaseline = content;
-      } else {
-        editorHandle?.replaceContent('');
-        diskBaseline = null;
-      }
-      dismissedDisk = null;
-      fileState.filePath = path;
-      // Register this window as the owner of `path` — see the matching call
-      // in `handleOpen`. Also (re)starts the file watcher, replacing the
-      // separate `start_watching` invoke this used to make.
-      invoke('register_open_file', { path }).catch(() => {});
-      fileState.isDirty = false;
-      recentFiles.add(path);
-
-      // A different document means different comments; drafts belonged to the
-      // file we just left and must not reappear anchored in this one.
-      commentDrafts = new Map();
-      void reloadComments();
-
-      // Detect file type and switch editor mode
-      const basename = path.split('/').pop()?.toLowerCase() ?? '';
-      const ext = path.split('.').pop()?.toLowerCase() ?? '';
-      const isEnvFile = basename.startsWith('.env') || ext === 'env';
-
-      if (isEnvFile) {
-        editorHandle?.setEnvMode(true);
-        activePreview = 'env';
-      } else if (!MARKDOWN_EXTENSIONS.has(ext)) {
-        editorHandle?.setEnvMode(false);
-        editorHandle?.setCodeMode(ext, basename);
-        activePreview = isShellConfig(basename) ? 'shell' : 'code';
-      } else {
-        editorHandle?.setEnvMode(false);
-        editorHandle?.setCodeMode(null);
-        activePreview = 'markdown';
-      }
-
-      // `setCodeMode`/`setEnvMode` above reconfigure the preview compartment
-      // themselves, and the markdown branch installs a bare livePreviewPlugin
-      // — no flavour facet, no live-render bundle. Re-assert the engine's own
-      // configuration on top, or a freshly opened window sits in a half-built
-      // state: in live-render that meant no atomic markers, no hidden markers
-      // and no selection toolbar until the engine was toggled by hand.
-      // `activePreview` was just assigned, so this cannot rely on the $effect
-      // firing first.
-      applyPreviewConfig();
+      return await read();
     } catch (err) {
-      console.error('Failed to open file:', err);
+      reportOpenError(path, err);
+      throw err;
+    }
+  }
+
+  /**
+   * The controller's disk, with a toast for a read the human asked for. An
+   * agent's read (`quiet`) fails into the agent's answer instead: a red toast
+   * for something the human never did would stand there unexplained.
+   */
+  function diskCall<T>(path: string, opts: DiskOptions | undefined, call: () => Promise<T>): Promise<T> {
+    return opts?.quiet ? call() : readingForTab(path, call);
+  }
+
+  /** The Rust half of a tab operation failed; the tab model itself goes on. */
+  function logTabIpc(command: string): (err: unknown) => void {
+    return (err) => console.error(`${command} failed:`, err);
+  }
+
+  /**
+   * The one path that changes what this window shows — see
+   * `lib/tabs/controller.ts`. Its dependencies are the singletons that follow
+   * the active tab.
+   */
+  const tabs = createTabController({
+    editor: {
+      current: () => editorHandle?.view?.state ?? null,
+      createState: (doc, cursor) => {
+        if (!editorHandle) throw new Error('editor not mounted');
+        return editorHandle.createState(doc, cursor);
+      },
+      swap: (state, opts) => editorHandle?.swapState(state, opts),
+      applyDocumentConfig,
+      stripForBackground,
+      scrollSnapshot: () => editorHandle?.view?.scrollSnapshot() ?? null,
+      applyPosition: ({ cursor, topLine }) => applyRestorePosition(cursor, topLine),
+      topLine: topVisibleLine,
+      commitCellEdit: () => activeCellEditSession()?.commit(),
+    },
+    doc: {
+      path: () => fileState.filePath,
+      dirty: () => fileState.isDirty,
+      baseline: () => diskBaseline,
+      lineEnding: () => fileState.lineEnding,
+      setActive: setActiveDocument,
+    },
+    autosave: {
+      flush: () => autoSave.flush(),
+      holdsBack: () => conflictDialogOpen || diskUnreadable,
+    },
+    saveErrorPending: () => toasts.hasKind('save-error'),
+    reportUnsaved: reportSwitchBlockedByUnsaved,
+    comments: {
+      flush: flushCommentsFor,
+      // Queued, so it lands after any write still waiting — a countdown's
+      // fire, say — rather than between that write's read and its rename.
+      commitPauses: async (path) => {
+        await commentWriter.enqueue(() =>
+          invoke('commit_document_pauses', { path }).catch(logTabIpc('commit_document_pauses'))
+        );
+      },
+      forget: forgetCommentsFor,
+      reload: reloadComments,
+    },
+    ai: {
+      // `agent` is created further down from `tabs` itself; the controller
+      // calls these only around a switch or a close, after the script ran.
+      leave: (tabId) => agent.leave(tabId),
+      enter: (tabId) => agent.enter(tabId),
+      forget: (tabId) => agent.forget(tabId),
+      carry: (tabId) => agent.carry(tabId),
+      adopt: (tabId, items) => agent.adopt(tabId, items),
+      hasLiveAsk: () => liveAskShown(),
+    },
+    disk: {
+      exists: (path, opts) => diskCall(path, opts, () => fileExists(path)),
+      // No line break on disk says nothing about the file's convention, so
+      // the tab's known ending is the fallback (see `detectLineEnding`).
+      read: (path, opts) => diskCall(path, opts, () => readDocument(path, opts?.fallback)),
+      write: (path, content, lineEnding) => writeDocument(path, content, lineEnding),
+    },
+    rust: {
+      owner: (path) =>
+        invoke<TabOwner>('tab_owner', { path }).catch((err: unknown): TabOwner => {
+          logTabIpc('tab_owner')(err);
+          return { kind: 'none' };
+        }),
+      open: (path) =>
+        invoke<OpenAnswer>('tab_open', { path }).catch((err: unknown): OpenAnswer => {
+          // Without Rust behind the page (`npm run dev` in a browser) a tab
+          // still needs an id, and there is nothing to dedup against.
+          if (!('__TAURI_INTERNALS__' in window)) {
+            return { kind: 'created', tabId: `local-${Date.now()}-${Math.random().toString(36).slice(2)}` };
+          }
+          // With Rust, a tab it never registered is invisible to dedup and
+          // agents; none is shown.
+          console.error('tab_open failed:', err);
+          toasts.push({
+            kind: 'open-error',
+            fileName: path?.split('/').pop() ?? t('ui.untitled_filename'),
+            message: err instanceof Error ? err.message : String(err),
+          });
+          return { kind: 'failed' };
+        }),
+      release: (tabId) => invoke<void>('tab_release', { tabId }).catch(logTabIpc('tab_release')),
+      activate: (tabId) => invoke<void>('tab_activate', { tabId }).catch(logTabIpc('tab_activate')),
+      close: (tabId, { cursor, topLine }) =>
+        invoke<void>('tab_close', { tabId, cursor, topLine }).catch(logTabIpc('tab_close')),
+      focusElsewhere: async (path) => {
+        await invoke('focus_if_open', { path }).catch(logTabIpc('focus_if_open'));
+      },
+      closeWindow: () =>
+        import('@tauri-apps/api/window')
+          .then(({ getCurrentWindow }) => getCurrentWindow().close())
+          .catch(logTabIpc('window close')),
+      move: (moving, target) => invoke<MoveDone>('tab_move', { tabs: moving, target }),
+    },
+    entered: (path, opened) => {
+      if (path === null) return;
+      if (opened) recentFiles.add(path);
+      // A write that landed between the read that loaded this tab and its
+      // watcher starting fired no event this window saw; one more read now
+      // catches it (and is a no-op when nothing changed).
+      void handleExternalChange(path);
+    },
+    changed: (list) => {
+      tabList = list;
+    },
+    settled: () => reportTabs(),
+    now: () => Date.now(),
+    windowFocused: () => document.hasFocus(),
+  });
+
+  // Rust counts this window as mounted from `get_window_init` on and delivers
+  // files as events from then on; one that lands before `tabs.init` is queued
+  // would run on an empty tab list, and init would then publish over it. Every
+  // tab-delivering source waits for this, in arrival order.
+  let releaseTabSources: () => void = () => {};
+  const tabSourcesReady = new Promise<void>((resolve) => {
+    releaseTabSources = resolve;
+  });
+
+  function openTab(path: string, position?: { cursor: number; topLine: number }): Promise<void> {
+    return tabSourcesReady.then(() => tabs.openPath(path, position));
+  }
+
+  /**
+   * Native menu actions that open something in the page, put the caret in
+   * the editor or change the document behind the drawer. The drawer closes
+   * first: its focus handling keeps the keyboard while it is open and would
+   * fight them.
+   */
+  const DRAWER_CLOSING_ACTIONS: ReadonlySet<string> = new Set([
+    'find',
+    'recent_files',
+    'ai_comment',
+    'select_all',
+    'open',
+    'save_as',
+    'new_tab',
+    'format_json',
+  ]);
+
+  /** What the drawer reads its cards' text and project line from. */
+  const drawerSource = {
+    held: (tabId: string) => tabs.textOf(tabId),
+    read: (path: string) => readDocument(path).then((doc) => doc.text),
+    gitInfo: (paths: string[]) =>
+      invoke<(GitInfo | null)[]>('tab_git_info', { paths }).catch(() => paths.map(() => null)),
+  };
+
+  /** The other windows, for the drawer's carousel (plan 05, `tab_carousel_windows`). */
+  const carouselSource = {
+    windows: () =>
+      invoke<CarouselWindow[]>('tab_carousel_windows').catch((err: unknown): CarouselWindow[] => {
+        logTabIpc('tab_carousel_windows')(err);
+        return [];
+      }),
+  };
+
+  /** The window carousel is up: the page behind it blurs (D9, D11). */
+  let carouselOn = $state(false);
+
+  /** A move from the drawer's carousel (plan 05). A refusal already has its toast (`mayLeave`). */
+  async function moveTabs(tabIds: string[], target: MoveTarget): Promise<void> {
+    const paths = tabIds.map((id) => tabList.tabs.find((tab) => tab.id === id)?.path ?? null);
+    const outcome = await tabs.moveTabs(tabIds, target);
+    if (outcome?.kind === 'moved') announceMoved([{ label: outcome.label, number: outcome.number }]);
+    if (outcome?.kind === 'failed') reportStranded(paths.map((path) => ({ path, error: outcome.error })));
+  }
+
+  /** Tabs a move left in this window; say so, or the gesture looks like it did nothing. */
+  function reportStranded(stranded: readonly Stranded[]): void {
+    if (stranded.length === 0) return;
+    // One toast for all of them: a toast replaces any other of its kind.
+    const errors = [...new Set(stranded.flatMap(({ error }) => (error ? [error] : [])))];
+    toasts.push({
+      kind: 'tabs-stranded',
+      fileNames: tabNames(stranded.map(({ path }) => path)),
+      count: stranded.length,
+      message: errors.length > 0 ? errors.join('; ') : null,
+    });
+  }
+
+  /** How long «Перенесено в #N» stays (D5). */
+  const TABS_MOVED_TOAST_MS = 6000;
+
+  /**
+   * The human stays here (D5): say where the tabs went, with «Перейти». A
+   * newer move replaces the toast, and its timer then finds nothing to close.
+   */
+  function announceMoved(moved: readonly MoveDone[]): void {
+    if (moved.length === 0) return;
+    const id = toasts.push({ kind: 'tabs-moved', label: moved[0].label, numbers: moved.map((m) => m.number) });
+    // Never cleared, and needn't be: dismiss is by id, so once a newer toast replaced this one it closes nothing.
+    setTimeout(() => toasts.dismiss(id), TABS_MOVED_TOAST_MS);
+  }
+
+  /** A toast that answers a key and goes by itself («Номер #N занят»). */
+  function quietToast(payload: ToastPayload): void {
+    const id = toasts.push(payload);
+    setTimeout(() => toasts.dismiss(id), WINDOW_NUMBER_TOAST_MS);
+  }
+
+  /** The notch's edit of `#N` (spec §3). */
+  function renumber(number: number): Promise<RenumberResult> {
+    return renumberWindow(number, {
+      setNumber: (n) => invoke<RenumberResult>('window_set_number', { number: n }),
+      apply: setWindowNumber,
+      toast: quietToast,
+    });
+  }
+
+  /** «В новые окна» (spec §6): each tab through `tab_move`, into a window of its own. */
+  async function moveTabsToNewWindows(tabIds: string[]): Promise<void> {
+    const outcome = await tabs.moveToNewWindows(tabIds);
+    if (outcome) {
+      announceMoved(outcome.moved);
+      reportStranded(outcome.stranded);
     }
   }
 
@@ -465,6 +902,24 @@
   // The watcher fires on every write to the path, our own autosave included —
   // there is no OS-level way to tell those apart from a real external edit.
   // `resolveExternalChange` tells them apart by content instead.
+  /**
+   * A watcher event for our file, and the file would not read.
+   *
+   * A file that is simply gone is not this case: that was never an error
+   * here, and the next save recreates it, as it always has. A file that is
+   * still there but unreadable is — its content is a version the window has
+   * not seen, so autosave pauses until a read succeeds.
+   */
+  async function handleReloadFailure(path: string, err: unknown): Promise<void> {
+    const exists = await fileExists(path).catch(() => true);
+    if (path !== fileState.filePath) return;
+    if (!exists) {
+      endDiskUnreadable();
+      return;
+    }
+    markDiskUnreadable(path, err);
+  }
+
   async function handleExternalChange(path: string): Promise<void> {
     if (path !== fileState.filePath) return;
 
@@ -474,6 +929,7 @@
     // a state caught mid-write. Retry the read until no save landed while it
     // was in flight.
     let disk: string;
+    let diskLineEnding: LineEnding;
     for (;;) {
       while (currentSave) await currentSave.catch(() => {});
       // Cmd+O (or another window event) may have switched this window to a
@@ -481,9 +937,11 @@
       if (path !== fileState.filePath) return;
       const generation = saveGeneration;
       try {
-        disk = await readFile(path);
+        // No line break on disk says nothing about the file's convention, so
+        // keep the one the document already has (see `detectLineEnding`).
+        ({ text: disk, lineEnding: diskLineEnding } = await readDocument(path, fileState.lineEnding));
       } catch (err) {
-        console.error('Failed to read externally changed file:', err);
+        if (path === fileState.filePath) await handleReloadFailure(path, err);
         return;
       }
       // A save that began during the read may have landed on either side of
@@ -491,7 +949,11 @@
       if (generation === saveGeneration) break;
     }
     if (path !== fileState.filePath) return;
+    const wasUnreadable = endDiskUnreadable();
 
+    // Every comparison below is between LF texts: `disk` is normalized by
+    // `readDocument`, and the buffer and baseline never held anything else.
+    // That is what keeps our own CRLF save from echoing back as a change.
     const decision = resolveExternalChange({
       disk,
       buffer: editorHandle?.view?.state.doc.toString() ?? '',
@@ -499,8 +961,19 @@
       dismissedDisk,
     });
 
+    fileState.lineEnding = lineEndingAfterExternalChange({
+      decision,
+      disk,
+      baseline: diskBaseline,
+      diskLineEnding,
+      current: fileState.lineEnding,
+    });
+
     switch (decision) {
       case 'ignore':
+        // Edits typed while autosave was paused are still only in the buffer,
+        // and the disk turned out to be the version they were made on top of.
+        if (wasUnreadable && fileState.isDirty) autoSave.schedule();
         return;
       case 'adopt':
         // Buffer already matches disk — nothing to reload, just resync.
@@ -530,14 +1003,15 @@
           if (reload) {
             // Disk may have moved on again while the dialog was up.
             try {
-              const latest = await readFile(path);
+              const latest = await readDocument(path, fileState.lineEnding);
               if (path !== fileState.filePath) return;
-              editorHandle?.updateContent(latest);
-              diskBaseline = latest;
+              editorHandle?.updateContent(latest.text);
+              diskBaseline = latest.text;
+              fileState.lineEnding = latest.lineEnding;
               fileState.isDirty = false;
               dismissedDisk = null;
             } catch (err) {
-              console.error('Failed to reload externally changed file:', err);
+              if (path === fileState.filePath) await handleReloadFailure(path, err);
             }
           } else {
             // Suppress repeats for this exact disk state; a further external
@@ -546,7 +1020,7 @@
             // The autosave that fired while the dialog was up (if any) was
             // suppressed by the guard above — the edits it would have saved
             // are still only in the buffer, so re-arm it.
-            if (fileState.isDirty) scheduleAutoSave();
+            if (fileState.isDirty) autoSave.schedule();
           }
         } finally {
           conflictDialogOpen = false;
@@ -719,19 +1193,27 @@
     const entry = commentCountdowns.get(id);
     if (!entry) return;
     disarmCommentCountdown(id, true);
-    // A draft becomes a real thread on its first write, under an id the file
-    // gives it — the commit has to follow it there.
-    const written = (await writeComment(id)) ?? id;
-    try {
-      await commentCommit(entry.path, written);
-      toasts.dismissKind('comment-error');
-    } catch (err) {
-      // The thread stays paused: the write that would have handed it to the
-      // agent did not happen, and pretending otherwise would leave the user
-      // waiting for a reply to a question no agent can see.
-      reportCommentError(entry.path, err);
-      return;
-    }
+    // Write and commit are one queued step: the sidecar is read-modify-written
+    // with no lock on the Rust side, so a write queued behind this one must not
+    // land between them. `writeCommentNow`, not `writeComment` — the latter
+    // would queue behind this very step and wait for itself.
+    const committed = await commentWriter.run(id, async (realId) => {
+      // A draft becomes a real thread on its first write, under an id the file
+      // gives it — the commit has to follow it there.
+      const written = (await writeCommentNow(realId)) ?? realId;
+      try {
+        await commentCommit(entry.path, written);
+        toasts.dismissKind('comment-error');
+        return true;
+      } catch (err) {
+        // The thread stays paused: the write that would have handed it to the
+        // agent did not happen, and pretending otherwise would leave the user
+        // waiting for a reply to a question no agent can see.
+        reportCommentError(entry.path, err);
+        return false;
+      }
+    });
+    if (!committed) return;
     await reloadComments();
   }
 
@@ -847,7 +1329,7 @@
    * with this thread — the pause commit — can follow a draft to the real id
    * the file just gave it. `null` when nothing was written.
    */
-  async function writeComment(id: string): Promise<string | null> {
+  async function writeCommentNow(id: string): Promise<string | null> {
     const entry = commentPending.get(id);
     if (!entry) return null;
     if (entry.timer !== null) {
@@ -873,23 +1355,25 @@
           draft.context
         );
         const realId = started.id;
-        // The countdown was started under the draft's id by the keystroke that
-        // created this thread; move it, with the deadline the file actually
-        // recorded rather than the one this side guessed.
+        commentWriter.redirect(id, realId);
+        // The start opened the thread already paused; count that pause down
+        // from the deadline the file recorded, under the id the file gave it.
         disarmCommentCountdown(id);
         armCommentCountdown(realId, entry.path, started.until * 1000);
-        commentPending.delete(id);
-        commentPending.set(realId, { path: entry.path, text, saved: text, timer: null });
+        adoptStartedDraft(commentPending, id, realId, text);
         commentEditable.set(realId, text);
         // The card is about to be rebuilt under the id the file gave it; the
         // caret has to come along, or the first save silently ejects the user
         // from the box they are writing in.
         commentFocus = { id: realId, at: caret?.id === id ? caret.at : text.length };
         // The sidecar has only just come into existence, so the watcher armed
-        // when this document was opened isn't watching it yet. Re-registering
-        // the file rebuilds the watcher over both paths — otherwise the very
+        // when this tab was activated isn't watching it yet. Activating the
+        // tab again rebuilds the watcher over both paths — otherwise the very
         // first agent reply would arrive with nothing listening for it.
-        await invoke('register_open_file', { path: entry.path }).catch(() => {});
+        const activeTabId = tabs.list.activeId;
+        if (activeTabId !== null && fileState.filePath === entry.path) {
+          await invoke('tab_activate', { tabId: activeTabId }).catch(logTabIpc('tab_activate'));
+        }
         await reloadComments();
         markCommentSaved(realId);
         return realId;
@@ -923,6 +1407,13 @@
     }
   }
 
+  const commentWriter = createCommentWriter(writeCommentNow);
+
+  /** Every caller goes through the queue — see `comment-writer.ts`. */
+  function writeComment(id: string): Promise<string | null> {
+    return commentWriter.write(id);
+  }
+
   /** Drop everything pending for a thread — used when it is resolved, so a
    * queued write cannot bring it back from the dead. */
   function forgetCommentPending(id: string): void {
@@ -948,6 +1439,9 @@
       return;
     }
     const threads = await commentThreads(path).catch(() => []);
+    // The window may have switched documents while the read was in flight;
+    // these threads' anchors would then be searched for in the wrong text.
+    if (fileState.filePath !== path) return;
     const doc = view.state.doc.toString();
     // Whoever is in a box right now goes back into it afterwards. Without
     // this, an agent answering — or the user's own autosave flipping the
@@ -1032,9 +1526,12 @@
   }
 
   const commentActions: CommentActions = {
-    save: (id, text) => {
+    save: (cardId, text) => {
       const path = fileState.filePath;
       if (!path) return;
+      // A draft's card keeps its draft id until the rebuild that follows its
+      // first write; keystrokes in that gap belong to the thread it became.
+      const id = commentWriter.idFor(cardId);
       const entry = commentPending.get(id) ?? {
         path,
         text,
@@ -1057,11 +1554,12 @@
       // Deliberately not "flush, then let the timer do its thing": the button
       // says now, and what it does is exactly what the countdown would have
       // done when it ran out.
-      void fireCommentCountdown(id);
+      void fireCommentCountdown(commentWriter.idFor(id));
     },
-    resolve: (id) => {
+    resolve: (cardId) => {
       const path = fileState.filePath;
       if (!path) return;
+      const id = commentWriter.idFor(cardId);
       forgetCommentPending(id);
       // A pause on a resolved thread has nothing left to hand over.
       disarmCommentCountdown(id);
@@ -1075,8 +1573,20 @@
       // card disappeared from the screen, so it came back on the next reload
       // with no explanation. `reloadComments` still runs, which is what puts
       // the card back — now with a toast saying why.
-      void commentResolve(path, id)
-        .catch((err) => reportCommentError(path, err))
+      //
+      // Queued: a draft whose first write is in flight is no longer in
+      // `commentDrafts` but has no real id yet either, and resolving it by its
+      // draft id is a write the sidecar rejects. Behind that write it runs
+      // under the id the file gave the thread — and forgets again under that
+      // id, because the start moved the pending entry there.
+      void commentWriter
+        .run(cardId, async (realId) => {
+          forgetCommentPending(realId);
+          disarmCommentCountdown(realId);
+          // The start failed and put the draft back: still nothing on disk.
+          if (commentDrafts.delete(realId)) return;
+          await commentResolve(path, realId).catch((err) => reportCommentError(path, err));
+        })
         .then(reloadComments);
     },
     handoff: (id) => {
@@ -1096,26 +1606,20 @@
       // thread, so it gets the same wash and the same Escape to dismiss —
       // without it, a paragraph the user did not write appears in their
       // document with nothing marking it as not theirs.
+      //
+      // The agent's text may carry `\r\n`; CM6 would normalize it on insert,
+      // and a highlight measured on the raw string would overrun the span.
+      const clean = normalizeLineEndings(text);
       view.dispatch({
-        changes: { from: at, insert: `\n${text}\n` },
-        effects: setAiHighlights.of([{ from: at + 1, to: at + 1 + text.length }]),
+        changes: { from: at, insert: `\n${clean}\n` },
+        effects: setAiHighlights.of([{ from: at + 1, to: at + 1 + clean.length }]),
       });
     },
   };
 
   /**
-   * Put the "start watching this document's comments" prompt on the clipboard.
-   *
-   * Same focus guard as comment creation, and for the same reason: a menu event
-   * reaches every window, and only the focused one should answer for its own
-   * document. The toast is the whole point — a clipboard write is invisible.
-   */
-  /**
    * Put the "here is the document I'm looking at" prompt on the clipboard —
    * the top-left button's whole job (#29).
-   *
-   * No focus guard, unlike `copyWatchCommand` below: this is a click inside
-   * this window's own chrome, so which document is meant is never in question.
    */
   function copyBindPrompt(): void {
     const path = fileState.filePath;
@@ -1144,8 +1648,8 @@
     formatJsonCommand(view);
   }
 
+  /** Put the "start watching this document's comments" prompt on the clipboard. */
   function copyWatchCommand(): void {
-    if (!document.hasFocus()) return;
     const path = fileState.filePath;
     if (!path) {
       toasts.push({ kind: 'ai-watch-copied', saved: false });
@@ -1158,27 +1662,17 @@
   }
 
   /**
-   * Start a comment on the selection, or on the caret's line if nothing is
-   * selected — an empty quote would give the thread no anchor to survive on.
+   * The menu item's entry point. Rust delivers a document action to exactly
+   * one window (`menu_route.rs`), so there is nothing left to guard against
+   * here; the toolbar button calls `startCommentFromSelection` directly.
    */
   function createCommentFromSelection(): void {
-    // Menu events reach every window: `onMenuEvent` listens globally, and a
-    // global listener's target is `Any`. That is harmless for idempotent
-    // actions like theme or zoom, but this one creates a card — so without
-    // this guard a single menu click would start a draft in every open
-    // document. Focus is only knowable here, not in the Rust menu handler,
-    // where the menu bar itself is what the OS considers active.
-    //
-    // The in-editor toolbar button calls `startCommentFromSelection` directly
-    // instead: a click inside this window's own toolbar already says which
-    // document is meant, and going through the guard would make the button
-    // untestable under automation, where nothing holds OS focus.
-    if (!document.hasFocus()) return;
     startCommentFromSelection();
   }
 
   /**
-   * The actual work, with no focus guard — see `createCommentFromSelection`.
+   * Start a comment on the selection, or on the caret's line if nothing is
+   * selected — an empty quote would give the thread no anchor to survive on.
    *
    * `target` overrides the document selection. The live-render toolbar passes
    * one for text selected inside a table cell: that selection lives in the
@@ -1234,20 +1728,37 @@
     });
   }
 
-  // --- AI command handling (`mdmini show`/`edit`) ---
-  interface AiResponse {
-    ok: boolean;
-    error?: string;
-    changed_lines?: [number, number][];
-    answer?: string;
-    answers?: string[];
-    custom?: string;
+  // --- AI commands (`mdmini show`/`edit`/`ask`, routed opens, `close`) ---
+  //
+  // Where a command lands, and what it does to a tab in the background, is
+  // `lib/tabs/agent-commands.ts`. What stays here is the live view.
+
+  const typingTracker = createTypingTracker({
+    now: () => Date.now(),
+    focused: () => document.hasFocus(),
+    // App-wide (Q10): an agent's command for another window must not bring it forward mid-word.
+    report: () => void invoke('note_typing').catch(logTabIpc('note_typing')),
+  });
+
+  /** Capture phase on the window: every key, before anything stops it. */
+  function noteTyping(e: KeyboardEvent): void {
+    typingTracker.note(e);
   }
 
-  async function respondToAi(id: number, response: AiResponse): Promise<void> {
-    await invoke('ai_respond', { id, response }).catch((err: unknown) => {
-      console.error('Failed to respond to AI command:', err);
-    });
+  /**
+   * ⌃1…⌃9: bring window #N forward (spec §3). Registered in `onMount`, before
+   * the drawer can add its listener. A human's key: the plain reveal, no
+   * typing guard.
+   */
+  const onWindowDigit = ctrlDigitHandler({
+    current: getWindowNumber,
+    reveal: (number) => invoke<RevealResult>('window_reveal_number', { number }),
+    toast: quietToast,
+  });
+
+  function liveAskShown(): boolean {
+    const view = editorHandle?.view;
+    return view ? activeAskIds(view.state).length > 0 : false;
   }
 
   /** Pulse is purely visual; clear it once its animation finishes unless a real
@@ -1263,161 +1774,159 @@
     }, 1600);
   }
 
-  /** Invariant: the edit branch below must stay synchronous between reading
-   * `view.state.doc` (via `computeReplacement`) and calling `view.dispatch` —
-   * no `await` in between. Two AI edit commands delivered back-to-back would
-   * otherwise both read the same pre-edit state and diff against it, and
-   * whichever dispatches second would clobber the first's change instead of
-   * building on top of it. */
-  async function handleAiCommand(payload: AiCommandPayload): Promise<void> {
-    // Before any of the command's own outcomes: an agent has reached this
-    // install for the first time, and this is the one moment the user is
-    // certain to be looking. Raised even if the command below then fails —
-    // something visibly happened either way, and the point is to explain what.
-    if (payload.firstUse) {
-      toasts.push({ kind: 'ai-first-use' });
-    }
-    if (payload.path !== fileState.filePath) {
-      await respondToAi(payload.id, { ok: false, error: 'window does not own this file' });
-      return;
-    }
+  function liveShow(payload: AiCommandPayload, keepCaret: boolean): AgentResponse {
     const view = editorHandle?.view;
-    if (!view) {
-      await respondToAi(payload.id, { ok: false, error: 'editor not ready' });
-      return;
-    }
-
-    if (payload.cmd === 'show') {
-      const pos = resolveShowTarget(view.state, { line: payload.line, find: payload.find });
-      if (pos === null) {
-        await respondToAi(payload.id, { ok: false, error: 'target not found' });
-        return;
-      }
+    if (!view) return { ok: false, error: AGENT_ERRORS.editorNotReady };
+    const pos = resolveShowTarget(view.state, { line: payload.line, find: payload.find });
+    if (pos === null) return { ok: false, error: AGENT_ERRORS.targetNotFound };
+    view.dispatch({
       // Move the caret along with the view: otherwise it stays wherever it
       // was (often position 0 in a fresh window) and the next arrow key
       // snaps the view back there — reads as "cursor jumped to the top".
-      view.dispatch({
-        selection: { anchor: pos },
-        effects: [EditorView.scrollIntoView(pos, { y: 'center' }), pulseAiLine.of(pos)],
-      });
-      schedulePulseCleanup();
-      await respondToAi(payload.id, { ok: true });
-      return;
-    }
-
-    if (payload.cmd === 'ask') {
-      let pos: number;
-      if (payload.line === null && payload.find === null) {
-        pos = view.state.doc.length;
-      } else {
-        const resolved = resolveShowTarget(view.state, { line: payload.line, find: payload.find });
-        if (resolved === null) {
-          await respondToAi(payload.id, { ok: false, error: 'target not found' });
-          return;
-        }
-        pos = resolved;
-      }
-
-      const askId = payload.id;
-      const onAnswer = (
-        answerId: number,
-        result: string | string[] | { custom: string } | { answers: string[]; custom: string } | null
-      ): void => {
-        const currentView = editorHandle?.view;
-        currentView?.dispatch({ effects: removeAiAsk.of(answerId) });
-        if (result === null) {
-          respondToAi(answerId, { ok: false, error: 'dismissed by user' });
-        } else if (Array.isArray(result)) {
-          respondToAi(answerId, { ok: true, answers: result });
-        } else if (typeof result === 'string') {
-          respondToAi(answerId, { ok: true, answer: result });
-        } else if ('answers' in result) {
-          respondToAi(answerId, { ok: true, answers: result.answers, custom: result.custom });
-        } else {
-          respondToAi(answerId, { ok: true, custom: result.custom });
-        }
-      };
-
-      view.dispatch({
-        // Caret follows the question's anchor for the same reason as `show`:
-        // a later arrow key must not yank the view back to a stale caret.
-        selection: { anchor: pos },
-        effects: [
-          addAiAsk.of({
-            spec: {
-              id: askId,
-              question: payload.question ?? '',
-              options: payload.options,
-              multi: payload.multi,
-              freeText: payload.freeText,
-              onAnswer,
-            },
-            pos,
-          }),
-          EditorView.scrollIntoView(pos, { y: 'center' }),
-        ],
-      });
-
-      // The Rust side owns the timeout/window-close deadline; this is only a
-      // fallback to drop a widget the server has already stopped waiting on.
-      // Answering after the server timeout is a harmless no-op there, and
-      // removing an id the field no longer has is a no-op here too.
-      setTimeout(
-        () => {
-          editorHandle?.view?.dispatch({ effects: removeAiAsk.of(askId) });
-        },
-        payload.timeoutSecs * 1000 + 2000
-      );
-
-      // The socket call is blocking on the user — respond only from the
-      // button callbacks above, never immediately here.
-      return;
-    }
-
-    // cmd === 'edit'
-    const oldContent = view.state.doc.toString();
-    const newContent = payload.content ?? '';
-    const repl = computeReplacement(oldContent, newContent);
-    if (!repl) {
-      await respondToAi(payload.id, { ok: true, changed_lines: [] });
-      return;
-    }
-
-    // Single-span diff, exactly mirroring Editor.svelte's updateContent: keeps
-    // CM6's automatic selection mapping intact and preserves scroll position.
-    const changes = ChangeSet.of(repl, view.state.doc.length);
-    const scrollEffect = view.scrollSnapshot().map(changes);
-    // The *change* is deliberately one coalescing span; the *highlight* is not.
-    // Edits scattered across the file would otherwise wash everything between
-    // the first and last of them (issue #27). Positions must be post-change,
-    // since the highlight field reads effect values in the end state — hence
-    // the diff runs against `newContent` rather than the live doc.
-    const lineRanges = computeChangedLineRanges(oldContent, newContent);
-    const highlightRanges = docRangesForLineRanges(Text.of(newContent.split('\n')), lineRanges);
-    view.dispatch({
-      changes,
-      // With `show` the user is being led to the change — bring the caret
-      // too (post-change coordinates), so arrow keys continue from there.
-      ...(payload.show ? { selection: { anchor: repl.from } } : {}),
-      effects: [
-        ...(scrollEffect ? [scrollEffect] : []),
-        setAiHighlights.of(highlightRanges),
-        ...(payload.show ? [EditorView.scrollIntoView(repl.from, { y: 'center' })] : []),
-      ],
-      // Unlike an external-reload or an untitled-restore transaction, an AI
-      // edit must stay undoable — it's a content change the user did not
-      // author, and Cmd+Z is their way to reject it. No addToHistory(false)
-      // annotation here (contrast Editor.svelte's updateContent).
+      // Not while the human types: then neither the caret nor the view moves
+      // (D19), and the pulse alone says where to look.
+      ...(keepCaret ? {} : { selection: { anchor: pos } }),
+      effects: [...(keepCaret ? [] : [EditorView.scrollIntoView(pos, { y: 'center' })]), pulseAiLine.of(pos)],
     });
+    schedulePulseCleanup();
+    return { ok: true };
+  }
+
+  /**
+   * A background `show` arriving with its tab. The caret and the view were
+   * placed on entry already (`placeCaretNow`), so this only pulses: it never
+   * scrolls, and there is nothing for `quiet` to hold back.
+   */
+  function livePulse(payload: AiCommandPayload): void {
+    const view = editorHandle?.view;
+    if (!view) return;
+    const pos = resolveShowTarget(view.state, { line: payload.line, find: payload.find });
+    if (pos === null) return;
+    view.dispatch({ effects: pulseAiLine.of(pos) });
+    schedulePulseCleanup();
+  }
+
+  /** Invariant: synchronous between reading `view.state.doc` (in `buildAiEdit`)
+   * and calling `view.dispatch` — no `await` in between. Two AI edit commands
+   * delivered back-to-back would otherwise both read the same pre-edit state
+   * and diff against it, and whichever dispatches second would clobber the
+   * first's change instead of building on top of it. The same edit, CRLF
+   * handling and undo step as a background tab's (`buildAiEdit` /
+   * `aiEditTransaction`). */
+  function liveEdit(payload: AiCommandPayload, keepCaret: boolean): AgentResponse {
+    const view = editorHandle?.view;
+    if (!view) return { ok: false, error: AGENT_ERRORS.editorNotReady };
+    const edit = buildAiEdit(view.state, payload.content ?? '');
+    if (!edit) return { ok: true, changed_lines: [] };
+    // With `show` the user is being led to the change — the caret and the
+    // view go there. Not while they type: the caret stays under their fingers
+    // and the view keeps its place (the snapshot, mapped through the edit).
+    const lead = payload.show && !keepCaret;
+    const scrollEffect = view.scrollSnapshot().map(edit.changes);
+    view.dispatch(
+      aiEditTransaction(edit, lead, [
+        ...(scrollEffect ? [scrollEffect] : []),
+        ...(lead ? [EditorView.scrollIntoView(edit.from, { y: 'center' })] : []),
+      ])
+    );
     // docChanged still fires the update listener (handleChange), which arms
     // dirty state + autosave — no separate call needed here.
+    return { ok: true, changed_lines: edit.changedLines };
+  }
 
-    await respondToAi(payload.id, {
-      ok: true,
-      // A pure deletion produces no new lines to report, so fall back to the
-      // single span's line (`view.state` is post-change after the dispatch).
-      changed_lines: lineRanges.length > 0 ? lineRanges : [changedLineRanges(view.state, repl)],
+  function livePlaceAsk(
+    payload: AiCommandPayload,
+    deadline: number,
+    onAnswer: (result: AskResult) => void,
+    quiet: boolean
+  ): boolean {
+    const view = editorHandle?.view;
+    if (!view) return false;
+    let pos: number;
+    if (payload.line === null && payload.find === null) {
+      pos = view.state.doc.length;
+    } else {
+      const resolved = resolveShowTarget(view.state, { line: payload.line, find: payload.find });
+      if (resolved === null) return false;
+      pos = resolved;
+    }
+    const askId = payload.id;
+    view.dispatch({
+      // The caret follows the question's anchor for the same reason as
+      // `show` — unless `quiet` (the human is typing): then the widget
+      // appears and nothing moves.
+      ...(quiet ? {} : { selection: { anchor: pos } }),
+      effects: [
+        addAiAsk.of({
+          spec: {
+            id: askId,
+            question: payload.question ?? '',
+            options: payload.options,
+            multi: payload.multi,
+            freeText: payload.freeText,
+            onAnswer: (answerId, result) => {
+              editorHandle?.view?.dispatch({ effects: removeAiAsk.of(answerId) });
+              onAnswer(result);
+            },
+          },
+          pos,
+        }),
+        ...(quiet ? [] : [EditorView.scrollIntoView(pos, { y: 'center' })]),
+      ],
     });
+    // Rust owns the deadline; this only drops a widget nobody waits on any
+    // more. Removing an id the field no longer has is a no-op.
+    setTimeout(
+      () => {
+        editorHandle?.view?.dispatch({ effects: removeAiAsk.of(askId) });
+      },
+      Math.max(0, deadline - Date.now()) + 2000
+    );
+    return true;
+  }
+
+  const agent = createAgentCommands({
+    tabs,
+    // Rejects when Rust cannot be asked; the orchestrator answers the agent
+    // then instead of guessing either way.
+    isPending: (id) => invoke<boolean>('ai_is_pending', { id }),
+    respond: (id, response) =>
+      invoke<void>('ai_respond', { id, response }).catch((err: unknown) => {
+        console.error('Failed to respond to AI command:', err);
+      }),
+    forward: (payload) => invoke<boolean>('ai_forward', { payload }),
+    typing: () => typingTracker.typing(),
+    liveAsk: liveAskShown,
+    // A failed IPC answers as before the refusal existed: the window was asked to come forward.
+    revealWindow: () =>
+      invoke<boolean>('reveal_window').catch((err: unknown) => {
+        logTabIpc('reveal_window')(err);
+        return true;
+      }),
+    now: () => Date.now(),
+    live: {
+      show: liveShow,
+      edit: liveEdit,
+      placeAsk: livePlaceAsk,
+      pulse: livePulse,
+      askIds: () => {
+        const view = editorHandle?.view;
+        return view ? activeAskIds(view.state) : [];
+      },
+    },
+  });
+
+  async function handleAiCommand(payload: AiCommandPayload): Promise<void> {
+    // Before any of the command's own outcomes: an agent has reached this
+    // install for the first time. The command may land in the background, in
+    // a window that never comes forward, so this is not a moment the user is
+    // sure to be looking — the toast stays until dismissed and is there when
+    // they do. Raised even if the command below then fails: the point is to
+    // explain what an agent can do here, not what this one did.
+    if (payload.firstUse) {
+      toasts.push({ kind: 'ai-first-use' });
+    }
+    await agent.handle(payload);
   }
 
   // --- Recovery save (every 5s if dirty) ---
@@ -1429,7 +1938,7 @@
           console.error('Recovery save failed:', err);
         });
       }
-      reportSession();
+      reportTabs();
     }, 5000);
   }
 
@@ -1445,24 +1954,35 @@
     return view.state.doc.lineAt(pos).number;
   }
 
-  function reportSession(): void {
+  // Until the mount-time pending open settles, this window's buffer is not
+  // yet what it will be: a report now would describe a restored Untitled
+  // window as empty and cost it its sidecar. Set once, by the mount chain.
+  let pendingSettled = false;
+
+  /**
+   * Every tab of this window — background untitled text included, or a tab
+   * left out of one report drops out of the session and its sidecar with it.
+   */
+  function reportTabs(): void {
+    if (!pendingSettled) return;
     const view = editorHandle?.view;
     if (!view) return;
-    invoke('update_session_document', {
-      path: fileState.filePath,
+    const { tabs: reported, active } = tabs.report({
       cursor: view.state.selection.main.head,
       topLine: topVisibleLine(),
-      content: fileState.filePath ? null : view.state.doc.toString(),
-    }).catch(() => {
+      content: view.state.doc.toString(),
+    });
+    invoke('tabs_sync', { tabs: reported, active }).catch(() => {
       // Session tracking is best-effort; never surface it to the user.
     });
   }
 
   // --- Save on blur ---
   function handleWindowBlur(): void {
-    // Same reason as the autosave-timer guard: writing now would overwrite
-    // the disk state the open conflict dialog is asking about.
-    if (fileState.isDirty && fileState.filePath && !conflictDialogOpen) {
+    void tabs.windowFocusChanged(false);
+    // Same gate as the autosave timer: not over a disk state the conflict
+    // dialog is asking about, not over one we could not read.
+    if (canAutoSave(saveGate())) {
       performSave();
     }
     // Leaving md-mini ends every running comment pause on the spot.
@@ -1479,6 +1999,10 @@
     commitAllCommentPauses();
   }
 
+  function handleWindowFocus(): void {
+    void tabs.windowFocusChanged(true);
+  }
+
   onMount(() => {
     // Настоящее имя сборки в заголовок: у `dev:app` и `build:dev` оно другое,
     // и титлбар — единственное место, где человек видит, дев перед ним или
@@ -1487,38 +2011,126 @@
       .then(setProductName)
       .catch(() => {});
 
-    // Pull any file path stored by the backend for this window (CLI args or new-window open).
-    // This avoids the race condition of the push-based emit approach.
-    invoke<PendingOpen | null>('get_pending_file').then(async (pending) => {
-      if (!pending) return;
-      if (pending.path) {
-        await handleOpenFilePath(pending.path);
-      } else if (pending.content !== null) {
-        // Restored Untitled window — no file on disk, just the buffer.
-        editorHandle?.replaceContent(pending.content);
-        fileState.isDirty = true;
-      }
-      if (pending.cursor > 0 || pending.topLine > 1) {
-        await applyRestorePosition(pending.cursor, pending.topLine);
-      }
-    }).then(async () => {
-      // Commands queued for this file before its window existed (e.g. an
-      // `ai edit` of a file that wasn't open yet triggered this window's
-      // creation) — drained once, after the pending-open/restore settles.
-      const queued = await invoke<AiCommandPayload[]>('ai_pull_pending').catch(() => []);
-      for (const command of queued) {
-        await handleAiCommand(command);
-      }
+    // Every listener that can deliver a tab — a file, a reopened tab, an
+    // agent's command — is in place before `get_window_init`: Rust counts the
+    // window as mounted from that call on and sends it events instead of a
+    // payload, and an event with no listener yet is lost.
+    const unlistenOpenFile = onOpenFile((path) => {
+      void openTab(path);
     });
+    const unlistenReopenTab = onReopenTab(({ path, cursor, topLine }) => {
+      void openTab(path, { cursor, topLine });
+    });
+    const unlistenAiCommand = onAiCommand((payload) => {
+      void tabSourcesReady.then(() => handleAiCommand(payload));
+    });
+    // Tabs another window moved here. A window built for a move can mount
+    // before the move takes the lock: its init is then a blank Untitled, and
+    // the tabs come this way (the blank tab gives way to them).
+    const unlistenTabsArrive = onTabsArrive((arrived) => {
+      void tabSourcesReady
+        .then(() => tabs.arrive(arrived))
+        .catch((err: unknown) => console.error('Failed to take in tabs moved here:', err));
+    });
+
+    const unlistenWindowNumber = onWindowNumber(setWindowNumber);
+
+    // Pull what the backend stored for this window (its tabs, restored or
+    // handed over before it mounted) — pulled, so it cannot race the listeners.
+    // Retried once: a window that never gets here stays unmounted in Rust, and
+    // files meant for it pile up in a payload nobody pulls.
+    Promise.all([unlistenOpenFile, unlistenReopenTab, unlistenAiCommand, unlistenTabsArrive, unlistenWindowNumber])
+      .then(() => invoke<WindowInit>('get_window_init'))
+      .catch((err: unknown) => {
+        console.error('get_window_init failed, retrying once:', err);
+        return invoke<WindowInit>('get_window_init');
+      })
+      .then(
+        async (init) => {
+          // Released even if this throws: held, every file and agent command
+          // for this window would wait forever.
+          let initialized: Promise<void> | undefined;
+          try {
+            initialized = tabs.init(init.tabs, init.activeTabId);
+            setWindowNumber(init.number);
+          } finally {
+            releaseTabSources();
+          }
+          await initialized;
+        },
+        async (err: unknown) => {
+          // No Rust behind the page (`npm run dev` in a browser), or both
+          // attempts failed: one local tab.
+          console.error('get_window_init failed twice; this window has only a local tab:', err);
+          let initialized: Promise<void> | undefined;
+          try {
+            initialized = tabs.init([], null);
+          } finally {
+            releaseTabSources();
+          }
+          await initialized;
+        }
+      )
+      .catch((err: unknown) => {
+        console.error('Window init failed:', err);
+      })
+      // Register this window in the session right away, not 5s later — but only
+      // once init has settled. Reported any earlier, a restored Untitled tab
+      // still looks empty: Rust drops its `untitled` name, the ticker prunes the
+      // restored sidecar within a second, and a quit before the next heartbeat
+      // loses that draft for good. `finally`, so a failed init still registers
+      // the window. The recovery interval's heartbeat is held back until here
+      // too (`pendingSettled`), for an init slower than its first 5 s tick.
+      .finally(() => {
+        pendingSettled = true;
+        reportTabs();
+      })
+      .then(async () => {
+        // Commands queued for this file before its window existed (e.g. an
+        // `ai edit` of a file that wasn't open yet triggered this window's
+        // creation) — drained once, after init settles.
+        const queued = await invoke<AiCommandPayload[]>('ai_pull_pending').catch(() => []);
+        for (const command of queued) {
+          await handleAiCommand(command);
+        }
+      });
 
     // Menu events
     const unlistenMenu = onMenuEvent((action) => {
+      if (DRAWER_CLOSING_ACTIONS.has(action)) drawerHandle?.close();
       switch (action) {
         case 'new':
           handleNew();
           break;
         case 'open':
           handleOpen();
+          break;
+        case 'new_tab':
+          void tabSourcesReady.then(() => tabs.newTab());
+          break;
+        case 'close':
+          void tabSourcesReady.then(() => tabs.closeActive());
+          break;
+        case 'next_tab':
+          void tabSourcesReady.then(() => tabs.cycle(1));
+          break;
+        case 'prev_tab':
+          void tabSourcesReady.then(() => tabs.cycle(-1));
+          break;
+        case 'toggle_drawer':
+          drawerHandle?.toggle();
+          break;
+        case 'toggle_tabs_compact:on':
+          tabsCompact.set(true);
+          break;
+        case 'toggle_tabs_compact:off':
+          tabsCompact.set(false);
+          break;
+        case 'transient_ignored_keep':
+          transientPolicy.set('keep');
+          break;
+        case 'transient_ignored_close':
+          transientPolicy.set('close');
           break;
         case 'save':
           handleSave();
@@ -1610,8 +2222,22 @@
           // The native accelerator wins over the webview, so in the app this
           // is the path that actually runs for Cmd+Shift+J; the CM6 binding in
           // json-paste.ts covers the browser build of the same editor.
-          if (document.hasFocus()) formatJson(false);
+          formatJson(false);
           break;
+      }
+
+      const tabDigit = /^select_tab_([1-9])$/.exec(action);
+      if (tabDigit) {
+        const n = Number(tabDigit[1]);
+        // With the drawer open, ⌘n is the card whose hint reads ⌘n — in a
+        // filtered view that is not the n-th tab.
+        const picked = drawerHandle?.shortcutTarget(n);
+        if (picked === undefined) {
+          void tabSourcesReady.then(() => tabs.selectIndex(n));
+        } else if (picked !== null) {
+          drawerHandle?.close();
+          void tabs.activate(picked);
+        }
       }
 
       // macOS/muda toggles the clicked CheckMenuItem natively before this
@@ -1634,18 +2260,18 @@
       if (action.startsWith('toggle_ocd_alignment')) {
         syncOcdAlignmentMenu(ocdAlignment.enabled);
       }
-    });
-
-    const unlistenOpenFile = onOpenFile((path) => {
-      handleOpenFilePath(path);
+      if (action.startsWith('toggle_tabs_compact')) {
+        syncTabsCompactMenu(tabsCompact.enabled);
+      }
+      // macOS flips the clicked radio item by itself, so the pair is always
+      // re-set — the click that chose the current value included.
+      if (action.startsWith('transient_ignored_')) {
+        syncTransientMenu(transientPolicy.value);
+      }
     });
 
     const unlistenExternalChange = onFileChangedExternally((path) => {
       handleExternalChange(path);
-    });
-
-    const unlistenAiCommand = onAiCommand((payload) => {
-      handleAiCommand(payload);
     });
 
     // An agent appended a reply to this document's sidecar. Only the comment
@@ -1655,22 +2281,13 @@
       void reloadComments();
     });
 
-    // Drag & drop: open files dropped onto the window
-    // If current window is empty (no file, no edits), open first file here; rest in new windows
+    // Drag & drop: every dropped file becomes a tab of this window; the first
+    // may take a blank tab's place.
     const unlistenDragDrop = import('@tauri-apps/api/webview').then(({ getCurrentWebview }) =>
       getCurrentWebview().onDragDropEvent(async (event) => {
         if (event.payload.type !== 'drop') return;
-        const paths = event.payload.paths as string[];
-        let usedCurrentWindow = false;
-        for (const path of paths) {
-          if (!usedCurrentWindow && !fileState.filePath && !fileState.isDirty) {
-            usedCurrentWindow = true;
-            await handleOpenFilePath(path);
-          } else {
-            await invoke('open_file_window_cmd', { path }).catch((err: unknown) => {
-              console.error('Failed to open dropped file:', err);
-            });
-          }
+        for (const path of event.payload.paths as string[]) {
+          await openTab(path);
         }
       })
     );
@@ -1678,9 +2295,18 @@
 
     // Save on window blur
     window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener('keydown', noteTyping, true);
+    window.addEventListener('keydown', onWindowDigit, true);
+    window.addEventListener('focus', handleWindowFocus);
 
     // Start recovery interval
     startRecoveryInterval();
+
+    // Spec §7: an hour after being seen, an unanswered quick look is kept or
+    // closed by the File-menu policy. A minute is fine-grained enough.
+    const transientTimer = setInterval(() => {
+      void tabs.expireTransients(transientPolicy.value);
+    }, 60_000);
 
     // Check for updates: first after 15s, then every hour. Only one window
     // actually polls — startUpdateChecker is a no-op in the others.
@@ -1767,25 +2393,34 @@
       toasts.dismissKind('session');
     });
 
-    // Register this window in the session right away, not 5s later.
-    reportSession();
+    void recentFiles.init();
+    const unlistenRecentChanged = onRecentChanged((snapshot) => recentFiles.setList(snapshot));
 
     return () => {
       if (stopUpdateChecker) stopUpdateChecker();
       unlistenMenu.then((fn) => fn());
       unlistenOpenFile.then((fn) => fn());
+      unlistenReopenTab.then((fn) => fn());
+      unlistenTabsArrive.then((fn) => fn());
+      unlistenWindowNumber.then((fn) => fn());
       unlistenExternalChange.then((fn) => fn());
       unlistenAiCommand.then((fn) => fn());
       unlistenComments.then((fn) => fn());
       unlistenDragDrop.then((fn) => fn());
       unlistenSessionRestored.then((fn) => fn());
+      unlistenRecentChanged.then((fn) => fn());
       unlistenUpdateAvailable.then((fn) => fn());
       unlistenCheckUpdatesRequested.then((fn) => fn());
       unlistenUpdateDismissed.then((fn) => fn());
       unlistenLanguageChangeFailed.then((fn) => fn());
       window.removeEventListener('blur', handleWindowBlur);
-      if (autoSaveTimer !== null) clearTimeout(autoSaveTimer);
+      window.removeEventListener('keydown', noteTyping, true);
+      window.removeEventListener('keydown', onWindowDigit, true);
+      window.removeEventListener('focus', handleWindowFocus);
+      autoSave.cancel();
       if (recoveryInterval !== null) clearInterval(recoveryInterval);
+      clearInterval(transientTimer);
+      if (reloadRetryTimer !== null) clearTimeout(reloadRetryTimer);
       clearAiHintTimer();
     };
   });
@@ -1818,6 +2453,12 @@
   $effect(() => {
     syncOcdAlignmentMenu(ocdAlignment.enabled);
   });
+  $effect(() => {
+    syncTabsCompactMenu(tabsCompact.enabled);
+  });
+  $effect(() => {
+    syncTransientMenu(transientPolicy.value);
+  });
 
   $effect(() => {
     document.documentElement.toggleAttribute('data-ocd', ocdAlignment.enabled);
@@ -1832,15 +2473,20 @@
     });
   });
 
-  // Reconfigure line glow when toggled
-  $effect(() => {
+  /** Line glow lives in each state's own compartment: a swapped-in state needs it re-applied. */
+  function applyLineGlow(): void {
     const view = editorHandle?.view;
     if (!view) return;
     view.dispatch({
-      effects: lineGlowCompartment.reconfigure(
-        lineGlow.enabled ? highlightActiveLine() : []
-      ),
+      effects: lineGlowCompartment.reconfigure(lineGlow.enabled ? highlightActiveLine() : []),
     });
+  }
+
+  // Reconfigure line glow when toggled
+  $effect(() => {
+    void lineGlow.enabled;
+    void editorHandle?.view;
+    applyLineGlow();
   });
 
   // Reconfigure the preview compartment on engine change (Cmd+E, or a direct
@@ -1863,8 +2509,8 @@
    * Called both from the `$effect` below and imperatively after a file opens,
    * because `Editor.svelte`'s `setCodeMode`/`setEnvMode` reconfigure the SAME
    * compartment — and its markdown branch installs a bare `livePreviewPlugin`
-   * with no flavour facet and no live-render bundle. `handleOpenFilePath`
-   * calls `setCodeMode(null)` for every markdown file, so on a freshly opened
+   * with no flavour facet and no live-render bundle. `applyDocumentConfig`
+   * calls `setCodeMode(null)` for every markdown tab, so on a freshly opened
    * window it wiped whatever this effect had just installed: live-render was
    * dead until the engine was toggled by hand, which re-ran the effect. Two
    * owners of one compartment, and this one is authoritative.
@@ -1903,9 +2549,6 @@
       effects: previewCompartment.reconfigure([
         livePreviewPlugin,
         flavourFacet.of(liveRender ? LIVE_RENDER : LIVE_PREVIEW),
-        // The toolbar's comment button reaches the same code path as the menu
-        // item, minus the focus guard: a click in this window's own toolbar is
-        // unambiguous about which document is meant.
         ...(liveRender
           ? liveRenderExtensions({ onComment: (range) => startCommentFromSelection(range) })
           : []),
@@ -1923,7 +2566,7 @@
 
   // Keep the editor's idea of which file it holds in step with the store.
   //
-  // An effect rather than a call inside `handleOpen`, because the path also
+  // An effect as well as a call inside `applyDocumentConfig`, because the path also
   // changes on Save As and on New, and the JSON formatter's fence decision has
   // to be right immediately in all three — a stale path here means a ```
   // line offered into a `.py` buffer.
@@ -1937,7 +2580,7 @@
 <!-- Масштаб применяется зумом страницы webview, а не каскадом `font-size` —
      см. `lib/window-zoom.ts`. Атрибут ничего не масштабирует: это проба,
      по которой уровень видно в DOM (и в браузерном тесте) без IPC. -->
-<main data-zoom={zoom.level}>
+<main data-zoom={zoom.level} class:carousel-on={carouselOn}>
   <Editor
     bind:handle={editorHandle}
     onchange={handleChange}
@@ -1952,10 +2595,39 @@
 
 <AiBindButton onclick={copyBindPrompt} />
 
+<TabDrawer
+  bind:handle={drawerHandle}
+  list={tabList}
+  windowNumber={getWindowNumber()}
+  compact={tabsCompact.enabled}
+  source={drawerSource}
+  onactivate={(tabId) => void tabs.activate(tabId)}
+  onclose={(tabIds) => void tabs.closeTabs(tabIds)}
+  onreorder={(order) => void tabs.reorder(order)}
+  onnewwindows={(tabIds) => void moveTabsToNewWindows(tabIds)}
+  {carouselSource}
+  onmove={(tabIds, target) => void moveTabs(tabIds, target)}
+  oncarousel={(on) => {
+    carouselOn = on;
+  }}
+  onrestorefocus={() => editorHandle?.view?.focus()}
+  onrenumber={renumber}
+/>
+
+<TransientBar
+  visible={activeQuickLook !== null}
+  onclose={() => {
+    if (activeQuickLook !== null) void tabs.closeTransient(activeQuickLook);
+  }}
+  onkeep={() => {
+    if (activeQuickLook !== null) void tabs.keepTransient(activeQuickLook);
+  }}
+/>
+
 {#if showRecentFiles}
   <RecentFilesPanel
     files={recentFiles.list}
-    onopen={handleOpenFilePath}
+    onopen={(path) => void openTab(path)}
     onclose={() => { showRecentFiles = false; }}
   />
 {/if}
@@ -1963,6 +2635,9 @@
 <ToastStack
   store={toasts}
   onFormatJson={() => formatJson(true)}
+  onRevealWindow={(label) => {
+    invoke('reveal_other_window', { label }).catch(logTabIpc('reveal_other_window'));
+  }}
   onDismiss={(entry) => {
     // Closing the update notice closes it everywhere, not just here.
     if (entry.payload.kind === 'update') {
@@ -1979,5 +2654,21 @@
   main {
     height: 100vh;
     width: 100vw;
+    transition: filter 0.28s var(--tabs-ease);
+  }
+
+  /* Plan 05: the page behind the window carousel (mockup `.carousel-on .editor`). */
+  main.carousel-on {
+    filter: blur(9px) saturate(0.85);
+  }
+
+  /* D11: no blur and no transition — the scrim alone dims the page. */
+  @media (prefers-reduced-motion: reduce) {
+    main {
+      transition: none;
+    }
+    main.carousel-on {
+      filter: none;
+    }
   }
 </style>

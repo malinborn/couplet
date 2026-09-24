@@ -1,5 +1,7 @@
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+import type { RecentSnapshot } from '../stores.svelte';
+import type { PendingTab } from './commands';
 
 export type MenuAction =
   | 'new'
@@ -35,22 +37,83 @@ export type MenuAction =
   | 'recent_files'
   | 'ai_comment'
   | 'ai_watch_command'
-  | 'format_json';
+  | 'format_json'
+  | 'new_tab'
+  | 'next_tab'
+  | 'prev_tab'
+  | 'toggle_drawer'
+  | 'toggle_tabs_compact:on'
+  | 'toggle_tabs_compact:off'
+  | 'transient_ignored_keep'
+  | 'transient_ignored_close'
+  | `select_tab_${'1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'}`;
 
+/**
+ * A native menu action. Rust emits each action exactly once — to every window
+ * for a preference, to the last-focused window for a document action
+ * (`src-tauri/src/menu_route.rs`) — so this must listen through the current
+ * webview window: a global listener's target is `Any` and would also receive
+ * the actions targeted at other windows.
+ */
 export function onMenuEvent(handler: (action: MenuAction) => void): Promise<() => void> {
-  return listen<string>('menu-event', (event) => {
+  return getCurrentWebviewWindow().listen<string>('menu-event', (event) => {
     handler(event.payload as MenuAction);
   });
 }
 
+/**
+ * A file the OS handed to the app (`RunEvent::Opened`), routed by Rust to one
+ * window with `emit_to`. Listened for through the current webview window for
+ * the same reason as `onAiCommand`: a global listener's target is `Any` and
+ * matches targeted emits too, so every window would open a tab for it
+ * (`lib/tabs/controller.ts`).
+ */
 export function onOpenFile(handler: (path: string) => void): Promise<() => void> {
-  return listen<string>('open-file', (event) => {
+  return getCurrentWebviewWindow().listen<string>('open-file', (event) => {
     handler(event.payload);
   });
 }
 
+/** A closed tab coming back into this window (⌘⇧T). Matches `ReopenTab` in `closed.rs`. */
+export interface ReopenTab {
+  path: string;
+  cursor: number;
+  topLine: number;
+}
+
+/** Targeted at the window the tab was closed from — see `onAiCommand` on why per-window. */
+export function onReopenTab(handler: (tab: ReopenTab) => void): Promise<() => void> {
+  return getCurrentWebviewWindow().listen<ReopenTab>('reopen-tab', (event) => {
+    handler(event.payload);
+  });
+}
+
+/**
+ * Tabs another window moved here (plan 05, `tab_move`). Registered to this
+ * window already: the controller shows them and never `tab_open`s them. Per
+ * window, like `onAiCommand`; registered before `get_window_init` like every
+ * other tab source (the window init contract) — a window built for a move
+ * that mounted before the move took the lock gets its tabs this way.
+ */
+export function onTabsArrive(handler: (tabs: PendingTab[]) => void): Promise<() => void> {
+  return getCurrentWebviewWindow().listen<PendingTab[]>('tabs-arrive', (event) => {
+    handler(event.payload);
+  });
+}
+
+/** The file this window watches changed on disk. Targeted by the watcher. */
 export function onFileChangedExternally(handler: (path: string) => void): Promise<() => void> {
-  return listen<string>('file-changed-externally', (event) => {
+  return getCurrentWebviewWindow().listen<string>('file-changed-externally', (event) => {
+    handler(event.payload);
+  });
+}
+
+/**
+ * This window's `#N` changed under it: a session restore moved an untouched
+ * `main` off a number a restored window takes back (spec §3). Targeted.
+ */
+export function onWindowNumber(handler: (n: number) => void): Promise<() => void> {
+  return getCurrentWebviewWindow().listen<number>('window-number', (event) => {
     handler(event.payload);
   });
 }
@@ -58,6 +121,14 @@ export function onFileChangedExternally(handler: (path: string) => void): Promis
 /** Emitted by Rust after windows from the previous session have been reopened. */
 export function onSessionRestored(handler: (count: number) => void): Promise<() => void> {
   return listen<number>('session-restored', (event) => {
+    handler(event.payload);
+  });
+}
+
+/** Emitted by Rust whenever any window adds to, or imports into, the shared
+ * Recent Files list — every other window applies it via `setList`. */
+export function onRecentChanged(handler: (snapshot: RecentSnapshot) => void): Promise<() => void> {
+  return listen<RecentSnapshot>('recent-changed', (event) => {
     handler(event.payload);
   });
 }
@@ -105,9 +176,9 @@ export function onUpdateDismissed(handler: () => void): Promise<() => void> {
  * The user picked "Check for Updates…" from the menu (#82).
  *
  * Routed like `ai-command`, deliberately **not** through the general
- * `menu-event` broadcast (`onMenuEvent`, above): that channel reaches every
- * window, and five open windows would mean five simultaneous GitHub
- * requests for the same answer. Rust targets exactly one window with
+ * `menu-event` channel (`onMenuEvent`, above): it must reach the window that
+ * owns the update poll, not merely the last-focused one, and five open
+ * windows must not mean five GitHub requests. Rust targets exactly one window with
  * `emit_to` (see the `check_updates` handler in `lib.rs`) — a bare `emit`
  * would not have been enough on its own, since an unfiltered `emit`
  * broadcasts to every listener regardless of target label. That is also why
@@ -132,7 +203,7 @@ export function onCheckUpdatesRequested(handler: () => void): Promise<() => void
  */
 export interface AiCommandPayload {
   id: number;
-  cmd: 'show' | 'edit' | 'ask';
+  cmd: 'show' | 'edit' | 'ask' | 'open' | 'close';
   path: string;
   line: number | null;
   find: string | null;
@@ -151,6 +222,12 @@ export interface AiCommandPayload {
    * someone whose agent config arrived pre-made from a colleague.
    */
   firstUse: boolean;
+  /** The command may take the view (`show` by default). Never while the human types. */
+  focus: boolean;
+  /** `show(transient: true)` — a quick look (spec §7). */
+  transient: boolean;
+  /** Rust opened this tab for this very command (a new window). */
+  fresh: boolean;
 }
 
 /**
