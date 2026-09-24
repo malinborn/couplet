@@ -20,6 +20,8 @@ import '../src/lib/theme/aurora-light.css';
 import '../src/lib/theme/aurora-dark.css';
 import '../src/lib/theme/blueprint.css';
 import '../src/lib/theme/phosphor.css';
+import './candidates/paper.css';
+import './candidates/ink.css';
 import './candidates/coral.css';
 
 import './lab.css';
@@ -69,15 +71,21 @@ const FAMILIES: Family[] = [
     shipped: true,
   },
   {
-    name: 'Коралл',
-    note: 'Из backlog-иконок paper / ink: тушь по бумаге и крем по туши. Коралл — только правка: каретка, чекбоксы, линия выполненного.',
-    light: 'coral-light',
-    dark: 'coral-dark',
+    name: 'Paper',
+    note: 'Иконка backlog-paper: тушь по бумаге / та же бумага ночью, сепия. Коралл — только правка: каретка, чекбоксы, линия выполненного.',
+    light: 'paper-light',
+    dark: 'paper-dark',
   },
   {
-    name: 'Коралл · закат',
-    note: 'Из backlog-иконки coral: коралловый градиент уходит в размывку подложки и заголовки, каретка — тушь. Тёмная — та же ink.',
-    light: 'sunset-light',
+    name: 'Ink',
+    note: 'Иконка backlog-ink: крем по туши, каретка-градиент со свечением / тушь по холодному светлому листу с тем же градиентом.',
+    light: 'ink-light',
+    dark: 'ink-dark',
+  },
+  {
+    name: 'Coral',
+    note: 'Иконка backlog-coral: коралловая заря в подложке и заголовках. Светлая — крем с тушевой кареткой, тёмная — терракота.',
+    light: 'coral-light',
     dark: 'coral-dark',
   },
 ];
@@ -211,7 +219,7 @@ function buildPicker(): void {
 }
 
 /** Порядок обхода стрелками: светлая и тёмная каждой семьи подряд. */
-const ORDER = [...new Set(FAMILIES.flatMap((f) => [f.light, f.dark]))];
+const ORDER = FAMILIES.flatMap((f) => [f.light, f.dark]);
 
 function step(delta: number): void {
   const current = document.documentElement.getAttribute('data-theme') ?? ORDER[0];
