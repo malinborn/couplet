@@ -32,8 +32,9 @@ pub struct PendingTab {
     pub opened_at: u64,
     pub viewed_at: u64,
     pub unviewed: bool,
-    /// A quick look (spec §7) carried by a move between windows (plan 05);
-    /// `false` for every other tab — a quick look is not persisted.
+    /// A quick look (spec §7), carried by a move between windows (plan 05)
+    /// and by a session restore (tabs-questions Q8); `false` for every other
+    /// tab — a new one, or one back from ⌘⇧T.
     pub transient: bool,
     pub transient_seen_at: u64,
     /// What waited for the tab in its old window's agent inbox (asks with
@@ -43,8 +44,9 @@ pub struct PendingTab {
     pub inbox: Option<serde_json::Value>,
 }
 
-/// The tab a restored snapshot hands its window's frontend: caret and drawer
-/// stamps as they were saved, the untitled text read by the caller.
+/// The tab a restored snapshot hands its window's frontend: caret, drawer
+/// stamps and quick-look state as they were saved, the untitled text read by
+/// the caller.
 pub fn pending_tab_from_snapshot(
     tab: &crate::session::TabSnapshot,
     content: Option<String>,
@@ -58,6 +60,8 @@ pub fn pending_tab_from_snapshot(
         opened_at: tab.opened_at,
         viewed_at: tab.viewed_at,
         unviewed: tab.unviewed,
+        transient: tab.transient,
+        transient_seen_at: tab.transient_seen_at,
         ..Default::default()
     }
 }
@@ -1431,6 +1435,25 @@ mod tests {
         assert_eq!((tab.cursor, tab.top_line), (4, 1), "line numbers are 1-based");
         let json = serde_json::to_string(&tab).unwrap();
         for key in [r#""openedAt":11"#, r#""viewedAt":22"#, r#""unviewed":true"#] {
+            assert!(json.contains(key), "{key} missing in {json}");
+        }
+        assert!(!tab.transient, "an ordinary tab stays one");
+    }
+
+    #[test]
+    fn a_restored_quick_look_stays_one_with_its_clock() {
+        let snapshot = crate::session::TabSnapshot {
+            tab_id: "1-2-3".into(),
+            path: Some("/a.md".into()),
+            top_line: 1,
+            transient: true,
+            transient_seen_at: 33,
+            ..Default::default()
+        };
+        let tab = pending_tab_from_snapshot(&snapshot, None);
+        assert_eq!((tab.transient, tab.transient_seen_at), (true, 33));
+        let json = serde_json::to_string(&tab).unwrap();
+        for key in [r#""transient":true"#, r#""transientSeenAt":33"#] {
             assert!(json.contains(key), "{key} missing in {json}");
         }
     }

@@ -407,6 +407,8 @@ pub fn move_tabs_between(
             opened_at: t.opened_at,
             viewed_at: t.viewed_at,
             unviewed: t.unviewed,
+            transient: t.transient,
+            transient_seen_at: t.transient_seen_at,
         })
         .collect();
     let drafts = arriving
@@ -888,6 +890,11 @@ mod tests {
         assert_eq!(
             out.snapshots.iter().map(|s| (s.tab_id.as_str(), s.path.as_deref())).collect::<Vec<_>>(),
             vec![("u", None), ("a", Some("/a.md"))]
+        );
+        assert_eq!(
+            (out.snapshots[1].transient, out.snapshots[1].transient_seen_at),
+            (true, 5),
+            "the target's session records the quick look before its first heartbeat (Q8)"
         );
     }
 

@@ -1586,6 +1586,61 @@ describe('quick looks', () => {
   });
 });
 
+describe('quick looks across a restart (tabs-questions Q8)', () => {
+  const files = { '/a.md': 'AAAA', '/b.md': 'BBBB', '/c.md': 'CCCC' };
+  const meta = (h: Harness, id: string) => h.controller.list.tabs.find((t) => t.id === id);
+
+  it('TheHeartbeatCarriesAQuickLooksStateIntoTheSession', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), { ...fileTab('b', '/b.md'), transient: true, transientSeenAt: 7 }], 'a');
+    const { tabs } = h.controller.report({ cursor: 0, topLine: 1, content: 'AAAA' });
+    expect(tabs).toEqual([
+      expect.objectContaining({ tabId: 'a', transient: false, transientSeenAt: 0 }),
+      expect.objectContaining({ tabId: 'b', transient: true, transientSeenAt: 7 }),
+    ]);
+  });
+
+  it('ARestoredQuickLooksHourCountsFromWhenItWasFirstSeen_NotFromTheLaunch', async () => {
+    const seen = 500; // the harness launches at 1 000
+    const h = await started(files, [fileTab('a', '/a.md'), { ...fileTab('b', '/b.md'), transient: true, transientSeenAt: seen }], 'b');
+    // Launched later, with the quick look active in a focused window: seeing it
+    // again does not restart its clock.
+    h.clock.now = seen + 10 * 60 * 1000;
+    await h.controller.windowFocusChanged(true);
+    expect(meta(h, 'b')).toMatchObject({ transient: true, transientSeenAt: seen });
+    await h.controller.activate('a');
+    h.clock.now = seen + TRANSIENT_IGNORED_AFTER_MS - 1;
+    await h.controller.expireTransients('close');
+    expect(h.ids(), 'not yet').toEqual(['a', 'b']);
+    h.clock.now += 1;
+    await h.controller.expireTransients('close');
+    expect(h.ids()).toEqual(['a']);
+  });
+
+  it('ExpiredWhileTheAppWasDown_TheFirstTickClosesTheBackgroundOnes_NeverTheActiveOne', async () => {
+    const h = await started(
+      files,
+      [
+        { ...fileTab('b', '/b.md'), transient: true, transientSeenAt: 1 },
+        { ...fileTab('c', '/c.md'), transient: true, transientSeenAt: 1 },
+        { ...fileTab('a', '/a.md'), transient: true, transientSeenAt: 0, unviewed: true },
+      ],
+      'b'
+    );
+    h.clock.now = 5 * TRANSIENT_IGNORED_AFTER_MS;
+    await h.controller.expireTransients('close');
+    expect(h.ids(), 'c went; b is active; a was never seen').toEqual(['b', 'a']);
+    expect(h.deps.rust.close).toHaveBeenCalledWith('c', expect.anything());
+  });
+
+  it('ExpiredWhileTheAppWasDown_TheKeepPolicyMakesThemOrdinary', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), { ...fileTab('b', '/b.md'), transient: true, transientSeenAt: 1 }], 'a');
+    h.clock.now = 2 * TRANSIENT_IGNORED_AFTER_MS;
+    await h.controller.expireTransients('keep');
+    expect(h.ids()).toEqual(['a', 'b']);
+    expect(meta(h, 'b')).toMatchObject({ transient: false, transientSeenAt: 0 });
+  });
+});
+
 describe('moving tabs to another window (plan 05)', () => {
   const files = { '/a.md': 'AAAA', '/b.md': 'BBBB', '/c.md': 'CCCC', '/d.md': 'DDDD' };
   const three = () => [fileTab('a', '/a.md'), fileTab('b', '/b.md'), fileTab('c', '/c.md')];

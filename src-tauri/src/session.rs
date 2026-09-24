@@ -75,6 +75,14 @@ pub struct TabSnapshot {
     /// (spec §2) — it shimmers until it is seen.
     #[serde(default)]
     pub unviewed: bool,
+    /// A quick look (spec §7) still waiting for «Закрыть / Оставить»
+    /// (tabs-questions Q8). Absent in sessions written before Q8: an ordinary tab.
+    #[serde(default)]
+    pub transient: bool,
+    /// When the human first saw the quick look, ms since the epoch — its hour
+    /// counts from here, across a restart too. `0`: not seen yet.
+    #[serde(default)]
+    pub transient_seen_at: u64,
 }
 
 impl TabSnapshot {
@@ -778,6 +786,11 @@ pub struct TabReport {
     pub viewed_at: u64,
     #[serde(default)]
     pub unviewed: bool,
+    /// Quick-look state — see `TabSnapshot`. Defaulted like the stamps.
+    #[serde(default)]
+    pub transient: bool,
+    #[serde(default)]
+    pub transient_seen_at: u64,
 }
 
 /// Turn a heartbeat into snapshots, plus the sidecar writes it calls for
@@ -814,6 +827,8 @@ pub fn tab_snapshots(
                 opened_at: r.opened_at,
                 viewed_at: r.viewed_at,
                 unviewed: r.unviewed,
+                transient: r.transient,
+                transient_seen_at: r.transient_seen_at,
             }
         })
         .collect();
@@ -1617,6 +1632,7 @@ mod tests {
             opened_at: 1_700_000_000_123,
             viewed_at: 1_700_000_000_456,
             unviewed: true,
+            ..Default::default()
         }];
         let (snapshots, _) = tab_snapshots(&state, "main", reports);
         assert_eq!(snapshots[0].opened_at, 1_700_000_000_123);
@@ -1625,10 +1641,24 @@ mod tests {
     }
 
     #[test]
+    fn a_quick_look_rides_the_heartbeat_into_the_snapshot() {
+        let state = SessionState::new();
+        let report: TabReport = serde_json::from_str(
+            r#"{"tabId":"a","path":"/tmp/a.md","cursor":0,"topLine":1,"content":null,
+                "transient":true,"transientSeenAt":1700000000789}"#,
+        )
+        .unwrap();
+        let (snapshots, _) = tab_snapshots(&state, "main", vec![report]);
+        assert!(snapshots[0].transient);
+        assert_eq!(snapshots[0].transient_seen_at, 1_700_000_000_789);
+    }
+
+    #[test]
     fn a_heartbeat_without_stamps_is_still_accepted() {
         let report: TabReport =
             serde_json::from_str(r#"{"tabId":"1","path":null,"cursor":0,"topLine":1,"content":null}"#).unwrap();
         assert_eq!((report.opened_at, report.viewed_at, report.unviewed), (0, 0, false));
+        assert_eq!((report.transient, report.transient_seen_at), (false, 0));
     }
 
     #[test]
@@ -1638,6 +1668,7 @@ mod tests {
         let s = parse_session(json).expect("parses");
         let t = &s.windows[0].tabs[0];
         assert_eq!((t.opened_at, t.viewed_at, t.unviewed), (0, 0, false));
+        assert_eq!((t.transient, t.transient_seen_at), (false, 0), "a session from before Q8: ordinary tabs");
     }
 
     #[test]
@@ -1648,6 +1679,18 @@ mod tests {
         t.unviewed = true;
         let json = serde_json::to_string(&session(vec![window(vec![t.clone()])])).unwrap();
         for key in [r#""openedAt":5"#, r#""viewedAt":7"#, r#""unviewed":true"#] {
+            assert!(json.contains(key), "{key} missing in {json}");
+        }
+        assert_eq!(parse_session(&json).unwrap().windows[0].tabs[0], t);
+    }
+
+    #[test]
+    fn a_quick_look_round_trips_through_the_session_file_without_a_version_bump() {
+        let mut t = tab("t1", Some("/tmp/a.md"));
+        t.transient = true;
+        t.transient_seen_at = 9;
+        let json = serde_json::to_string(&session(vec![window(vec![t.clone()])])).unwrap();
+        for key in [r#""transient":true"#, r#""transientSeenAt":9"#, r#""version":2"#] {
             assert!(json.contains(key), "{key} missing in {json}");
         }
         assert_eq!(parse_session(&json).unwrap().windows[0].tabs[0], t);

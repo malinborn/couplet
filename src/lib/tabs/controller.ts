@@ -58,7 +58,7 @@ export interface InitTab {
   openedAt?: number;
   viewedAt?: number;
   unviewed?: boolean;
-  /** A quick look carried by a move between windows (plan 05); absent for every other tab. */
+  /** A quick look carried by a move between windows (plan 05) or restored from the session (Q8). */
   transient?: boolean;
   transientSeenAt?: number;
   /** What waited for the tab in its old window's agent inbox (plan 05). */
@@ -75,6 +75,9 @@ export interface TabReport {
   openedAt: number;
   viewedAt: number;
   unviewed: boolean;
+  /** A quick look survives a restart with its clock (tabs-questions Q8). */
+  transient: boolean;
+  transientSeenAt: number;
 }
 
 /** One tab as it leaves for another window — the shape `tab_move` takes (Rust `MovedTab`). */
@@ -1170,7 +1173,13 @@ export function createTabController(deps: TabControllerDeps) {
     return {
       active: list.activeId,
       tabs: list.tabs.map((tab): TabReport => {
-        const stamps = { openedAt: tab.openedAt, viewedAt: tab.viewedAt, unviewed: tab.unviewed };
+        const stamps = {
+          openedAt: tab.openedAt,
+          viewedAt: tab.viewedAt,
+          unviewed: tab.unviewed,
+          transient: tab.transient === true,
+          transientSeenAt: tab.transientSeenAt ?? 0,
+        };
         if (tab.id === list.activeId) {
           return {
             tabId: tab.id,
