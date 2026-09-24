@@ -79,11 +79,12 @@ export type ToastPayload =
    */
   | { kind: 'save-as-blocked'; fileName: string; reason: 'held' | 'tab-gone' | 'unavailable' }
   /**
-   * A window number the human asked for is not available: the notch's edit
-   * picked one another window holds (spec §3). Goes by itself, like
-   * `tabs-moved` — it answers a key the human just pressed.
+   * A window number the human asked for is not available (spec §3): the
+   * notch's edit picked one another window holds (`taken`), or ⌃N named a
+   * window that is not there (`missing`). Goes by itself, like `tabs-moved` —
+   * it answers a key the human just pressed.
    */
-  | { kind: 'window-number'; reason: 'taken'; number: number }
+  | { kind: 'window-number'; reason: 'taken' | 'missing'; number: number }
   | { kind: 'update'; latest: string; current: string; highlight?: string }
   /**
    * Answers to a manual "Check for Updates…" click (#82) — the automatic

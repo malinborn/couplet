@@ -20,6 +20,7 @@
   "toast.save_as_blocked.tab_gone": "La pestaña para la que se eligió el nombre está cerrada; no se escribió nada",
   "toast.save_as_blocked.unavailable": "Esta pestaña no pudo tomar ese nombre; no se escribió nada",
   "toast.window_number.taken": "El número #{number} está ocupado",
+  "toast.window_number.missing": "No hay ventana #{number}",
 
   "toast.update.headline": "mdmini {latest} disponible",
   "toast.update.current": "tienes la v{current}",

@@ -7,7 +7,7 @@ import { EditorSelection } from '@codemirror/state';
 import { HOVER_CLOSE_MS, HOVER_OPEN_MS } from './drawer-state';
 import type { TabListState, TabMeta } from './tab-model';
 import { GOT_MS, type CarouselWindow } from './carousel';
-import { DOUBLE_CLICK_MS, type RenumberResult } from './window-number';
+import { DOUBLE_CLICK_MS, ctrlDigitHandler, type RenumberResult, type RevealResult } from './window-number';
 
 /*
  * The drawer's keyboard and pointer contract against a stand-in for the
@@ -1143,5 +1143,30 @@ describe('TabDrawer — renaming the window from the notch (spec §3)', () => {
     h.handle().close();
     await settle();
     expect(input()).toBeNull();
+  });
+});
+
+describe('TabDrawer — ⌃1…⌃9 while it is open (spec §3)', () => {
+  it('the window key wins: neither the search nor the editor sees it', async () => {
+    // As App installs it: in onMount, before the drawer ever adds its listener.
+    h.destroy();
+    const reveal = vi.fn(async (): Promise<RevealResult> => 'revealed');
+    const handler = ctrlDigitHandler({ current: () => 3, reveal, toast: () => {} });
+    window.addEventListener('keydown', handler, true);
+    try {
+      h = setup();
+      h.editor.focus();
+      h.handle().toggle();
+      await settle();
+      const e = press('2', { code: 'Digit2', ctrlKey: true });
+      await settle();
+      expect(e.defaultPrevented).toBe(true);
+      expect(reveal).toHaveBeenCalledWith(2);
+      expect(query()).toBe('');
+      expect(h.editorKeys).toEqual([]);
+      expect(h.root().classList.contains('open'), 'the drawer stays as it was').toBe(true);
+    } finally {
+      window.removeEventListener('keydown', handler, true);
+    }
   });
 });

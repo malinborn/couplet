@@ -20,6 +20,7 @@
   "toast.save_as_blocked.tab_gone": "Вкладка, для которой выбрано имя, закрыта — ничего не записано",
   "toast.save_as_blocked.unavailable": "Эта вкладка не смогла взять это имя — ничего не записано",
   "toast.window_number.taken": "Номер #{number} занят",
+  "toast.window_number.missing": "Окна #{number} нет",
 
   "toast.update.headline": "Доступна версия mdmini {latest}",
   "toast.update.current": "у вас установлена v{current}",

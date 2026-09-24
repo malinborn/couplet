@@ -36,7 +36,13 @@
   import type { GitInfo } from './lib/tabs/drawer-data';
   import { tabNames } from './lib/tabs/tab-name';
   import { createToastStore, type ToastPayload } from './lib/toasts.svelte';
-  import { WINDOW_NUMBER_TOAST_MS, renumberWindow, type RenumberResult } from './lib/tabs/window-number';
+  import {
+    WINDOW_NUMBER_TOAST_MS,
+    ctrlDigitHandler,
+    renumberWindow,
+    type RenumberResult,
+    type RevealResult,
+  } from './lib/tabs/window-number';
   import { shouldShowHint, nextCheckDelay } from './lib/ai-hint';
   import { previewCompartment, lineGlowCompartment } from './lib/editor/setup';
   import { stashAndUnfoldAll, restoreStashedFolds } from './lib/editor/fold-memory';
@@ -1552,6 +1558,17 @@
     typingTracker.note(e);
   }
 
+  /**
+   * ⌃1…⌃9: bring window #N forward (spec §3). Registered in `onMount`, before
+   * the drawer can add its listener. A human's key: the plain reveal, no
+   * typing guard.
+   */
+  const onWindowDigit = ctrlDigitHandler({
+    current: getWindowNumber,
+    reveal: (number) => invoke<RevealResult>('window_reveal_number', { number }),
+    toast: quietToast,
+  });
+
   function liveAskShown(): boolean {
     const view = editorHandle?.view;
     return view ? activeAskIds(view.state).length > 0 : false;
@@ -2084,6 +2101,7 @@
     // Save on window blur
     window.addEventListener('blur', handleWindowBlur);
     window.addEventListener('keydown', noteTyping, true);
+    window.addEventListener('keydown', onWindowDigit, true);
     window.addEventListener('focus', handleWindowFocus);
 
     // Start recovery interval
@@ -2201,6 +2219,7 @@
       unlistenLanguageChangeFailed.then((fn) => fn());
       window.removeEventListener('blur', handleWindowBlur);
       window.removeEventListener('keydown', noteTyping, true);
+      window.removeEventListener('keydown', onWindowDigit, true);
       window.removeEventListener('focus', handleWindowFocus);
       autoSave.cancel();
       if (recoveryInterval !== null) clearInterval(recoveryInterval);

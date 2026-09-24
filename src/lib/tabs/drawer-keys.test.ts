@@ -64,3 +64,20 @@ describe('drawer sort keys', () => {
     for (const file of [MENU_RS, LIB_RS]) expect(readFileSync(file, 'utf8')).not.toMatch(/Menu::default\s*\(/);
   });
 });
+
+describe('⌃1…⌃9 (window keys, spec §3)', () => {
+  it('NoNativeMenuAcceleratorClaimsCtrlDigit', () => {
+    // A native accelerator is resolved before the webview: App's capture
+    // listener (`ctrlDigitHandler`) would never see the key.
+    const ctrlDigits = new Set(Array.from({ length: 9 }, (_, i) => [`Ctrl+${i + 1}`, `Control+${i + 1}`]).flat());
+    for (const a of NATIVE_MENU_ACCELERATORS) expect(ctrlDigits.has(a.accelerator), a.id).toBe(false);
+    const claimed = [...readFileSync(MENU_RS, 'utf8').matchAll(/\.accelerator\(\s*"([^"]+)"\s*\)/g)].map((m) => m[1]);
+    expect(claimed.length).toBeGreaterThan(5);
+    for (const accelerator of claimed) expect(ctrlDigits.has(accelerator), accelerator).toBe(false);
+  });
+
+  it('TabKeysStayOnCmdDigit', () => {
+    // ⌘1…⌘9 pick tabs; `CmdOrCtrl` is ⌘ on macOS, so they do not collide.
+    for (let n = 1; n <= 9; n++) expect(nativeAccelerator(`select_tab_${n}`)).toBe(`CmdOrCtrl+${n}`);
+  });
+});

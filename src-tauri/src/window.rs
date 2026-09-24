@@ -726,6 +726,61 @@ pub async fn reveal_other_window(app: AppHandle, label: String) -> Result<(), St
     win.run_on_main_thread(activate_app).map_err(|e| e.to_string())
 }
 
+/// Which window `#number` is, seen from `caller`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NumberTarget {
+    Missing,
+    Caller,
+    Other(String),
+}
+
+pub fn number_target(reg: &TabRegistry, caller: &str, number: u32, is_live: impl Fn(&str) -> bool) -> NumberTarget {
+    match reg.live_label_with_number(number, is_live) {
+        None => NumberTarget::Missing,
+        Some(label) if label == caller => NumberTarget::Caller,
+        Some(label) => NumberTarget::Other(label),
+    }
+}
+
+/// What `window_reveal_number` did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RevealNumber {
+    Revealed,
+    /// No live window has that number.
+    Missing,
+    /// The caller has it: nothing to do.
+    Current,
+}
+
+/// IPC: bring window `#number` forward — ⌃1…⌃9 (spec §3). A human's key, so
+/// the plain reveal: not `reveal_window`, whose typing guard (Q10) is for agents.
+#[tauri::command]
+pub async fn window_reveal_number(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    number: u32,
+) -> Result<RevealNumber, String> {
+    let target = {
+        let open_files = app.state::<OpenFiles>();
+        let reg = open_files.0.lock().map_err(|e| e.to_string())?;
+        number_target(&reg, window.label(), number, |l| app.get_webview_window(l).is_some())
+    };
+    match target {
+        NumberTarget::Missing => Ok(RevealNumber::Missing),
+        NumberTarget::Caller => Ok(RevealNumber::Current),
+        NumberTarget::Other(label) => {
+            // Closed between the lookup and now.
+            let Some(win) = app.get_webview_window(&label) else {
+                return Ok(RevealNumber::Missing);
+            };
+            reveal(&win);
+            win.run_on_main_thread(activate_app).map_err(|e| e.to_string())?;
+            Ok(RevealNumber::Revealed)
+        }
+    }
+}
+
 /// Removes a file path from the open files tracking when a window is closed.
 /// Also cleans up any recovery file for that path.
 pub fn untrack_window(app: &AppHandle, label: &str) {
@@ -1420,6 +1475,26 @@ mod tests {
         assert_eq!(serde_json::to_string(&Renumber::Taken).unwrap(), "\"taken\"");
         assert_eq!(serde_json::to_string(&Renumber::Set).unwrap(), "\"set\"");
         assert_eq!(serde_json::to_string(&Renumber::Invalid).unwrap(), "\"invalid\"");
+    }
+
+    #[test]
+    fn number_target_finds_the_live_holder() {
+        let mut reg = TabRegistry::new();
+        reg.set_number("main", Some(1));
+        reg.set_number("editor-2", Some(2));
+        reg.set_number("editor-9", Some(9));
+        let live = |l: &str| l != "editor-9";
+        assert_eq!(number_target(&reg, "main", 2, live), NumberTarget::Other("editor-2".into()));
+        assert_eq!(number_target(&reg, "main", 1, live), NumberTarget::Caller);
+        assert_eq!(number_target(&reg, "main", 3, live), NumberTarget::Missing);
+        assert_eq!(number_target(&reg, "main", 9, live), NumberTarget::Missing, "a dead window's entry");
+    }
+
+    #[test]
+    fn reveal_number_answers_lowercase_json() {
+        assert_eq!(serde_json::to_string(&RevealNumber::Revealed).unwrap(), "\"revealed\"");
+        assert_eq!(serde_json::to_string(&RevealNumber::Missing).unwrap(), "\"missing\"");
+        assert_eq!(serde_json::to_string(&RevealNumber::Current).unwrap(), "\"current\"");
     }
 
     #[test]

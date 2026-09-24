@@ -20,6 +20,7 @@
   "toast.save_as_blocked.tab_gone": "选择该名称的标签页已关闭，未写入任何内容",
   "toast.save_as_blocked.unavailable": "此标签页无法使用该名称，未写入任何内容",
   "toast.window_number.taken": "编号 #{number} 已被占用",
+  "toast.window_number.missing": "没有窗口 #{number}",
 
   "toast.update.headline": "mdmini {latest} 已发布",
   "toast.update.current": "你当前是 v{current}",

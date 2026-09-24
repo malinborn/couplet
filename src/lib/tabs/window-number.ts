@@ -1,6 +1,7 @@
 /**
- * Changing a window's `#N` from the notch (spec §3). The decision is Rust's
- * (`window_set_number`, under the registry lock); this is the window's side.
+ * Window numbers from the window's side (spec §3): renaming `#N` from the
+ * notch (`window_set_number`, decided under the registry lock) and ⌃1…⌃9
+ * (`window_reveal_number`).
  */
 
 import type { ToastPayload } from '../toasts.svelte';
@@ -43,4 +44,52 @@ export async function renumberWindow(number: number, deps: RenumberDeps): Promis
   if (result === 'set') deps.apply(number);
   else if (result === 'taken') deps.toast({ kind: 'window-number', reason: 'taken', number });
   return result;
+}
+
+/** `window_reveal_number`'s answer. */
+export type RevealResult = 'revealed' | 'missing' | 'current';
+
+/**
+ * ⌃1…⌃9 → the window number; `null` for any other key. Matched on `e.code`,
+ * layout independent. ⌘1…⌘9 (tabs) and ⌃Tab are not this.
+ */
+export function ctrlDigit(e: KeyboardEvent): number | null {
+  if (!e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return null;
+  const m = /^Digit([1-9])$/.exec(e.code);
+  return m ? Number(m[1]) : null;
+}
+
+export interface RevealDeps {
+  /** This window's `#N`. */
+  current(): number | null;
+  reveal(number: number): Promise<RevealResult>;
+  toast(payload: ToastPayload): void;
+}
+
+/** Bring `#number` forward; «Окна #N нет» when there is none. Its own number does nothing. */
+export async function revealWindowNumber(number: number, deps: RevealDeps): Promise<void> {
+  if (deps.current() === number) return;
+  let result: RevealResult;
+  try {
+    result = await deps.reveal(number);
+  } catch (e) {
+    console.error('window_reveal_number failed:', e);
+    return;
+  }
+  if (result === 'missing') deps.toast({ kind: 'window-number', reason: 'missing', number });
+}
+
+/**
+ * The ⌃1…⌃9 listener. Installed in the capture phase on the window before the
+ * drawer's own listener, so it runs first and neither the drawer nor
+ * CodeMirror sees the key.
+ */
+export function ctrlDigitHandler(deps: RevealDeps): (e: KeyboardEvent) => void {
+  return (e) => {
+    const n = ctrlDigit(e);
+    if (n === null) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if (!e.repeat) void revealWindowNumber(n, deps);
+  };
 }
