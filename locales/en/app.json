@@ -195,5 +195,23 @@
   "tabs.hint.select": "⇧ click / drag",
   "tabs.hint.select_tail": "— select",
   "tabs.hint.close": "⌘ click",
-  "tabs.hint.close_tail": "— close"
+  "tabs.hint.close_tail": "— close",
+
+  "tabs.carousel.head": "Move {what} to a window",
+  "tabs.carousel.tabs.one": "{count} tab",
+  "tabs.carousel.tabs.few": "{count} tabs",
+  "tabs.carousel.tabs.many": "{count} tabs",
+  "tabs.carousel.tabs.other": "{count} tabs",
+  "tabs.carousel.windows.one": "{count} window",
+  "tabs.carousel.windows.few": "{count} windows",
+  "tabs.carousel.windows.many": "{count} windows",
+  "tabs.carousel.windows.other": "{count} windows",
+  "tabs.carousel.new_window": "+ New window",
+  "tabs.carousel.new_window_short": "New window",
+  "tabs.carousel.drop_here": "here → #{n}",
+  "tabs.carousel.no_project": "no project",
+  "tabs.carousel.more_up": "▲ more windows",
+  "tabs.carousel.more_down": "▼ more windows",
+  "tabs.carousel.foot_drag": "drop on a window · back to the drawer — reorder · Esc — cancel",
+  "tabs.carousel.foot_keys": "↑↓ — choose · Enter — move · Esc — cancel"
 }

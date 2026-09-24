@@ -195,5 +195,23 @@
   "tabs.hint.select": "⇧ клик / протяжка",
   "tabs.hint.select_tail": "— выделение",
   "tabs.hint.close": "⌘ клик",
-  "tabs.hint.close_tail": "— закрыть"
+  "tabs.hint.close_tail": "— закрыть",
+
+  "tabs.carousel.head": "Перенести {what} в окно",
+  "tabs.carousel.tabs.one": "{count} вкладку",
+  "tabs.carousel.tabs.few": "{count} вкладки",
+  "tabs.carousel.tabs.many": "{count} вкладок",
+  "tabs.carousel.tabs.other": "{count} вкладок",
+  "tabs.carousel.windows.one": "{count} окно",
+  "tabs.carousel.windows.few": "{count} окна",
+  "tabs.carousel.windows.many": "{count} окон",
+  "tabs.carousel.windows.other": "{count} окон",
+  "tabs.carousel.new_window": "+ Новое окно",
+  "tabs.carousel.new_window_short": "Новое окно",
+  "tabs.carousel.drop_here": "сюда → #{n}",
+  "tabs.carousel.no_project": "без проекта",
+  "tabs.carousel.more_up": "▲ ещё окна",
+  "tabs.carousel.more_down": "▼ ещё окна",
+  "tabs.carousel.foot_drag": "отпустите на окне · вернитесь в ящик — порядок · Esc — отмена",
+  "tabs.carousel.foot_keys": "↑↓ — выбрать · Enter — перенести · Esc — отмена"
 }

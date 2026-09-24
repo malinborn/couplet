@@ -195,5 +195,23 @@
   "tabs.hint.select": "⇧ 点击 / 拖动",
   "tabs.hint.select_tail": "— 选择",
   "tabs.hint.close": "⌘ 点击",
-  "tabs.hint.close_tail": "— 关闭"
+  "tabs.hint.close_tail": "— 关闭",
+
+  "tabs.carousel.head": "将{what}移到窗口",
+  "tabs.carousel.tabs.one": "{count} 个标签页",
+  "tabs.carousel.tabs.few": "{count} 个标签页",
+  "tabs.carousel.tabs.many": "{count} 个标签页",
+  "tabs.carousel.tabs.other": "{count} 个标签页",
+  "tabs.carousel.windows.one": "{count} 个窗口",
+  "tabs.carousel.windows.few": "{count} 个窗口",
+  "tabs.carousel.windows.many": "{count} 个窗口",
+  "tabs.carousel.windows.other": "{count} 个窗口",
+  "tabs.carousel.new_window": "+ 新窗口",
+  "tabs.carousel.new_window_short": "新窗口",
+  "tabs.carousel.drop_here": "移到这里 → #{n}",
+  "tabs.carousel.no_project": "无项目",
+  "tabs.carousel.more_up": "▲ 更多窗口",
+  "tabs.carousel.more_down": "▼ 更多窗口",
+  "tabs.carousel.foot_drag": "在窗口上松开 · 拖回抽屉 — 排序 · Esc — 取消",
+  "tabs.carousel.foot_keys": "↑↓ — 选择 · Enter — 移动 · Esc — 取消"
 }

@@ -195,5 +195,23 @@
   "tabs.hint.select": "⇧ Klick / Ziehen",
   "tabs.hint.select_tail": "— auswählen",
   "tabs.hint.close": "⌘ Klick",
-  "tabs.hint.close_tail": "— schließen"
+  "tabs.hint.close_tail": "— schließen",
+
+  "tabs.carousel.head": "{what} in ein Fenster verschieben",
+  "tabs.carousel.tabs.one": "{count} Tab",
+  "tabs.carousel.tabs.few": "{count} Tabs",
+  "tabs.carousel.tabs.many": "{count} Tabs",
+  "tabs.carousel.tabs.other": "{count} Tabs",
+  "tabs.carousel.windows.one": "{count} Fenster",
+  "tabs.carousel.windows.few": "{count} Fenster",
+  "tabs.carousel.windows.many": "{count} Fenster",
+  "tabs.carousel.windows.other": "{count} Fenster",
+  "tabs.carousel.new_window": "+ Neues Fenster",
+  "tabs.carousel.new_window_short": "Neues Fenster",
+  "tabs.carousel.drop_here": "hierher → #{n}",
+  "tabs.carousel.no_project": "kein Projekt",
+  "tabs.carousel.more_up": "▲ weitere Fenster",
+  "tabs.carousel.more_down": "▼ weitere Fenster",
+  "tabs.carousel.foot_drag": "auf einem Fenster loslassen · zurück in die Leiste — Reihenfolge · Esc — abbrechen",
+  "tabs.carousel.foot_keys": "↑↓ — wählen · Enter — verschieben · Esc — abbrechen"
 }

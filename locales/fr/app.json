@@ -195,5 +195,23 @@
   "tabs.hint.select": "⇧ clic / glisser",
   "tabs.hint.select_tail": "— sélection",
   "tabs.hint.close": "⌘ clic",
-  "tabs.hint.close_tail": "— fermer"
+  "tabs.hint.close_tail": "— fermer",
+
+  "tabs.carousel.head": "Déplacer {what} vers une fenêtre",
+  "tabs.carousel.tabs.one": "{count} onglet",
+  "tabs.carousel.tabs.few": "{count} onglets",
+  "tabs.carousel.tabs.many": "{count} onglets",
+  "tabs.carousel.tabs.other": "{count} onglets",
+  "tabs.carousel.windows.one": "{count} fenêtre",
+  "tabs.carousel.windows.few": "{count} fenêtres",
+  "tabs.carousel.windows.many": "{count} fenêtres",
+  "tabs.carousel.windows.other": "{count} fenêtres",
+  "tabs.carousel.new_window": "+ Nouvelle fenêtre",
+  "tabs.carousel.new_window_short": "Nouvelle fenêtre",
+  "tabs.carousel.drop_here": "ici → #{n}",
+  "tabs.carousel.no_project": "sans projet",
+  "tabs.carousel.more_up": "▲ autres fenêtres",
+  "tabs.carousel.more_down": "▼ autres fenêtres",
+  "tabs.carousel.foot_drag": "relâchez sur une fenêtre · retour au tiroir — ordre · Échap — annuler",
+  "tabs.carousel.foot_keys": "↑↓ — choisir · Entrée — déplacer · Échap — annuler"
 }
