@@ -35,11 +35,24 @@ const MAX_DEPTH: usize = 64;
 /// The most of a `.git` file or a `HEAD` ever read; both are one short line.
 const MAX_READ: u64 = 4096;
 
-/// A regular file's contents, at most [`MAX_READ`] bytes of them. Opened
-/// non-blocking and checked on the open descriptor, so a FIFO swapped in
-/// between a check and the open cannot hang the command.
+#[cfg(test)]
+thread_local! {
+    /// How many times [`read_small`] got as far as `open` on this thread.
+    static OPENS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A regular file's contents, at most [`MAX_READ`] bytes of them. Checked
+/// twice: by path before the open, so a symlink to a device node is never
+/// opened at all (opening one can have side effects), and again on the open
+/// descriptor — opened non-blocking — so a FIFO or device swapped in between
+/// the check and the open cannot hang the command.
 fn read_small(path: &Path) -> Option<String> {
     use std::os::unix::fs::OpenOptionsExt;
+    if !fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    #[cfg(test)]
+    OPENS.with(|n| n.set(n.get() + 1));
     let file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
@@ -119,10 +132,14 @@ pub fn git_info(file: &Path) -> Option<GitInfo> {
 }
 
 /// IPC: `git_info` for each path, in order. Never fails as a whole — a path
-/// that cannot be resolved answers `null` in its place.
+/// that cannot be resolved answers `null` in its place. The walk is plain
+/// blocking filesystem calls, so it runs on the blocking pool: a file on a
+/// hung network mount would otherwise stall an async worker with it.
 #[tauri::command]
 pub async fn tab_git_info(paths: Vec<String>) -> Result<Vec<Option<GitInfo>>, String> {
-    Ok(paths.iter().map(|p| git_info(Path::new(p))).collect())
+    tauri::async_runtime::spawn_blocking(move || paths.iter().map(|p| git_info(Path::new(p))).collect())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -253,6 +270,32 @@ mod tests {
             git_info(&root.join("a.md")),
             Some(GitInfo { project: "repo".into(), branch: None })
         );
+    }
+
+    #[test]
+    fn a_symlink_to_a_device_is_never_opened() {
+        let dir = scratch("devnull");
+        let link = dir.join("HEAD");
+        std::os::unix::fs::symlink("/dev/null", &link).unwrap();
+        let before = OPENS.with(|n| n.get());
+        assert_eq!(read_small(&link), None);
+        assert_eq!(OPENS.with(|n| n.get()), before, "a device must be refused before open");
+    }
+
+    #[test]
+    fn a_regular_file_is_still_read() {
+        let file = scratch("regular").join("HEAD");
+        fs::write(&file, "ref: refs/heads/main\n").unwrap();
+        assert_eq!(read_small(&file).as_deref(), Some("ref: refs/heads/main\n"));
+    }
+
+    #[test]
+    fn the_command_answers_every_path_in_order() {
+        let dir = scratch("cmd").join("notes");
+        fs::create_dir_all(&dir).unwrap();
+        let paths = vec![dir.join("a.md").to_string_lossy().into_owned(), "relative.md".to_string()];
+        let answer = tauri::async_runtime::block_on(tab_git_info(paths)).unwrap();
+        assert_eq!(answer, vec![Some(GitInfo { project: "notes".into(), branch: None }), None]);
     }
 
     #[test]
