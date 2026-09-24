@@ -15,6 +15,7 @@
   "menu.file.reopen_session.few": "Восстановить {n} окна из прошлой сессии",
   "menu.file.reopen_session.many": "Восстановить {n} окон из прошлой сессии",
   "menu.file.reopen_session.other": "Восстановить {n} окон из прошлой сессии",
+  "menu.file.reopen_closed": "Восстановить закрытое окно",
 
   "menu.edit.title": "Правка",
   "menu.edit.select_all": "Выделить всё",

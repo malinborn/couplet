@@ -70,6 +70,22 @@ impl WindowSnapshot {
         }
     }
 
+    /// Builds a snapshot for Cmd+Shift+T's "reopen last closed" — a brand new
+    /// window, so it gets its own fresh `tab_id`.
+    pub fn from_closed_entry(entry: crate::closed::ClosedEntry) -> Self {
+        Self {
+            path: Some(entry.path),
+            untitled: None,
+            x: entry.x,
+            y: entry.y,
+            width: entry.width,
+            height: entry.height,
+            cursor: entry.cursor,
+            top_line: entry.top_line,
+            tab_id: new_tab_id(),
+        }
+    }
+
     /// Line numbers are 1-based; a stored 0 would panic CodeMirror's `doc.line`.
     pub fn normalized(&self) -> Self {
         let mut out = self.clone();
@@ -288,8 +304,6 @@ impl SessionState {
     }
 
     /// A copy of this window's current entry, if it has one.
-    // No production caller until "reopen closed window" (tabs plan, Task 7).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn snapshot_for(&self, label: &str) -> Option<WindowSnapshot> {
         self.entries.lock().unwrap().get(label).cloned()
     }
@@ -531,6 +545,7 @@ pub fn restore_pending(app: &tauri::AppHandle) -> usize {
         crate::window::open_restored_window(app, snapshot);
     }
     state.finish_restore();
+    crate::closed::refresh_reopen_item(app);
     if count > 0 {
         // Let open windows drop the "restore available" toast.
         let _ = app.emit("session-restored", count);
@@ -907,6 +922,26 @@ mod tests {
         state.set_document("editor-1", Some("/tmp/a.md".to_string()), 3, 2);
         let snap = state.snapshot_for("editor-1").expect("entry exists");
         assert_eq!(snap.path.as_deref(), Some("/tmp/a.md"));
+    }
+
+    #[test]
+    fn from_closed_entry_carries_geometry_and_position_with_a_fresh_tab_id() {
+        let entry = crate::closed::ClosedEntry {
+            path: "/tmp/a.md".to_string(),
+            cursor: 42,
+            top_line: 9,
+            x: 11,
+            y: 22,
+            width: 800,
+            height: 600,
+        };
+        let a = WindowSnapshot::from_closed_entry(entry.clone());
+        assert_eq!(a.path.as_deref(), Some("/tmp/a.md"));
+        assert_eq!(a.untitled, None);
+        assert_eq!((a.x, a.y, a.width, a.height), (11, 22, 800, 600));
+        assert_eq!((a.cursor, a.top_line), (42, 9));
+        let b = WindowSnapshot::from_closed_entry(entry);
+        assert_ne!(a.tab_id, b.tab_id, "every reopened window is a new window");
     }
 
     #[test]

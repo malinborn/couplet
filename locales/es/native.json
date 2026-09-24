@@ -15,6 +15,7 @@
   "menu.file.reopen_session.few": "Reabrir {n} ventanas de la última sesión",
   "menu.file.reopen_session.many": "Reabrir {n} ventanas de la última sesión",
   "menu.file.reopen_session.other": "Reabrir {n} ventanas de la última sesión",
+  "menu.file.reopen_closed": "Reabrir ventana cerrada",
 
   "menu.edit.title": "Edición",
   "menu.edit.select_all": "Seleccionar todo",

@@ -15,6 +15,7 @@
   "menu.file.reopen_session.few": "Reopen {n} Windows from Last Session",
   "menu.file.reopen_session.many": "Reopen {n} Windows from Last Session",
   "menu.file.reopen_session.other": "Reopen {n} Windows from Last Session",
+  "menu.file.reopen_closed": "Reopen Closed Window",
 
   "menu.edit.title": "Edit",
   "menu.edit.select_all": "Select All",

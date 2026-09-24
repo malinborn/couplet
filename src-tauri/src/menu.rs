@@ -87,6 +87,51 @@ pub struct ViewToggleItems {
     pub ocd_enabled: Toggle,
 }
 
+/// A live handle to the "Reopen…" item, so it can be re-enabled once the
+/// closed-window stack gets an entry — macOS disables the accelerator along
+/// with the item, so without this Cmd+Shift+T would stay dead for the rest of
+/// the process on any launch that starts with nothing pending.
+pub struct SessionMenuItems {
+    pub reopen_session: tauri::menu::MenuItem<Wry>,
+}
+
+/// What Cmd+Shift+T would do right now, and so what its item must say.
+#[derive(Debug, PartialEq)]
+pub enum ReopenLabel {
+    /// Reopen the most recently closed window (also the idle, disabled label).
+    LastClosed,
+    /// Restore the previous session's windows.
+    Session(usize),
+}
+
+/// The closed stack wins over the pending session — the same order the
+/// `reopen_session` handler tries them in.
+pub fn reopen_item_state(closed_count: usize, pending_count: usize) -> (ReopenLabel, bool) {
+    let label = if closed_count == 0 && pending_count > 0 {
+        ReopenLabel::Session(pending_count)
+    } else {
+        ReopenLabel::LastClosed
+    };
+    (label, closed_count > 0 || pending_count > 0)
+}
+
+impl ReopenLabel {
+    fn text(&self) -> String {
+        match self {
+            Self::LastClosed => t("menu.file.reopen_closed"),
+            Self::Session(n) => crate::i18n::t_plural("menu.file.reopen_session", *n as u64),
+        }
+    }
+}
+
+impl SessionMenuItems {
+    pub fn sync(&self, closed_count: usize, pending_count: usize) {
+        let (label, enabled) = reopen_item_state(closed_count, pending_count);
+        let _ = self.reopen_session.set_text(label.text());
+        let _ = self.reopen_session.set_enabled(enabled);
+    }
+}
+
 impl EngineMenuItems {
     /// Single writer for the Editor Engine checkmarks: checks exactly the
     /// item matching `engine` ("raw" | "live-preview" | "live-render"),
@@ -120,7 +165,14 @@ pub fn build_menu(
     ThemeMenuItems,
     EngineMenuItems,
     ViewToggleItems,
+    SessionMenuItems,
 )> {
+    let (reopen_label, reopen_enabled) = reopen_item_state(0, pending_session_count);
+    let reopen_session_item = MenuItemBuilder::with_id("reopen_session", reopen_label.text())
+        .accelerator("CmdOrCtrl+Shift+T")
+        .enabled(reopen_enabled)
+        .build(app)?;
+
     let file_menu = SubmenuBuilder::new(app, t("menu.file.title"))
         .item(
             &MenuItemBuilder::with_id("new", t("menu.file.new"))
@@ -152,15 +204,7 @@ pub fn build_menu(
         .separator()
         .item(&MenuItemBuilder::with_id("recent_files", t("menu.file.recent_files")).build(app)?)
         .separator()
-        .item(
-            &MenuItemBuilder::with_id(
-                "reopen_session",
-                crate::i18n::t_plural("menu.file.reopen_session", pending_session_count as u64),
-            )
-            .accelerator("CmdOrCtrl+Shift+T")
-            .enabled(pending_session_count > 0)
-            .build(app)?,
-        )
+        .item(&reopen_session_item)
         .build()?;
 
     let edit_menu = SubmenuBuilder::new(app, t("menu.edit.title"))
@@ -409,5 +453,29 @@ pub fn build_menu(
         ocd_enabled: Toggle::default(),
     };
 
-    Ok((menu, theme_items, engine_items, view_toggles))
+    let session_items = SessionMenuItems {
+        reopen_session: reopen_session_item,
+    };
+    Ok((menu, theme_items, engine_items, view_toggles, session_items))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reopen_item_offers_the_session_until_something_is_closed() {
+        assert_eq!(reopen_item_state(0, 3), (ReopenLabel::Session(3), true));
+    }
+
+    #[test]
+    fn reopen_item_prefers_the_closed_stack_over_the_session() {
+        assert_eq!(reopen_item_state(1, 3), (ReopenLabel::LastClosed, true));
+        assert_eq!(reopen_item_state(2, 0), (ReopenLabel::LastClosed, true));
+    }
+
+    #[test]
+    fn reopen_item_is_disabled_with_nothing_to_reopen() {
+        assert_eq!(reopen_item_state(0, 0), (ReopenLabel::LastClosed, false));
+    }
 }

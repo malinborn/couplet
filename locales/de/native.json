@@ -15,6 +15,7 @@
   "menu.file.reopen_session.few": "{n} Fenster aus letzter Sitzung wiederherstellen",
   "menu.file.reopen_session.many": "{n} Fenster aus letzter Sitzung wiederherstellen",
   "menu.file.reopen_session.other": "{n} Fenster aus letzter Sitzung wiederherstellen",
+  "menu.file.reopen_closed": "Geschlossenes Fenster wieder öffnen",
 
   "menu.edit.title": "Bearbeiten",
   "menu.edit.select_all": "Alles auswählen",

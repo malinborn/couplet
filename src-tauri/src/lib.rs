@@ -9,6 +9,7 @@ compile_error!("mcp-bridge must never be enabled in a release build");
 
 pub mod ai_socket;
 pub mod atomic_write;
+mod closed;
 pub mod comment_pause;
 pub mod comments;
 mod commands;
@@ -225,12 +226,14 @@ pub fn run() {
                 }
             };
 
-            let (menu, theme_items, engine_items, view_toggles) =
+            let (menu, theme_items, engine_items, view_toggles, session_menu_items) =
                 menu::build_menu(app.handle(), pending_count, explicit_language.as_deref())?;
             app.set_menu(menu)?;
             app.manage(theme_items);
             app.manage(view_toggles);
             app.manage(engine_items);
+            app.manage(session_menu_items);
+            app.manage(closed::ClosedStack::new());
 
             let app_handle = app.handle().clone();
             app.on_menu_event(move |_app, event| {
@@ -242,9 +245,14 @@ pub fn run() {
                     return;
                 }
 
-                // Restore windows in Rust, like "new" — it creates windows.
+                // Restore windows in Rust, like "new" — it creates windows. The
+                // last closed window comes back first; only with none left does
+                // the previous session's restore run.
                 if id == "reopen_session" {
-                    session::restore_pending(&app_handle);
+                    if !closed::reopen_closed(&app_handle) {
+                        session::restore_pending(&app_handle);
+                    }
+                    closed::refresh_reopen_item(&app_handle);
                     return;
                 }
 
@@ -435,8 +443,17 @@ pub fn run() {
                 tauri::WindowEvent::Destroyed => {
                     let app = window.app_handle();
                     let label = window.label();
+                    let session_state = app.state::<SessionState>();
+                    // Read before `remove` erases it below.
+                    let closed_entry = session_state.snapshot_for(label).and_then(|snap| {
+                        closed::ClosedEntry::from_snapshot(session_state.is_quitting(), &snap)
+                    });
+                    if let Some(entry) = closed_entry {
+                        app.state::<closed::ClosedStack>().push_entry(entry);
+                        closed::refresh_reopen_item(app);
+                    }
                     // No-op while quitting, so an exit keeps every window.
-                    app.state::<SessionState>().remove(label);
+                    session_state.remove(label);
                     // Hand the update poll to a surviving window.
                     app.state::<UpdateState>().release(label);
                     window::untrack_window(app, label);
