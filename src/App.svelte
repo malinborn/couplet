@@ -12,6 +12,7 @@
     onOpenFile,
     onReopenTab,
     onTabsArrive,
+    onWindowNumber,
     onFileChangedExternally,
     onSessionRestored,
     onRecentChanged,
@@ -1846,11 +1847,13 @@
         .catch((err: unknown) => console.error('Failed to take in tabs moved here:', err));
     });
 
+    const unlistenWindowNumber = onWindowNumber(setWindowNumber);
+
     // Pull what the backend stored for this window (its tabs, restored or
     // handed over before it mounted) — pulled, so it cannot race the listeners.
     // Retried once: a window that never gets here stays unmounted in Rust, and
     // files meant for it pile up in a payload nobody pulls.
-    Promise.all([unlistenOpenFile, unlistenReopenTab, unlistenAiCommand, unlistenTabsArrive])
+    Promise.all([unlistenOpenFile, unlistenReopenTab, unlistenAiCommand, unlistenTabsArrive, unlistenWindowNumber])
       .then(() => invoke<WindowInit>('get_window_init'))
       .catch((err: unknown) => {
         console.error('get_window_init failed, retrying once:', err);
@@ -2207,6 +2210,7 @@
       unlistenOpenFile.then((fn) => fn());
       unlistenReopenTab.then((fn) => fn());
       unlistenTabsArrive.then((fn) => fn());
+      unlistenWindowNumber.then((fn) => fn());
       unlistenExternalChange.then((fn) => fn());
       unlistenAiCommand.then((fn) => fn());
       unlistenComments.then((fn) => fn());

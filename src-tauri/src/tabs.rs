@@ -77,8 +77,14 @@ impl TabRegistry {
         self.windows.remove(label)
     }
 
-    pub fn numbers_in_use(&self) -> HashSet<u32> {
-        self.windows.values().filter_map(|w| w.number).collect()
+    /// The numbers live windows other than `label` hold. `label`'s own and an
+    /// entry left by a window that is gone do not count.
+    pub fn numbers_held_by_others(&self, label: &str, is_live: impl Fn(&str) -> bool) -> HashSet<u32> {
+        self.windows
+            .iter()
+            .filter(|(l, _)| l.as_str() != label && is_live(l))
+            .filter_map(|(_, w)| w.number)
+            .collect()
     }
 
     /// The live window showing `#number`. Liveness is part of the lookup: an
@@ -492,14 +498,17 @@ mod tests {
     }
 
     #[test]
-    fn numbers_in_use_are_the_numbered_windows() {
+    fn numbers_held_by_others_skip_the_caller_and_dead_windows() {
         let mut reg = reg_with(&[("main", "t1", None), ("editor-2", "t2", None), ("editor-3", "t3", None)]);
         reg.set_number("main", Some(4));
         reg.set_number("editor-3", Some(9));
-        assert_eq!(reg.numbers_in_use(), [4, 9].into_iter().collect());
+        reg.set_number("editor-7", Some(7));
+        let live = |l: &str| l != "editor-7";
+        assert_eq!(reg.numbers_held_by_others("editor-2", live), [4, 9].into_iter().collect());
+        assert_eq!(reg.numbers_held_by_others("main", live), [9].into_iter().collect(), "its own number is not held");
         assert_eq!(reg.window("editor-2").unwrap().number, None);
         reg.remove_window("main");
-        assert_eq!(reg.numbers_in_use(), [9].into_iter().collect(), "a closed window's number is free");
+        assert_eq!(reg.numbers_held_by_others("editor-2", live), [9].into_iter().collect(), "a closed window's number is free");
     }
 
     #[test]

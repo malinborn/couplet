@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 
@@ -152,6 +152,7 @@ pub fn window_init(
 ///   `tab_open`, which checks ownership and claims it.
 #[tauri::command]
 pub async fn get_window_init(
+    app: AppHandle,
     window: tauri::Window,
     pending: tauri::State<'_, PendingFiles>,
     open_files: tauri::State<'_, OpenFiles>,
@@ -164,7 +165,7 @@ pub async fn get_window_init(
         let taken = pending.0.lock().map_err(|e| e.to_string())?.remove(&label);
         reg.mark_mounted(&label);
         // `build_window` numbers every window it makes; this is the backstop.
-        number_if_missing(&mut reg, &label);
+        number_window(&mut reg, &label, None, &HashSet::new(), |l| app.get_webview_window(l).is_some());
         window_init(&mut reg, &label, taken, crate::session::new_tab_id)
     };
     Ok(init)
@@ -319,29 +320,74 @@ pub fn evict_dead(
     None
 }
 
-/// Give `label` its window number: `preferred` (a restored window's own) when
-/// it is free, else the lowest free one. Under the registry lock, so two
-/// windows numbered at once never get the same number.
-pub fn number_window(reg: &mut TabRegistry, label: &str, preferred: Option<u32>) {
-    let live = reg.numbers_in_use();
-    let number = crate::window_numbers::pick_restored(preferred, &live)
-        .or_else(|| crate::window_numbers::lowest_free(&live));
-    reg.set_number(label, number);
-}
-
-/// `number_window` for a window that has no number yet, and only then.
-pub fn number_if_missing(reg: &mut TabRegistry, label: &str) {
+/// Give `label` its window number, unless it has one already (its frontend's
+/// `get_window_init` can get there first): `preferred` (a restored window's
+/// own) when no other live window holds it, else the lowest number that is
+/// neither held nor `reserved` — the numbers a session restore is about to
+/// hand back to their windows. `label`'s own entry and a dead window's do not
+/// count as holding. Under the registry lock, so two windows numbered at once
+/// never get the same number.
+pub fn number_window(
+    reg: &mut TabRegistry,
+    label: &str,
+    preferred: Option<u32>,
+    reserved: &HashSet<u32>,
+    is_live: impl Fn(&str) -> bool,
+) {
     if reg.window(label).is_some_and(|w| w.number.is_some()) {
         return;
     }
-    number_window(reg, label, None);
+    let held = reg.numbers_held_by_others(label, is_live);
+    let number = crate::window_numbers::pick_restored(preferred, &held).or_else(|| {
+        let blocked: HashSet<u32> = held.union(reserved).copied().collect();
+        // Every free number reserved: a restored window's collision beats none.
+        crate::window_numbers::lowest_free(&blocked).or_else(|| crate::window_numbers::lowest_free(&held))
+    });
+    reg.set_number(label, number);
 }
 
 /// Number the `main` window — created by `tauri.conf.json`, not by us.
 pub fn number_main_window(app: &AppHandle) {
     let open_files = app.state::<OpenFiles>();
     let mut reg = open_files.0.lock().unwrap();
-    number_window(&mut reg, "main", None);
+    number_window(&mut reg, "main", None, &HashSet::new(), |l| app.get_webview_window(l).is_some());
+}
+
+/// A session restore is about to give `reserved` back to its windows. `main`,
+/// while it is still as it started (no project, no file tab), moves off a
+/// reserved number, so the previous session's #1 A and #2 B come back as #1
+/// and #2 instead of #2 and #3. `Some(n)`: main now shows `n`.
+pub fn make_room_for_restore(
+    reg: &mut TabRegistry,
+    reserved: &HashSet<u32>,
+    is_live: impl Fn(&str) -> bool,
+) -> Option<u32> {
+    if !is_live("main") || !crate::routing::main_untouched(reg) {
+        return None;
+    }
+    let current = reg.window("main")?.number?;
+    if !reserved.contains(&current) {
+        return None;
+    }
+    let mut blocked = reg.numbers_held_by_others("main", is_live);
+    blocked.extend(reserved);
+    let n = crate::window_numbers::lowest_free(&blocked)?;
+    reg.set_number("main", Some(n));
+    Some(n)
+}
+
+/// `make_room_for_restore` on the live registry; the session and main's
+/// frontend (`window-number`: its title and notch) learn it after the lock.
+pub fn make_room_for_restore_now(app: &AppHandle, reserved: &HashSet<u32>) {
+    let moved = {
+        let open_files = app.state::<OpenFiles>();
+        let mut reg = open_files.0.lock().unwrap();
+        make_room_for_restore(&mut reg, reserved, |l| app.get_webview_window(l).is_some())
+    };
+    if let Some(n) = moved {
+        app.state::<crate::session::SessionState>().set_number("main", Some(n));
+        let _ = app.emit_to("main", "window-number", n);
+    }
 }
 
 /// What `window_set_number` did.
@@ -351,14 +397,15 @@ pub enum Renumber {
     Set,
     /// Another live window holds it; nothing changed.
     Taken,
-    /// Outside 1..=99; nothing changed.
+    /// Outside 1..=99, or the asking window is gone; nothing changed.
     Invalid,
 }
 
 /// Give `label` the number `number` unless another live window holds it. An
-/// entry left by a dead window does not count, the same as for routing.
+/// entry left by a dead window does not count, the same as for routing. A
+/// window that is gone gets nothing: no registry entry is made again for it.
 pub fn renumber(reg: &mut TabRegistry, label: &str, number: u32, is_live: impl Fn(&str) -> bool) -> Renumber {
-    if !crate::window_numbers::is_valid(number) {
+    if !crate::window_numbers::is_valid(number) || !is_live(label) {
         return Renumber::Invalid;
     }
     match reg.live_label_with_number(number, is_live) {
@@ -506,7 +553,7 @@ pub(crate) fn build_window(app: &AppHandle, activation: Activation) -> Result<St
     {
         let open_files = app.state::<OpenFiles>();
         let mut reg = open_files.0.lock().unwrap();
-        number_window(&mut reg, &label, None);
+        number_window(&mut reg, &label, None, &HashSet::new(), |l| app.get_webview_window(l).is_some());
     }
     Ok(label)
 }
@@ -834,9 +881,12 @@ pub async fn open_file_window_cmd(app: AppHandle, path: Option<String>) -> Resul
 /// tab) and an untitled tab whose sidecar is gone has nothing to show. A
 /// window left with no tabs is not created; the window holding its first file
 /// is focused instead.
+/// `reserved`: the numbers of the other windows being restored with it, kept
+/// free for them when this one's own is taken (`number_window`).
 pub fn open_restored_window(
     app: &AppHandle,
     snapshot: &crate::session::WindowSnapshot,
+    reserved: &HashSet<u32>,
 ) -> Option<String> {
     let mut focus_instead: Option<String> = None;
     let mut survivors: Vec<crate::session::TabSnapshot> = Vec::new();
@@ -937,7 +987,9 @@ pub fn open_restored_window(
             let (active_path, number) = {
                 let open_files = app.state::<OpenFiles>();
                 let mut reg = open_files.0.lock().unwrap();
-                number_window(&mut reg, &label, snapshot.number);
+                number_window(&mut reg, &label, snapshot.number, reserved, |l| {
+                    app.get_webview_window(l).is_some()
+                });
                 // A restored window keeps the project it had, even if the file
                 // that bound it is no longer among its tabs.
                 if let Some(project) = snapshot.project.clone() {
@@ -1372,8 +1424,16 @@ mod tests {
     fn a_free_restored_number_is_kept() {
         let mut reg = TabRegistry::new();
         reg.set_number("main", Some(1));
-        number_window(&mut reg, "editor-2", Some(7));
+        number_window(&mut reg, "editor-2", Some(7), &none(), |_| true);
         assert_eq!(reg.window("editor-2").unwrap().number, Some(7));
+    }
+
+    fn none() -> HashSet<u32> {
+        HashSet::new()
+    }
+
+    fn set(ns: &[u32]) -> HashSet<u32> {
+        ns.iter().copied().collect()
     }
 
     #[test]
@@ -1381,20 +1441,36 @@ mod tests {
         let mut reg = TabRegistry::new();
         reg.set_number("main", Some(7));
         reg.set_number("editor-1", Some(1));
-        number_window(&mut reg, "editor-2", Some(7));
+        number_window(&mut reg, "editor-2", Some(7), &none(), |_| true);
         assert_eq!(reg.window("editor-2").unwrap().number, Some(2));
+    }
+
+    #[test]
+    fn a_fallback_skips_the_numbers_a_restore_reserves() {
+        let mut reg = TabRegistry::new();
+        reg.set_number("main", Some(1));
+        number_window(&mut reg, "editor-2", Some(1), &set(&[1, 2]), |_| true);
+        assert_eq!(reg.window("editor-2").unwrap().number, Some(3), "#2 is kept for its own window");
+    }
+
+    #[test]
+    fn a_number_held_only_by_a_dead_window_is_free() {
+        let mut reg = TabRegistry::new();
+        reg.set_number("editor-9", Some(1));
+        number_window(&mut reg, "editor-2", None, &none(), |l| l != "editor-9");
+        assert_eq!(reg.window("editor-2").unwrap().number, Some(1));
     }
 
     #[test]
     fn a_new_window_takes_the_number_a_closed_one_freed() {
         let mut reg = TabRegistry::new();
-        number_window(&mut reg, "main", None);
-        number_window(&mut reg, "editor-1", None);
+        number_window(&mut reg, "main", None, &none(), |_| true);
+        number_window(&mut reg, "editor-1", None, &none(), |_| true);
         assert_eq!(reg.window("editor-1").unwrap().number, Some(2));
         reg.remove_window("main");
-        number_window(&mut reg, "editor-2", None);
+        number_window(&mut reg, "editor-2", None, &none(), |_| true);
         assert_eq!(reg.window("editor-2").unwrap().number, Some(1));
-        number_window(&mut reg, "editor-3", None);
+        number_window(&mut reg, "editor-3", None, &none(), |_| true);
         assert_eq!(reg.window("editor-3").unwrap().number, Some(3));
     }
 
@@ -1404,7 +1480,7 @@ mod tests {
         for n in 1..=crate::window_numbers::MAX_NUMBER {
             reg.set_number(&format!("editor-{n}"), Some(n));
         }
-        number_window(&mut reg, "editor-100", None);
+        number_window(&mut reg, "editor-100", None, &none(), |_| true);
         assert_eq!(reg.window("editor-100").unwrap().number, None);
     }
 
@@ -1413,16 +1489,54 @@ mod tests {
         let mut reg = TabRegistry::new();
         reg.set_number("main", Some(1));
         reg.add_tab("editor-2", "t", None);
-        number_if_missing(&mut reg, "editor-2");
+        number_window(&mut reg, "editor-2", None, &none(), |_| true);
         assert_eq!(window_init(&mut reg, "editor-2", None, || panic!("has a tab")).number, Some(2));
     }
 
     #[test]
-    fn a_numbered_window_is_never_renumbered_at_init() {
+    fn a_numbered_window_is_never_renumbered() {
+        // `get_window_init` numbered it before `build_window` or a restore got there.
         let mut reg = TabRegistry::new();
-        reg.set_number("main", Some(4));
-        number_if_missing(&mut reg, "main");
-        assert_eq!(reg.window("main").unwrap().number, Some(4));
+        reg.set_number("editor-2", Some(4));
+        number_window(&mut reg, "editor-2", Some(7), &none(), |_| true);
+        assert_eq!(reg.window("editor-2").unwrap().number, Some(4));
+    }
+
+    #[test]
+    fn a_restore_keeps_both_numbers_while_main_is_as_it_started() {
+        // The last session was #1 A and #2 B; on relaunch main took #1.
+        let mut reg = TabRegistry::new();
+        number_window(&mut reg, "main", None, &none(), |_| true);
+        assert_eq!(reg.window("main").unwrap().number, Some(1));
+        let reserved = set(&[1, 2]);
+        assert_eq!(make_room_for_restore(&mut reg, &reserved, |_| true), Some(3));
+        number_window(&mut reg, "editor-1", Some(1), &reserved, |_| true);
+        number_window(&mut reg, "editor-2", Some(2), &reserved, |_| true);
+        assert_eq!(reg.window("editor-1").unwrap().number, Some(1));
+        assert_eq!(reg.window("editor-2").unwrap().number, Some(2));
+        assert_eq!(reg.window("main").unwrap().number, Some(3));
+    }
+
+    #[test]
+    fn a_main_that_holds_a_file_keeps_its_number_through_a_restore() {
+        let mut reg = TabRegistry::new();
+        reg.set_number("main", Some(1));
+        reg.add_tab("main", "t", Some("/p/a.md".into()));
+        let reserved = set(&[1, 2]);
+        assert_eq!(make_room_for_restore(&mut reg, &reserved, |_| true), None);
+        number_window(&mut reg, "editor-1", Some(1), &reserved, |_| true);
+        number_window(&mut reg, "editor-2", Some(2), &reserved, |_| true);
+        assert_eq!(reg.window("main").unwrap().number, Some(1));
+        assert_eq!(reg.window("editor-1").unwrap().number, Some(3), "past both reserved numbers");
+        assert_eq!(reg.window("editor-2").unwrap().number, Some(2));
+    }
+
+    #[test]
+    fn main_off_a_free_number_stays_put() {
+        let mut reg = TabRegistry::new();
+        reg.set_number("main", Some(5));
+        assert_eq!(make_room_for_restore(&mut reg, &set(&[1, 2]), |_| true), None);
+        assert_eq!(reg.window("main").unwrap().number, Some(5));
     }
 
     #[test]
@@ -1432,7 +1546,7 @@ mod tests {
         reg.set_number("editor-2", Some(2));
         assert_eq!(renumber(&mut reg, "editor-2", 7, |_| true), Renumber::Set);
         assert_eq!(reg.window("editor-2").unwrap().number, Some(7));
-        assert_eq!(reg.numbers_in_use(), [1, 7].into_iter().collect(), "#2 is free again");
+        assert_eq!(reg.numbers_held_by_others("main", |_| true), [7].into_iter().collect(), "#2 is free again");
     }
 
     #[test]
@@ -1459,6 +1573,13 @@ mod tests {
         reg.set_number("main", Some(3));
         assert_eq!(renumber(&mut reg, "main", 3, |_| true), Renumber::Set);
         assert_eq!(reg.window("main").unwrap().number, Some(3));
+    }
+
+    #[test]
+    fn a_window_that_is_gone_is_not_renumbered_nor_brought_back() {
+        let mut reg = TabRegistry::new();
+        assert_eq!(renumber(&mut reg, "editor-4", 7, |l| l != "editor-4"), Renumber::Invalid);
+        assert!(reg.window("editor-4").is_none(), "no zombie entry");
     }
 
     #[test]

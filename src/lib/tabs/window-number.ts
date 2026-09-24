@@ -9,8 +9,12 @@ import type { ToastPayload } from '../toasts.svelte';
 /** `window_set_number`'s answer. */
 export type RenumberResult = 'set' | 'taken' | 'invalid';
 
-/** How long a click on `#N` waits for a second one while the drawer is open. */
-export const DOUBLE_CLICK_MS = 400;
+/**
+ * How long a click on `#N` waits for a second one while the drawer is open.
+ * macOS's default double-click speed; a page cannot read the user's setting,
+ * so a slower double-click reads as two clicks.
+ */
+export const DOUBLE_CLICK_MS = 500;
 
 /** How long «Номер #N занят» and «Окна #N нет» stay. */
 export const WINDOW_NUMBER_TOAST_MS = 3000;

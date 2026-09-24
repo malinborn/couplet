@@ -989,6 +989,13 @@ describe('TabDrawer — renaming the window from the notch (spec §3)', () => {
     el('.wid').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail }));
   }
 
+  /** What the platform sends for a double-click: two clicks, then `dblclick`. */
+  function doubleClickNumber(): void {
+    clickNumber(1);
+    clickNumber(2);
+    el('.wid').dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, detail: 2 }));
+  }
+
   function input(): HTMLInputElement | null {
     return h.root().querySelector<HTMLInputElement>('.notch-edit');
   }
@@ -1001,8 +1008,7 @@ describe('TabDrawer — renaming the window from the notch (spec §3)', () => {
   async function startEdit(): Promise<HTMLInputElement> {
     h.handle().toggle();
     await settle();
-    clickNumber(1);
-    clickNumber(2);
+    doubleClickNumber();
     await settle();
     const found = input();
     if (!found) throw new Error('no input');
@@ -1038,6 +1044,43 @@ describe('TabDrawer — renaming the window from the notch (spec §3)', () => {
     await settle();
     expect(isOpen()).toBe(false);
     expect(input()).toBeNull();
+  });
+
+  it('a double-click on a closed drawer\'s notch never starts an edit', async () => {
+    vi.useFakeTimers();
+    doubleClickNumber();
+    await settle();
+    vi.advanceTimersByTime(DOUBLE_CLICK_MS * 2);
+    await settle();
+    expect(input()).toBeNull();
+  });
+
+  it('Esc right after a click on #N closes the drawer for good: the waiting click is dropped', async () => {
+    vi.useFakeTimers();
+    h.handle().toggle();
+    await settle();
+    clickNumber(1);
+    press('Escape');
+    await settle();
+    expect(isOpen()).toBe(false);
+    vi.advanceTimersByTime(DOUBLE_CLICK_MS * 2);
+    await settle();
+    expect(isOpen(), 'not reopened by the late click').toBe(false);
+  });
+
+  it('a double-click slower than the wait is two clicks: no edit', async () => {
+    vi.useFakeTimers();
+    h.handle().toggle();
+    await settle();
+    clickNumber(1);
+    vi.advanceTimersByTime(DOUBLE_CLICK_MS);
+    await settle();
+    expect(isOpen()).toBe(false);
+    clickNumber(2);
+    el('.wid').dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, detail: 2 }));
+    await settle();
+    expect(input()).toBeNull();
+    expect(isOpen(), 'the second click reopened it').toBe(true);
   });
 
   it('with the drawer closed, a click on #N opens it at once and edits nothing', async () => {
@@ -1105,6 +1148,20 @@ describe('TabDrawer — renaming the window from the notch (spec §3)', () => {
     expect(input()?.classList.contains('shake')).toBe(true);
   });
 
+  it('a refusal that lands after the input lost focus closes it', async () => {
+    let answer: (r: RenumberResult) => void = () => {};
+    h.onrenumber.mockImplementationOnce(() => new Promise<RenumberResult>((resolve) => (answer = resolve)));
+    const field = await startEdit();
+    typeValue('7');
+    press('Enter');
+    field.blur();
+    await settle();
+    expect(input(), 'still asking').not.toBeNull();
+    answer('taken');
+    await settle();
+    expect(input()).toBeNull();
+  });
+
   it('an invalid value shakes without asking anyone', async () => {
     await startEdit();
     for (const value of ['0', '']) {
@@ -1127,10 +1184,10 @@ describe('TabDrawer — renaming the window from the notch (spec §3)', () => {
   it('editing pins a hover-opened drawer: the pointer leaving no longer closes it', async () => {
     vi.useFakeTimers();
     await hoverOpen();
-    clickNumber(1);
-    clickNumber(2);
+    doubleClickNumber();
     await settle();
     expect(input()).not.toBeNull();
+    expect(el('.wid').classList.contains('editing'), 'the number it stands in for is hidden').toBe(true);
     pointer(el('.drawer-wrap'), 'pointerleave');
     vi.advanceTimersByTime(HOVER_CLOSE_MS * 2);
     await settle();

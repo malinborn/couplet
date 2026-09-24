@@ -106,6 +106,16 @@ export function onFileChangedExternally(handler: (path: string) => void): Promis
   });
 }
 
+/**
+ * This window's `#N` changed under it: a session restore moved an untouched
+ * `main` off a number a restored window takes back (spec §3). Targeted.
+ */
+export function onWindowNumber(handler: (n: number) => void): Promise<() => void> {
+  return getCurrentWebviewWindow().listen<number>('window-number', (event) => {
+    handler(event.payload);
+  });
+}
+
 /** Emitted by Rust after windows from the previous session have been reopened. */
 export function onSessionRestored(handler: (count: number) => void): Promise<() => void> {
   return listen<number>('session-restored', (event) => {

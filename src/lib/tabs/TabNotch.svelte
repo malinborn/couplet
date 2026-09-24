@@ -7,10 +7,14 @@
    * the window holds unviewed tabs; its accessible name says so in words.
    * Geometry and colours are the mockup's.
    *
-   * With the drawer open, a double-click on `#N` turns it into a number input
-   * (spec §3): Enter asks `onrenumber`, Esc or blur cancels, a refusal shakes
-   * it. A single click on `#N` then waits out the double-click before it does
-   * what a click on the notch does; everywhere else it acts at once.
+   * With the drawer already open, a double-click on `#N` makes the number
+   * itself editable (spec §3): an input in its place, vertical like it, same
+   * font and colour. Enter asks `onrenumber`, Esc or blur cancels, a refusal
+   * shakes it. The edit starts on `dblclick` — the platform's own double-click,
+   * at the user's system speed — and only when the first click found the
+   * drawer open; that first click waits `DOUBLE_CLICK_MS` before it does what a
+   * notch click does, so it cannot close the drawer under the second. A double
+   * click slower than that is two clicks. Everywhere else the notch acts at once.
    */
   import { tick } from 'svelte';
   import { plural, t } from '../i18n';
@@ -69,40 +73,62 @@
   let editing = $state(false);
   let draft = $state('');
   let committing = false;
-  /** The input's centre, in the notch's containing block. */
+  /** The middle of the input's bottom edge — where `#N` starts — in the notch's containing block. */
   let at = $state({ x: 0, y: 0 });
+  /** A first click on an open drawer's `#N`, waiting to see whether a second follows. */
   let clickTimer: ReturnType<typeof setTimeout> | undefined;
 
+  function dropPendingClick(): void {
+    clearTimeout(clickTimer);
+    clickTimer = undefined;
+  }
+
   $effect(() => {
-    // The drawer closing takes the edit with it.
-    if (!editable && editing) stopEdit();
+    // The drawer closing (Esc, the scrim, ⌘J) takes the edit with it, and a
+    // click still waiting must not reopen it.
+    if (editable) return;
+    dropPendingClick();
+    if (editing) stopEdit();
   });
 
-  $effect(() => () => clearTimeout(clickTimer));
+  $effect(() => dropPendingClick);
+
+  function onNumber(e: MouseEvent): boolean {
+    return number !== null && e.target instanceof Node && !!widEl?.contains(e.target);
+  }
 
   function onNotchClick(e: MouseEvent): void {
-    const onNumber = editable && number !== null && e.target instanceof Node && !!widEl?.contains(e.target);
-    if (!onNumber) {
+    if (e.detail <= 1) {
+      if (editable && onNumber(e)) {
+        dropPendingClick();
+        clickTimer = setTimeout(() => {
+          clickTimer = undefined;
+          onclick();
+        }, DOUBLE_CLICK_MS);
+        return;
+      }
       onclick();
       return;
     }
-    clearTimeout(clickTimer);
-    if (e.detail >= 2) {
-      clickTimer = undefined;
-      startEdit();
-      return;
-    }
-    clickTimer = setTimeout(() => {
-      clickTimer = undefined;
-      onclick();
-    }, DOUBLE_CLICK_MS);
+    // The second click of a double-click: `dblclick` decides when the first
+    // one is waiting; otherwise it is a click like any other.
+    if (clickTimer === undefined) onclick();
+  }
+
+  function onNotchDblClick(): void {
+    // Only a first click that found the drawer open is waiting here.
+    if (clickTimer === undefined) return;
+    dropPendingClick();
+    startEdit();
   }
 
   function startEdit(): void {
     if (editing || !notchEl || !widEl) return;
     at = {
       x: notchEl.offsetLeft + widEl.offsetLeft + widEl.offsetWidth / 2,
-      y: notchEl.offsetTop + widEl.offsetTop + widEl.offsetHeight / 2,
+      // The number reads bottom to top: the input grows up from where it starts,
+      // away from the tab count below it.
+      y: notchEl.offsetTop + widEl.offsetTop + widEl.offsetHeight,
     };
     draft = String(number ?? '');
     editing = true;
@@ -142,7 +168,8 @@
     committing = true;
     try {
       const result = await onrenumber(n);
-      if (result === 'set') stopEdit();
+      // Focus gone while it was asked: the blur that came meanwhile was a cancel.
+      if (result === 'set' || document.activeElement !== inputEl) stopEdit();
       else shake();
     } finally {
       committing = false;
@@ -216,6 +243,7 @@
   onpointerenter={onenter}
   onpointerleave={onleave}
   onclick={onNotchClick}
+  ondblclick={onNotchDblClick}
   onmousedown={(e) => {
     // A press on the button blurs the editor (WebKit), and the drawer can only
     // give focus back on close if it saw where it was when it opened.
@@ -223,7 +251,7 @@
   }}
 >
   <span class="shape" aria-hidden="true" bind:this={shapeEl}><span class="glow"></span></span>
-  <span class="wid" aria-hidden="true" bind:this={widEl}>#{number ?? ''}</span>
+  <span class="wid" class:editing aria-hidden="true" bind:this={widEl}>#{number ?? ''}</span>
   <span class="cnt" aria-hidden="true">{count}</span>
   <span class="nk" aria-hidden="true">{keyLabel}</span>
 </button>
@@ -398,44 +426,61 @@
     color: var(--text-muted);
   }
 
-  /* Horizontal over the vertical `#N`: two digits read better upright. */
+  /* The number the input stands in for stays in the layout, unseen. */
+  .wid.editing {
+    visibility: hidden;
+  }
+
+  /* The number itself, made editable: vertical and read bottom to top like
+     `.wid` (vertical-rl turned 180°), same font, size and accent. The box
+     fits two digits; one sits in its middle. Checked in Chrome and in
+     Playwright's WebKit: caret, typing and select-all all work vertically. */
   .notch-edit {
     position: absolute;
     z-index: 1;
-    width: 3.2ch;
-    box-sizing: content-box;
+    box-sizing: border-box;
+    width: 20px;
+    height: 24px;
     margin: 0;
-    padding: 3px 4px;
-    transform: translate(-50%, -50%);
-    border: 1px solid var(--text-muted);
+    padding: 3px 0;
+    writing-mode: vertical-rl;
+    transform: translate(-50%, -100%) rotate(180deg);
+    border: 1px solid color-mix(in oklab, rgb(var(--color-glow)) 45%, transparent);
     border-radius: 5px;
     background: var(--bg-surface);
     color: rgb(var(--color-glow));
+    caret-color: rgb(var(--color-glow));
     font-family: var(--font-code);
     font-size: 12.5px;
     font-weight: 600;
+    letter-spacing: -0.04em;
+    line-height: 1;
     text-align: center;
     outline: none;
     box-shadow: 0 2px 8px rgba(var(--tabs-shadow-rgb), var(--tabs-shadow-a));
+  }
+
+  .notch-edit::selection {
+    background: color-mix(in oklab, rgb(var(--color-glow)) 28%, transparent);
   }
 
   .notch-edit:global(.shake) {
     animation: shake 0.32s ease-in-out;
   }
 
-  /* `translate(-50%, -50%)` stays in every step: the input is centred by it. */
+  /* The placing translate and the 180° turn stay in every step. */
   @keyframes shake {
     20% {
-      transform: translate(calc(-50% - 4px), -50%);
+      transform: translate(calc(-50% - 4px), -100%) rotate(180deg);
     }
     40% {
-      transform: translate(calc(-50% + 4px), -50%);
+      transform: translate(calc(-50% + 4px), -100%) rotate(180deg);
     }
     60% {
-      transform: translate(calc(-50% - 3px), -50%);
+      transform: translate(calc(-50% - 3px), -100%) rotate(180deg);
     }
     80% {
-      transform: translate(calc(-50% + 2px), -50%);
+      transform: translate(calc(-50% + 2px), -100%) rotate(180deg);
     }
   }
 

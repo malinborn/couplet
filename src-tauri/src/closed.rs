@@ -309,7 +309,7 @@ pub fn reopen_closed(app: &tauri::AppHandle) -> bool {
         ReopenTarget::NewWindow => {
             let closed_label = entry.label.clone();
             let snapshot = crate::session::WindowSnapshot::from_closed_entry(entry);
-            if let Some(new_label) = crate::window::open_restored_window(app, &snapshot) {
+            if let Some(new_label) = crate::window::open_restored_window(app, &snapshot, &std::collections::HashSet::new()) {
                 stack.record_revival(&closed_label, &new_label);
             }
         }

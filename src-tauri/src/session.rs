@@ -952,8 +952,16 @@ pub fn restore_pending(app: &tauri::AppHandle) -> usize {
     let state = app.state::<SessionState>();
     let snapshots = state.take_pending();
     let count = snapshots.len();
+    // Every restored window's own number, kept free for it: `main` moves off
+    // one, and a window whose number is taken falls back past them.
+    let reserved: HashSet<u32> = snapshots
+        .iter()
+        .filter_map(|s| s.number)
+        .filter(|n| crate::window_numbers::is_valid(*n))
+        .collect();
+    crate::window::make_room_for_restore_now(app, &reserved);
     for snapshot in &snapshots {
-        crate::window::open_restored_window(app, snapshot);
+        crate::window::open_restored_window(app, snapshot, &reserved);
     }
     state.finish_restore();
     crate::closed::refresh_reopen_item(app);
