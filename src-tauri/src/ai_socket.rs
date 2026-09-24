@@ -571,6 +571,21 @@ impl AiPending {
         n
     }
 
+    /// Hand request `id` to window `to`: it reached `from` for a file `to`
+    /// holds now — its tab moved there, or was claimed there meanwhile.
+    /// Only while someone still waits on it and it is `from`'s, or already
+    /// `to`'s (a move relabelled it). `false`: nothing changed.
+    pub fn hand_to(&self, id: u64, from: &str, to: &str) -> bool {
+        let mut map = self.map.lock().unwrap();
+        match map.get_mut(&id) {
+            Some(entry) if entry.label == from || entry.label == to => {
+                entry.label = to.to_string();
+                true
+            }
+            _ => false,
+        }
+    }
+
     #[cfg(test)]
     fn label_of(&self, id: u64) -> Option<String> {
         self.map.lock().unwrap().get(&id).map(|e| e.label.clone())
@@ -668,7 +683,7 @@ pub fn cancel_for_tab(app: &AppHandle, label: &str, path: &str, error: &str) {
 
 /// The event payload sent to the owning window as `ai-command`, and the shape
 /// queued in `AiQueue` for a window still being created.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiCommandPayload {
     pub id: u64,
@@ -1084,6 +1099,33 @@ pub async fn ai_pull_pending(
     state: tauri::State<'_, AiQueue>,
 ) -> Result<Vec<AiCommandPayload>, String> {
     Ok(state.pull(window.label()))
+}
+
+/// IPC: a command reached this window for a file another live window holds
+/// now (plan 05, D12). Delivered there when its request can be handed over
+/// (`AiPending::hand_to`). `false`: nothing was forwarded — the caller
+/// answers the agent itself, as before.
+#[tauri::command]
+pub async fn ai_forward(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    payload: AiCommandPayload,
+) -> Result<bool, String> {
+    let caller = window.label().to_string();
+    let holder = {
+        let open_files = app.state::<window::OpenFiles>();
+        let reg = open_files.0.lock().unwrap();
+        reg.label_of(&payload.path)
+    }
+    .filter(|label| label != &caller && app.get_webview_window(label).is_some());
+    let Some(holder) = holder else {
+        return Ok(false);
+    };
+    if !app.state::<AiPending>().hand_to(payload.id, &caller, &holder) {
+        return Ok(false);
+    }
+    deliver(&app, &holder, payload);
+    Ok(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -2655,6 +2697,45 @@ mod tests {
         assert_eq!(pending.relabel("main", "editor-2", "/a.md"), 0);
         assert_eq!(pending.label_of(elsewhere).as_deref(), Some("editor-3"));
         assert_eq!(pending.label_of(pathless).as_deref(), Some("main"), "a close request has no document to follow");
+    }
+
+    #[test]
+    fn hand_to_takes_a_request_of_the_caller_or_already_of_the_holder_only() {
+        let pending = AiPending::new();
+        let (mine, _r1) = waiting(&pending, "main", Some("/a.md"));
+        let (relabelled, _r2) = waiting(&pending, "editor-2", Some("/b.md"));
+        let (theirs, _r3) = waiting(&pending, "editor-3", Some("/c.md"));
+        assert!(pending.hand_to(mine, "main", "editor-2"));
+        assert_eq!(pending.label_of(mine).as_deref(), Some("editor-2"));
+        assert!(pending.hand_to(relabelled, "main", "editor-2"), "a move relabelled it already");
+        assert!(!pending.hand_to(theirs, "main", "editor-2"), "another window's request is not ours to give");
+        assert_eq!(pending.label_of(theirs).as_deref(), Some("editor-3"));
+        assert!(!pending.hand_to(9999, "main", "editor-2"), "nobody waits");
+    }
+
+    #[test]
+    fn a_command_payload_comes_back_from_the_frontend_as_it_went() {
+        let p = AiCommandPayload {
+            id: 7,
+            cmd: "ask".into(),
+            path: "/a.md".into(),
+            line: Some(2),
+            find: None,
+            content: None,
+            show: false,
+            question: Some("Q?".into()),
+            options: vec!["Yes".into()],
+            timeout_secs: 30,
+            multi: false,
+            free_text: true,
+            first_use: false,
+            focus: false,
+            transient: false,
+            fresh: true,
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        let back: AiCommandPayload = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&back).unwrap(), json);
     }
 
     #[test]

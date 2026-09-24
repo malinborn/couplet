@@ -187,6 +187,7 @@ pub fn run() {
             ai_socket::ai_respond,
             ai_socket::ai_pull_pending,
             ai_socket::ai_is_pending,
+            ai_socket::ai_forward,
             onboarding::ai_nudge_pending,
             onboarding::ai_nudge_dismiss,
             onboarding::ai_open_getting_started,
