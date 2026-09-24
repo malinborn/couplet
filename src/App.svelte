@@ -1669,7 +1669,18 @@
 
     // Pull any file path stored by the backend for this window (CLI args or new-window open).
     // This avoids the race condition of the push-based emit approach.
-    invoke<WindowInit>('get_window_init').then(async (init) => {
+    // Retried once: without it this window has no tab id, so it never sends a
+    // heartbeat and is left out of the next session.
+    invoke<WindowInit>('get_window_init')
+      .catch((err: unknown) => {
+        console.error('get_window_init failed, retrying once:', err);
+        return invoke<WindowInit>('get_window_init');
+      })
+      .catch((err: unknown) => {
+        console.error('get_window_init failed twice; this window has no tab and will not be saved in the session:', err);
+        throw err;
+      })
+      .then(async (init) => {
       const tab = init.tabs.find((t) => t.tabId === init.activeTabId) ?? init.tabs[0];
       if (!tab) return;
       activeTabId = tab.tabId;

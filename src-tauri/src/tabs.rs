@@ -96,8 +96,9 @@ impl TabRegistry {
     }
 
     /// For one-tab windows, until the frontend has tabs: point the window's
-    /// first tab at `path`, creating that tab with `new_id` if there is none.
-    /// Returns the tab's id, or `None` when another window holds `path`.
+    /// active tab (else its first) at `path`, creating that tab with `new_id`
+    /// if there is none. Returns the tab's id, or `None` when another window
+    /// holds `path`.
     pub fn set_single_path(
         &mut self,
         label: &str,
@@ -108,7 +109,12 @@ impl TabRegistry {
             return None;
         }
         let window = self.windows.entry(label.to_string()).or_default();
-        let id = match window.tabs.first_mut() {
+        let active = window
+            .active
+            .as_ref()
+            .and_then(|a| window.tabs.iter().position(|t| &t.id == a))
+            .unwrap_or(0);
+        let id = match window.tabs.get_mut(active) {
             Some(tab) => {
                 tab.path = Some(path.to_string());
                 tab.id.clone()
@@ -292,6 +298,15 @@ mod tests {
     fn the_first_tab_of_a_window_becomes_active() {
         let reg = reg_with(&[("main", "t1", Some("/a.md")), ("main", "t2", None)]);
         assert_eq!(reg.window("main").unwrap().active.as_deref(), Some("t1"));
+    }
+
+    #[test]
+    fn set_single_path_retargets_the_active_tab_not_the_first() {
+        let mut reg = reg_with(&[("main", "t1", Some("/a.md")), ("main", "t2", None)]);
+        reg.sync("main", &[("t1".into(), Some("/a.md".into())), ("t2".into(), None)], Some("t2"));
+        assert_eq!(reg.set_single_path("main", "/b.md", || panic!("no new tab")).as_deref(), Some("t2"));
+        assert_eq!(reg.label_of("/a.md").as_deref(), Some("main"), "the first tab keeps its file");
+        assert_eq!(reg.owner_of("/b.md"), Some(("main".to_string(), "t2".to_string())));
     }
 
     #[test]

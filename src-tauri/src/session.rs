@@ -299,7 +299,9 @@ impl SessionState {
         self.touch();
     }
 
-    /// Replace this window's tabs with what the frontend reports, in its order.
+    /// Replace this window's tabs outright. The heartbeat goes through
+    /// `set_reported_tabs`, which keeps tabs a report omitted.
+    #[cfg(test)]
     pub fn set_tabs(&self, label: &str, tabs: Vec<TabSnapshot>, active_tab: Option<String>) {
         if self.is_quitting() {
             return;
@@ -309,6 +311,30 @@ impl SessionState {
             .entry(label.to_string())
             .or_insert_with(WindowSnapshot::empty);
         entry.tabs = tabs;
+        entry.active_tab = active_tab;
+        drop(map);
+        self.touch();
+    }
+
+    /// `set_tabs` for a heartbeat: tabs the registry still holds
+    /// (`registry_ids`) but the report omitted keep their current snapshot —
+    /// see `with_omitted_tabs`. Merged under the same lock that stores it, so
+    /// two heartbeats cannot interleave between the read and the write.
+    pub fn set_reported_tabs(
+        &self,
+        label: &str,
+        reported: Vec<TabSnapshot>,
+        active_tab: Option<String>,
+        registry_ids: &[String],
+    ) {
+        if self.is_quitting() {
+            return;
+        }
+        let mut map = self.entries.lock().unwrap();
+        let entry = map
+            .entry(label.to_string())
+            .or_insert_with(WindowSnapshot::empty);
+        entry.tabs = with_omitted_tabs(reported, registry_ids, Some(&*entry));
         entry.active_tab = active_tab;
         drop(map);
         self.touch();
@@ -453,13 +479,22 @@ pub fn parse_session(data: &str) -> Option<Session> {
     })
 }
 
-/// The previous run's session: `session-v2.json` when it parses, else the
-/// pre-tabs `session.json`, migrated. A v2 file that exists but does not
-/// parse falls back too — an older snapshot beats none.
+/// The previous run's session: whichever of `session-v2.json` and the
+/// pre-tabs `session.json` (migrated) was saved last, v2 on a tie. A file
+/// that does not parse loses to one that does — an older snapshot beats none.
+///
+/// Newest, not "v2 first": an older build run after this one (a rollback, or
+/// a dev build of another branch sharing the data dir) writes only
+/// `session.json`, and preferring the stale v2 would restore the wrong
+/// windows and leave the newer file's sidecars unreferenced — the first
+/// prune deletes them.
 pub fn choose_session(current: Option<&str>, legacy: Option<&str>) -> Option<Session> {
-    current
-        .and_then(parse_session)
-        .or_else(|| legacy.and_then(parse_session))
+    let current = current.and_then(parse_session);
+    let legacy = legacy.and_then(parse_session);
+    match (current, legacy) {
+        (Some(current), Some(legacy)) if legacy.saved_at > current.saved_at => Some(legacy),
+        (current, legacy) => current.or(legacy),
+    }
 }
 
 fn data_file(name: &str) -> Result<PathBuf, String> {
@@ -496,8 +531,8 @@ pub fn write_session(session: &Session) -> Result<(), String> {
     })
 }
 
-/// Read the session (v2, else v1 migrated), dropping tabs whose file has
-/// since disappeared.
+/// Read the session (the newer of v2 and v1 migrated), dropping tabs whose
+/// file has since disappeared.
 pub fn read_session() -> Option<Session> {
     let read = |name: &str| data_file(name).ok().and_then(|p| fs::read_to_string(p).ok());
     let current = read(SESSION_FILE);
@@ -572,8 +607,8 @@ pub struct TabReport {
     pub content: Option<String>,
 }
 
-/// Turn a heartbeat into snapshots, writing each untitled tab's text to its
-/// sidecar through `write`.
+/// Turn a heartbeat into snapshots, plus the sidecar writes it calls for
+/// (`(file name, text)`), not yet made — see `record_heartbeat` on why.
 ///
 /// The `is_empty` guard keeps a blank untitled tab out of the next session:
 /// no sidecar, no `untitled` name, and `prune_missing` drops it on read. It is
@@ -584,28 +619,82 @@ pub fn tab_snapshots(
     state: &SessionState,
     label: &str,
     reports: Vec<TabReport>,
-    write: impl Fn(&str, &str) -> Result<(), String>,
-) -> Result<Vec<TabSnapshot>, String> {
-    reports
+) -> (Vec<TabSnapshot>, Vec<(String, String)>) {
+    let mut writes = Vec::new();
+    let snapshots = reports
         .into_iter()
         .map(|r| {
-            let untitled = match (&r.path, &r.content) {
+            let untitled = match (&r.path, r.content) {
                 (None, Some(text)) if !text.is_empty() => {
                     let name = state.untitled_file_for(label, &r.tab_id);
-                    write(&name, text)?;
+                    writes.push((name.clone(), text));
                     Some(name)
                 }
                 _ => None,
             };
-            Ok(TabSnapshot {
+            TabSnapshot {
                 tab_id: r.tab_id,
                 path: r.path,
                 untitled,
                 cursor: r.cursor,
                 top_line: r.top_line.max(1),
-            })
+            }
         })
-        .collect()
+        .collect();
+    (snapshots, writes)
+}
+
+/// `reported`, followed — in `registry_ids` order — by the tabs of
+/// `previous` that the registry still holds but the report left out.
+///
+/// The registry keeps such tabs (a claim can be in flight while an older
+/// report is on its way, see `TabRegistry::sync`); dropping them here would
+/// strip a background untitled tab of its `untitled` name, and the next
+/// prune would delete its draft.
+pub fn with_omitted_tabs(
+    mut reported: Vec<TabSnapshot>,
+    registry_ids: &[String],
+    previous: Option<&WindowSnapshot>,
+) -> Vec<TabSnapshot> {
+    let Some(previous) = previous else {
+        return reported;
+    };
+    for id in registry_ids {
+        if reported.iter().any(|t| &t.tab_id == id) {
+            continue;
+        }
+        if let Some(tab) = previous.tabs.iter().find(|t| &t.tab_id == id) {
+            reported.push(tab.clone());
+        }
+    }
+    reported
+}
+
+/// Record one heartbeat: the window's tabs into `state`, then each untitled
+/// tab's text into its sidecar through `write`.
+///
+/// In that order on purpose. The ticker prunes every sidecar
+/// `referenced_untitled` does not name; a first sidecar written before its
+/// name is recorded could be deleted in between, and a quit right then loses
+/// the draft. A name recorded before its file exists is harmless: restore
+/// skips an untitled tab whose sidecar cannot be read.
+pub fn record_heartbeat(
+    state: &SessionState,
+    label: &str,
+    reports: Vec<TabReport>,
+    active: Option<String>,
+    registry_ids: &[String],
+    write: impl Fn(&str, &str) -> Result<(), String>,
+) -> Result<(), String> {
+    let (snapshots, writes) = tab_snapshots(state, label, reports);
+    state.set_reported_tabs(label, snapshots, active, registry_ids);
+    let mut first_error = None;
+    for (name, text) in &writes {
+        if let Err(e) = write(name, text) {
+            first_error.get_or_insert(e);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 /// Frontend heartbeat: every tab of the window, in order, with positions and
@@ -621,17 +710,19 @@ pub async fn tabs_sync(
 ) -> Result<(), String> {
     use tauri::Manager;
     let label = window.label().to_string();
-    {
+    let registry_ids: Vec<String> = {
         // Released before any `SessionState` lock is taken.
         let open_files = app.state::<crate::window::OpenFiles>();
         let mut reg = open_files.0.lock().unwrap();
         let reported: Vec<(String, Option<String>)> =
             tabs.iter().map(|t| (t.tab_id.clone(), t.path.clone())).collect();
         reg.sync(&label, &reported, active.as_deref());
-    }
+        reg.window(&label)
+            .map(|w| w.tabs.iter().map(|t| t.id.clone()).collect())
+            .unwrap_or_default()
+    };
 
-    let snapshots = tab_snapshots(&state, &label, tabs, write_untitled)?;
-    state.set_tabs(&label, snapshots, active);
+    record_heartbeat(&state, &label, tabs, active, &registry_ids, write_untitled)?;
 
     // Geometry also rides the heartbeat, because `Moved`/`Resized` never fire for
     // a window the user does not touch — leaving it recorded at 0x0 and restored
@@ -782,6 +873,22 @@ mod tests {
         let v1 = r#"{"version":1,"savedAt":0,"windows":[{"path":"/v1.md","x":0,"y":0,"width":9,"height":9}]}"#;
         let s = choose_session(Some(&v2), Some(v1)).unwrap();
         assert_eq!(s.windows[0].tabs[0].path.as_deref(), Some("/v2.md"));
+    }
+
+    #[test]
+    fn a_newer_v1_from_a_rolled_back_build_wins() {
+        let v2 = serde_json::to_string(&Session {
+            saved_at: 5,
+            ..session(vec![window(vec![tab("t2", Some("/v2.md"))])])
+        })
+        .unwrap();
+        let v1 = r#"{"version":1,"savedAt":9,"windows":[{"path":"/v1.md","x":0,"y":0,"width":9,"height":9}]}"#;
+        let s = choose_session(Some(&v2), Some(v1)).unwrap();
+        assert_eq!(s.windows[0].tabs[0].path.as_deref(), Some("/v1.md"));
+
+        let older_v1 = r#"{"version":1,"savedAt":4,"windows":[{"path":"/v1.md","x":0,"y":0,"width":9,"height":9}]}"#;
+        let s = choose_session(Some(&v2), Some(older_v1)).unwrap();
+        assert_eq!(s.windows[0].tabs[0].path.as_deref(), Some("/v2.md"), "an older v1 still loses");
     }
 
     #[test]
@@ -988,7 +1095,8 @@ mod tests {
             TabReport { tab_id: "blank".into(), path: None, cursor: 0, top_line: 1, content: Some(String::new()) },
             TabReport { tab_id: "file".into(), path: Some("/tmp/a.md".into()), cursor: 9, top_line: 4, content: None },
         ];
-        let snaps = tab_snapshots(&state, "main", reports, |name, text| {
+        let ids: Vec<String> = ["old", "new", "blank", "file"].map(String::from).to_vec();
+        record_heartbeat(&state, "main", reports, Some("old".to_string()), &ids, |name, text| {
             written.borrow_mut().push((name.to_string(), text.to_string()));
             Ok(())
         })
@@ -1001,6 +1109,7 @@ mod tests {
                 ("untitled-new.md".to_string(), "fresh".to_string()),
             ]
         );
+        let snaps = state.snapshot_for("main").unwrap().tabs;
         let names: Vec<Option<&str>> = snaps.iter().map(|s| s.untitled.as_deref()).collect();
         assert_eq!(names, vec![Some("untitled-main.md"), Some("untitled-new.md"), None, None]);
         assert_eq!(snaps[0].top_line, 1, "a reported 0 is normalized");
@@ -1008,10 +1117,55 @@ mod tests {
     }
 
     #[test]
-    fn tab_snapshots_fail_when_a_sidecar_cannot_be_written() {
+    fn a_heartbeat_fails_when_a_sidecar_cannot_be_written() {
         let state = SessionState::new();
         let reports = vec![TabReport { tab_id: "u".into(), path: None, cursor: 0, top_line: 1, content: Some("text".into()) }];
-        assert!(tab_snapshots(&state, "main", reports, |_, _| Err("disk full".into())).is_err());
+        assert!(record_heartbeat(&state, "main", reports, None, &[], |_, _| Err("disk full".into())).is_err());
+    }
+
+    #[test]
+    fn a_sidecar_is_referenced_before_it_is_written() {
+        // The ticker prunes whatever `referenced_untitled` does not name; a
+        // first sidecar written before its name is recorded can be deleted
+        // before the name lands.
+        let state = SessionState::new();
+        let reports = vec![TabReport { tab_id: "u".into(), path: None, cursor: 0, top_line: 1, content: Some("text".into()) }];
+        let checked = RefCell::new(false);
+        record_heartbeat(&state, "main", reports, Some("u".to_string()), &["u".to_string()], |name, _| {
+            assert!(state.referenced_untitled().contains(name), "{name} written before it was referenced");
+            *checked.borrow_mut() = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(checked.into_inner());
+    }
+
+    #[test]
+    fn a_report_without_a_background_untitled_tab_does_not_release_its_sidecar() {
+        let state = SessionState::new();
+        state.seed(
+            "main",
+            window(vec![tab("a", Some("/tmp/a.md")), untitled_tab("u", "untitled-u.md")]),
+        );
+        let reports = vec![TabReport { tab_id: "a".into(), path: Some("/tmp/a.md".into()), cursor: 7, top_line: 2, content: None }];
+        let ids = ["a", "u"].map(String::from).to_vec();
+        record_heartbeat(&state, "main", reports, Some("a".to_string()), &ids, |_, _| Ok(())).unwrap();
+
+        assert!(state.referenced_untitled().contains("untitled-u.md"));
+        let tabs = state.snapshot_for("main").unwrap().tabs;
+        let order: Vec<&str> = tabs.iter().map(|t| t.tab_id.as_str()).collect();
+        assert_eq!(order, vec!["a", "u"]);
+        assert_eq!(tabs[0].cursor, 7, "the reported tab is updated");
+    }
+
+    #[test]
+    fn a_tab_the_registry_no_longer_holds_is_dropped_from_the_session() {
+        let state = SessionState::new();
+        state.seed("main", window(vec![tab("a", Some("/tmp/a.md")), untitled_tab("u", "untitled-u.md")]));
+        let reports = vec![TabReport { tab_id: "a".into(), path: Some("/tmp/a.md".into()), cursor: 0, top_line: 1, content: None }];
+        record_heartbeat(&state, "main", reports, Some("a".to_string()), &["a".to_string()], |_, _| Ok(())).unwrap();
+        assert!(!state.referenced_untitled().contains("untitled-u.md"));
+        assert_eq!(state.snapshot_for("main").unwrap().tabs.len(), 1);
     }
 
     #[test]
@@ -1093,8 +1247,10 @@ mod tests {
         let state = SessionState::new();
         state.seed("main", window(vec![untitled_tab("u", "untitled-u.md")]));
         let reports = vec![TabReport { tab_id: "u".into(), path: None, cursor: 0, top_line: 1, content: Some(String::new()) }];
-        let snaps = tab_snapshots(&state, "main", reports, |_, _| panic!("no sidecar for an empty buffer")).unwrap();
-        state.set_tabs("main", snaps, Some("u".to_string()));
+        record_heartbeat(&state, "main", reports, Some("u".to_string()), &["u".to_string()], |_, _| {
+            panic!("no sidecar for an empty buffer")
+        })
+        .unwrap();
         assert!(!state.referenced_untitled().contains("untitled-u.md"));
         assert!(prune_missing(state.snapshot(0), |_| true).windows.is_empty(), "a blank tab never comes back");
     }
