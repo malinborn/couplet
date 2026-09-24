@@ -555,6 +555,36 @@ impl AiPending {
         self.fail_where(error, |e| e.label == label && e.path.as_deref() == Some(path));
     }
 
+    /// The tab holding `path` moved from window `from` to `to` (`tab_move`):
+    /// its agents wait on `to` from now on — an answer from there is
+    /// accepted (`respond_from`), closing `to` fails them, closing `from`
+    /// no longer does. Called under the `OpenFiles` lock (lock order
+    /// `OpenFiles → AiPending`; nothing takes them the other way round).
+    /// Returns how many requests followed the file.
+    pub fn relabel(&self, from: &str, to: &str, path: &str) -> usize {
+        let mut map = self.map.lock().unwrap();
+        let mut n = 0;
+        for entry in map.values_mut().filter(|e| e.label == from && e.path.as_deref() == Some(path)) {
+            entry.label = to.to_string();
+            n += 1;
+        }
+        n
+    }
+
+    #[cfg(test)]
+    fn label_of(&self, id: u64) -> Option<String> {
+        self.map.lock().unwrap().get(&id).map(|e| e.label.clone())
+    }
+
+    /// A waiting request, for tests in other modules (`register` is private).
+    #[cfg(test)]
+    pub(crate) fn register_waiting(&self, label: &str, path: Option<&str>) -> (u64, mpsc::Receiver<AiResponse>) {
+        let (tx, rx) = mpsc::channel();
+        let id = self.alloc_id();
+        self.register(id, label, path.map(str::to_string), tx);
+        (id, rx)
+    }
+
     #[cfg(test)]
     fn len(&self) -> usize {
         self.map.lock().unwrap().len()
@@ -2599,6 +2629,32 @@ mod tests {
         assert!(rx_other.try_recv().is_err(), "the same path in another window");
         assert!(rx_none.try_recv().is_err(), "an entry without a path is never matched");
         assert_eq!(pending.len(), 3);
+    }
+
+    #[test]
+    fn relabel_hands_a_moved_documents_agents_to_the_target_window() {
+        let pending = AiPending::new();
+        let (moved, rx) = waiting(&pending, "main", Some("/a.md"));
+        let (_other_doc, _rx2) = waiting(&pending, "main", Some("/b.md"));
+        assert_eq!(pending.relabel("main", "editor-2", "/a.md"), 1);
+        assert!(
+            pending.respond_from(moved, "main", AiResponse::ok()).is_err(),
+            "the old window no longer answers it"
+        );
+        pending.cancel_for_window("main");
+        assert!(pending.is_pending(moved), "closing the old window does not fail it");
+        pending.respond_from(moved, "editor-2", AiResponse::ok()).unwrap();
+        assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap().ok);
+    }
+
+    #[test]
+    fn relabel_leaves_other_windows_and_pathless_requests_alone() {
+        let pending = AiPending::new();
+        let (elsewhere, _r1) = waiting(&pending, "editor-3", Some("/a.md"));
+        let (pathless, _r2) = waiting(&pending, "main", None);
+        assert_eq!(pending.relabel("main", "editor-2", "/a.md"), 0);
+        assert_eq!(pending.label_of(elsewhere).as_deref(), Some("editor-3"));
+        assert_eq!(pending.label_of(pathless).as_deref(), Some("main"), "a close request has no document to follow");
     }
 
     #[test]

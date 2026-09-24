@@ -16,6 +16,25 @@ pub struct RegTab {
     pub path: Option<String>,
 }
 
+/// Why `TabRegistry::move_tabs` changed nothing.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MoveRefused {
+    Nothing,
+    SameWindow,
+    /// This id is not one of the source window's tabs.
+    NotHere(String),
+}
+
+impl std::fmt::Display for MoveRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Nothing => write!(f, "nothing to move"),
+            Self::SameWindow => write!(f, "the tabs are in that window already"),
+            Self::NotHere(id) => write!(f, "tab {id} is not in this window"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WindowTabs {
     /// In the order the window shows them.
@@ -209,6 +228,63 @@ impl TabRegistry {
         }
         window.active = Some(tab_id.to_string());
         true
+    }
+
+    /// Move tabs `ids` from `from` to `to` (plan 05), in the order given,
+    /// right after `to`'s active tab — at its end when it has none. All or
+    /// nothing: refused, with nothing changed, when no id is given, the two
+    /// are one window, or any id is not one of `from`'s tabs. Paths go with
+    /// their tabs, so one file stays one tab.
+    ///
+    /// Each moved id is tombstoned in `from` — a heartbeat it sent before the
+    /// move must not bring the tab back there (`sync`) nor, through the
+    /// session, its draft — and un-tombstoned in `to`. `from`'s active tab,
+    /// if it moved, falls to its first remaining tab until its frontend says
+    /// otherwise; `to` keeps its own, or takes the first moved one.
+    pub fn move_tabs(&mut self, from: &str, to: &str, ids: &[String]) -> Result<Vec<RegTab>, MoveRefused> {
+        if ids.is_empty() {
+            return Err(MoveRefused::Nothing);
+        }
+        if from == to {
+            return Err(MoveRefused::SameWindow);
+        }
+        let mut unique: Vec<&String> = Vec::with_capacity(ids.len());
+        for id in ids {
+            if !unique.contains(&id) {
+                unique.push(id);
+            }
+        }
+        let Some(source) = self.windows.get_mut(from) else {
+            return Err(MoveRefused::NotHere(ids[0].clone()));
+        };
+        if let Some(stranger) = unique.iter().find(|id| !source.tabs.iter().any(|t| &t.id == **id)) {
+            return Err(MoveRefused::NotHere((*stranger).clone()));
+        }
+        let mut moved = Vec::with_capacity(unique.len());
+        for id in unique {
+            if let Some(at) = source.tabs.iter().position(|t| &t.id == id) {
+                let tab = source.tabs.remove(at);
+                source.closed_ids.insert(tab.id.clone());
+                moved.push(tab);
+            }
+        }
+        if source.active.as_ref().is_some_and(|a| moved.iter().any(|t| &t.id == a)) {
+            source.active = source.tabs.first().map(|t| t.id.clone());
+        }
+        let target = self.windows.entry(to.to_string()).or_default();
+        let at = target
+            .active
+            .as_ref()
+            .and_then(|a| target.tabs.iter().position(|t| &t.id == a))
+            .map_or(target.tabs.len(), |i| i + 1);
+        for (k, tab) in moved.iter().enumerate() {
+            target.closed_ids.remove(&tab.id);
+            target.tabs.insert(at + k, tab.clone());
+        }
+        if target.active.is_none() {
+            target.active = moved.first().map(|t| t.id.clone());
+        }
+        Ok(moved)
     }
 
     pub fn tab_path(&self, label: &str, tab_id: &str) -> Option<String> {
@@ -533,5 +609,100 @@ mod tests {
             vec![("main".to_string(), "/p/a.md".to_string())],
             "an untitled-only window has nothing to bind to yet; a bound one is done"
         );
+    }
+
+    fn ids_of(reg: &TabRegistry, label: &str) -> Vec<String> {
+        reg.window(label).map(|w| w.tabs.iter().map(|t| t.id.clone()).collect()).unwrap_or_default()
+    }
+
+    fn strings(xs: &[&str]) -> Vec<String> {
+        xs.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_move_puts_the_tabs_after_the_targets_active_tab_in_the_order_given() {
+        let mut reg = reg_with(&[
+            ("main", "a", Some("/a.md")),
+            ("main", "b", Some("/b.md")),
+            ("main", "c", None),
+            ("editor-2", "x", Some("/x.md")),
+            ("editor-2", "y", Some("/y.md")),
+        ]);
+        let moved = reg.move_tabs("main", "editor-2", &strings(&["c", "a"])).unwrap();
+        assert_eq!(moved.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), vec!["c", "a"]);
+        assert_eq!(ids_of(&reg, "main"), vec!["b"]);
+        assert_eq!(ids_of(&reg, "editor-2"), vec!["x", "c", "a", "y"], "right after x, the active tab");
+        assert_eq!(reg.owner_of("/a.md"), Some(("editor-2".to_string(), "a".to_string())), "the file went with its tab");
+        assert_eq!(reg.paths().iter().filter(|p| p.as_str() == "/a.md").count(), 1, "one file, one tab");
+    }
+
+    #[test]
+    fn a_move_is_all_or_nothing() {
+        let mut reg = reg_with(&[("main", "a", Some("/a.md")), ("editor-2", "x", None)]);
+        assert_eq!(
+            reg.move_tabs("main", "editor-2", &strings(&["a", "x"])),
+            Err(MoveRefused::NotHere("x".to_string()))
+        );
+        assert_eq!(reg.move_tabs("main", "main", &strings(&["a"])), Err(MoveRefused::SameWindow));
+        assert_eq!(reg.move_tabs("main", "editor-2", &[]), Err(MoveRefused::Nothing));
+        assert_eq!(ids_of(&reg, "main"), vec!["a"]);
+        assert_eq!(ids_of(&reg, "editor-2"), vec!["x"]);
+        assert!(reg.window("main").unwrap().closed_ids.is_empty(), "nothing tombstoned");
+    }
+
+    #[test]
+    fn the_sources_active_tab_falls_to_its_first_remaining_one_and_the_target_keeps_its_own() {
+        let mut reg = reg_with(&[("main", "a", None), ("main", "b", None), ("editor-2", "x", None)]);
+        reg.move_tabs("main", "editor-2", &strings(&["a"])).unwrap();
+        assert_eq!(reg.window("main").unwrap().active.as_deref(), Some("b"));
+        assert_eq!(reg.window("editor-2").unwrap().active.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn a_window_built_for_the_move_takes_the_first_moved_tab_as_active_and_keeps_its_number() {
+        let mut reg = reg_with(&[("main", "a", None), ("main", "b", None)]);
+        reg.set_number("editor-3", Some(3));
+        reg.move_tabs("main", "editor-3", &strings(&["a", "b"])).unwrap();
+        let w = reg.window("editor-3").unwrap();
+        assert_eq!(w.active.as_deref(), Some("a"));
+        assert_eq!(w.number, Some(3), "numbers never change");
+        assert_eq!(reg.window("main").unwrap().active, None, "an emptied window has none");
+    }
+
+    #[test]
+    fn a_heartbeat_the_source_sent_before_the_move_does_not_bring_the_tab_back() {
+        let mut reg = reg_with(&[("main", "a", Some("/a.md")), ("main", "u", None), ("editor-2", "x", None)]);
+        let stale = [("a".to_string(), Some("/a.md".to_string())), ("u".to_string(), None)];
+        reg.move_tabs("main", "editor-2", &strings(&["u"])).unwrap();
+        reg.sync("main", &stale, Some("u"));
+        assert_eq!(ids_of(&reg, "main"), vec!["a"]);
+        assert_eq!(reg.window("main").unwrap().active.as_deref(), Some("a"));
+        assert!(reg.window("main").unwrap().closed_ids.contains("u"));
+        assert_eq!(ids_of(&reg, "editor-2"), vec!["x", "u"]);
+    }
+
+    #[test]
+    fn moving_a_tab_back_clears_its_tombstone_there() {
+        let mut reg = reg_with(&[("main", "a", None), ("main", "u", None), ("editor-2", "x", None)]);
+        reg.move_tabs("main", "editor-2", &strings(&["u"])).unwrap();
+        reg.move_tabs("editor-2", "main", &strings(&["u"])).unwrap();
+        assert!(!reg.window("main").unwrap().closed_ids.contains("u"));
+        assert!(reg.window("editor-2").unwrap().closed_ids.contains("u"));
+        reg.sync("main", &[("a".to_string(), None), ("u".to_string(), None)], Some("u"));
+        assert_eq!(reg.window("main").unwrap().active.as_deref(), Some("u"));
+    }
+
+    #[test]
+    fn an_id_given_twice_moves_once() {
+        let mut reg = reg_with(&[("main", "a", None), ("main", "b", None), ("editor-2", "x", None)]);
+        assert_eq!(reg.move_tabs("main", "editor-2", &strings(&["a", "a"])).unwrap().len(), 1);
+        assert_eq!(ids_of(&reg, "editor-2"), vec!["x", "a"]);
+    }
+
+    #[test]
+    fn a_refused_move_says_why() {
+        assert_eq!(MoveRefused::NotHere("x".into()).to_string(), "tab x is not in this window");
+        assert_eq!(MoveRefused::SameWindow.to_string(), "the tabs are in that window already");
+        assert_eq!(MoveRefused::Nothing.to_string(), "nothing to move");
     }
 }

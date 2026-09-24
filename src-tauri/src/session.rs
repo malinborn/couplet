@@ -439,6 +439,34 @@ impl SessionState {
         self.touch();
     }
 
+    /// A tab moved to another window (`tab_move`): its snapshot leaves
+    /// `from`'s entry and joins `to`'s now, not at the next heartbeat — a
+    /// quit in between would otherwise restore it in neither window. The
+    /// `untitled` name the source recorded is kept, so the draft goes on
+    /// being written to (and referenced as) the file it already has.
+    pub fn move_tab(&self, from: &str, to: &str, mut tab: TabSnapshot) {
+        if self.is_quitting() {
+            return;
+        }
+        let mut map = self.entries.lock().unwrap();
+        let old = map.get_mut(from).and_then(|w| {
+            let at = w.tabs.iter().position(|t| t.tab_id == tab.tab_id)?;
+            let old = w.tabs.remove(at);
+            if w.active_tab.as_deref() == Some(tab.tab_id.as_str()) {
+                w.active_tab = w.tabs.first().map(|t| t.tab_id.clone());
+            }
+            Some(old)
+        });
+        if tab.untitled.is_none() {
+            tab.untitled = old.and_then(|t| t.untitled);
+        }
+        let entry = map.entry(to.to_string()).or_insert_with(WindowSnapshot::empty);
+        entry.tabs.retain(|t| t.tab_id != tab.tab_id);
+        entry.tabs.push(tab);
+        drop(map);
+        self.touch();
+    }
+
     /// Forget a window. A no-op while quitting — see the module docs on why.
     pub fn remove(&self, label: &str) {
         if self.is_quitting() {
@@ -1580,5 +1608,62 @@ mod tests {
         let state = SessionState::new();
         state.set_project("main", Some("/p".to_string()));
         assert_eq!(state.snapshot_for("main").unwrap().project.as_deref(), Some("/p"));
+    }
+
+    fn moved_snap(id: &str, path: Option<&str>) -> TabSnapshot {
+        TabSnapshot { tab_id: id.to_string(), path: path.map(str::to_string), top_line: 1, ..Default::default() }
+    }
+
+    #[test]
+    fn a_moved_tab_takes_its_snapshot_and_sidecar_name_to_the_target() {
+        let state = SessionState::new();
+        state.set_tabs(
+            "main",
+            vec![
+                moved_snap("a", Some("/a.md")),
+                TabSnapshot { untitled: Some("untitled-main.md".into()), ..moved_snap("u", None) },
+            ],
+            Some("u".into()),
+        );
+        state.set_tabs("editor-2", vec![moved_snap("x", None)], Some("x".into()));
+        state.move_tab("main", "editor-2", TabSnapshot { cursor: 4, opened_at: 7, ..moved_snap("u", None) });
+
+        let main = state.snapshot_for("main").unwrap();
+        assert_eq!(main.tabs.iter().map(|t| t.tab_id.as_str()).collect::<Vec<_>>(), vec!["a"]);
+        assert_eq!(main.active_tab.as_deref(), Some("a"));
+        let target = state.snapshot_for("editor-2").unwrap();
+        let u = target.tabs.iter().find(|t| t.tab_id == "u").unwrap();
+        assert_eq!(u.untitled.as_deref(), Some("untitled-main.md"), "a migrated draft keeps writing to its file");
+        assert_eq!((u.cursor, u.opened_at), (4, 7));
+        assert_eq!(state.untitled_file_for("editor-2", "u"), "untitled-main.md");
+    }
+
+    #[test]
+    fn a_moved_draft_stays_referenced_so_the_prune_keeps_it() {
+        let state = SessionState::new();
+        state.set_tabs(
+            "main",
+            vec![TabSnapshot { untitled: Some("untitled-1-2-3.md".into()), ..moved_snap("1-2-3", None) }],
+            None,
+        );
+        state.move_tab("main", "editor-4", moved_snap("1-2-3", None));
+        assert!(state.referenced_untitled().contains("untitled-1-2-3.md"));
+    }
+
+    #[test]
+    fn a_tab_the_source_never_recorded_still_lands_in_the_target() {
+        let state = SessionState::new();
+        state.move_tab("main", "editor-2", moved_snap("n", Some("/n.md")));
+        assert_eq!(state.snapshot_for("editor-2").unwrap().tabs, vec![moved_snap("n", Some("/n.md"))]);
+    }
+
+    #[test]
+    fn move_tab_changes_nothing_while_quitting() {
+        let state = SessionState::new();
+        state.set_tabs("main", vec![moved_snap("a", None)], None);
+        state.mark_quitting();
+        state.move_tab("main", "editor-2", moved_snap("a", None));
+        assert_eq!(state.snapshot_for("main").unwrap().tabs.len(), 1);
+        assert!(state.snapshot_for("editor-2").is_none());
     }
 }

@@ -166,6 +166,7 @@ pub fn run() {
             tab_commands::tab_release,
             tab_commands::tab_activate,
             tab_commands::tab_close,
+            tab_commands::tab_move,
             git_info::tab_git_info,
             window::open_file_window_cmd,
             window::focus_if_open,

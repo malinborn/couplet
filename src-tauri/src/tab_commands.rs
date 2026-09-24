@@ -4,12 +4,12 @@
 
 use std::collections::HashMap;
 
-use serde::Serialize;
-use tauri::{AppHandle, Manager};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager};
 
-use crate::session::SessionState;
-use crate::tabs::TabRegistry;
-use crate::window::{self, OpenFiles, PendingFiles, PendingOpen};
+use crate::session::{SessionState, TabSnapshot};
+use crate::tabs::{MoveRefused, TabRegistry};
+use crate::window::{self, OpenFiles, PendingFiles, PendingOpen, PendingTab};
 
 /// Who holds a path, seen from the calling window.
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -285,9 +285,202 @@ pub async fn tab_close(
     Ok(())
 }
 
+/// One tab as its old window hands it over (plan 05) — `MovedTab` in
+/// `lib/tabs/controller.ts`. No path: Rust takes a tab's file from its
+/// registry, never from a frontend.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MovedTab {
+    pub tab_id: String,
+    /// An untitled tab's text. Ignored for a file tab: the target reads the file.
+    pub content: Option<String>,
+    pub cursor: usize,
+    pub top_line: usize,
+    pub opened_at: u64,
+    pub viewed_at: u64,
+    pub unviewed: bool,
+    pub transient: bool,
+    pub transient_seen_at: u64,
+    /// The agent inbox items that waited for the tab, untouched.
+    pub inbox: Option<serde_json::Value>,
+}
+
+impl MovedTab {
+    fn into_pending(self, path: Option<String>) -> PendingTab {
+        PendingTab {
+            content: if path.is_none() { self.content } else { None },
+            path,
+            tab_id: self.tab_id,
+            cursor: self.cursor,
+            top_line: self.top_line.max(1),
+            opened_at: self.opened_at,
+            viewed_at: self.viewed_at,
+            unviewed: self.unviewed,
+            transient: self.transient,
+            transient_seen_at: self.transient_seen_at,
+            inbox: self.inbox,
+        }
+    }
+}
+
+/// Where `tab_move` sends tabs.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum MoveTarget {
+    Window { label: String },
+    /// A window built for them, in the background (D5).
+    NewWindow,
+}
+
+/// `tab_move`'s answer: the window the tabs are in now.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub struct MoveDone {
+    pub label: String,
+    pub number: Option<u32>,
+}
+
+/// How moved tabs reach the target's frontend.
+#[derive(Debug, PartialEq)]
+pub enum Arrival {
+    /// It has mounted: they go to it as one `tabs-arrive` event.
+    Event(Vec<PendingTab>),
+    /// It has not (a window built for the move): they wait in its payload.
+    Pending,
+}
+
+/// What `move_tabs_between` did.
+#[derive(Debug, PartialEq)]
+pub struct Moved {
+    pub arrival: Arrival,
+    /// The session snapshots of the moved tabs, for `SessionState::move_tab`.
+    pub snapshots: Vec<TabSnapshot>,
+    /// The source's active tab moved: its watcher stops until the source
+    /// shows its next tab (`tab_activate`).
+    pub source_active_moved: bool,
+}
+
+/// The move itself (D1), with the `OpenFiles` and `PendingFiles` locks held:
+/// the registry, the agents' requests for the moved files, and the hand-over
+/// — an event for a mounted target, its payload otherwise. `get_window_init`
+/// takes the payload and marks the window mounted under the same two locks,
+/// so a payload is never appended to after it was pulled. Nothing changes
+/// when the target is gone or the registry refuses.
+pub fn move_tabs_between(
+    reg: &mut TabRegistry,
+    pending: &mut HashMap<String, PendingOpen>,
+    agents: &crate::ai_socket::AiPending,
+    from: &str,
+    to: &str,
+    tabs: Vec<MovedTab>,
+    is_live: impl Fn(&str) -> bool,
+) -> Result<Moved, String> {
+    if !is_live(to) {
+        return Err(format!("window {to} is gone"));
+    }
+    let ids: Vec<String> = tabs.iter().map(|t| t.tab_id.clone()).collect();
+    let was_active = reg.window(from).and_then(|w| w.active.clone());
+    let moved = reg.move_tabs(from, to, &ids).map_err(|e| e.to_string())?;
+    for path in moved.iter().filter_map(|t| t.path.as_deref()) {
+        agents.relabel(from, to, path);
+    }
+    let arriving: Vec<PendingTab> = moved
+        .iter()
+        .map(|reg_tab| {
+            let carried = tabs.iter().find(|t| t.tab_id == reg_tab.id).cloned().unwrap_or_default();
+            carried.into_pending(reg_tab.path.clone())
+        })
+        .collect();
+    let snapshots = arriving
+        .iter()
+        .map(|t| TabSnapshot {
+            tab_id: t.tab_id.clone(),
+            path: t.path.clone(),
+            untitled: None,
+            cursor: t.cursor,
+            top_line: t.top_line,
+            opened_at: t.opened_at,
+            viewed_at: t.viewed_at,
+            unviewed: t.unviewed,
+        })
+        .collect();
+    let arrival = if reg.is_mounted(to) {
+        Arrival::Event(arriving)
+    } else {
+        let entry = pending.entry(to.to_string()).or_default();
+        if entry.active_tab_id.is_none() {
+            entry.active_tab_id = arriving.first().map(|t| t.tab_id.clone());
+        }
+        entry.tabs.extend(arriving);
+        Arrival::Pending
+    };
+    let source_active_moved = was_active.is_some_and(|a| moved.iter().any(|t| t.id == a));
+    Ok(Moved { arrival, snapshots, source_active_moved })
+}
+
+/// Move `tabs` of the calling window to `target` (plan 05, D1). A window
+/// built for them is built before the registry lock (`build_window` takes it
+/// to number the window), in the background, and destroyed again when the
+/// move is refused. Never a close or a release (D13): the agents keep
+/// waiting — on the target now.
+#[tauri::command]
+pub async fn tab_move(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    tabs: Vec<MovedTab>,
+    target: MoveTarget,
+) -> Result<MoveDone, String> {
+    let from = window.label().to_string();
+    if tabs.is_empty() {
+        return Err(MoveRefused::Nothing.to_string());
+    }
+    if let Some(bad) = tabs.iter().find(|t| !crate::session::is_valid_tab_id(&t.tab_id)) {
+        return Err(format!("invalid tab id: {:?}", bad.tab_id));
+    }
+    let (to, built) = match target {
+        MoveTarget::Window { label } => (label, false),
+        MoveTarget::NewWindow => (window::build_window(&app, window::Activation::Background)?, true),
+    };
+    let outcome = {
+        let open_files = app.state::<OpenFiles>();
+        let mut reg = open_files.0.lock().unwrap();
+        let moved = {
+            let pending = app.state::<PendingFiles>();
+            let mut pending = pending.0.lock().unwrap();
+            let agents = app.state::<crate::ai_socket::AiPending>();
+            move_tabs_between(&mut reg, &mut pending, &agents, &from, &to, tabs, live_windows(&app))
+        };
+        if moved.as_ref().is_ok_and(|m| m.source_active_moved) {
+            window::set_watcher(&app, &from, None);
+        }
+        moved.map(|m| (m, reg.window(&to).and_then(|w| w.number)))
+    };
+    let (moved, number) = match outcome {
+        Ok(ok) => ok,
+        Err(e) => {
+            if built {
+                if let Some(win) = app.get_webview_window(&to) {
+                    let _ = win.destroy();
+                }
+            }
+            return Err(e);
+        }
+    };
+    let session = app.state::<SessionState>();
+    for snapshot in moved.snapshots {
+        session.move_tab(&from, &to, snapshot);
+    }
+    if let Arrival::Event(arriving) = moved.arrival {
+        if let Err(e) = app.emit_to(to.as_str(), "tabs-arrive", &arriving) {
+            eprintln!("tab_move: {to} did not get its tabs: {e}");
+        }
+    }
+    Ok(MoveDone { label: to, number })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai_socket::{AiPending, AiResponse};
 
     fn reg_with(entries: &[(&str, &str, Option<&str>)]) -> TabRegistry {
         let mut reg = TabRegistry::new();
@@ -499,5 +692,117 @@ mod tests {
         );
         assert_eq!(reg.tab_path("main", "a"), None, "nothing claimed");
         let _ = std::fs::remove_dir_all(real.parent().unwrap().parent().unwrap());
+    }
+
+    fn moved(id: &str) -> MovedTab {
+        MovedTab { tab_id: id.to_string(), cursor: 3, top_line: 2, opened_at: 10, viewed_at: 20, ..Default::default() }
+    }
+
+    #[test]
+    fn a_move_to_a_mounted_window_hands_the_tabs_over_as_one_event() {
+        let mut reg = reg_with(&[("main", "a", Some("/a.md")), ("main", "u", None), ("main", "k", None), ("editor-2", "x", None)]);
+        reg.mark_mounted("editor-2");
+        let tabs = vec![
+            MovedTab { content: Some("draft".into()), unviewed: true, inbox: Some(serde_json::json!([{ "kind": "pulse" }])), ..moved("u") },
+            MovedTab { content: Some("never the file's".into()), transient: true, transient_seen_at: 5, ..moved("a") },
+        ];
+        let out = move_tabs_between(&mut reg, &mut HashMap::new(), &AiPending::new(), "main", "editor-2", tabs, |_| true).unwrap();
+        let Arrival::Event(arriving) = out.arrival else { panic!("the target is mounted") };
+        assert_eq!(arriving.iter().map(|t| t.tab_id.as_str()).collect::<Vec<_>>(), vec!["u", "a"]);
+        assert_eq!(arriving[0].content.as_deref(), Some("draft"));
+        assert_eq!(arriving[0].inbox, Some(serde_json::json!([{ "kind": "pulse" }])));
+        assert!(arriving[0].unviewed);
+        assert_eq!(arriving[1].path.as_deref(), Some("/a.md"), "the registry's path, never the frontend's");
+        assert_eq!(arriving[1].content, None, "a file tab's text comes from its file");
+        assert_eq!(
+            (arriving[1].cursor, arriving[1].top_line, arriving[1].opened_at, arriving[1].viewed_at),
+            (3, 2, 10, 20)
+        );
+        assert!(arriving[1].transient);
+        assert_eq!(arriving[1].transient_seen_at, 5);
+        assert_eq!(
+            out.snapshots.iter().map(|s| (s.tab_id.as_str(), s.path.as_deref())).collect::<Vec<_>>(),
+            vec![("u", None), ("a", Some("/a.md"))]
+        );
+    }
+
+    #[test]
+    fn a_move_to_a_window_that_has_not_mounted_waits_in_its_payload() {
+        let mut reg = reg_with(&[("main", "a", Some("/a.md")), ("main", "b", Some("/b.md"))]);
+        reg.set_number("editor-5", Some(5));
+        let mut pending = HashMap::new();
+        let out = move_tabs_between(&mut reg, &mut pending, &AiPending::new(), "main", "editor-5", vec![moved("a"), moved("b")], |_| true)
+            .unwrap();
+        assert_eq!(out.arrival, Arrival::Pending);
+        let payload = pending.get("editor-5").expect("queued for its mount");
+        assert_eq!(payload.active_tab_id.as_deref(), Some("a"));
+        assert_eq!(payload.tabs.iter().map(|t| t.tab_id.as_str()).collect::<Vec<_>>(), vec!["a", "b"]);
+        assert!(out.source_active_moved, "a was main's active tab: its watcher must stop");
+    }
+
+    #[test]
+    fn a_move_to_a_window_that_is_gone_changes_nothing() {
+        let mut reg = reg_with(&[("main", "a", Some("/a.md")), ("editor-2", "x", None)]);
+        let err = move_tabs_between(&mut reg, &mut HashMap::new(), &AiPending::new(), "main", "editor-2", vec![moved("a")], |l| l != "editor-2")
+            .unwrap_err();
+        assert_eq!(err, "window editor-2 is gone");
+        assert_eq!(reg.label_of("/a.md").as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn a_background_tab_moving_leaves_the_source_watcher_alone() {
+        let mut reg = reg_with(&[("main", "a", Some("/a.md")), ("main", "b", Some("/b.md")), ("editor-2", "x", None)]);
+        reg.mark_mounted("editor-2");
+        let out = move_tabs_between(&mut reg, &mut HashMap::new(), &AiPending::new(), "main", "editor-2", vec![moved("b")], |_| true)
+            .unwrap();
+        assert!(!out.source_active_moved);
+    }
+
+    #[test]
+    fn the_agents_of_a_moved_file_wait_on_the_target() {
+        let mut reg = reg_with(&[("main", "a", Some("/a.md")), ("editor-2", "x", None)]);
+        reg.mark_mounted("editor-2");
+        let agents = AiPending::new();
+        let (id, rx) = agents.register_waiting("main", Some("/a.md"));
+        move_tabs_between(&mut reg, &mut HashMap::new(), &agents, "main", "editor-2", vec![moved("a")], |_| true).unwrap();
+        assert!(agents.respond_from(id, "main", AiResponse::ok()).is_err(), "never `tab released`, and not the source's any more");
+        agents.respond_from(id, "editor-2", AiResponse::ok()).unwrap();
+        assert!(rx.try_recv().unwrap().ok, "answered from its new window");
+    }
+
+    #[test]
+    fn the_move_speaks_the_frontends_json() {
+        let tab: MovedTab = serde_json::from_str(
+            r#"{"tabId":"1-2-3","content":"x","cursor":4,"topLine":2,"openedAt":5,"viewedAt":6,"unviewed":true,"transient":true,"transientSeenAt":7,"inbox":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            tab,
+            MovedTab {
+                tab_id: "1-2-3".into(),
+                content: Some("x".into()),
+                cursor: 4,
+                top_line: 2,
+                opened_at: 5,
+                viewed_at: 6,
+                unviewed: true,
+                transient: true,
+                transient_seen_at: 7,
+                inbox: Some(serde_json::json!([])),
+            }
+        );
+        assert_eq!(
+            serde_json::from_str::<MoveTarget>(r#"{"kind":"window","label":"editor-2"}"#).unwrap(),
+            MoveTarget::Window { label: "editor-2".into() }
+        );
+        assert_eq!(serde_json::from_str::<MoveTarget>(r#"{"kind":"new-window"}"#).unwrap(), MoveTarget::NewWindow);
+        assert_eq!(
+            serde_json::to_string(&MoveDone { label: "editor-2".into(), number: Some(7) }).unwrap(),
+            r#"{"label":"editor-2","number":7}"#
+        );
+        let pending = serde_json::to_value(PendingTab { tab_id: "u".into(), transient: true, transient_seen_at: 3, ..Default::default() })
+            .unwrap();
+        assert_eq!(pending["transientSeenAt"], 3);
+        assert!(pending.get("inbox").is_none(), "absent unless carried");
     }
 }

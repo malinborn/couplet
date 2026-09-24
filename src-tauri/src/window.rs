@@ -32,6 +32,15 @@ pub struct PendingTab {
     pub opened_at: u64,
     pub viewed_at: u64,
     pub unviewed: bool,
+    /// A quick look (spec §7) carried by a move between windows (plan 05);
+    /// `false` for every other tab — a quick look is not persisted.
+    pub transient: bool,
+    pub transient_seen_at: u64,
+    /// What waited for the tab in its old window's agent inbox (asks with
+    /// their deadlines, a pulse): the frontend's own items, carried
+    /// untouched by `tab_move`. Absent for every tab that did not move.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inbox: Option<serde_json::Value>,
 }
 
 /// The tab a restored snapshot hands its window's frontend: caret and drawer
@@ -49,6 +58,7 @@ pub fn pending_tab_from_snapshot(
         opened_at: tab.opened_at,
         viewed_at: tab.viewed_at,
         unviewed: tab.unviewed,
+        ..Default::default()
     }
 }
 
