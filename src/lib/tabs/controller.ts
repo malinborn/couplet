@@ -467,7 +467,12 @@ export function createTabController(deps: TabControllerDeps) {
     await deps.rust.activate(tab.id);
     if (deps.windowFocused()) markSeen(tab.id);
     // After `activate`: an answer from here comes from the window Rust sees showing it.
-    await deps.ai.enter(tab.id);
+    // A failed delivery must not leave the switch unsettled.
+    try {
+      await deps.ai.enter(tab.id);
+    } catch (err) {
+      console.error('Failed to deliver what waited for the tab:', err);
+    }
     void deps.comments.reload();
     deps.entered(tab.path, opened);
     deps.settled();
@@ -904,8 +909,11 @@ export function createTabController(deps: TabControllerDeps) {
     try {
       const exists = await deps.disk.exists(tab.path);
       const disk = exists ? await deps.disk.read(tab.path) : '';
+      // As `prepare`: a file deleted while in the background keeps its
+      // buffer — an empty base would write over the last copy of the text.
       base =
-        cached?.state && decideEnter({ baseline: cached.baseline, disk: exists ? disk : null }) === 'use-cache'
+        cached?.state &&
+        (!exists || decideEnter({ baseline: cached.baseline, disk }) === 'use-cache')
           ? cached.state
           : deps.editor.createState(disk, cached?.cursor ?? 0);
     } catch (err) {
@@ -1029,9 +1037,15 @@ export function createTabController(deps: TabControllerDeps) {
     placeCaretNow,
     applyToTabNow,
     textForAgentNow,
-    /** ⌘W for an agent's `close`, inside `runExclusive` (see `closeNow`'s `onLastTab`). */
-    closeTabNow: async (tabId: string, onLastTab?: () => Promise<void>): Promise<boolean> =>
-      requireExclusive('closeTabNow') ? closeNow(tabId, 'close', onLastTab) : false,
+    /**
+     * ⌘W for an agent's `close`, inside `runExclusive` (see `closeNow`'s
+     * `onLastTab`). File tabs only: an agent never closes an untitled tab (spec §8).
+     */
+    closeTabNow: async (tabId: string, onLastTab?: () => Promise<void>): Promise<boolean> => {
+      if (!requireExclusive('closeTabNow')) return false;
+      if (findById(list, tabId)?.path == null) return false;
+      return closeNow(tabId, 'close', onLastTab);
+    },
     findByPath: (path: string) => findByPath(list, path),
     /** Save As gave the active tab a new path. */
     renameActive(path: string): void {

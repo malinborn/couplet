@@ -1427,6 +1427,46 @@ describe('agent operations', () => {
     }
   });
 
+  it('AnEditOfACachedTabWhoseFileWasDeletedStartsFromTheCachedText', async () => {
+    // As `prepare` does: an empty state on that path would write over the
+    // last copy of the text, and its undo history with it.
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    await h.controller.openPath('/b.md');
+    await h.controller.activate('a');
+    h.files.delete('/b.md');
+    let seen: string | null = null;
+    await exclusive(h, async () => {
+      expect(await h.controller.textForAgentNow('t1')).toBe('BBBB');
+      await h.controller.applyToTabNow('t1', (s) => {
+        seen = s.doc.toString();
+        return prependX(s);
+      });
+    });
+    expect(seen).toBe('BBBB');
+    expect(h.files.get('/b.md')).toBe('XBBBB');
+  });
+
+  it('AFailingDeliveryStillSettlesTheSwitch', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    await h.controller.openPath('/b.md');
+    vi.mocked(h.deps.ai.enter).mockRejectedValueOnce(new Error('boom'));
+    vi.mocked(h.deps.settled).mockClear();
+    expect(await h.controller.activate('a')).toBe('ok');
+    expect(h.deps.settled).toHaveBeenCalled();
+    expect(h.deps.entered).toHaveBeenCalledWith('/a.md', false);
+    expect(h.deps.comments.reload).toHaveBeenCalled();
+  });
+
+  it('CloseTabNowNeverClosesAnUntitledTab', async () => {
+    // Spec §8: an agent's `close` never takes an untitled tab with text.
+    const h = await started(files, [untitledTab('u', 'draft'), fileTab('a', '/a.md')], 'a');
+    expect(await exclusive(h, () => h.controller.closeTabNow('u'))).toBe(false);
+    await h.controller.activate('u');
+    expect(await exclusive(h, () => h.controller.closeTabNow('u')), 'active or not').toBe(false);
+    expect(h.ids()).toEqual(['u', 'a']);
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+  });
+
   it('TheSlotClosesEvenWhenTheCommandThrows', async () => {
     const h = await started(files, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
     await h.controller.runExclusive(async () => {
