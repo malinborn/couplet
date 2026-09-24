@@ -138,7 +138,7 @@ export function reorderTabs(s: TabListState, order: readonly string[]): TabListS
  * Quick looks the human saw at least `afterMs` ago and never answered —
  * spec §7's "ignored". Never one that is unseen — not yet, or again since an
  * agent put something new there — nor one with unsaved text, nor an untitled
- * one (spec §8), nor `skipId`, the tab in front of the human right now.
+ * one (spec §8), nor `skipId` — the controller passes the active tab.
  */
 export function expiredTransients(
   s: TabListState,

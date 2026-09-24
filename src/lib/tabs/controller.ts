@@ -31,8 +31,9 @@ export const TRANSIENT_IGNORED_AFTER_MS = 60 * 60 * 1000;
 export type TransientPolicy = 'keep' | 'close';
 
 /**
- * Proof that the agent's command itself created the tab — the only tab a
- * `show(transient)` may make a quick look (D17). `opened`: the `opened` answer
+ * Where a quick look came from: the agent's command itself created the tab —
+ * the only tab a `show(transient)` may make one (D17). Typed so that a
+ * `shown`/`existing` answer cannot be passed. `opened`: the `opened` answer
  * of `openPathNow` / `openBackgroundNow`. `fresh`: Rust built a window for
  * this very command, and the tab was born with it.
  */
@@ -290,7 +291,11 @@ export function createTabController(deps: TabControllerDeps) {
     return { id, path, dirty: false, openedAt: deps.now(), viewedAt: 0, unviewed: false };
   }
 
-  /** `id` is in front of the human: viewed now, no longer unviewed; a quick look's hour starts. */
+  /**
+   * `id` is in front of the human: viewed now, no longer unviewed. A quick
+   * look's hour starts — and starts again when an agent landed on it since
+   * (it was unviewed): the human has only now seen what it put there.
+   */
   function markSeen(id: string): void {
     const tab = findById(list, id);
     if (!tab) return;
@@ -299,7 +304,7 @@ export function createTabController(deps: TabControllerDeps) {
       updateTab(list, id, {
         viewedAt: now,
         unviewed: false,
-        ...(tab.transient && !tab.transientSeenAt ? { transientSeenAt: now } : {}),
+        ...(tab.transient && (!tab.transientSeenAt || tab.unviewed) ? { transientSeenAt: now } : {}),
       })
     );
   }
@@ -1104,10 +1109,10 @@ export function createTabController(deps: TabControllerDeps) {
     },
     /**
      * `show(transient)` opened a tab: it becomes a quick look (spec §7). Only
-     * with the command's own proof that it opened the tab (D17) — a tab the
-     * human already had never becomes one. File tabs only; a tab that already
-     * is one keeps its clock. Seen at once when it is in front of the human.
-     * Inside `runExclusive` only.
+     * with the typed origin saying the command itself opened it (D17) — a tab
+     * the human already had never becomes one. File tabs only; a tab that
+     * already is one keeps its clock. Seen at once when it is in front of the
+     * human. Inside `runExclusive` only.
      */
     markTransientNow(origin: QuickLookOrigin): void {
       if (!requireExclusive('markTransientNow')) return;
@@ -1116,8 +1121,19 @@ export function createTabController(deps: TabControllerDeps) {
       const seen = tab.id === list.activeId && deps.windowFocused();
       publish(updateTab(list, tab.id, { transient: true, transientSeenAt: seen ? deps.now() : 0 }));
     },
-    /** «Оставить» — or the human typed into it: an ordinary tab from now on. */
+    /** «Оставить»: an ordinary tab from now on. */
     keepTransient: (tabId: string) => queue.run(async () => keepNow(tabId)),
+    /**
+     * The human changed the live document — any way at all: a key, ⌘V, ⌘X,
+     * ⌘B, a checkbox, a drop, the hover menu. Editing a quick look is
+     * «Оставить» (D17). Synchronous and unqueued, so an EditorView update
+     * listener can call it, even while an agent command holds the queue: the
+     * live view always shows the active tab (a swap runs no update listeners),
+     * so the edited tab is the active one.
+     */
+    humanEdited(): void {
+      if (list.activeId !== null) keepNow(list.activeId);
+    },
     /** «Закрыть»: the ⌘W way — ⌘⇧T brings it back. An ordinary tab is left alone. */
     closeTransient: (tabId: string) =>
       queue.run(async () => {
@@ -1125,22 +1141,21 @@ export function createTabController(deps: TabControllerDeps) {
       }),
     /**
      * Spec §7: ignored quick looks, by the File-menu policy. Called on a
-     * timer. A close goes the ⌘W way; the active tab (of an unfocused window)
-     * waits for the next check while its text is not on disk — a timer never
-     * refuses with a toast, and never closes what only this buffer holds.
+     * timer. The active tab never expires, whether its window has focus or
+     * not (team-lead decision on the Task 10 review, reversible): md-mini
+     * usually sits unfocused beside the agent's terminal while the human
+     * reads it, and closing that document — failing a live ask there with
+     * `tab closed` — is worse than a quick look that stays while it is in
+     * front. It expires once it is in the background. So every close here is
+     * of a background tab, clean by construction, and goes the ⌘W way.
      */
     expireTransients: (policy: TransientPolicy) =>
       queue.run(async () => {
-        const inFront = deps.windowFocused() ? list.activeId : null;
-        const ids = expiredTransients(list, deps.now(), TRANSIENT_IGNORED_AFTER_MS, inFront);
+        const ids = expiredTransients(list, deps.now(), TRANSIENT_IGNORED_AFTER_MS, list.activeId);
         if (ids.length === 0) return;
-        for (const id of backgroundFirst(ids)) {
-          if (policy === 'keep') {
-            keepNow(id);
-            continue;
-          }
-          const unsaved = id === list.activeId && (deps.doc.dirty() || deps.saveErrorPending());
-          if (!unsaved) await closeNow(id, 'close');
+        for (const id of ids) {
+          if (policy === 'close') await closeNow(id, 'close');
+          else keepNow(id);
         }
         deps.settled();
       }),

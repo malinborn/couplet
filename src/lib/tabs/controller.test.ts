@@ -1546,6 +1546,12 @@ describe('quick looks', () => {
     const h = await started(files, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
     const result = await h.controller.runExclusive(() => h.controller.openPathNow('/b.md'));
     expect(result).toEqual({ kind: 'shown', tabId: 'b' });
+    if (result?.kind !== 'shown') throw new Error('unreachable');
+    // Pinned at the type level: a `shown` answer is not a QuickLookOrigin.
+    // (Called outside the slot, so at run time it is refused anyway.)
+    // @ts-expect-error — D17: only a tab the command opened becomes a quick look.
+    h.controller.markTransientNow(result);
+    expect(meta(h, 'b')?.transient).toBeFalsy();
   });
 
   it('OnlyFileTabsBecomeQuickLooks_AndMarkingAgainKeepsTheFirstClock', async () => {
@@ -1605,7 +1611,7 @@ describe('quick looks', () => {
     expect(h.deps.rust.close).toHaveBeenCalledTimes(2);
   });
 
-  it('AnUnseenQuickLookNeverExpires_NorTheOneTheHumanIsLookingAt', async () => {
+  it('AnUnseenQuickLookNeverExpires_NorTheActiveOne_FocusedOrNot', async () => {
     const h = await started(files, [fileTab('a', '/a.md')]);
     await backgroundQuickLook(h, '/b.md');
     await h.controller.runExclusive(async () => {
@@ -1614,30 +1620,69 @@ describe('quick looks', () => {
     h.clock.now += 3 * TRANSIENT_IGNORED_AFTER_MS;
     await h.controller.expireTransients('close');
     expect(h.ids(), 'unseen t1 and the active, focused t2 stay').toEqual(['a', 't2', 't1']);
+    // Team-lead decision (Task 10 review): the human often reads an unfocused
+    // md-mini beside the agent's terminal — the active tab never expires.
     h.clock.focused = false;
     await h.controller.expireTransients('close');
-    expect(h.ids()).toEqual(['a', 't1']);
+    expect(h.ids(), 'the active t2 of an unfocused window stays too').toEqual(['a', 't2', 't1']);
+    await h.controller.activate('a');
+    await h.controller.expireTransients('close');
+    expect(h.ids(), 'in the background it expires').toEqual(['a', 't1']);
   });
 
-  it('AQuickLookAnAgentTouchedAgainIsUnseenAgain_AndDoesNotExpire', async () => {
+  it('AQuickLookAnAgentTouchedAgainIsUnseenAgain_ItsHourStartsAgainWhenSeen', async () => {
     const h = await started(files, [fileTab('a', '/a.md')]);
     await seenQuickLooks(h);
     await h.controller.runExclusive(async () => h.controller.markUnviewedNow('t1'));
     h.clock.now = 10_000 + TRANSIENT_IGNORED_AFTER_MS;
     await h.controller.expireTransients('close');
-    expect(h.ids()).toEqual(['a', 't1']);
+    expect(h.ids(), 'unseen again: only t2 goes').toEqual(['a', 't1']);
+    const seenAgain = 10_000 + 70 * 60 * 1000;
+    h.clock.now = seenAgain;
+    await h.controller.activate('t1');
+    await h.controller.activate('a');
+    expect(meta(h, 't1')?.transientSeenAt).toBe(seenAgain);
+    h.clock.now = seenAgain + TRANSIENT_IGNORED_AFTER_MS - 1;
+    await h.controller.expireTransients('close');
+    expect(h.ids(), 'an hour from the second view, not the first').toEqual(['a', 't1']);
+    h.clock.now += 1;
+    await h.controller.expireTransients('close');
+    expect(h.ids()).toEqual(['a']);
   });
 
-  it('AnExpiredQuickLookWithTextNotYetSavedWaitsForTheNextCheck', async () => {
+  it('EditingTheActiveQuickLookKeepsIt', async () => {
     const h = await started(files, [fileTab('a', '/a.md')]);
     await seenQuickLooks(h);
     await h.controller.activate('t2');
-    h.clock.focused = false;
-    h.type('!');
-    h.clock.now = 10_000 + TRANSIENT_IGNORED_AFTER_MS;
-    await h.controller.expireTransients('close');
-    expect(h.ids(), 'the background one goes; the dirty active one stays').toEqual(['a', 't2']);
-    expect(h.deps.reportUnsaved, 'a timer raises no toast').not.toHaveBeenCalled();
-    expect(h.files.get('/c.md')).toBe('CCCC');
+    h.controller.humanEdited();
+    expect(meta(h, 't2')).toMatchObject({ transient: false, transientSeenAt: 0 });
+    expect(meta(h, 't1')?.transient, 'only the tab in the live view').toBe(true);
+  });
+
+  it('EditingIsHeardWhileAnAgentCommandHoldsTheQueue', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    await seenQuickLooks(h);
+    await h.controller.activate('t2');
+    let release = () => {};
+    let holding = false;
+    const held = h.controller.runExclusive(
+      () =>
+        new Promise<void>((resolve) => {
+          holding = true;
+          release = resolve;
+        })
+    );
+    await vi.waitFor(() => expect(holding).toBe(true));
+    // An update listener, mid-command: synchronous, never waits for the slot.
+    h.controller.humanEdited();
+    expect(meta(h, 't2')?.transient).toBe(false);
+    release();
+    await held;
+  });
+
+  it('EditingAnOrdinaryTabChangesNothing', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    h.controller.humanEdited();
+    expect(h.deps.changed).not.toHaveBeenCalled();
   });
 });
