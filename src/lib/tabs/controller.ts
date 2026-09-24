@@ -5,6 +5,7 @@ import { decideEnter } from './tab-cache';
 import {
   activeTab,
   emptyTabList,
+  expiredTransients,
   findById,
   findByPath,
   insertAfterActive,
@@ -22,6 +23,20 @@ import {
 
 /** Flush attempts before a still-dirty file tab refuses to be left. */
 export const FLUSH_ATTEMPTS = 3;
+
+/** Spec §7: a quick look seen and unanswered this long is "ignored". */
+export const TRANSIENT_IGNORED_AFTER_MS = 60 * 60 * 1000;
+
+/** File → «Короткие показы без ответа через час». */
+export type TransientPolicy = 'keep' | 'close';
+
+/**
+ * Proof that the agent's command itself created the tab — the only tab a
+ * `show(transient)` may make a quick look (D17). `opened`: the `opened` answer
+ * of `openPathNow` / `openBackgroundNow`. `fresh`: Rust built a window for
+ * this very command, and the tab was born with it.
+ */
+export type QuickLookOrigin = { kind: 'opened'; tabId: string } | { kind: 'fresh'; tabId: string };
 
 export interface Position {
   cursor: number;
@@ -275,9 +290,25 @@ export function createTabController(deps: TabControllerDeps) {
     return { id, path, dirty: false, openedAt: deps.now(), viewedAt: 0, unviewed: false };
   }
 
-  /** `id` is in front of the human: viewed now, no longer unviewed. */
+  /** `id` is in front of the human: viewed now, no longer unviewed; a quick look's hour starts. */
   function markSeen(id: string): void {
-    if (findById(list, id)) publish(updateTab(list, id, { viewedAt: deps.now(), unviewed: false }));
+    const tab = findById(list, id);
+    if (!tab) return;
+    const now = deps.now();
+    publish(
+      updateTab(list, id, {
+        viewedAt: now,
+        unviewed: false,
+        ...(tab.transient && !tab.transientSeenAt ? { transientSeenAt: now } : {}),
+      })
+    );
+  }
+
+  /** An ordinary tab from now on. */
+  function keepNow(tabId: string): void {
+    if (findById(list, tabId)?.transient) {
+      publish(updateTab(list, tabId, { transient: false, transientSeenAt: 0 }));
+    }
   }
 
   function isEmptyUntitled(): boolean {
@@ -1071,6 +1102,48 @@ export function createTabController(deps: TabControllerDeps) {
       publish(updateTab(list, tabId, { unviewed: true }));
       deps.settled();
     },
+    /**
+     * `show(transient)` opened a tab: it becomes a quick look (spec §7). Only
+     * with the command's own proof that it opened the tab (D17) — a tab the
+     * human already had never becomes one. File tabs only; a tab that already
+     * is one keeps its clock. Seen at once when it is in front of the human.
+     * Inside `runExclusive` only.
+     */
+    markTransientNow(origin: QuickLookOrigin): void {
+      if (!requireExclusive('markTransientNow')) return;
+      const tab = findById(list, origin.tabId);
+      if (!tab || tab.path === null || tab.transient) return;
+      const seen = tab.id === list.activeId && deps.windowFocused();
+      publish(updateTab(list, tab.id, { transient: true, transientSeenAt: seen ? deps.now() : 0 }));
+    },
+    /** «Оставить» — or the human typed into it: an ordinary tab from now on. */
+    keepTransient: (tabId: string) => queue.run(async () => keepNow(tabId)),
+    /** «Закрыть»: the ⌘W way — ⌘⇧T brings it back. An ordinary tab is left alone. */
+    closeTransient: (tabId: string) =>
+      queue.run(async () => {
+        if (findById(list, tabId)?.transient) await closeNow(tabId, 'close');
+      }),
+    /**
+     * Spec §7: ignored quick looks, by the File-menu policy. Called on a
+     * timer. A close goes the ⌘W way; the active tab (of an unfocused window)
+     * waits for the next check while its text is not on disk — a timer never
+     * refuses with a toast, and never closes what only this buffer holds.
+     */
+    expireTransients: (policy: TransientPolicy) =>
+      queue.run(async () => {
+        const inFront = deps.windowFocused() ? list.activeId : null;
+        const ids = expiredTransients(list, deps.now(), TRANSIENT_IGNORED_AFTER_MS, inFront);
+        if (ids.length === 0) return;
+        for (const id of backgroundFirst(ids)) {
+          if (policy === 'keep') {
+            keepNow(id);
+            continue;
+          }
+          const unsaved = id === list.activeId && (deps.doc.dirty() || deps.saveErrorPending());
+          if (!unsaved) await closeNow(id, 'close');
+        }
+        deps.settled();
+      }),
     /** The drawer's order — drag and sorts. A stale order is ignored. */
     reorder: (order: readonly string[]) =>
       queue.run(async () => {

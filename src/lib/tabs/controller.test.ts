@@ -3,8 +3,12 @@ import { EditorState, StateEffect } from '@codemirror/state';
 import {
   createTabController,
   FLUSH_ATTEMPTS,
+  TRANSIENT_IGNORED_AFTER_MS,
+  type BackgroundOpen,
   type InitTab,
   type OpenAnswer,
+  type OpenPathResult,
+  type QuickLookOrigin,
   type SwapOptions,
   type TabControllerDeps,
 } from './controller';
@@ -1474,5 +1478,166 @@ describe('agent operations', () => {
     });
     h.controller.markUnviewedNow('b');
     expect(meta(h, 'b')?.unviewed).toBe(false);
+  });
+});
+
+describe('quick looks', () => {
+  const files = { '/a.md': 'AAAA', '/b.md': 'BBBB', '/c.md': 'CCCC' };
+  const meta = (h: Harness, id: string) => h.controller.list.tabs.find((t) => t.id === id);
+  /** What a `show(transient)` hands over: the result that says it opened the tab. */
+  const openedBy = (r: BackgroundOpen | OpenPathResult): QuickLookOrigin => {
+    if (r.kind !== 'opened') throw new Error(`the command did not open a tab: ${r.kind}`);
+    return r;
+  };
+
+  /** Opens `path` in the background and makes it a quick look, as `show(transient, focus: false)` does. */
+  async function backgroundQuickLook(h: Harness, path: string): Promise<void> {
+    await h.controller.runExclusive(async () => {
+      h.controller.markTransientNow(openedBy(await h.controller.openBackgroundNow(path)));
+    });
+  }
+
+  /**
+   * `/b.md` (t1) and `/c.md` (t2) opened as quick looks in the background —
+   * each right after the active tab, so the order is a, t2, t1 — both seen
+   * at 10 000, `a` active again.
+   */
+  async function seenQuickLooks(h: Harness): Promise<void> {
+    await backgroundQuickLook(h, '/b.md');
+    await backgroundQuickLook(h, '/c.md');
+    h.clock.now = 10_000;
+    await h.controller.activate('t1');
+    await h.controller.activate('t2');
+    await h.controller.activate('a');
+  }
+
+  it('AQuickLookInTheBackgroundIsUnseen_ItsHourStartsWhenItIsSeen', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    await backgroundQuickLook(h, '/b.md');
+    expect(meta(h, 't1')).toMatchObject({ transient: true, transientSeenAt: 0 });
+    h.clock.now = 5_000;
+    await h.controller.activate('t1');
+    expect(meta(h, 't1')?.transientSeenAt).toBe(5_000);
+  });
+
+  it('AQuickLookInAnUnfocusedWindowStartsItsHourWhenTheWindowGetsFocus', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    await backgroundQuickLook(h, '/b.md');
+    h.clock.focused = false;
+    await h.controller.activate('t1');
+    expect(meta(h, 't1')?.transientSeenAt, 'active, but nobody is looking').toBe(0);
+    h.clock.focused = true;
+    h.clock.now = 6_000;
+    await h.controller.windowFocusChanged(true);
+    expect(meta(h, 't1')?.transientSeenAt).toBe(6_000);
+  });
+
+  it('AQuickLookOpenedInFrontOfTheHumanIsSeenAtOnce', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    h.clock.now = 3_000;
+    await h.controller.runExclusive(async () => {
+      h.controller.markTransientNow(openedBy(await h.controller.openPathNow('/b.md')));
+    });
+    expect(meta(h, 't1')).toMatchObject({ transient: true, transientSeenAt: 3_000 });
+  });
+
+  it('ATabTheHumanAlreadyHadIsNotOpenedByTheShow', async () => {
+    // D17: `show` answers `shown` for it, which `markTransientNow` does not take.
+    const h = await started(files, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
+    const result = await h.controller.runExclusive(() => h.controller.openPathNow('/b.md'));
+    expect(result).toEqual({ kind: 'shown', tabId: 'b' });
+  });
+
+  it('OnlyFileTabsBecomeQuickLooks_AndMarkingAgainKeepsTheFirstClock', async () => {
+    const h = await started(files, [untitledTab('u', 'x'), fileTab('a', '/a.md')]);
+    await h.controller.runExclusive(async () => {
+      h.controller.markTransientNow({ kind: 'fresh', tabId: 'u' });
+      h.controller.markTransientNow({ kind: 'fresh', tabId: 'a' });
+    });
+    expect(meta(h, 'u')?.transient).toBeFalsy();
+    const first = meta(h, 'a')?.transientSeenAt;
+    h.clock.now += 1_000;
+    await h.controller.runExclusive(async () => h.controller.markTransientNow({ kind: 'fresh', tabId: 'a' }));
+    expect(meta(h, 'a')?.transientSeenAt).toBe(first);
+  });
+
+  it('MarkingIsRefusedOutsideRunExclusive', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    h.controller.markTransientNow({ kind: 'fresh', tabId: 'a' });
+    expect(meta(h, 'a')?.transient).toBeFalsy();
+    expect(console.error).toHaveBeenCalled();
+  });
+
+  it('KeepMakesItAnOrdinaryTab_CloseClosesItTheCmdWWay', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    await seenQuickLooks(h);
+    await h.controller.keepTransient('t1');
+    expect(meta(h, 't1')).toMatchObject({ transient: false, transientSeenAt: 0 });
+    await h.controller.closeTransient('t2');
+    expect(h.deps.rust.close).toHaveBeenCalledWith('t2', expect.anything());
+    expect(h.ids()).toEqual(['a', 't1']);
+  });
+
+  it('CloseLeavesAnOrdinaryTabAlone', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
+    await h.controller.closeTransient('b');
+    expect(h.ids()).toEqual(['a', 'b']);
+  });
+
+  it('AnHourAfterBeingSeen_TheKeepPolicyKeepsThem', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    await seenQuickLooks(h);
+    h.clock.now = 10_000 + TRANSIENT_IGNORED_AFTER_MS;
+    await h.controller.expireTransients('keep');
+    expect(h.ids()).toEqual(['a', 't2', 't1']);
+    expect([meta(h, 't1')?.transient, meta(h, 't2')?.transient]).toEqual([false, false]);
+  });
+
+  it('AnHourAfterBeingSeen_TheClosePolicyClosesThem', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    await seenQuickLooks(h);
+    h.clock.now = 10_000 + TRANSIENT_IGNORED_AFTER_MS - 1;
+    await h.controller.expireTransients('close');
+    expect(h.ids(), 'not yet').toEqual(['a', 't2', 't1']);
+    h.clock.now += 1;
+    await h.controller.expireTransients('close');
+    expect(h.ids()).toEqual(['a']);
+    expect(h.deps.rust.close).toHaveBeenCalledTimes(2);
+  });
+
+  it('AnUnseenQuickLookNeverExpires_NorTheOneTheHumanIsLookingAt', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    await backgroundQuickLook(h, '/b.md');
+    await h.controller.runExclusive(async () => {
+      h.controller.markTransientNow(openedBy(await h.controller.openPathNow('/c.md')));
+    });
+    h.clock.now += 3 * TRANSIENT_IGNORED_AFTER_MS;
+    await h.controller.expireTransients('close');
+    expect(h.ids(), 'unseen t1 and the active, focused t2 stay').toEqual(['a', 't2', 't1']);
+    h.clock.focused = false;
+    await h.controller.expireTransients('close');
+    expect(h.ids()).toEqual(['a', 't1']);
+  });
+
+  it('AQuickLookAnAgentTouchedAgainIsUnseenAgain_AndDoesNotExpire', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    await seenQuickLooks(h);
+    await h.controller.runExclusive(async () => h.controller.markUnviewedNow('t1'));
+    h.clock.now = 10_000 + TRANSIENT_IGNORED_AFTER_MS;
+    await h.controller.expireTransients('close');
+    expect(h.ids()).toEqual(['a', 't1']);
+  });
+
+  it('AnExpiredQuickLookWithTextNotYetSavedWaitsForTheNextCheck', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    await seenQuickLooks(h);
+    await h.controller.activate('t2');
+    h.clock.focused = false;
+    h.type('!');
+    h.clock.now = 10_000 + TRANSIENT_IGNORED_AFTER_MS;
+    await h.controller.expireTransients('close');
+    expect(h.ids(), 'the background one goes; the dirty active one stays').toEqual(['a', 't2']);
+    expect(h.deps.reportUnsaved, 'a timer raises no toast').not.toHaveBeenCalled();
+    expect(h.files.get('/c.md')).toBe('CCCC');
   });
 });

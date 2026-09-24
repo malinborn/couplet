@@ -12,6 +12,7 @@ import {
   findByPath,
   activeTab,
   reorderTabs,
+  expiredTransients,
   type TabListState,
   type TabMeta,
 } from './tab-model';
@@ -132,5 +133,37 @@ describe('reorderTabs', () => {
   it('ReturnsTheSameStateForTheSameOrder', () => {
     const s = list(['a', 'b'], 'a');
     expect(reorderTabs(s, ['a', 'b'])).toBe(s);
+  });
+});
+
+describe('expiredTransients', () => {
+  const t = (id: string, transient: boolean, seenAt: number, patch: Partial<TabMeta> = {}): TabMeta => ({
+    ...tab(id),
+    transient,
+    transientSeenAt: seenAt,
+    ...patch,
+  });
+
+  it('IsTheQuickLooksSeenLongEnoughAgo_NeverAnUnseenOne_NeverTheOneInFront', () => {
+    const s = {
+      tabs: [t('old', true, 1_000), t('fresh', true, 5_000), t('unseen', true, 0), t('plain', false, 1_000), t('front', true, 1_000)],
+      activeId: 'front',
+    };
+    expect(expiredTransients(s, 5_500, 4_000, 'front')).toEqual(['old']);
+    expect(expiredTransients(s, 5_500, 4_000, null)).toEqual(['old', 'front']);
+  });
+
+  it('NeverATabUnviewedAgain_NorADirtyOne_NorAnUntitledOne', () => {
+    // Seen once, then an agent put something new there: unseen again (spec §7).
+    const s = {
+      tabs: [
+        t('again', true, 1_000, { unviewed: true }),
+        t('dirty', true, 1_000, { dirty: true }),
+        t('untitled', true, 1_000, { path: null }),
+        t('old', true, 1_000),
+      ],
+      activeId: null,
+    };
+    expect(expiredTransients(s, 9_000, 4_000, null)).toEqual(['old']);
   });
 });

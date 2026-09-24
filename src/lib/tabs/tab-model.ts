@@ -20,6 +20,14 @@ export interface TabMeta {
    * (spec §2). It shimmers in the drawer and on the notch until it is seen.
    */
   unviewed: boolean;
+  /**
+   * A quick look (spec §7): an agent's `show(transient)` opened it, and it
+   * asks «Закрыть / Оставить» until answered. Absent: an ordinary tab. Not
+   * persisted — after a restart it is an ordinary tab (D17).
+   */
+  transient?: boolean;
+  /** When the quick look was first seen (active in a focused window). `0`/absent: not yet — it never expires unseen. */
+  transientSeenAt?: number;
 }
 
 export interface TabListState {
@@ -124,4 +132,32 @@ export function reorderTabs(s: TabListState, order: readonly string[]): TabListS
     byId.delete(id);
   }
   return tabs.every((t, i) => t === s.tabs[i]) ? s : { ...s, tabs };
+}
+
+/**
+ * Quick looks the human saw at least `afterMs` ago and never answered —
+ * spec §7's "ignored". Never one that is unseen — not yet, or again since an
+ * agent put something new there — nor one with unsaved text, nor an untitled
+ * one (spec §8), nor `skipId`, the tab in front of the human right now.
+ */
+export function expiredTransients(
+  s: TabListState,
+  now: number,
+  afterMs: number,
+  skipId: string | null
+): string[] {
+  return s.tabs
+    .filter((t) => {
+      const seenAt = t.transientSeenAt ?? 0;
+      return (
+        t.transient === true &&
+        seenAt > 0 &&
+        now - seenAt >= afterMs &&
+        !t.unviewed &&
+        !t.dirty &&
+        t.path !== null &&
+        t.id !== skipId
+      );
+    })
+    .map((t) => t.id);
 }
