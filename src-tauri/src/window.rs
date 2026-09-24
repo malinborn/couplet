@@ -944,23 +944,21 @@ pub fn label_to_focus(reg: &TabRegistry, path: &str, exclude_label: &str) -> Opt
 pub enum OpenedRoute {
     /// A live window already shows the file: bring it forward, touch nothing.
     FocusExisting(String),
+    /// A window of the file's project takes it as a tab and comes forward.
+    ProjectWindow(String),
     /// "main" shows no file, so it takes this one.
     UseMain,
     NewWindow,
 }
 
-/// Decide `RunEvent::Opened` for `path`. `is_live` says whether a window label
-/// still exists — a mapping whose window is gone is stale and routes as if
-/// absent.
+/// Decide `RunEvent::Opened` for `path`, whose project is `file_project`
+/// (`routing::project_of`). `is_live` says whether a window label still
+/// exists — a mapping whose window is gone is stale and routes as if absent.
 ///
-/// **tabs-questions Q4 — open, current behaviour kept.** A window of the
-/// file's project does not take it; a new window does. Q4's option 2 (a tab
-/// in the project's window, the one focused last) would be: after the
-/// `FocusExisting` check, `if let crate::routing::Route::Existing(label) =
-/// crate::routing::route(reg, path, None, &crate::routing::project_of(path),
-/// focus_order, &is_live)` return a new `OpenedRoute::ProjectWindow(label)`,
-/// taking `focus_order` from `FocusTracker::order()` in `RunEvent::Opened` —
-/// and flipping `route_opened_file_ignores_projects_until_q4_is_answered`.
+/// tabs-questions Q4: a Finder open goes by project, as an agent's open does
+/// (`routing::route` without a binding) — the file already open → its tab; a
+/// window of its project, the one focused last (`focus_order`, from
+/// `FocusTracker::order()`); an empty "main"; else a new window.
 ///
 /// The existing-window check must come first: "main" being empty says nothing
 /// about the file, and registering it to main while another window holds it
@@ -969,10 +967,15 @@ pub enum OpenedRoute {
 pub fn route_opened_file(
     reg: &TabRegistry,
     path: &str,
+    file_project: &str,
+    focus_order: &[String],
     is_live: impl Fn(&str) -> bool,
 ) -> OpenedRoute {
     if let Some(label) = reg.label_of(path).filter(|label| is_live(label)) {
         return OpenedRoute::FocusExisting(label);
+    }
+    if let Some(label) = crate::routing::project_window(reg, file_project, focus_order, &is_live) {
+        return OpenedRoute::ProjectWindow(label);
     }
     let main_shows_a_file = reg
         .window("main")
@@ -1064,7 +1067,7 @@ mod tests {
     fn route_opened_file_focuses_the_window_already_showing_it_even_with_main_empty() {
         let reg = reg(&[("/tmp/x.md", "editor-2")]);
         assert_eq!(
-            route_opened_file(&reg, "/tmp/x.md", |_| true),
+            route_opened_file(&reg, "/tmp/x.md", "/tmp", &[], |_| true),
             OpenedRoute::FocusExisting("editor-2".to_string())
         );
     }
@@ -1073,7 +1076,7 @@ mod tests {
     fn route_opened_file_focuses_main_when_main_already_shows_it() {
         let reg = reg(&[("/tmp/x.md", "main")]);
         assert_eq!(
-            route_opened_file(&reg, "/tmp/x.md", |_| true),
+            route_opened_file(&reg, "/tmp/x.md", "/tmp", &[], |_| true),
             OpenedRoute::FocusExisting("main".to_string())
         );
     }
@@ -1082,7 +1085,7 @@ mod tests {
     fn route_opened_file_ignores_a_mapping_to_a_dead_window() {
         let reg = reg(&[("/tmp/x.md", "editor-2")]);
         assert_eq!(
-            route_opened_file(&reg, "/tmp/x.md", |label| label != "editor-2"),
+            route_opened_file(&reg, "/tmp/x.md", "/tmp", &[], |label| label != "editor-2"),
             OpenedRoute::UseMain
         );
     }
@@ -1090,7 +1093,7 @@ mod tests {
     #[test]
     fn route_opened_file_uses_an_empty_main() {
         let reg = reg(&[("/tmp/b.md", "editor-2")]);
-        assert_eq!(route_opened_file(&reg, "/tmp/x.md", |_| true), OpenedRoute::UseMain);
+        assert_eq!(route_opened_file(&reg, "/tmp/x.md", "/tmp", &[], |_| true), OpenedRoute::UseMain);
     }
 
     #[test]
@@ -1176,23 +1179,75 @@ mod tests {
     #[test]
     fn route_opened_file_opens_a_new_window_when_main_is_gone() {
         let reg = TabRegistry::new();
-        assert_eq!(route_opened_file(&reg, "/tmp/x.md", |label| label != "main"), OpenedRoute::NewWindow);
+        assert_eq!(route_opened_file(&reg, "/tmp/x.md", "/tmp", &[], |label| label != "main"), OpenedRoute::NewWindow);
     }
 
     #[test]
     fn route_opened_file_opens_a_new_window_when_main_shows_another_file() {
         let reg = reg(&[("/tmp/b.md", "main")]);
-        assert_eq!(route_opened_file(&reg, "/tmp/x.md", |_| true), OpenedRoute::NewWindow);
+        assert_eq!(route_opened_file(&reg, "/tmp/x.md", "/tmp", &[], |_| true), OpenedRoute::NewWindow);
+    }
+
+    /// `route_opened_file` with every window live.
+    fn opened(reg: &TabRegistry, path: &str, project: &str, order: &[String]) -> OpenedRoute {
+        route_opened_file(reg, path, project, order, |_| true)
     }
 
     #[test]
-    fn route_opened_file_ignores_projects_until_q4_is_answered() {
-        // Pins today's Finder behaviour (tabs-questions Q4): a window of the
-        // file's project does not take it — a new window does, as before tabs.
+    fn route_opened_file_goes_to_the_window_of_the_files_project() {
+        // tabs-questions Q4: a tab in the project's window, not a new window.
         let mut reg = reg(&[("/p/a.md", "editor-2"), ("/q/b.md", "main")]);
         reg.bind_project("editor-2", "/p".to_string());
         reg.bind_project("main", "/q".to_string());
-        assert_eq!(route_opened_file(&reg, "/p/docs/c.md", |_| true), OpenedRoute::NewWindow);
+        assert_eq!(
+            opened(&reg, "/p/docs/c.md", "/p", &[]),
+            OpenedRoute::ProjectWindow("editor-2".to_string())
+        );
+        assert_eq!(opened(&reg, "/z/c.md", "/z", &[]), OpenedRoute::NewWindow, "no window of its project");
+    }
+
+    #[test]
+    fn route_opened_file_puts_the_project_window_before_an_empty_main() {
+        let mut reg = reg(&[("/p/a.md", "editor-2")]);
+        reg.bind_project("editor-2", "/p".to_string());
+        assert_eq!(opened(&reg, "/p/b.md", "/p", &[]), OpenedRoute::ProjectWindow("editor-2".to_string()));
+        assert_eq!(opened(&reg, "/z/b.md", "/z", &[]), OpenedRoute::UseMain);
+    }
+
+    #[test]
+    fn route_opened_file_picks_the_project_window_focused_last() {
+        let mut reg = reg(&[("/p/a.md", "editor-2"), ("/p/b.md", "editor-3"), ("/q/c.md", "main")]);
+        for label in ["editor-2", "editor-3"] {
+            reg.bind_project(label, "/p".to_string());
+        }
+        let order = ["main".to_string(), "editor-3".to_string(), "editor-2".to_string()];
+        assert_eq!(
+            opened(&reg, "/p/d.md", "/p", &order),
+            OpenedRoute::ProjectWindow("editor-3".to_string())
+        );
+        assert_eq!(
+            opened(&reg, "/p/d.md", "/p", &[]),
+            OpenedRoute::ProjectWindow("editor-2".to_string()),
+            "never focused: label order"
+        );
+        assert_eq!(
+            route_opened_file(&reg, "/p/d.md", "/p", &order, |l| l != "editor-3"),
+            OpenedRoute::ProjectWindow("editor-2".to_string()),
+            "a dead window is skipped"
+        );
+    }
+
+    #[test]
+    fn route_opened_file_prefers_the_files_own_tab_over_its_project_window() {
+        let mut reg = reg(&[("/p/a.md", "editor-2"), ("/p/b.md", "editor-3")]);
+        for label in ["editor-2", "editor-3"] {
+            reg.bind_project(label, "/p".to_string());
+        }
+        let order = ["editor-2".to_string()];
+        assert_eq!(
+            opened(&reg, "/p/b.md", "/p", &order),
+            OpenedRoute::FocusExisting("editor-3".to_string())
+        );
     }
 
     #[test]

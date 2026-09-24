@@ -79,24 +79,34 @@ pub fn route(
     if let Some(label) = bound {
         return Route::Existing(label);
     }
-    let rank = |label: &str| {
-        (
-            focus_order.iter().position(|l| l == label).unwrap_or(usize::MAX),
-            crate::session::label_order(label),
-        )
-    };
-    let of_project = reg
-        .all_windows()
-        .filter(|(label, w)| w.project.as_deref() == Some(file_project) && is_live(label))
-        .map(|(label, _)| label.clone())
-        .min_by_key(|label| rank(label));
-    if let Some(label) = of_project {
+    if let Some(label) = project_window(reg, file_project, focus_order, &is_live) {
         return Route::Existing(label);
     }
     if main_never_held_a_file(reg, &is_live) {
         return Route::Existing(MAIN.to_string());
     }
     Route::NewWindow
+}
+
+/// The live window bound to `file_project` that was focused most recently
+/// (`focus_order`, most recent first; windows never focused in label order).
+/// Step 3 of `route`, and where a Finder open lands (`window::route_opened_file`).
+pub fn project_window(
+    reg: &TabRegistry,
+    file_project: &str,
+    focus_order: &[String],
+    is_live: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let rank = |label: &str| {
+        (
+            focus_order.iter().position(|l| l == label).unwrap_or(usize::MAX),
+            crate::session::label_order(label),
+        )
+    };
+    reg.all_windows()
+        .filter(|(label, w)| w.project.as_deref() == Some(file_project) && is_live(label))
+        .map(|(label, _)| label.clone())
+        .min_by_key(|label| rank(label))
 }
 
 const MAIN: &str = "main";

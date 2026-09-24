@@ -44,6 +44,10 @@ Running app receives args → opens the files as tabs of one new window
 
 `-t`/`-b`/`-f`, and any open by an agent (`CLAUDECODE` set, non-empty), skip both paths above: the script sends them through the command socket (`mdmini ai open`, see "AI interface passthrough" below), which routes each file to a window (spec §5: `-t N` → window #N; a file already open → its tab; a window of the file's project → a new tab there; else a new window) and prints the window it landed in as one line of JSON. An agent's open lands in the background unless `-f`; a human's `-t N` in focus unless `-b`.
 
+#### Finder
+
+A file opened from Finder (double-click, Open With, a drop on the Dock icon) arrives as `RunEvent::Opened` and is routed by project, like a routed open without `-t` (tabs-questions Q4): a file already open → its tab comes forward; a window of the file's project → a new tab there, in the one focused last; a `main` that shows no file takes it; else a new window. It is a human's open, so the window it lands in comes forward.
+
 ### Why Other Approaches Failed
 
 | Approach | Problem |

@@ -492,10 +492,16 @@ pub fn run() {
                     if let Ok(path) = url.to_file_path() {
                         if let Some(path_str) = path.to_str() {
                             let file_path = resolve_path(path_str, None);
+                            // Projects are bound and the file's is found by
+                            // walking directories — both outside the registry
+                            // lock. The tracker's lock is released before it.
+                            routing::bind_missing_projects(_app_handle);
+                            let file_project = routing::project_of(&file_path);
+                            let order = _app_handle.state::<menu_route::FocusTracker>().order();
                             let route = {
                                 let open_files = _app_handle.state::<window::OpenFiles>();
                                 let reg = open_files.0.lock().unwrap();
-                                window::route_opened_file(&reg, &file_path, |label| {
+                                window::route_opened_file(&reg, &file_path, &file_project, &order, |label| {
                                     _app_handle.get_webview_window(label).is_some()
                                 })
                             };
@@ -507,6 +513,15 @@ pub fn run() {
                                         // there; that window activates it
                                         // through its own open path.
                                         let _ = win.emit_to(label.as_str(), "open-file", &file_path);
+                                    }
+                                }
+                                window::OpenedRoute::ProjectWindow(label) => {
+                                    // A human's open: the window comes
+                                    // forward, as a new one would.
+                                    if assign_file_to(_app_handle, &label, file_path) {
+                                        if let Some(win) = _app_handle.get_webview_window(&label) {
+                                            window::reveal(&win);
+                                        }
                                     }
                                 }
                                 window::OpenedRoute::UseMain => {
@@ -634,6 +649,12 @@ fn focused_window(app: &tauri::AppHandle) -> Option<String> {
 /// Returns `false` when another live window already holds the file: that
 /// window is brought forward instead and main is left untouched.
 fn assign_file_to_main(app: &tauri::AppHandle, path: String) -> bool {
+    assign_file_to(app, "main", path)
+}
+
+/// `assign_file_to_main` for any window `label` — a Finder open landing in
+/// its project's window (tabs-questions Q4).
+fn assign_file_to(app: &tauri::AppHandle, label: &str, path: String) -> bool {
     let tab = PendingTab {
         tab_id: session::new_tab_id(),
         path: Some(path.clone()),
@@ -642,18 +663,18 @@ fn assign_file_to_main(app: &tauri::AppHandle, path: String) -> bool {
         top_line: 1,
         ..Default::default()
     };
-    match window::hand_over_tab(app, "main", tab) {
+    match window::hand_over_tab(app, label, tab) {
         window::Handover::Pending => true,
         window::Handover::Mounted => {
             // `emit_to`, not `emit`: a bare `emit` reaches every window.
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.emit_to("main", "open-file", &path);
+            if let Some(win) = app.get_webview_window(label) {
+                let _ = win.emit_to(label, "open-file", &path);
                 let _ = win.set_focus();
             }
             true
         }
         window::Handover::Held(owner) => {
-            eprintln!("assign_file_to_main: {path} is held by {owner}; focusing it instead of main");
+            eprintln!("assign_file_to: {path} is held by {owner}; focusing it instead of {label}");
             if let Some(win) = app.get_webview_window(&owner) {
                 window::reveal(&win);
             }
