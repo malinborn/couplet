@@ -13,11 +13,17 @@ CMD_SOCK="/tmp/md_mini_cmd.sock"
 # spec §4): a command that lands in the background must not bring md-mini to
 # the front just because it was not running yet.
 ensure_running() {
-  if [ -S "$CMD_SOCK" ] && ! pgrep -f "md-mini.app/Contents/MacOS/md-mini" >/dev/null; then
+  if [ -S "$CMD_SOCK" ]; then
     # Socket file survived a crash/kill-9 of the process that owned it — a
     # stale socket makes every command below hang until its own read times
-    # out. Treat it as absent so the launch path below rebinds it.
-    rm -f "$CMD_SOCK"
+    # out. Treat it as absent so the launch path below rebinds it. Asked of
+    # the socket itself, not of the process list: `md-mini mcp` and
+    # `md-mini ai watch` run the same binary, and a pgrep for it would call
+    # a dead app alive. Exit 2 means nobody accepted the connection.
+    "$BIN" ai ls --json --socket "$CMD_SOCK" >/dev/null 2>&1
+    if [ $? -eq 2 ]; then
+      rm -f "$CMD_SOCK"
+    fi
   fi
   if [ ! -S "$CMD_SOCK" ]; then
     if [ "${1:-}" = "background" ]; then

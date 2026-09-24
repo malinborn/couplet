@@ -1827,22 +1827,36 @@ fn open_summary(opened: Vec<OpenedTab>, error: Option<String>) -> AiResponse {
     }
 }
 
-/// `mdmini <files>` routed: one `open` per file, one summary line.
-fn run_open(socket_path: &Path, paths: &[String], window: Option<u32>, focus: bool, agent: bool) -> i32 {
+/// The most files one `mdmini <files>` opens: each is a round trip and a tab,
+/// and a stray glob should not fill the app.
+const MAX_OPEN_FILES: usize = 50;
+
+/// One `open` per file through `send`, summed up in one answer and its exit
+/// code. A file the app refuses is reported and the rest still open; a
+/// transport failure (the app went away, no answer) stops there, and the
+/// answer still lists what had opened — with the transport's exit code.
+fn open_all(
+    paths: &[String],
+    window: Option<u32>,
+    focus: bool,
+    mut send: impl FnMut(&AiRequest) -> Result<String, (String, i32)>,
+) -> (AiResponse, i32) {
+    if paths.len() > MAX_OPEN_FILES {
+        let msg = format!("too many files: {} (at most {MAX_OPEN_FILES} at once)", paths.len());
+        return (AiResponse::error(msg), 2);
+    }
     let mut opened = Vec::new();
     let mut first_error = None;
+    let mut transport_code = None;
     for path in paths {
         let abs = crate::resolve_path(path, None);
         let request = AiRequest::Open { v: 1, path: abs.clone(), window_binding: window, focus };
-        let resp = match exchange(socket_path, &request) {
+        let resp = match send(&request) {
             Ok(line) => serde_json::from_str::<AiResponse>(&line)
                 .unwrap_or_else(|e| AiResponse::error(format!("failed to parse response: {e}"))),
             Err((line, code)) => {
-                println!("{line}");
-                if !agent {
-                    tell_human(&line);
-                }
-                return code;
+                transport_code = Some(code);
+                serde_json::from_str::<AiResponse>(&line).unwrap_or_else(|_| AiResponse::error(line))
             }
         };
         if resp.ok {
@@ -1850,12 +1864,22 @@ fn run_open(socket_path: &Path, paths: &[String], window: Option<u32>, focus: bo
         } else if first_error.is_none() {
             first_error = resp.error;
         }
+        if transport_code.is_some() {
+            break;
+        }
     }
-    let summary = serde_json::to_string(&open_summary(opened, first_error)).unwrap();
-    println!("{summary}");
-    let code = exit_code_for(&summary);
+    let summary = open_summary(opened, first_error);
+    let code = transport_code.unwrap_or(if summary.ok { 0 } else { 1 });
+    (summary, code)
+}
+
+/// `mdmini <files>` routed: one `open` per file, one summary line.
+fn run_open(socket_path: &Path, paths: &[String], window: Option<u32>, focus: bool, agent: bool) -> i32 {
+    let (summary, code) = open_all(paths, window, focus, |request| exchange(socket_path, request));
+    let line = serde_json::to_string(&summary).unwrap();
+    println!("{line}");
     if code != 0 && !agent {
-        tell_human(&summary);
+        tell_human(&line);
     }
     code
 }
@@ -1888,6 +1912,7 @@ fn run_ls(socket_path: &Path, json: bool) -> i32 {
         }
         _ => {
             println!("{line}");
+            tell_human(&line);
             1
         }
     }
@@ -2054,6 +2079,9 @@ pub fn run_ai_cli(args: Vec<String>) -> i32 {
         }
         Err((line, code)) => {
             println!("{line}");
+            if is_close && !agent {
+                tell_human(&line);
+            }
             code
         }
     }
@@ -3153,6 +3181,57 @@ mod tests {
         assert!(matches!(parse_request(r#"{"v":1,"cmd":"windows"}"#).unwrap(), AiRequest::Windows { .. }));
     }
 
+    fn files(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("/nope-open/{i}.md")).collect()
+    }
+
+    fn opened_in_7() -> Result<String, (String, i32)> {
+        Ok(r#"{"ok":true,"window":7,"focused":false}"#.to_string())
+    }
+
+    #[test]
+    fn a_transport_failure_mid_list_keeps_what_opened_and_its_exit_code() {
+        let mut calls = 0;
+        let (summary, code) = open_all(&files(3), None, false, |_| {
+            calls += 1;
+            match calls {
+                1 => opened_in_7(),
+                _ => Err((r#"{"ok":false,"error":"md-mini is not running"}"#.to_string(), 2)),
+            }
+        });
+        assert_eq!((calls, code), (2, 2), "stops at the failure, exits with the transport's code");
+        assert!(!summary.ok);
+        assert_eq!(summary.error.as_deref(), Some("md-mini is not running"));
+        assert_eq!(summary.opened.unwrap().iter().map(|t| t.path.as_str()).collect::<Vec<_>>(), vec!["/nope-open/0.md"]);
+        assert_eq!(summary.window, Some(7));
+    }
+
+    #[test]
+    fn a_refused_file_is_reported_and_the_rest_still_open() {
+        let mut calls = 0;
+        let (summary, code) = open_all(&files(3), Some(7), true, |req| {
+            calls += 1;
+            assert!(matches!(req, AiRequest::Open { window_binding: Some(7), focus: true, .. }));
+            if calls == 2 {
+                Ok(r#"{"ok":false,"error":"could not read the file"}"#.to_string())
+            } else {
+                opened_in_7()
+            }
+        });
+        assert_eq!((calls, code), (3, 1));
+        assert_eq!(summary.error.as_deref(), Some("could not read the file"));
+        assert_eq!(summary.opened.map(|o| o.len()), Some(2));
+    }
+
+    #[test]
+    fn at_most_fifty_files_open_at_once() {
+        let (summary, code) = open_all(&files(51), None, false, |_| panic!("nothing is sent"));
+        assert_eq!(code, 2);
+        assert_eq!(summary.error.as_deref(), Some("too many files: 51 (at most 50 at once)"));
+        let (summary, code) = open_all(&files(50), None, false, |_| opened_in_7());
+        assert_eq!((summary.ok, code), (true, 0));
+    }
+
     #[test]
     fn a_request_path_must_be_absolute_and_comes_out_normalized() {
         for bad in ["", "a.md", "./a.md", "../a.md"] {
@@ -3176,6 +3255,18 @@ mod tests {
             assert!(parse_request(line).unwrap().path_mut().is_some(), "{line}");
         }
         assert!(AiRequest::Windows { v: 1 }.path_mut().is_none());
+    }
+
+    #[test]
+    fn a_stale_socket_file_is_not_running_exit_2() {
+        // What `scripts/mdmini` probes with `ai ls --json` after a crash: the
+        // file is there, nobody accepts on it.
+        let path = std::env::temp_dir().join(format!("mdmini-stale-{}.sock", crate::session::new_tab_id()));
+        drop(UnixListener::bind(&path).unwrap());
+        assert!(path.exists());
+        let (_, code) = exchange(&path, &AiRequest::Windows { v: 1 }).unwrap_err();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(code, 2);
     }
 
     #[test]
