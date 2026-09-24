@@ -582,8 +582,16 @@ export function createTabController(deps: TabControllerDeps) {
     if (shown) await settle(tab, shown.entry.restore, true);
   }
 
-  async function closeNow(tabId: string): Promise<void> {
-    if (!findById(list, tabId)) return;
+  /**
+   * Take `tabId` out of this window. `'close'` records it for ⌘⇧T and fails
+   * its agents (Rust `tab_close`); `'release'` gives the claim back without a
+   * closed-stack entry (Rust `tab_release`) — the tab moves to another window,
+   * so a release never closes this one. `true` when the tab is gone from the list.
+   */
+  async function closeNow(tabId: string, how: 'close' | 'release' = 'close'): Promise<boolean> {
+    if (!findById(list, tabId)) return false;
+    const finish = (position: Position) =>
+      how === 'close' ? deps.rust.close(tabId, position) : deps.rust.release(tabId);
 
     if (tabId !== list.activeId) {
       // A background tab is clean by construction and was handed over when
@@ -591,9 +599,9 @@ export function createTabController(deps: TabControllerDeps) {
       const cached = cache.get(tabId);
       cache.delete(tabId);
       publish(removeTab(list, tabId).state);
-      await deps.rust.close(tabId, { cursor: cached?.cursor ?? 0, topLine: cached?.topLine ?? 1 });
+      await finish({ cursor: cached?.cursor ?? 0, topLine: cached?.topLine ?? 1 });
       deps.settled();
-      return;
+      return true;
     }
 
     deps.editor.commitCellEdit();
@@ -607,9 +615,9 @@ export function createTabController(deps: TabControllerDeps) {
       saveErrorPending: deps.saveErrorPending(),
     });
     if (verdict.kind === 'refuse-unsaved') deps.reportUnsaved();
-    if (verdict.kind !== 'ok') return;
+    if (verdict.kind !== 'ok') return false;
     if (path !== null) {
-      if (!(await deps.comments.flush(path))) return;
+      if (!(await deps.comments.flush(path))) return false;
       await deps.comments.commitPauses(path);
     }
     const state = deps.editor.current();
@@ -619,12 +627,17 @@ export function createTabController(deps: TabControllerDeps) {
     };
 
     const next = await prepareLoadable(removeTab(list, tabId).state);
+    if (how === 'release' && next.tab === null) {
+      // Nothing else here can be shown: releasing would close the window.
+      void deps.comments.reload();
+      return false;
+    }
     await flushWithRetries();
     if (path !== null && deps.doc.dirty()) {
       // Typed into during the awaits: the tab stays, its cards come back.
       void deps.comments.reload();
       deps.reportUnsaved();
-      return;
+      return false;
     }
 
     // From the dirty check above to the swap, nothing awaits.
@@ -634,17 +647,24 @@ export function createTabController(deps: TabControllerDeps) {
     for (const id of next.failed) cache.delete(id);
     publish(next.working);
     if (next.tab === null) {
-      await deps.rust.close(tabId, position);
+      await finish(position);
       await releaseAll(next.failed);
       deps.settled();
       await deps.rust.closeWindow();
-      return;
+      return true;
     }
     await enter(next.tab, next.ready, null, false);
-    // After the swap: its Rust side fails the closed document's agents and
-    // records it for ⌘⇧T; the watcher has already moved on.
-    await deps.rust.close(tabId, position);
+    // After the swap: its Rust side fails the document's agents (and, for a
+    // close, records it for ⌘⇧T); the watcher has already moved on.
+    await finish(position);
     await releaseAll(next.failed);
+    return true;
+  }
+
+  /** Background tabs first, the active one last: at most one swap for a group. */
+  function backgroundFirst(ids: readonly string[]): string[] {
+    const active = list.activeId;
+    return [...ids.filter((id) => id !== active), ...ids.filter((id) => id === active)];
   }
 
   function report(live: { cursor: number; topLine: number; content: string }): {
@@ -732,6 +752,44 @@ export function createTabController(deps: TabControllerDeps) {
       if (deps.windowFocused() || !findById(list, tabId)) return;
       publish(updateTab(list, tabId, { unviewed: true }));
       deps.settled();
+    },
+    /** The drawer's order — drag and sorts. A stale order is ignored. */
+    reorder: (order: readonly string[]) =>
+      queue.run(async () => {
+        const next = reorderTabs(list, order);
+        if (next === list) return;
+        publish(next);
+        deps.settled();
+      }),
+    /** Close a ⇧-selection (spec §6). Each goes the way ⌘W goes. */
+    closeTabs: (ids: readonly string[]) =>
+      queue.run(async () => {
+        for (const id of backgroundFirst(ids)) await closeNow(id, 'close');
+      }),
+    /**
+     * Take file tabs out of this window for new windows of their own. Untitled
+     * tabs stay (a new window opens by path), and the window is never emptied
+     * — its last tab stays. Resolves to the paths taken out, in order.
+     */
+    detachTabs: (ids: readonly string[]) =>
+      queue.run(async () => {
+        const out: string[] = [];
+        for (const id of backgroundFirst(ids)) {
+          const path = findById(list, id)?.path ?? null;
+          if (path === null || list.tabs.length <= 1) continue;
+          if (await closeNow(id, 'release')) out.push(path);
+        }
+        return out;
+      }),
+    /**
+     * A tab's text without I/O: the live view for the active tab, the cached
+     * state (or restored untitled text) for a background one, `null` for a
+     * tab never shown since launch — the drawer reads that one from disk.
+     */
+    textOf(tabId: string): string | null {
+      if (tabId === list.activeId) return deps.editor.current()?.doc.toString() ?? null;
+      const c = cache.get(tabId);
+      return c?.state?.doc.toString() ?? c?.content ?? null;
     },
     report,
   };

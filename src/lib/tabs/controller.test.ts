@@ -866,3 +866,125 @@ describe('drawer stamps', () => {
     ]);
   });
 });
+
+describe('drawer operations', () => {
+  const files = { '/a.md': 'AAAA', '/b.md': 'BBBB', '/c.md': 'CCCC' };
+  const three = () => [fileTab('a', '/a.md'), fileTab('b', '/b.md'), fileTab('c', '/c.md')];
+
+  it('ReorderIsPublishedAndReported', async () => {
+    const h = await started(files, three());
+    await h.controller.reorder(['c', 'a', 'b']);
+    expect(h.ids()).toEqual(['c', 'a', 'b']);
+    expect(h.active()).toBe('a');
+    expect(h.deps.settled).toHaveBeenCalledTimes(1);
+  });
+
+  it('ReorderIgnoresAnOrderThatIsNotAPermutation', async () => {
+    const h = await started(files, three());
+    await h.controller.reorder(['c', 'a']);
+    expect(h.ids()).toEqual(['a', 'b', 'c']);
+    expect(h.deps.settled).not.toHaveBeenCalled();
+  });
+
+  it('TextOfAnswersFromTheLiveViewAndTheCache_NeverFromDisk', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), fileTab('b', '/b.md'), untitledTab('u', 'draft')]);
+    const reads = vi.mocked(h.deps.disk.read).mock.calls.length;
+    expect(h.controller.textOf('a')).toBe('AAAA');
+    expect(h.controller.textOf('b')).toBeNull();
+    expect(h.controller.textOf('u')).toBe('draft');
+    await h.controller.activate('b');
+    expect(h.controller.textOf('a')).toBe('AAAA');
+    expect(h.controller.textOf('b')).toBe('BBBB');
+    expect(h.controller.textOf('ghost')).toBeNull();
+    expect(vi.mocked(h.deps.disk.read).mock.calls.length).toBe(reads + 1);
+  });
+
+  it('CloseTabsClosesBackgroundTabsBeforeTheActiveOne', async () => {
+    const h = await started(files, three());
+    await h.controller.closeTabs(['a', 'c']);
+    expect(h.ids()).toEqual(['b']);
+    expect(h.active()).toBe('b');
+    expect(h.calls.indexOf('close c')).toBeLessThan(h.calls.indexOf('close a'));
+    expect(h.calls.filter((c) => c === 'swap')).toHaveLength(1);
+  });
+
+  it('CloseTabsLeavesAnActiveTabWhoseSaveDidNotLand_TheBackgroundOnesStillGo', async () => {
+    // Background tabs are clean by construction, so the only one that can
+    // refuse is the active one — and it goes last.
+    const h = await started(files, three());
+    h.setSaveSucceeds(false);
+    h.type('unsaved');
+
+    await h.controller.closeTabs(['a', 'b', 'c']);
+
+    expect(h.ids()).toEqual(['a']);
+    expect(h.active()).toBe('a');
+    expect(h.deps.reportUnsaved).toHaveBeenCalledTimes(1);
+    expect(h.deps.rust.close).not.toHaveBeenCalledWith('a', expect.anything());
+    expect(h.deps.rust.closeWindow).not.toHaveBeenCalled();
+    expect(h.live().doc.toString()).toBe('AAAAunsaved');
+  });
+
+  it('CloseTabsSkipsIdsItDoesNotHave', async () => {
+    const h = await started(files, three());
+    await h.controller.closeTabs(['ghost', 'b']);
+    expect(h.ids()).toEqual(['a', 'c']);
+  });
+
+  it('DetachTabsReleasesInsteadOfClosing', async () => {
+    const h = await started(files, three());
+    expect(await h.controller.detachTabs(['b'])).toEqual(['/b.md']);
+    expect(h.ids()).toEqual(['a', 'c']);
+    expect(h.deps.rust.release).toHaveBeenCalledWith('b');
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+  });
+
+  it('DetachingTheActiveTabHandsItOverAndSwitchesFirst', async () => {
+    const h = await started(files, three());
+    expect(await h.controller.detachTabs(['a'])).toEqual(['/a.md']);
+    expect(h.active()).toBe('b');
+    expect(h.calls.indexOf('swap')).toBeLessThan(h.calls.indexOf('release a'));
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+  });
+
+  it('DetachNeverEmptiesTheWindow', async () => {
+    const h = await started(files, three());
+    expect(await h.controller.detachTabs(['a', 'b', 'c'])).toEqual(['/b.md', '/c.md']);
+    expect(h.ids()).toEqual(['a']);
+    expect(h.deps.rust.closeWindow).not.toHaveBeenCalled();
+  });
+
+  it('DetachLeavesUntitledTabsWhereTheyAre', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), untitledTab('u', 'draft'), fileTab('b', '/b.md')]);
+    expect(await h.controller.detachTabs(['u', 'b'])).toEqual(['/b.md']);
+    expect(h.ids()).toEqual(['a', 'u']);
+  });
+
+  it('DetachKeepsAnActiveTabWhoseSaveDidNotLand', async () => {
+    const h = await started(files, three());
+    h.setSaveSucceeds(false);
+    h.type('unsaved');
+
+    expect(await h.controller.detachTabs(['a', 'b'])).toEqual(['/b.md']);
+
+    expect(h.ids()).toEqual(['a', 'c']);
+    expect(h.active()).toBe('a');
+    expect(h.deps.reportUnsaved).toHaveBeenCalledTimes(1);
+    expect(h.deps.rust.release).not.toHaveBeenCalledWith('a');
+    expect(h.live().doc.toString()).toBe('AAAAunsaved');
+  });
+
+  it('DetachKeepsTheActiveTabWhenNoOtherTabCanBeShown', async () => {
+    // Every neighbour is unreadable: releasing the active tab would close the window.
+    const h = await started(files, three());
+    h.unreadable.add('/b.md');
+    h.unreadable.add('/c.md');
+
+    expect(await h.controller.detachTabs(['a'])).toEqual([]);
+
+    expect(h.ids()).toEqual(['a', 'b', 'c']);
+    expect(h.active()).toBe('a');
+    expect(h.deps.rust.release).not.toHaveBeenCalled();
+    expect(h.deps.rust.closeWindow).not.toHaveBeenCalled();
+  });
+});
