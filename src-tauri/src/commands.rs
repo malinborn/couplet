@@ -72,6 +72,18 @@ pub async fn sync_ocd_alignment_menu(
     Ok(())
 }
 
+/// Sets View → Tabs → Compact to the frontend's persisted flag — the same
+/// start-up sync as `sync_ocd_alignment_menu`, for the same reason: `lib.rs`
+/// sends windows this toggle's value from `ViewToggleItems`, not "flip it".
+#[command]
+pub async fn sync_tabs_compact_menu(
+    state: tauri::State<'_, crate::menu::ViewToggleItems>,
+    enabled: bool,
+) -> Result<(), String> {
+    state.sync_tabs_compact(enabled);
+    Ok(())
+}
+
 /// Comment threads of a document, read from its sidecar. A document with no
 /// sidecar yet returns an empty list rather than an error — that is the normal
 /// state for most files.

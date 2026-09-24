@@ -43,6 +43,7 @@ export const NATIVE_MENU_ACCELERATORS: readonly NativeMenuAccelerator[] = [
   { id: 'ai_comment', accelerator: 'CmdOrCtrl+Shift+M' },
   { id: 'next_tab', accelerator: 'Ctrl+Tab' },
   { id: 'prev_tab', accelerator: 'Ctrl+Shift+Tab' },
+  { id: 'toggle_drawer', accelerator: 'CmdOrCtrl+J' },
   { id: 'select_tab_1', accelerator: 'CmdOrCtrl+1' },
   { id: 'select_tab_2', accelerator: 'CmdOrCtrl+2' },
   { id: 'select_tab_3', accelerator: 'CmdOrCtrl+3' },

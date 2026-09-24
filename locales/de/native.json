@@ -38,6 +38,8 @@
   "menu.view.next_tab": "Nächsten Tab zeigen",
   "menu.view.prev_tab": "Vorherigen Tab zeigen",
   "menu.view.select_tab": "Tab {n}",
+  "menu.view.show_tabs": "Tabs anzeigen",
+  "menu.view.tabs_compact": "Kompakt",
 
   "menu.theme.title": "Design",
   "menu.theme.half_light": "Hell",

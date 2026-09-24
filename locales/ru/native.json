@@ -38,6 +38,8 @@
   "menu.view.next_tab": "Следующая вкладка",
   "menu.view.prev_tab": "Предыдущая вкладка",
   "menu.view.select_tab": "Вкладка {n}",
+  "menu.view.show_tabs": "Показать вкладки",
+  "menu.view.tabs_compact": "Компактно",
 
   "menu.theme.title": "Тема",
   "menu.theme.half_light": "Светлая",

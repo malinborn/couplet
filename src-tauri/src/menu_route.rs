@@ -18,7 +18,8 @@ pub enum MenuRoute {
 }
 
 pub fn menu_route(id: &str) -> MenuRoute {
-    const BROADCAST_PREFIXES: [&str; 3] = ["engine_", "theme_", "toggle_ocd_alignment"];
+    const BROADCAST_PREFIXES: [&str; 4] =
+        ["engine_", "theme_", "toggle_ocd_alignment", "toggle_tabs_compact"];
     match id {
         "toggle_mode" | "zoom_in" | "zoom_out" | "zoom_reset" | "toggle_line_glow" => {
             MenuRoute::Broadcast
@@ -98,6 +99,8 @@ mod tests {
             "zoom_reset",
             "toggle_line_glow",
             "toggle_ocd_alignment:on",
+            "toggle_tabs_compact:on",
+            "toggle_tabs_compact:off",
             "theme_family_aurora",
             "theme_half_dark",
             "theme_system:off",
@@ -111,7 +114,7 @@ mod tests {
         for id in [
             "open", "save", "save_as", "close", "select_all", "find", "recent_files",
             "ai_comment", "ai_watch_command", "format_json", "new_tab", "next_tab",
-            "prev_tab", "select_tab_1", "select_tab_9",
+            "prev_tab", "select_tab_1", "select_tab_9", "toggle_drawer",
         ] {
             assert_eq!(menu_route(id), MenuRoute::Focused, "{id}");
         }

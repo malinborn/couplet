@@ -38,6 +38,8 @@
   "menu.view.next_tab": "显示下一个标签页",
   "menu.view.prev_tab": "显示上一个标签页",
   "menu.view.select_tab": "标签页 {n}",
+  "menu.view.show_tabs": "显示标签页",
+  "menu.view.tabs_compact": "紧凑",
 
   "menu.theme.title": "主题",
   "menu.theme.half_light": "浅色",

@@ -38,6 +38,8 @@
   "menu.view.next_tab": "Mostrar pestaña siguiente",
   "menu.view.prev_tab": "Mostrar pestaña anterior",
   "menu.view.select_tab": "Pestaña {n}",
+  "menu.view.show_tabs": "Mostrar pestañas",
+  "menu.view.tabs_compact": "Compacto",
 
   "menu.theme.title": "Tema",
   "menu.theme.half_light": "Claro",

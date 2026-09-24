@@ -38,6 +38,8 @@
   "menu.view.next_tab": "Afficher l'onglet suivant",
   "menu.view.prev_tab": "Afficher l'onglet précédent",
   "menu.view.select_tab": "Onglet {n}",
+  "menu.view.show_tabs": "Afficher les onglets",
+  "menu.view.tabs_compact": "Compact",
 
   "menu.theme.title": "Thème",
   "menu.theme.half_light": "Clair",

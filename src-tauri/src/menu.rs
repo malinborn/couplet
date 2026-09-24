@@ -85,6 +85,9 @@ pub struct EngineMenuItems {
 pub struct ViewToggleItems {
     pub ocd_alignment: CheckMenuItem<Wry>,
     pub ocd_enabled: Toggle,
+    /// View → Tabs → Compact (spec §6): one-line drawer cards.
+    pub tabs_compact: CheckMenuItem<Wry>,
+    pub compact_enabled: Toggle,
 }
 
 /// A live handle to the "Reopen…" item, so it can be re-enabled once the
@@ -147,6 +150,11 @@ impl ViewToggleItems {
     pub fn sync_ocd_alignment(&self, enabled: bool) {
         let _ = self.ocd_alignment.set_checked(enabled);
         self.ocd_enabled.set(enabled);
+    }
+
+    pub fn sync_tabs_compact(&self, enabled: bool) {
+        let _ = self.tabs_compact.set_checked(enabled);
+        self.compact_enabled.set(enabled);
     }
 }
 
@@ -264,11 +272,23 @@ pub fn build_menu(
     let toggle_ocd_alignment =
         CheckMenuItemBuilder::with_id("toggle_ocd_alignment", t("menu.view.ocd_alignment")).build(app)?;
 
+    let tabs_compact =
+        CheckMenuItemBuilder::with_id("toggle_tabs_compact", t("menu.view.tabs_compact")).build(app)?;
+
     // Nine literal builder chains, not a loop: the accelerator mirror test
     // (`native-menu-accelerators.test.ts`) reads each item id as a string
     // literal right after its builder call.
     let tab_label = |n: u32| t("menu.view.select_tab").replace("{n}", &n.to_string());
     let tabs_submenu = SubmenuBuilder::new(app, t("menu.view.tabs_title"))
+        // The drawer (spec §6). ⌘J is its only key; it is printed on the
+        // notch, which reads it from the mirror of this line.
+        .item(
+            &MenuItemBuilder::with_id("toggle_drawer", t("menu.view.show_tabs"))
+                .accelerator("CmdOrCtrl+J")
+                .build(app)?,
+        )
+        .item(&tabs_compact)
+        .separator()
         .item(
             &MenuItemBuilder::with_id("next_tab", t("menu.view.next_tab"))
                 .accelerator("Ctrl+Tab")
@@ -322,7 +342,6 @@ pub fn build_menu(
         .item(&CheckMenuItemBuilder::with_id("toggle_line_glow", t("menu.view.line_glow")).build(app)?)
         .item(&toggle_ocd_alignment)
         .separator()
-        // Plan 03 adds "Show Tabs" (⌘J) and "Compact" here (spec §6).
         .item(&tabs_submenu)
         .build()?;
 
@@ -486,6 +505,8 @@ pub fn build_menu(
     let view_toggles = ViewToggleItems {
         ocd_alignment: toggle_ocd_alignment,
         ocd_enabled: Toggle::default(),
+        tabs_compact,
+        compact_enabled: Toggle::default(),
     };
 
     let session_items = SessionMenuItems {

@@ -44,8 +44,9 @@ use window::{FileWatchers, OpenFiles, PendingFiles, PendingTab};
 ///
 /// `None` для всего, что тумблером не является: такие события уходят как есть.
 /// Здесь только пункты, чьё значение фронтенд сообщает при старте
-/// (`sync_theme_menu`, `sync_ocd_alignment_menu`) — без этого `Toggle` не с
-/// чего было бы начинать. `toggle_line_glow` такой синхронизации не имеет и
+/// (`sync_theme_menu`, `sync_ocd_alignment_menu`, `sync_tabs_compact_menu`) —
+/// без этого `Toggle` не с чего было бы начинать. `toggle_line_glow` такой
+/// синхронизации не имеет и
 /// потому сюда не включён; он до сих пор рассылает «переключи» и ведёт себя
 /// соответственно, когда окон больше одного.
 fn toggle_value(app: &tauri::AppHandle, id: &str) -> Option<bool> {
@@ -56,6 +57,9 @@ fn toggle_value(app: &tauri::AppHandle, id: &str) -> Option<bool> {
         "toggle_ocd_alignment" => app
             .try_state::<menu::ViewToggleItems>()
             .map(|s| s.ocd_enabled.flip()),
+        "toggle_tabs_compact" => app
+            .try_state::<menu::ViewToggleItems>()
+            .map(|s| s.compact_enabled.flip()),
         _ => None,
     }
 }
@@ -185,6 +189,7 @@ pub fn run() {
             commands::sync_theme_menu,
             commands::sync_engine_menu,
             commands::sync_ocd_alignment_menu,
+            commands::sync_tabs_compact_menu,
             i18n::resolved_language,
         ])
         .setup(|app| {
