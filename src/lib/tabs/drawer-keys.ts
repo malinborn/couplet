@@ -28,10 +28,11 @@ export const DRAWER_SORT_KEYS: readonly DrawerSortKey[] = [
 /**
  * «В окно…» (plan 05, D10): the carousel for the selection, else the card the
  * arrows are on, else the active tab. A drawer key like the sorts, for the
- * same reason — while the drawer is closed ⌘M is nobody's, and a native item
- * would fire whether the drawer is open or not.
+ * same reason — while the drawer is closed ⌘G is the editor's (CodeMirror's
+ * `findNext`), and a native item would fire whether the drawer is open or
+ * not. Not ⌘M: that is macOS's Minimize, a native Window-menu item (Q11).
  */
-export const DRAWER_MOVE_KEY = { code: 'KeyM', accelerator: 'CmdOrCtrl+M' } as const;
+export const DRAWER_MOVE_KEY = { code: 'KeyG', accelerator: 'CmdOrCtrl+G' } as const;
 
 export function sortKindForCode(code: string): SortKind | undefined {
   return DRAWER_SORT_KEYS.find((key) => key.code === code)?.sort;

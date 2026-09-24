@@ -47,6 +47,8 @@
   "menu.theme.title": "Thème",
   "menu.theme.half_light": "Clair",
   "menu.theme.half_dark": "Sombre",
+  "menu.window.title": "Fenêtre",
+  "menu.window.minimize": "Placer dans le Dock",
 
   "menu.ai.title": "IA",
   "menu.ai.connect": "Apprends mdmini à ton IA",

@@ -226,11 +226,11 @@ export function drawerKeyAction(e: KeyLike, query: string, mac: boolean): Drawer
 }
 
 /**
- * Whether the drawer may take `a`. Sort keys work in any open drawer: the Q5
- * rule only keeps printable typing (and, for now, Esc) with the editor until
- * the drawer has the keyboard, and letting ⌘U through would run CodeMirror's
- * `undoSelection` behind an open drawer.
+ * Whether the drawer may take `a`. Sort keys and ⌘G work in any open drawer:
+ * the Q5 rule only keeps printable typing (and, for now, Esc) with the editor
+ * until the drawer has the keyboard, and letting ⌘U or ⌘G through would run
+ * CodeMirror's `undoSelection` or `findNext` behind an open drawer.
  */
 export function actionAllowed(s: DrawerState, a: DrawerKeyAction): boolean {
-  return s.open && (s.typing || a.kind === 'sort');
+  return s.open && (s.typing || a.kind === 'sort' || a.kind === 'carousel');
 }

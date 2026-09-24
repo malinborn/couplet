@@ -47,6 +47,8 @@
   "menu.theme.title": "Theme",
   "menu.theme.half_light": "Light",
   "menu.theme.half_dark": "Dark",
+  "menu.window.title": "Window",
+  "menu.window.minimize": "Minimize",
 
   "menu.ai.title": "AI",
   "menu.ai.connect": "Teach Your AI mdmini",

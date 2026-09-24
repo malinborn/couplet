@@ -55,7 +55,7 @@
   } from './drawer-state';
   import { filterEntries, type Match } from './drawer-filter';
   import { sortedOrder, type SortKind } from './drawer-sort';
-  import { DRAWER_SORT_KEYS } from './drawer-keys';
+  import { DRAWER_MOVE_KEY, DRAWER_SORT_KEYS } from './drawer-keys';
   import { createDrawerData, type DrawerDataDeps, type GitInfo, type TabText } from './drawer-data';
   import { dropBefore, moveIds, pastThreshold, sweptIds, type Box } from './drawer-geometry';
   import { tabName } from './tab-name';
@@ -295,7 +295,7 @@
     oncarousel?.(car !== null);
   });
 
-  // ⌘M's carousel follows its tabs: one closed while it is up (⌘W, an agent)
+  // ⌘G's carousel follows its tabs: one closed while it is up (⌘W, an agent)
   // leaves it, and with none left the carousel goes. A drag's is settled at
   // the drop instead (`pick`) — closed here, the next move would reopen it.
   $effect(() => {
@@ -666,7 +666,7 @@
     trackShift(e);
     // The IME owns the key: a composed character is not a search letter.
     if (e.isComposing || e.keyCode === 229) return;
-    // While ⌘M's carousel is up every key is its own (D10) — not during the
+    // While ⌘G's carousel is up every key is its own (D10) — not during the
     // «got» pulse after a pick, when the keys are the list's again.
     if (car?.mode === 'keys' && car.got === null) {
       onCarouselKey(e);
@@ -847,7 +847,7 @@
     if (c.mode === 'keys') void tick().then(() => listEl?.focus({ preventScroll: true }));
   }
 
-  /** ⌘M / «В окно…»: the selection, else the card the arrows are on, else the active tab. */
+  /** ⌘G / «В окно…»: the selection, else the card the arrows are on, else the active tab. */
   function openMoveKeys(): void {
     const selectedNow = selectedIds();
     const kb = kbTarget(ds, visible);
@@ -935,7 +935,7 @@
     trackShift(e);
     // A gesture still running here lost its pointerup: drop it.
     endGesture?.();
-    // A press in the list leaves ⌘M's carousel: a drag from here gets its own.
+    // A press in the list leaves ⌘G's carousel: a drag from here gets its own.
     if (car?.mode === 'keys') closeCarousel();
     if (e.button !== 0 || !(e.target instanceof Element)) return;
     if (e.target.closest('.card-close')) return;
@@ -1199,7 +1199,12 @@
           >{t('tabs.selection.drag_hint')}</small
         >
         <span class="acts">
-          <button type="button" onclick={openMoveKeys}>{t('tabs.selection.to_window')}</button>
+          <button
+            type="button"
+            title={acceleratorLabel(DRAWER_MOVE_KEY.accelerator)}
+            aria-keyshortcuts={acceleratorAriaKeyShortcuts(DRAWER_MOVE_KEY.accelerator)}
+            onclick={openMoveKeys}>{t('tabs.selection.to_window')}</button
+          >
           <button type="button" onclick={moveSelected}
             >{t(selected.size === 1 ? 'tabs.selection.new_window' : 'tabs.selection.new_windows')}</button
           >

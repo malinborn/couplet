@@ -47,6 +47,8 @@
   "menu.theme.title": "Тема",
   "menu.theme.half_light": "Светлая",
   "menu.theme.half_dark": "Тёмная",
+  "menu.window.title": "Окно",
+  "menu.window.minimize": "Свернуть",
 
   "menu.ai.title": "AI",
   "menu.ai.connect": "Научите свой AI работать с mdmini",

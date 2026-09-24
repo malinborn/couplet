@@ -47,6 +47,8 @@
   "menu.theme.title": "主题",
   "menu.theme.half_light": "浅色",
   "menu.theme.half_dark": "深色",
+  "menu.window.title": "窗口",
+  "menu.window.minimize": "最小化",
 
   "menu.ai.title": "AI",
   "menu.ai.connect": "教你的 AI 使用 mdmini",

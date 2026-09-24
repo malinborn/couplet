@@ -510,12 +510,21 @@ pub fn build_menu(
         .item(&MenuItemBuilder::with_id("ai_playbook", t("menu.ai.playbook")).build(app)?)
         .build()?;
 
+    // The standard Window menu, for ⌘M. The predefined item carries the key
+    // itself (no `.accelerator("…")` string), so the drawer's «В окно…» key
+    // is ⌘G, not ⌘M — `drawer-keys.test.ts` holds both sides of that.
+    let window_menu = SubmenuBuilder::new(app, t("menu.window.title"))
+        .minimize_with_text(t("menu.window.minimize"))
+        .build()?;
+
+    // Window before AI: the AI menu stands where Help would, last.
     let menu = MenuBuilder::new(app)
         .item(&app_menu)
         .item(&file_menu)
         .item(&edit_menu)
         .item(&view_menu)
         .item(&theme_menu)
+        .item(&window_menu)
         .item(&ai_menu)
         .build()?;
 

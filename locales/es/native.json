@@ -47,6 +47,8 @@
   "menu.theme.title": "Tema",
   "menu.theme.half_light": "Claro",
   "menu.theme.half_dark": "Oscuro",
+  "menu.window.title": "Ventana",
+  "menu.window.minimize": "Minimizar",
 
   "menu.ai.title": "IA",
   "menu.ai.connect": "Enseña mdmini a tu IA",

@@ -737,14 +737,14 @@ describe('TabDrawer — the window carousel (plan 05)', () => {
     expect(el('.drawer').hasAttribute('inert')).toBe(false);
   });
 
-  it('CmdMOpensTheCarouselForTheSelection_ArrowsAndEnterMoveIt', async () => {
+  it('CmdGOpensTheCarouselForTheSelection_ArrowsAndEnterMoveIt', async () => {
     h.windows.mockResolvedValue([other('editor-2', 7), other('editor-3', 8)]);
     h.handle().toggle();
     await settle();
     shiftClick('c');
     shiftClick('b');
     await settle();
-    press('m', { metaKey: true, ctrlKey: true });
+    press('g', { metaKey: true, ctrlKey: true });
     await settle();
     await settle();
     expect(document.activeElement).toBe(listbox());
@@ -757,10 +757,10 @@ describe('TabDrawer — the window carousel (plan 05)', () => {
     expect(h.onmove).toHaveBeenCalledWith(['b', 'c'], { kind: 'window', label: 'editor-3' });
   });
 
-  it('CmdMWithoutASelectionMovesTheActiveTab_EscGivesTheKeysBackToTheList', async () => {
+  it('CmdGWithoutASelectionMovesTheActiveTab_EscGivesTheKeysBackToTheList', async () => {
     h.handle().toggle();
     await settle();
-    press('m', { metaKey: true, ctrlKey: true });
+    press('g', { metaKey: true, ctrlKey: true });
     await settle();
     await settle();
     // One window: only «+ Новое окно», and the keyboard is on it.
@@ -772,7 +772,7 @@ describe('TabDrawer — the window carousel (plan 05)', () => {
     await settle();
     expect(carousel()).toBeNull();
     expect(document.activeElement).toBe(el('.tab-list'));
-    press('m', { metaKey: true, ctrlKey: true });
+    press('g', { metaKey: true, ctrlKey: true });
     await settle();
     await settle();
     press('Enter');
@@ -786,6 +786,8 @@ describe('TabDrawer — the window carousel (plan 05)', () => {
     shiftClick('c');
     await settle();
     const button = [...el('.sel-bar').querySelectorAll('button')].find((b) => b.textContent === 'To a window…');
+    expect(button!.title, 'the tooltip names the key').toMatch(/G$/);
+    expect(button!.getAttribute('aria-keyshortcuts')).toMatch(/\+G$/);
     button!.click();
     await settle();
     await settle();
@@ -798,7 +800,7 @@ describe('TabDrawer — the window carousel (plan 05)', () => {
   it('AHoverOpenedDrawerStaysWhileTheCarouselIsUp_AThumbnailClickMoves', async () => {
     vi.useFakeTimers();
     await hoverOpen();
-    press('m', { metaKey: true, ctrlKey: true });
+    press('g', { metaKey: true, ctrlKey: true });
     await settle();
     await settle();
     expect(carousel()).not.toBeNull();
@@ -847,7 +849,7 @@ describe('TabDrawer — the window carousel (plan 05)', () => {
   it('DuringThePulseAfterEnterTheKeysAreTheListsAgain', async () => {
     h.handle().toggle();
     await settle();
-    press('m', { metaKey: true, ctrlKey: true });
+    press('g', { metaKey: true, ctrlKey: true });
     await settle();
     await settle();
     press('Enter');
@@ -858,13 +860,13 @@ describe('TabDrawer — the window carousel (plan 05)', () => {
     expect(query()).toBe('x');
   });
 
-  it('DuringADragKeysAreSwallowed_CmdMDoesNothing', async () => {
+  it('DuringADragKeysAreSwallowed_CmdGDoesNothing', async () => {
     h.handle().toggle();
     await settle();
     await dragOut('b');
     expect(press('x').defaultPrevented).toBe(true);
     press('ArrowDown');
-    press('m', { metaKey: true, ctrlKey: true });
+    press('g', { metaKey: true, ctrlKey: true });
     await settle();
     await settle();
     expect(query()).toBe('');
@@ -877,10 +879,10 @@ describe('TabDrawer — the window carousel (plan 05)', () => {
     expect(h.onmove).toHaveBeenCalledWith(['b'], { kind: 'new-window' });
   });
 
-  it('ADragStartedUnderCmdMsCarouselGetsItsOwn', async () => {
+  it('ADragStartedUnderCmdGsCarouselGetsItsOwn', async () => {
     h.handle().toggle();
     await settle();
-    press('m', { metaKey: true, ctrlKey: true });
+    press('g', { metaKey: true, ctrlKey: true });
     await settle();
     await settle();
     expect(document.activeElement).toBe(listbox());
@@ -898,7 +900,7 @@ describe('TabDrawer — the window carousel (plan 05)', () => {
   it('InKeysModeAPressOffTheThumbnailsCancels_OnOneItDoesNot', async () => {
     h.handle().toggle();
     await settle();
-    press('m', { metaKey: true, ctrlKey: true });
+    press('g', { metaKey: true, ctrlKey: true });
     await settle();
     await settle();
     pointer(option(0)!, 'pointerdown', { button: 0 });
@@ -930,13 +932,13 @@ describe('TabDrawer — the window carousel (plan 05)', () => {
     expect(h.onmove).not.toHaveBeenCalled();
   });
 
-  it('ATabClosedUnderCmdMsCarouselLeavesIt_WithNoneLeftTheCarouselGoes', async () => {
+  it('ATabClosedUnderCmdGsCarouselLeavesIt_WithNoneLeftTheCarouselGoes', async () => {
     h.handle().toggle();
     await settle();
     shiftClick('b');
     shiftClick('c');
     await settle();
-    press('m', { metaKey: true, ctrlKey: true });
+    press('g', { metaKey: true, ctrlKey: true });
     await settle();
     await settle();
     const without = (...gone: string[]) => {
@@ -970,6 +972,23 @@ describe('TabDrawer — the window carousel (plan 05)', () => {
     expect(carousel()).toBeNull();
   });
 
+  it('CmdGIsTheDrawersEvenBeforeItTookTheKeys_ClosedItIsTheEditors', async () => {
+    vi.useFakeTimers();
+    typeInEditor();
+    // Closed: CodeMirror's findNext gets it.
+    expect(press('g', { metaKey: true, ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(h.editorKeys).toEqual(['g']);
+    h.editorKeys.length = 0;
+    await hoverOpen();
+    expect(document.activeElement).toBe(h.editor);
+    // Open, even a hover drawer that left the keys with the editor: never findNext behind it.
+    expect(press('g', { metaKey: true, ctrlKey: true }).defaultPrevented).toBe(true);
+    expect(h.editorKeys).toEqual([]);
+    await settle();
+    await settle();
+    expect(carousel()).not.toBeNull();
+  });
+
   it('AWindowsFetchThatResolvesAfterCloseIsDropped', async () => {
     let resolve: (windows: CarouselWindow[]) => void = () => {};
     h.windows.mockReturnValueOnce(
@@ -979,11 +998,11 @@ describe('TabDrawer — the window carousel (plan 05)', () => {
     );
     h.handle().toggle();
     await settle();
-    press('m', { metaKey: true, ctrlKey: true });
+    press('g', { metaKey: true, ctrlKey: true });
     await settle();
     press('Escape');
     await settle();
-    press('m', { metaKey: true, ctrlKey: true });
+    press('g', { metaKey: true, ctrlKey: true });
     await settle();
     await settle();
     expect(option(0)).not.toBeNull();

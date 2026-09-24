@@ -47,6 +47,8 @@
   "menu.theme.title": "Design",
   "menu.theme.half_light": "Hell",
   "menu.theme.half_dark": "Dunkel",
+  "menu.window.title": "Fenster",
+  "menu.window.minimize": "Im Dock ablegen",
 
   "menu.ai.title": "KI",
   "menu.ai.connect": "Bring deiner KI mdmini bei",

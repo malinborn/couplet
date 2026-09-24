@@ -170,9 +170,11 @@ describe('actionAllowed', () => {
   const type = { kind: 'type', char: 'a' } as const;
   const esc = { kind: 'escape' } as const;
 
-  it('SortKeysWorkInAnOpenDrawerBeforeItTookTheKeyboard', () => {
+  it('SortKeysAndCmdGWorkInAnOpenDrawerBeforeItTookTheKeyboard', () => {
+    // Let through, ⌘G would run CodeMirror's findNext behind the drawer.
     const s = open(CLOSED, 'hover', false);
     expect(actionAllowed(s, sort)).toBe(true);
+    expect(actionAllowed(s, { kind: 'carousel' })).toBe(true);
     expect(actionAllowed(s, type)).toBe(false);
     expect(actionAllowed(s, esc)).toBe(false);
   });
@@ -187,16 +189,21 @@ describe('actionAllowed', () => {
   it('NothingWhileClosed', () => {
     expect(actionAllowed(CLOSED, sort)).toBe(false);
     expect(actionAllowed(CLOSED, type)).toBe(false);
+    expect(actionAllowed(CLOSED, { kind: 'carousel' })).toBe(false);
   });
 });
 
 describe('drawerKeyAction', () => {
-  it('CmdMOpensTheCarousel', () => {
-    expect(drawerKeyAction(key({ key: 'm', code: 'KeyM', metaKey: true }), '', true)).toEqual({ kind: 'carousel' });
-    expect(drawerKeyAction(key({ key: 'm', code: 'KeyM', ctrlKey: true }), '', false)).toEqual({ kind: 'carousel' });
-    // ⇧⌘M is the native AI-comment item and never reaches the webview.
-    expect(drawerKeyAction(key({ key: 'M', code: 'KeyM', metaKey: true, shiftKey: true }), '', true)).toEqual({ kind: 'none' });
-    expect(drawerKeyAction(key({ key: 'm', code: 'KeyM' }), '', true)).toEqual({ kind: 'type', char: 'm' });
+  it('CmdGOpensTheCarousel_CmdMIsNotTheDrawers', () => {
+    expect(drawerKeyAction(key({ key: 'g', code: 'KeyG', metaKey: true }), '', true)).toEqual({ kind: 'carousel' });
+    expect(drawerKeyAction(key({ key: 'g', code: 'KeyG', ctrlKey: true }), '', false)).toEqual({ kind: 'carousel' });
+    // Matched on the code: ⌘П in a Cyrillic layout is still ⌘G.
+    expect(drawerKeyAction(key({ key: 'п', code: 'KeyG', metaKey: true }), '', true)).toEqual({ kind: 'carousel' });
+    // ⇧⌘G stays CodeMirror's findPrevious.
+    expect(drawerKeyAction(key({ key: 'G', code: 'KeyG', metaKey: true, shiftKey: true }), '', true)).toEqual({ kind: 'none' });
+    expect(drawerKeyAction(key({ key: 'g', code: 'KeyG' }), '', true)).toEqual({ kind: 'type', char: 'g' });
+    // ⌘M is macOS Minimize, a native item: never the drawer's.
+    expect(drawerKeyAction(key({ key: 'm', code: 'KeyM', metaKey: true }), '', true)).toEqual({ kind: 'none' });
   });
 
   it('Escape', () => {

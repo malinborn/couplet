@@ -2,7 +2,7 @@
   /**
    * The window carousel (plan 05; mockup drawer-carousel.html): the other
    * windows as thumbnails — «+ Новое окно» first — while a card is dragged
-   * over the page or ⌘M asked for it. Presentational: `TabDrawer` feeds the
+   * over the page or ⌘G asked for it. Presentational: `TabDrawer` feeds the
    * pointer, owns the keys and turns a pick into a move. Scrolling is written
    * straight to the DOM on each frame, never through reactive state.
    */
@@ -27,7 +27,7 @@
     itemAt(x: number, y: number): number | null;
     /** Scroll item `index` into view — the keyboard's choice. */
     reveal(index: number): void;
-    /** Give the listbox the keyboard (⌘M). */
+    /** Give the listbox the keyboard (⌘G). */
     focus(): void;
   }
 

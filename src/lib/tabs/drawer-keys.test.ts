@@ -44,7 +44,9 @@ describe('drawer sort keys', () => {
   });
 
   it('TheMoveKeyIsNobodysEither', () => {
-    // ⌘M is «В окно…» only while the drawer is open (plan 05, D10).
+    // ⌘G is «В окно…» only while the drawer is open (plan 05, D10, Q11);
+    // outside it, CodeMirror's findNext. A menu item would take it in both.
+    expect(DRAWER_MOVE_KEY.accelerator).toBe('CmdOrCtrl+G');
     const native = new Set(NATIVE_MENU_ACCELERATORS.map((a) => a.accelerator));
     expect(native.has(DRAWER_MOVE_KEY.accelerator)).toBe(false);
     const claimed = [...readFileSync(MENU_RS, 'utf8').matchAll(/\.accelerator\(\s*"([^"]+)"\s*\)/g)].map((m) => m[1]);
@@ -52,12 +54,13 @@ describe('drawer sort keys', () => {
     expect(DRAWER_MOVE_KEY.accelerator).toBe(`CmdOrCtrl+${DRAWER_MOVE_KEY.code.slice(3)}`);
   });
 
-  it('MenuRsHasNoPredefinedMinimize', () => {
-    // A predefined Minimize item carries ⌘M without an `.accelerator("…")`
-    // string and would take the key before the webview sees it — whether it
-    // comes from the submenu builder, `PredefinedMenuItem`, or Tauri's default
-    // menu (its Window submenu has one).
-    expect(readFileSync(MENU_RS, 'utf8')).not.toMatch(/\.minimize(?:_with_text)?\s*\(|PredefinedMenuItem::minimize/);
+  it('CmdMIsMacOSMinimize_TheWindowMenuHasIt_AndTheDrawerLeavesIt', () => {
+    // A predefined Minimize carries ⌘M without an `.accelerator("…")` string,
+    // so the mirror above cannot see it: pin the item itself (Q11).
+    expect(readFileSync(MENU_RS, 'utf8')).toMatch(/\.minimize(?:_with_text)?\s*\(|PredefinedMenuItem::minimize/);
+    expect(DRAWER_MOVE_KEY.code).not.toBe('KeyM');
+    for (const key of DRAWER_SORT_KEYS) expect(key.code).not.toBe('KeyM');
+    // Tauri's default menu would add a second Window (and Edit) menu beside ours.
     for (const file of [MENU_RS, LIB_RS]) expect(readFileSync(file, 'utf8')).not.toMatch(/Menu::default\s*\(/);
   });
 });
