@@ -1801,13 +1801,27 @@ describe('moving tabs to another window (plan 05)', () => {
     expect(lastActivate(h)).toBe('activate a');
   });
 
-  it('MoveToNewWindowsSendsEachTabToAWindowOfItsOwn_InListOrder', async () => {
-    const h = await started(files, three());
-    const outcome = await h.controller.moveToNewWindows(['c', 'a']);
-    expect(h.calls.filter((c) => c.startsWith('move '))).toEqual(['move a → new', 'move c → new']);
-    expect(outcome?.moved.map((m) => m.label)).toEqual(['editor-9', 'editor-10']);
+  it('MoveToNewWindowsSendsEachTabToAWindowOfItsOwn_InListOrder_TheActiveOneLast', async () => {
+    const h = await started(files, [...three(), fileTab('d', '/d.md')]);
+    const outcome = await h.controller.moveToNewWindows(['d', 'a', 'c']);
+    expect(h.calls.filter((c) => c.startsWith('move '))).toEqual(['move c → new', 'move d → new', 'move a → new']);
+    expect(outcome?.moved.map((m) => m.label)).toEqual(['editor-9', 'editor-10', 'editor-11']);
     expect(outcome?.stranded).toEqual([]);
     expect(h.ids()).toEqual(['b']);
+  });
+
+  it('MoveToNewWindowsNeverShowsASelectedNeighbourOnTheWay', async () => {
+    // Moved first, the active tab would hand the view to b — shown, seen, its
+    // pulse spent — only for b to leave next.
+    const h = await started(files, three());
+    h.inboxes.set('b', [pulse]);
+    h.swaps.length = 0;
+    await h.controller.moveToNewWindows(['a', 'b']);
+    expect(h.swaps.map((s) => s.state.doc.toString())).toEqual(['CCCC']);
+    expect(h.calls).not.toContain('activate b');
+    expect(sent(h)[0]).toEqual([expect.objectContaining({ tabId: 'b', inbox: [pulse], viewedAt: 0 })]);
+    expect(h.ids()).toEqual(['c']);
+    expect(h.active()).toBe('c');
   });
 
   it('MoveToNewWindowsNeverReleases_TheAgentsKeepWaiting_AndTheTabKeepsWhatItHad', async () => {

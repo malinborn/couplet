@@ -82,6 +82,15 @@ describe('WindowCarousel', () => {
     expect(options()[0].classList.contains('newwin')).toBe(true);
   });
 
+  it('CountsTheOtherWindowsInItsHead_ButNeverSaysZero', () => {
+    show(carouselItems([win('editor-3', 12), win('editor-2', 7)]));
+    expect(target.querySelector('.car-head')?.textContent?.trim()).toBe('Move plan.md to a window · 2 windows');
+    unmount(component!);
+    target.remove();
+    show(carouselItems([]));
+    expect(target.querySelector('.car-head')?.textContent?.trim()).toBe('Move plan.md to a window');
+  });
+
   it('IsAListboxWhoseActiveDescendantIsTheKeyboardsOption', () => {
     show(carouselItems([win('editor-3', 12), win('editor-2', 7)]), { mode: 'keys', kb: 2 });
     const box = target.querySelector<HTMLElement>('[role="listbox"]')!;

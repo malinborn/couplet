@@ -930,6 +930,46 @@ describe('TabDrawer — the window carousel (plan 05)', () => {
     expect(h.onmove).not.toHaveBeenCalled();
   });
 
+  it('ATabClosedUnderCmdMsCarouselLeavesIt_WithNoneLeftTheCarouselGoes', async () => {
+    h.handle().toggle();
+    await settle();
+    shiftClick('b');
+    shiftClick('c');
+    await settle();
+    press('m', { metaKey: true, ctrlKey: true });
+    await settle();
+    await settle();
+    const without = (...gone: string[]) => {
+      const list = h.props.list;
+      h.props.list = { ...list, tabs: list.tabs.filter((t) => !gone.includes(t.id)) };
+    };
+    without('b');
+    await settle();
+    expect(carousel()).not.toBeNull();
+    expect(page().querySelector('.car-head b')?.textContent).toBe('gamma.md');
+    without('c');
+    await settle();
+    await settle();
+    expect(carousel()).toBeNull();
+    expect(document.activeElement).toBe(el('.tab-list'));
+    expect(h.onmove).not.toHaveBeenCalled();
+  });
+
+  it('ADropWhoseDraggedTabIsGoneMovesNothing_AndPlaysNoPulse', async () => {
+    h.handle().toggle();
+    await settle();
+    await dragOut('b');
+    const list = h.props.list;
+    h.props.list = { ...list, tabs: list.tabs.filter((t) => t.id !== 'b') };
+    await settle();
+    document.elementFromPoint = vi.fn(() => option(0));
+    pointer(window, 'pointermove', { buttons: 1, clientX: 610, clientY: 300 });
+    pointer(window, 'pointerup', { clientX: 610, clientY: 300 });
+    await settle();
+    expect(h.onmove).not.toHaveBeenCalled();
+    expect(carousel()).toBeNull();
+  });
+
   it('AWindowsFetchThatResolvesAfterCloseIsDropped', async () => {
     let resolve: (windows: CarouselWindow[]) => void = () => {};
     h.windows.mockReturnValueOnce(

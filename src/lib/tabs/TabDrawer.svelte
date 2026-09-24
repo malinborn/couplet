@@ -173,6 +173,8 @@
   let listEl: HTMLDivElement | undefined = $state();
   let asideEl: HTMLElement | undefined = $state();
   let selHintEl: HTMLElement | undefined = $state();
+  let dragHintFits = $state(true);
+  let dragHintEl: HTMLElement | undefined = $state();
 
   // Bookkeeping nothing renders from.
   let restoreFocus: HTMLElement | null = null;
@@ -293,6 +295,20 @@
     oncarousel?.(car !== null);
   });
 
+  // ⌘M's carousel follows its tabs: one closed while it is up (⌘W, an agent)
+  // leaves it, and with none left the carousel goes. A drag's is settled at
+  // the drop instead (`pick`) — closed here, the next move would reopen it.
+  $effect(() => {
+    const c = car;
+    if (c?.mode !== 'keys' || c.got !== null) return;
+    const present = c.ids.filter((id) => byId.has(id));
+    if (present.length === c.ids.length) return;
+    untrack(() => {
+      if (present.length === 0) cancelKeysCarousel();
+      else car = { ...c, ids: present, lead: tabName(byId.get(present[0])?.path ?? null) };
+    });
+  });
+
   // Where the last input went (tabs-questions Q5): a hover-open right after
   // typing in — or clicking into — the editor leaves the keyboard there. Input
   // into the drawer itself (its search, a press on the notch) is input
@@ -363,18 +379,33 @@
     });
   });
 
-  // «⇧ — выделить» is the first thing to go when the header row is too narrow.
-  $effect(() => {
-    const el = selHintEl;
-    if (!el) return;
-    const measure = () => {
-      selHintFits = el.scrollWidth <= el.clientWidth + 0.5;
-    };
+  /** Report whether `el`'s text fits its box, now and on every resize. Returns the cleanup. */
+  function watchFit(el: HTMLElement, report: (fits: boolean) => void): () => void {
+    const measure = () => report(el.scrollWidth <= el.clientWidth + 0.5);
     measure();
     void document.fonts?.ready.then(measure);
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
+  }
+
+  // «⇧ — выделить» is the first thing to go when the header row is too narrow.
+  $effect(() => {
+    const el = selHintEl;
+    if (!el) return;
+    return watchFit(el, (fits) => {
+      selHintFits = fits;
+    });
+  });
+
+  // Likewise «⇅ тянуть» in the selection bar: it only gets the room the
+  // buttons leave (`flex-basis: 0`), and a clipped hint is hidden, not cut.
+  $effect(() => {
+    const el = dragHintEl;
+    if (!el) return;
+    return watchFit(el, (fits) => {
+      dragHintFits = fits;
+    });
   });
 
   $effect(() => () => {
@@ -802,7 +833,14 @@
     const c = car;
     const item = c?.items?.[index];
     if (!c || !item || c.got !== null) return;
-    onmove(c.ids, targetOf(item));
+    // ⌘W or an agent may have closed them meanwhile: no pulse for a move of nothing.
+    const ids = c.ids.filter((id) => byId.has(id));
+    if (ids.length === 0) {
+      if (c.mode === 'keys') cancelKeysCarousel();
+      else closeCarousel();
+      return;
+    }
+    onmove(ids, targetOf(item));
     ds = clearSelection(ds);
     car = { ...c, got: index, hot: null };
     carCloseTimer = setTimeout(closeCarousel, motion(GOT_MS));
@@ -1153,22 +1191,29 @@
       </div>
 
       <!-- Hidden is not enough: inert keeps its buttons out of the Tab order too. -->
+      <!-- One row while it fits (mockup); else the buttons wrap under the count,
+           and on a very narrow drawer among themselves. The hint goes first. -->
       <div class="sel-bar" class:on={ds.open && selected.size > 0} inert={selected.size === 0}>
-        <span class="n">{plural(selected.size, 'tabs.selection.count')}<small>{t('tabs.selection.drag_hint')}</small></span>
-        <button type="button" onclick={openMoveKeys}>{t('tabs.selection.to_window')}</button>
-        <button type="button" onclick={moveSelected}
-          >{t(selected.size === 1 ? 'tabs.selection.new_window' : 'tabs.selection.new_windows')}</button
+        <span class="n">{plural(selected.size, 'tabs.selection.count')}</span>
+        <small class="drag-hint" class:nofit={!dragHintFits} bind:this={dragHintEl}
+          >{t('tabs.selection.drag_hint')}</small
         >
-        <button type="button" onclick={closeSelected}>{t('tabs.selection.close')}</button>
-        <button
-          type="button"
-          class="x"
-          title={t('tabs.selection.clear')}
-          aria-label={t('tabs.selection.clear')}
-          onclick={() => {
-            ds = clearSelection(ds);
-          }}>×</button
-        >
+        <span class="acts">
+          <button type="button" onclick={openMoveKeys}>{t('tabs.selection.to_window')}</button>
+          <button type="button" onclick={moveSelected}
+            >{t(selected.size === 1 ? 'tabs.selection.new_window' : 'tabs.selection.new_windows')}</button
+          >
+          <button type="button" onclick={closeSelected}>{t('tabs.selection.close')}</button>
+          <button
+            type="button"
+            class="x"
+            title={t('tabs.selection.clear')}
+            aria-label={t('tabs.selection.clear')}
+            onclick={() => {
+              ds = clearSelection(ds);
+            }}>×</button
+          >
+        </span>
       </div>
 
       <div class="hint" class:on={hintVisible(ds)}>
@@ -1573,14 +1618,18 @@
     animation: arrive 0.3s var(--tabs-ease);
   }
 
+  /* One 40px row as in the mockup while everything fits; else the buttons
+     wrap under the count. `max-height`, not `height`: a wrapped bar is taller. */
   .sel-bar {
     flex: 0 0 auto;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
+    align-content: center;
+    gap: 4px 6px;
     margin: 0 12px;
     padding: 0 8px 0 12px;
-    height: 0;
+    max-height: 0;
     overflow: hidden;
     background: var(--bg-base);
     border: 1px solid transparent;
@@ -1589,30 +1638,55 @@
     color: var(--text-subtle);
     opacity: 0;
     transition:
-      height 0.22s var(--tabs-ease),
+      max-height 0.22s var(--tabs-ease),
+      padding 0.22s var(--tabs-ease),
       opacity 0.18s,
       margin 0.22s var(--tabs-ease),
       border-color 0.2s;
   }
 
   .sel-bar.on {
-    height: 40px;
+    /* Four rows: a 400px window in the longest locale. */
+    max-height: 144px;
+    padding-block: 6px;
     opacity: 1;
     margin-bottom: 8px;
     border-color: color-mix(in oklab, var(--tabs-brand-a) 45%, transparent);
   }
 
+  .sel-bar > * {
+    min-height: 26px;
+    display: flex;
+    align-items: center;
+  }
+
   .sel-bar .n {
-    flex: 1;
+    flex: 0 0 auto;
     color: var(--text-primary);
     font-weight: 600;
     white-space: nowrap;
   }
 
-  .sel-bar .n small {
-    font-weight: 400;
+  /* Only the room the buttons leave (basis 0): it never pushes them to a new row. */
+  .sel-bar .drag-hint {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
     color: var(--text-muted);
-    margin-left: 6px;
+  }
+
+  .sel-bar .drag-hint.nofit {
+    visibility: hidden;
+  }
+
+  .sel-bar .acts {
+    flex: 0 1 auto;
+    min-width: 0;
+    margin-left: auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 4px 6px;
   }
 
   .sel-bar button {

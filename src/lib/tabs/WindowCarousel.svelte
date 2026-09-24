@@ -213,7 +213,8 @@
   style:--ts={(tw / DOC_WIDTH_PX).toFixed(4)}
 >
   <div class="car-head">
-    {head[0]}<b>{what}</b>{head[1] ?? ''} · {plural(windowCount, 'tabs.carousel.windows')}
+    <!-- Alone, «+ Новое окно» is the whole list: no "· 0 windows". -->
+    {head[0]}<b>{what}</b>{head[1] ?? ''}{#if windowCount > 0}{' '}· {plural(windowCount, 'tabs.carousel.windows')}{/if}
   </div>
   <div class="car-view" role="presentation" bind:this={viewEl} onpointerdown={onViewPointerDown}>
     <div class="car-edge top" class:on={edges.top} class:hot={edges.v < 0}>{t('tabs.carousel.more_up')}</div>

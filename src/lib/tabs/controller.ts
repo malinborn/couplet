@@ -1352,13 +1352,19 @@ export function createTabController(deps: TabControllerDeps) {
      * into a window of its own — the one move every move is, never a release:
      * agents keep waiting, and stamps, caret and quick look go with the tab. A
      * tab whose move was refused or failed stays here; the failed ones are
-     * reported as stranded (a refusal has its own toast).
+     * reported as stranded (a refusal has its own toast). The active tab goes
+     * last: moved first, it would hand the view to a selected neighbour, which
+     * would be shown — and seen, its pulse spent, its quick look's hour started
+     * — only to leave next.
      */
     moveToNewWindows: (ids: readonly string[]) =>
       queue.run(async (): Promise<NewWindowsOutcome> => {
         const moved: MoveDone[] = [];
         const stranded: Stranded[] = [];
-        for (const tab of list.tabs.filter((t) => ids.includes(t.id))) {
+        const inOrder = list.tabs.filter((t) => ids.includes(t.id)).map((t) => t.id);
+        for (const id of backgroundFirst(inOrder)) {
+          const tab = findById(list, id);
+          if (!tab) continue;
           const outcome = await moveNow([tab.id], { kind: 'new-window' });
           if (outcome.kind === 'moved') moved.push({ label: outcome.label, number: outcome.number });
           // A refusal already has its toast (`unsaved-blocked`, or the standing `save-error`).
