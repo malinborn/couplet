@@ -1334,6 +1334,49 @@
   background: var(--color-table-border);
 }
 
+/* The Find bar's «×». CodeMirror's base theme styles it at (0,4,0) —
+   `.ͼ1 .cm-panel.cm-search [name=close]`: transparent, `font: inherit`,
+   absolute at the top right — which left a 13px glyph nobody noticed, and
+   beat the generic button rule above. This selector is (0,4,1). A 28×28
+   hit area centred on the Find row; the panel keeps room for it on the
+   right so a narrow window wraps the row instead of sliding under it. */
+.cm-panels .cm-panel.cm-search {
+  padding-right: 40px;
+}
+
+.cm-panels .cm-panel.cm-search button[name="close"] {
+  top: 3px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0 0 2px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-subtle);
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
+  font-size: 21px;
+  font-weight: 400;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.cm-panels .cm-panel.cm-search button[name="close"]:hover {
+  background: rgba(var(--color-glow), 0.18);
+  color: var(--text-primary);
+}
+
+.cm-panels .cm-panel.cm-search button[name="close"]:focus-visible {
+  outline: 2px solid rgba(var(--color-glow), 0.7);
+  outline-offset: 1px;
+}
+
 /* Search match highlights */
 .cm-searchMatch {
   background: rgba(196, 167, 231, 0.25);
