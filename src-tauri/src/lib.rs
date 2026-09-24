@@ -25,6 +25,7 @@ mod preferences;
 mod recent;
 mod recovery;
 mod session;
+mod tabs;
 mod updater;
 pub mod watch;
 mod watcher;
@@ -468,8 +469,8 @@ pub fn run() {
                             let file_path = path_str.to_string();
                             let route = {
                                 let open_files = _app_handle.state::<window::OpenFiles>();
-                                let map = open_files.0.lock().unwrap();
-                                window::route_opened_file(&map, &file_path, |label| {
+                                let reg = open_files.0.lock().unwrap();
+                                window::route_opened_file(&reg, &file_path, |label| {
                                     _app_handle.get_webview_window(label).is_some()
                                 })
                             };
@@ -480,18 +481,7 @@ pub fn run() {
                                     }
                                 }
                                 window::OpenedRoute::UseMain => {
-                                    // Reuse "main" — store in PendingFiles + OpenFiles
-                                    let pending = _app_handle.state::<window::PendingFiles>();
-                                    let mut pmap = pending.0.lock().unwrap();
-                                    pmap.insert(
-                                        "main".to_string(),
-                                        PendingOpen::from_path(file_path.clone()),
-                                    );
-                                    drop(pmap);
-                                    let open_files = _app_handle.state::<window::OpenFiles>();
-                                    let mut map = open_files.0.lock().unwrap();
-                                    map.insert(file_path.clone(), "main".to_string());
-                                    drop(map);
+                                    assign_file_to_main(_app_handle, file_path.clone());
                                     // Emit in case frontend is already loaded.
                                     // `emit_to`, not `emit`: a bare `emit` reaches
                                     // every window, and each would run its own
@@ -633,7 +623,10 @@ fn assign_file_to_main(app: &tauri::AppHandle, path: String) {
         .insert("main".to_string(), PendingOpen::from_path(path.clone()));
 
     let open_files = app.state::<OpenFiles>();
-    open_files.0.lock().unwrap().insert(path, "main".to_string());
+    let mut reg = open_files.0.lock().unwrap();
+    // A holder whose window is gone must not block main from taking the file.
+    window::live_owner(app, &mut reg, &path);
+    reg.set_single_path("main", &path, session::new_tab_id);
 }
 
 /// Resolve a potentially relative path to an absolute path.

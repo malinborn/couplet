@@ -144,9 +144,9 @@ pub fn reopen_closed(app: &tauri::AppHandle) -> bool {
     use tauri::Manager;
     let is_open = |p: &str| {
         let open_files = app.state::<crate::window::OpenFiles>();
-        let map = open_files.0.lock().unwrap();
-        map.get(p)
-            .is_some_and(|label| app.get_webview_window(label).is_some())
+        let reg = open_files.0.lock().unwrap();
+        reg.label_of(p)
+            .is_some_and(|label| app.get_webview_window(&label).is_some())
     };
     let Some(entry) = app
         .state::<ClosedStack>()

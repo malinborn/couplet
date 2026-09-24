@@ -5,12 +5,16 @@ use std::sync::Mutex;
 use notify::RecommendedWatcher;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
-/// Tracks which file paths are open in which windows.
-pub struct OpenFiles(pub Mutex<HashMap<String, String>>);
+use crate::tabs::TabRegistry;
+
+/// Every window's tabs, and through them which tab holds each file — see
+/// `tabs.rs`. The name is kept from when this was a `path → label` map;
+/// every dedup check in the app still goes through it.
+pub struct OpenFiles(pub Mutex<TabRegistry>);
 
 impl OpenFiles {
     pub fn new() -> Self {
-        Self(Mutex::new(HashMap::new()))
+        Self(Mutex::new(TabRegistry::new()))
     }
 }
 
@@ -54,6 +58,17 @@ impl FileWatchers {
     }
 }
 
+/// The live window holding `path`, if any. A holder whose window is already
+/// gone is stale — its entry is dropped so the file can be claimed again.
+pub(crate) fn live_owner(app: &AppHandle, reg: &mut TabRegistry, path: &str) -> Option<String> {
+    let label = reg.label_of(path)?;
+    if app.get_webview_window(&label).is_some() {
+        return Some(label);
+    }
+    reg.remove_window(&label);
+    None
+}
+
 static WINDOW_COUNTER: AtomicU32 = AtomicU32::new(1);
 
 const CASCADE_OFFSET: f64 = 30.0;
@@ -63,17 +78,14 @@ const DEFAULT_HEIGHT: f64 = 700.0;
 /// Opens a file in a new window, or focuses an existing window if the file is already open.
 /// If `path` is None, opens a new empty window.
 pub fn open_file_window(app: &AppHandle, path: Option<String>) {
-    // If a path is given, check if it's already open
     if let Some(ref file_path) = path {
         let open_files = app.state::<OpenFiles>();
-        let map = open_files.0.lock().unwrap();
-        if let Some(label) = map.get(file_path) {
-            // Focus existing window
-            if let Some(window) = app.get_webview_window(label) {
+        let mut reg = open_files.0.lock().unwrap();
+        if let Some(label) = live_owner(app, &mut reg, file_path) {
+            if let Some(window) = app.get_webview_window(&label) {
                 let _ = window.set_focus();
-                return;
             }
-            // Window label exists in map but window is gone — fall through to create new
+            return;
         }
     }
 
@@ -116,8 +128,11 @@ pub fn open_file_window(app: &AppHandle, path: Option<String>) {
             // so the frontend can pull it on mount via get_pending_file command.
             if let Some(ref file_path) = path {
                 let open_files = app.state::<OpenFiles>();
-                let mut map = open_files.0.lock().unwrap();
-                map.insert(file_path.clone(), label.clone());
+                open_files
+                    .0
+                    .lock()
+                    .unwrap()
+                    .add_tab(&label, &crate::session::new_tab_id(), Some(file_path.clone()));
 
                 let pending = app.state::<PendingFiles>();
                 let mut pending_map = pending.0.lock().unwrap();
@@ -137,28 +152,23 @@ pub fn open_file_window(app: &AppHandle, path: Option<String>) {
     }
 }
 
-/// The file `label` is registered as showing in `OpenFiles`, if any. The lock
-/// is released before this returns.
+/// The file `label` is showing, if any. The lock is released before this returns.
 pub fn open_path_of(app: &AppHandle, label: &str) -> Option<String> {
     let open_files = app.state::<OpenFiles>();
-    let map = open_files.0.lock().unwrap();
-    map.iter()
-        .find(|(_, v)| v.as_str() == label)
-        .map(|(k, _)| k.clone())
+    let reg = open_files.0.lock().unwrap();
+    reg.paths_of(label).into_iter().next()
 }
 
 /// Removes a file path from the open files tracking when a window is closed.
 /// Also cleans up any recovery file for that path.
 pub fn untrack_window(app: &AppHandle, label: &str) {
-    let open_files = app.state::<OpenFiles>();
-    let mut map = open_files.0.lock().unwrap();
-    // Find the file path for this window before removing
-    let file_path: Option<String> = map
-        .iter()
-        .find(|(_, v)| v.as_str() == label)
-        .map(|(k, _)| k.clone());
-    map.retain(|_, v| v != label);
-    drop(map);
+    let paths: Vec<String> = {
+        let open_files = app.state::<OpenFiles>();
+        let mut reg = open_files.0.lock().unwrap();
+        reg.remove_window(label)
+            .map(|w| w.tabs.into_iter().filter_map(|t| t.path).collect())
+            .unwrap_or_default()
+    };
 
     // Stop file watcher for this window
     let watchers = app.state::<FileWatchers>();
@@ -178,8 +188,8 @@ pub fn untrack_window(app: &AppHandle, label: &str) {
     app.state::<crate::ai_socket::AiPending>()
         .cancel_for_window(label);
 
-    // Clean up recovery file in background
-    if let Some(path) = file_path {
+    // Clean up recovery files in background
+    for path in paths {
         std::thread::spawn(move || {
             let _ = crate::recovery::delete_recovery_sync(&path);
         });
@@ -211,14 +221,17 @@ pub async fn register_open_file(
 ) -> Result<(), String> {
     let label = window.label().to_string();
 
-    {
+    // The window's one tab now shows `path`; the path it held before is
+    // released by the same call. Another window's claim is never taken.
+    let claimed = {
         let open_files = app.state::<OpenFiles>();
-        let mut map = open_files.0.lock().unwrap();
-        // The window is switching files — drop whatever it used to point at
-        // before inserting the new path, so the old path doesn't keep
-        // resolving to this window.
-        map.retain(|_, v| v != &label);
-        map.insert(path.clone(), label.clone());
+        let mut reg = open_files.0.lock().unwrap();
+        live_owner(&app, &mut reg, &path);
+        reg.set_single_path(&label, &path, crate::session::new_tab_id)
+            .is_some()
+    };
+    if !claimed {
+        return Ok(());
     }
 
     // Replacing any existing entry under this label drops (and thus stops)
@@ -241,8 +254,8 @@ pub fn open_restored_window(app: &AppHandle, snapshot: &crate::session::WindowSn
     if let Some(path) = &snapshot.path {
         let already_open = {
             let open_files = app.state::<OpenFiles>();
-            let map = open_files.0.lock().unwrap();
-            map.get(path).and_then(|label| app.get_webview_window(label))
+            let mut reg = open_files.0.lock().unwrap();
+            live_owner(app, &mut reg, path).and_then(|label| app.get_webview_window(&label))
         };
         if let Some(window) = already_open {
             let _ = window.set_focus();
@@ -322,9 +335,11 @@ pub fn open_restored_window(app: &AppHandle, snapshot: &crate::session::WindowSn
 
             if let Some(path) = &snapshot.path {
                 let open_files = app.state::<OpenFiles>();
-                let mut map = open_files.0.lock().unwrap();
-                map.insert(path.clone(), label.clone());
-                drop(map);
+                open_files
+                    .0
+                    .lock()
+                    .unwrap()
+                    .add_tab(&label, &snapshot.tab_id, Some(path.clone()));
 
                 if let Ok(watcher) =
                     crate::watcher::watch_file(app, label.clone(), path.clone())
@@ -346,15 +361,8 @@ pub fn open_restored_window(app: &AppHandle, snapshot: &crate::session::WindowSn
 /// Which window (if any) should be focused for `path`, excluding
 /// `exclude_label` (the window making the request) — split out from
 /// `focus_if_open` so the decision is testable without a running window.
-pub fn label_to_focus(
-    open_files: &HashMap<String, String>,
-    path: &str,
-    exclude_label: &str,
-) -> Option<String> {
-    open_files
-        .get(path)
-        .filter(|label| label.as_str() != exclude_label)
-        .cloned()
+pub fn label_to_focus(reg: &TabRegistry, path: &str, exclude_label: &str) -> Option<String> {
+    reg.label_of(path).filter(|label| label != exclude_label)
 }
 
 /// IPC command: whether `path` is open in a window other than the caller —
@@ -371,21 +379,9 @@ pub async fn is_open_elsewhere(
     path: String,
 ) -> Result<bool, String> {
     let open_files = app.state::<OpenFiles>();
-    let map = open_files.0.lock().unwrap();
-    Ok(label_to_focus(&map, &path, window.label())
+    let reg = open_files.0.lock().unwrap();
+    Ok(label_to_focus(&reg, &path, window.label())
         .is_some_and(|other| app.get_webview_window(&other).is_some()))
-}
-
-/// Remove `path` from `open_files` if — and only if — it maps to `label`.
-/// Returns whether an entry was removed. Another window's mapping is never
-/// touched: releasing is a window giving up a claim of its own.
-pub fn release_mapping(open_files: &mut HashMap<String, String>, path: &str, label: &str) -> bool {
-    if open_files.get(path).map(String::as_str) == Some(label) {
-        open_files.remove(path);
-        true
-    } else {
-        false
-    }
 }
 
 /// IPC command: give up the calling window's claim on `path`.
@@ -404,8 +400,7 @@ pub async fn release_open_file(
     path: String,
 ) -> Result<(), String> {
     let open_files = app.state::<OpenFiles>();
-    let mut map = open_files.0.lock().unwrap();
-    release_mapping(&mut map, &path, window.label());
+    open_files.0.lock().unwrap().clear_path(window.label(), &path);
     Ok(())
 }
 
@@ -428,14 +423,17 @@ pub enum OpenedRoute {
 /// would overwrite that window's `OpenFiles` entry — the file then open in two
 /// windows and AI commands for it routed to the wrong one.
 pub fn route_opened_file(
-    open_files: &HashMap<String, String>,
+    reg: &TabRegistry,
     path: &str,
     is_live: impl Fn(&str) -> bool,
 ) -> OpenedRoute {
-    if let Some(label) = open_files.get(path).filter(|label| is_live(label)) {
-        return OpenedRoute::FocusExisting(label.clone());
+    if let Some(label) = reg.label_of(path).filter(|label| is_live(label)) {
+        return OpenedRoute::FocusExisting(label);
     }
-    if open_files.values().any(|v| v == "main") {
+    let main_shows_a_file = reg
+        .window("main")
+        .is_some_and(|w| w.tabs.iter().any(|t| t.path.is_some()));
+    if main_shows_a_file {
         OpenedRoute::NewWindow
     } else {
         OpenedRoute::UseMain
@@ -467,8 +465,8 @@ pub async fn focus_if_open(
     let label = window.label().to_string();
     let target = {
         let open_files = app.state::<OpenFiles>();
-        let map = open_files.0.lock().unwrap();
-        label_to_focus(&map, &path, &label)
+        let reg = open_files.0.lock().unwrap();
+        label_to_focus(&reg, &path, &label)
     };
     match target {
         Some(other) => match app.get_webview_window(&other) {
@@ -486,102 +484,68 @@ pub async fn focus_if_open(
 mod tests {
     use super::*;
 
+    /// A registry where each `(path, label)` window holds that one file.
+    fn reg(entries: &[(&str, &str)]) -> TabRegistry {
+        let mut reg = TabRegistry::new();
+        for (path, label) in entries {
+            assert!(reg.add_tab(label, &format!("tab-{path}"), Some(path.to_string())));
+        }
+        reg
+    }
+
     #[test]
     fn label_to_focus_finds_another_window_showing_the_path() {
-        let mut map = HashMap::new();
-        map.insert("/tmp/a.md".to_string(), "editor-2".to_string());
-        assert_eq!(
-            label_to_focus(&map, "/tmp/a.md", "main"),
-            Some("editor-2".to_string())
-        );
+        let reg = reg(&[("/tmp/a.md", "editor-2")]);
+        assert_eq!(label_to_focus(&reg, "/tmp/a.md", "main"), Some("editor-2".to_string()));
     }
 
     #[test]
     fn label_to_focus_excludes_the_calling_window() {
-        let mut map = HashMap::new();
-        map.insert("/tmp/a.md".to_string(), "main".to_string());
-        assert_eq!(label_to_focus(&map, "/tmp/a.md", "main"), None);
+        let reg = reg(&[("/tmp/a.md", "main")]);
+        assert_eq!(label_to_focus(&reg, "/tmp/a.md", "main"), None);
     }
 
     #[test]
     fn label_to_focus_is_none_when_the_path_is_not_open_anywhere() {
-        let map = HashMap::new();
-        assert_eq!(label_to_focus(&map, "/tmp/a.md", "main"), None);
-    }
-
-    #[test]
-    fn release_mapping_removes_the_calling_windows_own_mapping() {
-        let mut map = HashMap::new();
-        map.insert("/tmp/a.md".to_string(), "main".to_string());
-        map.insert("/tmp/b.md".to_string(), "editor-2".to_string());
-        assert!(release_mapping(&mut map, "/tmp/a.md", "main"));
-        assert!(!map.contains_key("/tmp/a.md"));
-        assert_eq!(map.get("/tmp/b.md"), Some(&"editor-2".to_string()));
-    }
-
-    #[test]
-    fn release_mapping_leaves_another_windows_mapping() {
-        let mut map = HashMap::new();
-        map.insert("/tmp/a.md".to_string(), "editor-2".to_string());
-        assert!(!release_mapping(&mut map, "/tmp/a.md", "main"));
-        assert_eq!(map.get("/tmp/a.md"), Some(&"editor-2".to_string()));
+        assert_eq!(label_to_focus(&TabRegistry::new(), "/tmp/a.md", "main"), None);
     }
 
     #[test]
     fn route_opened_file_focuses_the_window_already_showing_it_even_with_main_empty() {
-        let mut map = HashMap::new();
-        map.insert("/tmp/x.md".to_string(), "editor-2".to_string());
+        let reg = reg(&[("/tmp/x.md", "editor-2")]);
         assert_eq!(
-            route_opened_file(&map, "/tmp/x.md", |_| true),
+            route_opened_file(&reg, "/tmp/x.md", |_| true),
             OpenedRoute::FocusExisting("editor-2".to_string())
         );
     }
 
     #[test]
     fn route_opened_file_focuses_main_when_main_already_shows_it() {
-        let mut map = HashMap::new();
-        map.insert("/tmp/x.md".to_string(), "main".to_string());
+        let reg = reg(&[("/tmp/x.md", "main")]);
         assert_eq!(
-            route_opened_file(&map, "/tmp/x.md", |_| true),
+            route_opened_file(&reg, "/tmp/x.md", |_| true),
             OpenedRoute::FocusExisting("main".to_string())
         );
     }
 
     #[test]
     fn route_opened_file_ignores_a_mapping_to_a_dead_window() {
-        let mut map = HashMap::new();
-        map.insert("/tmp/x.md".to_string(), "editor-2".to_string());
+        let reg = reg(&[("/tmp/x.md", "editor-2")]);
         assert_eq!(
-            route_opened_file(&map, "/tmp/x.md", |label| label != "editor-2"),
+            route_opened_file(&reg, "/tmp/x.md", |label| label != "editor-2"),
             OpenedRoute::UseMain
         );
     }
 
     #[test]
     fn route_opened_file_uses_an_empty_main() {
-        let mut map = HashMap::new();
-        map.insert("/tmp/b.md".to_string(), "editor-2".to_string());
-        assert_eq!(
-            route_opened_file(&map, "/tmp/x.md", |_| true),
-            OpenedRoute::UseMain
-        );
+        let reg = reg(&[("/tmp/b.md", "editor-2")]);
+        assert_eq!(route_opened_file(&reg, "/tmp/x.md", |_| true), OpenedRoute::UseMain);
     }
 
     #[test]
     fn route_opened_file_opens_a_new_window_when_main_shows_another_file() {
-        let mut map = HashMap::new();
-        map.insert("/tmp/b.md".to_string(), "main".to_string());
-        assert_eq!(
-            route_opened_file(&map, "/tmp/x.md", |_| true),
-            OpenedRoute::NewWindow
-        );
-    }
-
-    #[test]
-    fn release_mapping_is_a_noop_when_the_path_is_absent() {
-        let mut map = HashMap::new();
-        map.insert("/tmp/b.md".to_string(), "main".to_string());
-        assert!(!release_mapping(&mut map, "/tmp/a.md", "main"));
-        assert_eq!(map.len(), 1);
+        let reg = reg(&[("/tmp/b.md", "main")]);
+        assert_eq!(route_opened_file(&reg, "/tmp/x.md", |_| true), OpenedRoute::NewWindow);
     }
 }

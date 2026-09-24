@@ -557,8 +557,8 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
         // answered.
         let already_open = {
             let open_files = app.state::<window::OpenFiles>();
-            let map = open_files.0.lock().unwrap();
-            map.contains_key(&path)
+            let reg = open_files.0.lock().unwrap();
+            reg.contains_path(&path)
         };
         if !already_open && !std::path::Path::new(&path).exists() {
             let _ = tx.send(AiResponse::error("file does not exist"));
@@ -630,8 +630,8 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
 
     let existing_label = {
         let open_files = app.state::<window::OpenFiles>();
-        let map = open_files.0.lock().unwrap();
-        map.get(&path).cloned()
+        let reg = open_files.0.lock().unwrap();
+        reg.label_of(&path)
     };
 
     if let Some(label) = existing_label {
@@ -671,8 +671,8 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
     loop {
         let label = {
             let open_files = app.state::<window::OpenFiles>();
-            let map = open_files.0.lock().unwrap();
-            map.get(&path).cloned()
+            let reg = open_files.0.lock().unwrap();
+            reg.label_of(&path)
         };
         if let Some(label) = label {
             app.state::<AiPending>().register(id, label.clone(), tx);
