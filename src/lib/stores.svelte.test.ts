@@ -201,6 +201,20 @@ describe('createThemeStore', () => {
     expect(store.family).toBe('blueprint');
   });
 
+  it('PaperAndInk_RestoreAndFollowTheSystem', () => {
+    installLocalStorageStub();
+    localStorage.setItem('md-mini:theme', JSON.stringify('paper-dark'));
+    localStorage.setItem('md-mini:themeSystem', JSON.stringify(true));
+    const setSystemDark = installMatchMediaStub(true);
+    const store = createThemeStore();
+    expect(store.resolved).toBe('paper-dark');
+    store.setFamily('ink');
+    expect(store.resolved).toBe('ink-dark');
+    setSystemDark(false);
+    expect(store.resolved).toBe('ink-light');
+    expect(JSON.parse(localStorage.getItem('md-mini:theme')!)).toBe('ink-dark');
+  });
+
   it('WithoutTheCheckbox_SystemIsIgnored', () => {
     const setSystemDark = installMatchMediaStub(false);
     const store = createThemeStore();

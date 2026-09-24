@@ -28,6 +28,8 @@ describe('resolveTheme', () => {
     );
     expect(resolveTheme({ theme: 'dark', followSystem: true }, false)).toBe('light');
     expect(resolveTheme({ theme: 'light', followSystem: true }, true)).toBe('dark');
+    expect(resolveTheme({ theme: 'ink-light', followSystem: true }, true)).toBe('ink-dark');
+    expect(resolveTheme({ theme: 'paper-dark', followSystem: true }, false)).toBe('paper-light');
   });
 });
 
@@ -43,6 +45,8 @@ describe('concreteTheme', () => {
     expect(concreteTheme('aurora', 'light')).toBe('aurora-light');
     expect(concreteTheme('blueprint', 'dark')).toBe('blueprint-dark');
     expect(concreteTheme('phosphor', 'light')).toBe('phosphor-light');
+    expect(concreteTheme('paper', 'dark')).toBe('paper-dark');
+    expect(concreteTheme('ink', 'light')).toBe('ink-light');
   });
 
   it('RoundTripsThroughFamilyAndHalf', () => {
@@ -63,6 +67,8 @@ describe('isDarkTheme', () => {
     expect(isDarkTheme('blueprint-dark')).toBe(true);
     expect(isDarkTheme('light')).toBe(false);
     expect(isDarkTheme('phosphor-light')).toBe(false);
+    expect(isDarkTheme('paper-dark')).toBe(true);
+    expect(isDarkTheme('ink-light')).toBe(false);
   });
 });
 
@@ -121,5 +127,18 @@ describe('loadSelection', () => {
       theme: 'phosphor-light',
       followSystem: false,
     });
+    expect(loadSelection('paper-dark', null, false)).toEqual({
+      theme: 'paper-dark',
+      followSystem: false,
+    });
+    expect(loadSelection('ink-light', null, true)).toEqual({
+      theme: 'ink-light',
+      followSystem: true,
+    });
+  });
+
+  it('LegacySystem_AcceptsTheNewestFamilies', () => {
+    expect(loadSelection('system', 'paper')).toEqual({ theme: 'paper-light', followSystem: true });
+    expect(loadSelection('system', 'ink')).toEqual({ theme: 'ink-light', followSystem: true });
   });
 });

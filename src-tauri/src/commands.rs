@@ -119,7 +119,7 @@ fn theme_event_ids(
     half: Option<String>,
     follow_system: Option<bool>,
 ) -> Result<Vec<String>, String> {
-    const VALID_FAMILIES: [&str; 4] = ["classic", "aurora", "blueprint", "phosphor"];
+    const VALID_FAMILIES: [&str; 6] = ["classic", "aurora", "blueprint", "phosphor", "paper", "ink"];
     const VALID_HALVES: [&str; 2] = ["light", "dark"];
 
     if let Some(f) = &family {
@@ -258,6 +258,14 @@ mod tests {
             theme_event_ids(None, None, Some(false)).unwrap(),
             vec!["theme_system:off"]
         );
+    }
+
+    #[test]
+    fn theme_event_ids_accepts_every_shipped_family() {
+        for family in ["classic", "aurora", "blueprint", "phosphor", "paper", "ink"] {
+            let ids = theme_event_ids(Some(family.into()), None, None).unwrap();
+            assert_eq!(ids, vec![format!("theme_family_{family}")]);
+        }
     }
 
     #[test]

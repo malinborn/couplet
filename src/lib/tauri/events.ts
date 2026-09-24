@@ -26,6 +26,8 @@ export type MenuAction =
   | 'theme_family_aurora'
   | 'theme_family_blueprint'
   | 'theme_family_phosphor'
+  | 'theme_family_paper'
+  | 'theme_family_ink'
   | 'theme_half_light'
   | 'theme_half_dark'
   | 'theme_system:on'
