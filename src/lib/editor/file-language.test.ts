@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findCodeLanguage, FILENAME_LANGUAGE, isShellConfig, MARKDOWN_EXTENSIONS, isMarkdownBuffer } from './file-language';
+import { findCodeLanguage, FILENAME_LANGUAGE, isShellConfig, MARKDOWN_EXTENSIONS, isMarkdownBuffer, previewKindFor } from './file-language';
 
 describe('isShellConfig', () => {
   it('returns true for .zshrc', () => {
@@ -251,6 +251,35 @@ describe('isMarkdownBuffer', () => {
       it(path, () => {
         expect(isMarkdownBuffer(path)).toBe(appSvelteBranch(path) === 'markdown');
       });
+    }
+  });
+});
+
+describe('previewKindFor', () => {
+  it('UntitledIsMarkdown', () => {
+    expect(previewKindFor(null)).toBe('markdown');
+  });
+
+  it('MarkdownExtensions', () => {
+    expect(previewKindFor('/docs/a.md')).toBe('markdown');
+    expect(previewKindFor('/docs/A.MARKDOWN')).toBe('markdown');
+    expect(previewKindFor('/docs/notes.txt')).toBe('markdown');
+  });
+
+  it('EnvFilesBeforeEverythingElse', () => {
+    expect(previewKindFor('/app/.env')).toBe('env');
+    expect(previewKindFor('/app/.env.local')).toBe('env');
+    expect(previewKindFor('/app/prod.env')).toBe('env');
+  });
+
+  it('ShellConfigsAndOtherCode', () => {
+    expect(previewKindFor('/Users/me/.zshrc')).toBe('shell');
+    expect(previewKindFor('/src/main.rs')).toBe('code');
+  });
+
+  it('AgreesWithIsMarkdownBuffer', () => {
+    for (const p of [null, '/a.md', '/.env', '/x.py', '/Users/me/.bashrc', '/n.txt']) {
+      expect(previewKindFor(p) === 'markdown').toBe(isMarkdownBuffer(p));
     }
   });
 });
