@@ -13,14 +13,14 @@
 import '../src/styles/editor.css';
 import '../src/styles/editor-metrics.css';
 
-// Все четыре выпущенные семьи; кандидатов сейчас нет, но стенд остаётся —
-// следующую тему проще сначала увидеть здесь, чем сразу собирать приложение.
+// Все четыре выпущенные семьи плюс кандидаты из `candidates/`.
 import '../src/lib/theme/light.css';
 import '../src/lib/theme/dark.css';
 import '../src/lib/theme/aurora-light.css';
 import '../src/lib/theme/aurora-dark.css';
 import '../src/lib/theme/blueprint.css';
 import '../src/lib/theme/phosphor.css';
+import './candidates/coral.css';
 
 import './lab.css';
 
@@ -67,6 +67,18 @@ const FAMILIES: Family[] = [
     light: 'phosphor-light',
     dark: 'phosphor-dark',
     shipped: true,
+  },
+  {
+    name: 'Коралл',
+    note: 'Из backlog-иконок paper / ink: тушь по бумаге и крем по туши. Коралл — только правка: каретка, чекбоксы, линия выполненного.',
+    light: 'coral-light',
+    dark: 'coral-dark',
+  },
+  {
+    name: 'Коралл · закат',
+    note: 'Из backlog-иконки coral: коралловый градиент уходит в размывку подложки и заголовки, каретка — тушь. Тёмная — та же ink.',
+    light: 'sunset-light',
+    dark: 'coral-dark',
   },
 ];
 
@@ -199,7 +211,7 @@ function buildPicker(): void {
 }
 
 /** Порядок обхода стрелками: светлая и тёмная каждой семьи подряд. */
-const ORDER = FAMILIES.flatMap((f) => [f.light, f.dark]);
+const ORDER = [...new Set(FAMILIES.flatMap((f) => [f.light, f.dark]))];
 
 function step(delta: number): void {
   const current = document.documentElement.getAttribute('data-theme') ?? ORDER[0];

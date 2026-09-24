@@ -1,0 +1,178 @@
+/* «Коралл» — кандидат, три палитры из backlog-иконок couplet.
+ *
+ * Роли взяты из иконок один в один: фон сквиркла → фон редактора, знак «&» →
+ * основной текст, курсор → каретка. Ни одного нового цвета сверх иконок в
+ * смысловых ролях нет; всё остальное (surface, border, muted) — смеси этих же
+ * трёх: бумага #F3EDE2, тушь #1F1B2E, коралл #E8563F.
+ *
+ * coral-light (backlog-paper) — строгая светлая. Тушь по бумаге, коралл только
+ *   у того, что меняют: каретка, чекбоксы, линия выполненной задачи. Заголовки
+ *   без градиентов, как в Classic/Блюпринте.
+ * coral-dark (backlog-ink) — тёмная. Крем по туши, каретка — тот же градиент
+ *   #FF8A6A → #E8563F → #C13E7B, что у курсора на иконке, со свечением.
+ * sunset-light (backlog-coral) — выразительная светлая. Сам коралловый градиент
+ *   фоном не годится (крем на #F4A57C ≈ 1.8:1), поэтому он уходит в тёплую
+ *   размывку подложки и в градиенты заголовков, а каретка — тушь, как курсор
+ *   на иконке.
+ */
+
+:root[data-theme='coral-light'] {
+  --bg-base: #f3ede2;
+  --bg-surface: #ebe3d5;
+  --text-primary: #1f1b2e;
+  --text-subtle: #5c5566;
+  --text-muted: #9a9187;
+  --highlight: #e6dccb;
+  --color-heading: #1f1b2e;
+  --color-bold: #1f1b2e;
+  --color-italic: #4a4358;
+  --color-link: #c24632;
+  --color-code-bg: #ebe3d5;
+  --color-code-text: #1f1b2e;
+  --color-selection: #f3cdbf;
+  --color-border: #ddd3c2;
+  --color-cursor: #e8563f;
+  --color-line-highlight: #eee7da;
+  --color-strikethrough: #9a9187;
+  --color-task-done: #9a9187;
+  --color-task-done-line: #e8563f;
+  --color-blockquote-border: #e8563f;
+  --color-hr: #ddd3c2;
+  --color-list-marker: #8a7f76;
+  --color-checkbox: #e8563f;
+  --color-table-border: #ddd3c2;
+  --color-table-header-bg: #ebe3d5;
+  --color-table-even-bg: #efe8dc;
+  --table-header-grad: linear-gradient(135deg, #e6dccb 0%, #ebe3d5 50%, #e3d8c6 100%);
+  --table-header-text: #1f1b2e;
+  --color-glow: 232, 86, 63;
+  --ai-edit-bg: rgba(232, 86, 63, 0.12);
+  --ai-edit-shimmer: rgba(232, 86, 63, 0.26);
+  --ai-ask-bg: rgba(31, 27, 46, 0.05);
+  --ai-ask-border: rgba(31, 27, 46, 0.22);
+  --ai-ask-chip-bg: #f7f2ea;
+  --ai-ask-chip-hover-bg: rgba(232, 86, 63, 0.12);
+  --ai-ask-accent: #1f1b2e;
+  --ai-ask-accent-text: #f3ede2;
+  --bg-overlay: rgba(243, 237, 226, 0.75);
+  --border: #ddd3c2;
+  /* Строгая: только тон, --heading-grad-N не объявлены. */
+  --heading-tone-1: #1f1b2e;
+  --heading-tone-2: #2a2538;
+  --heading-tone-3: #373143;
+  --heading-tone-4: #463f50;
+  --heading-tone-5: #5a525f;
+  --heading-tone-6: #6b6268;
+  --font-text: 'Merriweather', Georgia, serif;
+  --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+}
+
+:root[data-theme='coral-dark'] {
+  --bg-base: #1f1b2e;
+  --bg-surface: #27223a;
+  --text-primary: #f3ede2;
+  --text-subtle: #b3a9a6;
+  --text-muted: #7c7282;
+  --highlight: #3a3250;
+  --color-heading: #ff8a6a;
+  --color-bold: #ffffff;
+  --color-italic: #f0b9a4;
+  --color-link: #ff8a6a;
+  --color-code-bg: #27223a;
+  --color-code-text: #f3ede2;
+  --color-selection: #4a2f45;
+  --color-border: #362f4a;
+  --color-cursor: #e8563f;
+  --color-caret-top: #ff8a6a;
+  --color-caret-bottom: #c13e7b;
+  --color-line-highlight: #241f35;
+  --color-strikethrough: #7c7282;
+  --color-task-done: #7c7282;
+  --color-task-done-line: #e8563f;
+  --color-blockquote-border: #e8563f;
+  --color-hr: #362f4a;
+  --color-list-marker: #9a8f98;
+  --color-checkbox: #ff8a6a;
+  --color-table-border: #362f4a;
+  --color-table-header-bg: #27223a;
+  --color-table-even-bg: #231e33;
+  --table-header-grad: linear-gradient(135deg, #3a2238 0%, #2c2340 45%, #262038 100%);
+  --table-header-text: #ff8a6a;
+  --color-glow: 232, 86, 63;
+  --ai-edit-bg: rgba(255, 138, 106, 0.16);
+  --ai-edit-shimmer: rgba(255, 138, 106, 0.38);
+  --ai-ask-bg: rgba(255, 138, 106, 0.08);
+  --ai-ask-border: rgba(255, 138, 106, 0.28);
+  --ai-ask-chip-bg: rgba(255, 255, 255, 0.04);
+  --ai-ask-chip-hover-bg: rgba(255, 138, 106, 0.16);
+  --ai-ask-accent: #ff8a6a;
+  --ai-ask-accent-text: #1f1b2e;
+  --bg-overlay: rgba(31, 27, 46, 0.75);
+  --border: #362f4a;
+  /* Градиент курсора с иконки ведёт h1–h2; последний stop = тон уровня. */
+  --heading-tone-1: #ff8a6a;
+  --heading-tone-2: #f68a70;
+  --heading-tone-3: #ec8c78;
+  --heading-tone-4: #df9082;
+  --heading-tone-5: #cf958d;
+  --heading-tone-6: #bd9896;
+  --heading-grad-1: linear-gradient(100deg, #c13e7b 0%, #e8563f 45%, #ff8a6a 100%);
+  --heading-grad-2: linear-gradient(100deg, #e0607a 0%, #f68a70 100%);
+  --font-text: 'Inter', -apple-system, system-ui, sans-serif;
+  --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+}
+
+:root[data-theme='sunset-light'] {
+  --bg-base: #f7f1e6;
+  --bg-image: linear-gradient(135deg, #fbe2d6 0%, #f9ebe0 30%, #f7f1e6 65%);
+  --bg-surface: #f4e4d6;
+  --text-primary: #1f1b2e;
+  --text-subtle: #6a5a5a;
+  --text-muted: #a8948a;
+  --highlight: #f1d8c8;
+  --color-heading: #c9432e;
+  --color-bold: #b8402d;
+  --color-italic: #8a4a5e;
+  --color-link: #c13e7b;
+  --color-code-bg: #f4e4d6;
+  --color-code-text: #1f1b2e;
+  --color-selection: #f6cbb8;
+  --color-border: #ecd6c6;
+  --color-cursor: #1f1b2e;
+  --color-line-highlight: #f5e9dd;
+  --color-strikethrough: #a8948a;
+  --color-task-done: #a8948a;
+  --color-task-done-line: #e8563f;
+  --color-blockquote-border: #f4a57c;
+  --color-hr: #ecd6c6;
+  --color-list-marker: #c26a55;
+  --color-checkbox: #e8563f;
+  --color-table-border: #ecd6c6;
+  --color-table-even-bg: #f6ece2;
+  --table-header-grad: linear-gradient(135deg, #f8d3c1 0%, #f9dfd0 45%, #f7e8dc 100%);
+  --table-header-text: #1f1b2e;
+  --color-glow: 232, 86, 63;
+  --ai-edit-bg: rgba(193, 62, 123, 0.1);
+  --ai-edit-shimmer: rgba(193, 62, 123, 0.24);
+  --ai-ask-bg: rgba(232, 86, 63, 0.07);
+  --ai-ask-border: rgba(232, 86, 63, 0.3);
+  --ai-ask-chip-bg: #fbf6ef;
+  --ai-ask-chip-hover-bg: rgba(232, 86, 63, 0.14);
+  --ai-ask-accent: #e8563f;
+  --ai-ask-accent-text: #ffffff;
+  --bg-overlay: rgba(247, 241, 230, 0.75);
+  --border: #ecd6c6;
+  /* Фон иконки (#E8563F → #F4A57C) — в заголовках. #F4A57C на креме нечитаем,
+   * поэтому светлый конец затемнён до персика, а тон уровня — до терракоты. */
+  --heading-tone-1: #c9432e;
+  --heading-tone-2: #c44b35;
+  --heading-tone-3: #bb523e;
+  --heading-tone-4: #ad5a4a;
+  --heading-tone-5: #9b6158;
+  --heading-tone-6: #886662;
+  --heading-grad-1: linear-gradient(100deg, #e8563f 0%, #e98160 40%, #c13e7b 75%, #c9432e 100%);
+  --heading-grad-2: linear-gradient(100deg, #e8563f 0%, #d9745a 55%, #c44b35 100%);
+  --heading-grad-3: linear-gradient(100deg, #d9624a 0%, #bb523e 100%);
+  --font-text: 'Inter', -apple-system, system-ui, sans-serif;
+  --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+}
