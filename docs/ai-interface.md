@@ -410,6 +410,24 @@ payload rather than a separate event means a command drained from `AiQueue` by a
 didn't exist yet carries it too. Exactly one command per install can ever carry the flag; a
 rejected request never burns it.
 
+## Tabs (interim, until the routing contract)
+
+Windows hold tabs, and one file is open in at most one tab in the whole app. Until tabs plan 04 lands the routing contract (`window_binding`, `focus`, `transient`), a command still goes to the window that holds its file, and:
+
+| Situation | What happens |
+|---|---|
+| The file is that window's active tab | As before. |
+| The file is a background tab of that window | The window activates that tab, as if it had been clicked, then handles the command. |
+| … and the active tab has unsaved changes | `{"ok":false,"error":"the current tab has unsaved changes"}` |
+| … and the active tab shows another agent's live `ask` | `{"ok":false,"error":"the window is showing another agent's question"}` — an agent never takes the view away from a pending question |
+| … and the background tab's file can no longer be read | `{"ok":false,"error":"could not open the tab"}` |
+| The file is not open anywhere | As before: a new window opens with it. |
+| The tab holding a pending request is left | `switched away from this document` — `ask` included: a question does not survive in a background tab yet |
+| The tab holding a pending or queued request is closed | `tab closed` |
+| The tab meant to show the file never came to show it (unreadable when its window opened, or the open was abandoned) | `tab released` |
+
+Commands arriving while a window is switching tabs wait for the switch instead of failing (they run in the window's tab queue). A command that waited there and was answered meanwhile — its tab was left or closed, or it timed out — is dropped without acting.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |

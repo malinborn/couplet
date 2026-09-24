@@ -25,8 +25,8 @@ App starts → setup() reads temp file → opens files in "main" window
 ```
 
 - `open` launches the app through macOS Launch Services (proper window server access, non-blocking)
-- `load_pending_open_files()` in Rust `setup()` reads the temp file and stores the first path in `PendingFiles` for the "main" window (same mechanism as CLI args)
-- Frontend calls `get_pending_file` on mount and opens the file
+- `load_pending_open_files()` in Rust `setup()` reads the temp file and hands the first path to the "main" window as a tab (`assign_file_to_main`: registered in `OpenFiles`, payload in `PendingFiles` — same mechanism as CLI args); every further path opens its own window
+- Frontend calls `get_window_init` on mount and shows the tabs it returns (see the init contract in `CLAUDE.md` → Gotchas)
 
 #### Path 2: App IS running (`-S "$SOCK"` is true)
 
