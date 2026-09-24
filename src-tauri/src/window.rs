@@ -614,6 +614,11 @@ pub fn open_restored_window(
                 let open_files = app.state::<OpenFiles>();
                 let mut reg = open_files.0.lock().unwrap();
                 let moved = number_window(&mut reg, &label, snapshot.number, allocate_from(app));
+                // A restored window keeps the project it had, even if the file
+                // that bound it is no longer among its tabs.
+                if let Some(project) = snapshot.project.clone() {
+                    reg.bind_project(&label, project);
+                }
                 pending_tabs.retain(|t| {
                     let added = reg.add_tab(&label, &t.tab_id, t.path.clone());
                     if !added {

@@ -95,6 +95,10 @@ pub struct WindowSnapshot {
     /// The window's `#N`, kept across restarts. Absent in migrated v1 data.
     #[serde(default)]
     pub number: Option<u32>,
+    /// The project the window is bound to (`WindowTabs::project`). Absent in
+    /// sessions written before projects: bound again from the first file.
+    #[serde(default)]
+    pub project: Option<String>,
     pub x: i32,
     pub y: i32,
     pub width: u32,
@@ -109,6 +113,7 @@ impl WindowSnapshot {
     fn empty() -> Self {
         Self {
             number: None,
+            project: None,
             x: 0,
             y: 0,
             width: 0,
@@ -126,6 +131,7 @@ impl WindowSnapshot {
         let tab_id = new_tab_id();
         Self {
             number: entry.number,
+            project: None,
             x: entry.x,
             y: entry.y,
             width: entry.width,
@@ -208,6 +214,7 @@ fn migrate_legacy(legacy: LegacySession) -> Session {
             .into_iter()
             .map(|w| WindowSnapshot {
                 number: None,
+                project: None,
                 x: w.x,
                 y: w.y,
                 width: w.width,
@@ -384,6 +391,19 @@ impl SessionState {
             .entry(label.to_string())
             .or_insert_with(WindowSnapshot::empty);
         entry.number = number;
+        drop(map);
+        self.touch();
+    }
+
+    pub fn set_project(&self, label: &str, project: Option<String>) {
+        if self.is_quitting() {
+            return;
+        }
+        let mut map = self.entries.lock().unwrap();
+        let entry = map
+            .entry(label.to_string())
+            .or_insert_with(WindowSnapshot::empty);
+        entry.project = project;
         drop(map);
         self.touch();
     }
@@ -794,7 +814,9 @@ pub async fn tabs_sync(
     use tauri::Manager;
     check_tab_ids(&tabs)?;
     let label = window.label().to_string();
-    let (registry_ids, closed, number) = {
+    // Before the registry lock: binding walks the file system.
+    crate::routing::bind_missing_projects(&app);
+    let (registry_ids, closed, number, project) = {
         // Released before any `SessionState` lock is taken.
         let open_files = app.state::<crate::window::OpenFiles>();
         let mut reg = open_files.0.lock().unwrap();
@@ -806,10 +828,16 @@ pub async fn tabs_sync(
             .map(|w| w.tabs.iter().map(|t| t.id.clone()).collect())
             .unwrap_or_default();
         let closed: HashSet<String> = window.map(|w| w.closed_ids.clone()).unwrap_or_default();
-        (registry_ids, closed, window.and_then(|w| w.number))
+        (
+            registry_ids,
+            closed,
+            window.and_then(|w| w.number),
+            window.and_then(|w| w.project.clone()),
+        )
     };
 
     state.set_number(&label, number);
+    state.set_project(&label, project);
     record_heartbeat(&state, &label, tabs, active, &registry_ids, &closed, write_untitled)?;
 
     // Geometry also rides the heartbeat, because `Moved`/`Resized` never fire for
@@ -880,6 +908,7 @@ mod tests {
     fn window(tabs: Vec<TabSnapshot>) -> WindowSnapshot {
         WindowSnapshot {
             number: None,
+            project: None,
             x: 10,
             y: 20,
             width: 900,
@@ -1483,5 +1512,28 @@ mod tests {
             assert!(json.contains(key), "{key} missing in {json}");
         }
         assert_eq!(parse_session(&json).unwrap().windows[0].tabs[0], t);
+    }
+
+    #[test]
+    fn a_window_project_round_trips_through_the_session_file() {
+        let mut w = window(vec![tab("t1", Some("/p/a.md"))]);
+        w.project = Some("/p".to_string());
+        let json = serde_json::to_string(&session(vec![w])).unwrap();
+        assert!(json.contains(r#""project":"/p""#), "{json}");
+        assert_eq!(parse_session(&json).unwrap().windows[0].project.as_deref(), Some("/p"));
+    }
+
+    #[test]
+    fn a_session_written_before_projects_parses_without_one() {
+        let json = r#"{"version":2,"savedAt":1,"windows":[{"x":0,"y":0,"width":900,"height":700,
+            "tabs":[{"tabId":"1-2-3","path":"/tmp/a.md","cursor":0,"topLine":1}],"activeTab":"1-2-3"}]}"#;
+        assert_eq!(parse_session(json).unwrap().windows[0].project, None);
+    }
+
+    #[test]
+    fn set_project_records_the_windows_binding() {
+        let state = SessionState::new();
+        state.set_project("main", Some("/p".to_string()));
+        assert_eq!(state.snapshot_for("main").unwrap().project.as_deref(), Some("/p"));
     }
 }

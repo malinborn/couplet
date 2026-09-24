@@ -25,6 +25,7 @@ mod paths;
 mod preferences;
 mod recent;
 mod recovery;
+mod routing;
 mod session;
 mod tab_commands;
 mod tabs;

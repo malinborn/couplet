@@ -33,6 +33,11 @@ pub struct WindowTabs {
     /// removal can be processed after it, and must not bring the tab back —
     /// nor, through the session, its untitled draft on the next launch.
     pub closed_ids: HashSet<String>,
+    /// The project the window is bound to (spec §2): the absolute root — git
+    /// toplevel, or the directory outside git — of the first file it held.
+    /// Bound once (`routing::bind_missing_projects`) and never moved: closing
+    /// that file does not rebind the window.
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -59,6 +64,28 @@ impl TabRegistry {
 
     pub fn set_number(&mut self, label: &str, number: Option<u32>) {
         self.windows.entry(label.to_string()).or_default().number = number;
+    }
+
+    /// Bind `label` to `project` unless it already has one. `false`: it had.
+    pub fn bind_project(&mut self, label: &str, project: String) -> bool {
+        let window = self.windows.entry(label.to_string()).or_default();
+        if window.project.is_some() {
+            return false;
+        }
+        window.project = Some(project);
+        true
+    }
+
+    /// Windows with no project yet but a file to take one from, with that
+    /// file: `(label, first file in tab order)`.
+    pub fn unbound_windows(&self) -> Vec<(String, String)> {
+        self.windows
+            .iter()
+            .filter(|(_, w)| w.project.is_none())
+            .filter_map(|(label, w)| {
+                w.tabs.iter().find_map(|t| t.path.clone()).map(|p| (label.clone(), p))
+            })
+            .collect()
     }
 
     /// The window and tab holding `path`. Looked up exactly as given, never
@@ -463,5 +490,34 @@ mod tests {
         let mut reg = reg_with(&[("main", "a", Some("/a.md"))]);
         reg.sync("main", &[("a".into(), Some("/a.md".into()))], Some("ghost"));
         assert_eq!(reg.window("main").unwrap().active.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn a_window_takes_its_project_once_and_keeps_it() {
+        let mut reg = reg_with(&[("main", "a", Some("/p/a.md"))]);
+        assert!(reg.bind_project("main", "/p".to_string()));
+        assert!(!reg.bind_project("main", "/q".to_string()), "never rebound");
+        reg.remove_tab("main", "a");
+        assert_eq!(
+            reg.window("main").unwrap().project.as_deref(),
+            Some("/p"),
+            "closing the file that bound it keeps the binding"
+        );
+    }
+
+    #[test]
+    fn unbound_windows_name_their_first_file() {
+        let mut reg = reg_with(&[
+            ("main", "u", None),
+            ("main", "a", Some("/p/a.md")),
+            ("editor-2", "v", None),
+            ("editor-3", "b", Some("/q/b.md")),
+        ]);
+        reg.bind_project("editor-3", "/q".to_string());
+        assert_eq!(
+            reg.unbound_windows(),
+            vec![("main".to_string(), "/p/a.md".to_string())],
+            "an untitled-only window has nothing to bind to yet; a bound one is done"
+        );
     }
 }

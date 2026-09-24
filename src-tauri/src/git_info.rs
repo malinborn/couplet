@@ -103,7 +103,7 @@ fn branch_from_head(head: &str) -> Option<String> {
     (head.len() >= 7 && head.chars().all(|c| c.is_ascii_hexdigit())).then(|| head[..7].to_string())
 }
 
-fn dir_name(dir: &Path) -> String {
+pub(crate) fn dir_name(dir: &Path) -> String {
     dir.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| dir.to_string_lossy().into_owned())
@@ -129,6 +129,23 @@ pub fn git_info(file: &Path) -> Option<GitInfo> {
         }
         None => Some(GitInfo { project: dir_name(parent), branch: None }),
     }
+}
+
+/// The project `file` belongs to (spec §2): the directory holding the nearest
+/// `.git` — for a worktree that is the worktree itself, its own project — or,
+/// outside any repository, the file's own directory. `None` for a path
+/// `git_info` would not look at either. Nothing is read: `.git` is only
+/// stat'ed on the way up.
+pub fn project_root(file: &Path) -> Option<PathBuf> {
+    if !is_acceptable(file) {
+        return None;
+    }
+    let parent = file.parent().filter(|p| !p.as_os_str().is_empty())?;
+    Some(
+        find_dot_git(file)
+            .map(|(toplevel, _)| toplevel)
+            .unwrap_or_else(|| parent.to_path_buf()),
+    )
 }
 
 /// IPC: `git_info` for each path, in order. Never fails as a whole — a path
@@ -335,5 +352,30 @@ mod tests {
     fn it_serializes_the_way_the_drawer_reads_it() {
         let info = GitInfo { project: "infra".into(), branch: None };
         assert_eq!(serde_json::to_string(&info).unwrap(), r#"{"project":"infra","branch":null}"#);
+    }
+
+    #[test]
+    fn the_project_root_is_the_repository_toplevel() {
+        let root = scratch("proot").join("md-mini");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::create_dir_all(root.join("docs/deep")).unwrap();
+        assert_eq!(project_root(&root.join("docs/deep/a.md")), Some(root));
+    }
+
+    #[test]
+    fn a_worktree_is_its_own_project_root() {
+        let wt = scratch("proot-wt").join("tabs-impl");
+        fs::create_dir_all(&wt).unwrap();
+        fs::write(wt.join(".git"), "gitdir: /nowhere/.git/worktrees/tabs-impl\n").unwrap();
+        assert_eq!(project_root(&wt.join("README.md")), Some(wt));
+    }
+
+    #[test]
+    fn outside_git_the_project_root_is_the_files_directory() {
+        let dir = scratch("proot-plain").join("notes");
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(project_root(&dir.join("a.md")), Some(dir));
+        assert_eq!(project_root(Path::new("relative.md")), None);
+        assert_eq!(project_root(Path::new("/tmp/../etc/a.md")), None);
     }
 }
