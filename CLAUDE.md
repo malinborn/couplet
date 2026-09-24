@@ -122,7 +122,7 @@ src/                    # Frontend (Svelte + TypeScript)
   lib/toasts.svelte.ts  # Toast stack store (update + session notifications)
   lib/ToastStack.svelte # Bottom-right toast stack
   lib/session-position.ts # Clamps for a restored caret and scroll line
-  lib/theme/            # CSS variables (light/dark + aurora-light/aurora-dark) + CM6 theme
+  lib/theme/            # Theme tokens: light/dark, aurora, blueprint, phosphor (each a light/dark pair) + CM6 theme; see its CLAUDE.md
   lib/tauri/            # Tauri IPC wrappers + event listeners
   styles/               # Global CSS, editor decoration styles
   assets/fonts/         # Bundled woff2 (Inter, Merriweather, JetBrains Mono)
@@ -146,6 +146,7 @@ src/                    # Frontend (Svelte + TypeScript)
 - `src/lib/tabs/controller.ts` — **Read before changing how a window opens, switches or closes a document.** The check → prepare → hand over → swap → settle order (`mayLeave`, `prepare`, `handOver`, `show`, `settle`), and why nothing may `await` between the last dirty check and the swap
 - `docs/superpowers/plans/2026-09-25-tabs-02-model.md` — Tab model plan: design decisions D1–D17
 - `docs/superpowers/plans/2026-09-25-tabs-04-ai-cli.md` — AI contract and CLI plan: decisions D1–D19 (routing, focus, typing, background ask/edit/show, quick looks) and its known gaps
+- `src/lib/theme/CLAUDE.md` — **Read before adding a theme or a colour.** The full token set every theme defines, the optional hooks, how a family is registered (CSS, `theme-resolve.ts`, menu, both app icons), and the `theme-tokens.test.ts` guard that fails on an undefined `var(--…)`
 - `site/CLAUDE.md` — **Read before touching the md-mini.com landing.** How it builds and deploys, why its demos are real editor instances, and the layout/field/theme traps found while building it
 
 ## Tech Stack
