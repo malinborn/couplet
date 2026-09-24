@@ -161,47 +161,71 @@ pub fn maybe_show(app: &AppHandle) {
     };
 
     let lang = crate::i18n::active_language();
-
-    // The rename letter stands in for the welcome window on the launch it
-    // shows: two windows at once would bury one of them, and someone who
-    // used md-mini needs to hear about the name, not about the setup they
-    // already did. The marker is written as for the welcome, so the welcome
-    // does not follow on the next launch either.
-    if base_dir.join(RENAME_LETTER_FLAG).exists() {
-        let filename = format!("couplet-renamed-{}.md", lang);
-        if let Err(e) = open_bundled_doc(app, &filename, renamed_doc(lang)) {
-            eprintln!("onboarding: {}", e);
-            return;
-        }
+    let shown = show_startup_doc(&base_dir, &version, lang, |filename, content| {
+        open_bundled_doc(app, filename, content)
+    });
+    if shown {
         WELCOME_SHOWN_THIS_LAUNCH.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Which document a launch opens, if any.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupDoc {
+    RenameLetter,
+    Welcome,
+    Nothing,
+}
+
+/// The rename letter stands in for the welcome window on the launch it
+/// shows: two windows at once would bury one of them, and someone who used
+/// md-mini needs to hear about the name, not about the setup they already
+/// did. Pure, so every branch is directly testable.
+fn startup_doc(letter_pending: bool, stored: Option<&str>, version: &str, lang: &str) -> StartupDoc {
+    if letter_pending {
+        StartupDoc::RenameLetter
+    } else if should_show(stored, version, lang) {
+        StartupDoc::Welcome
+    } else {
+        StartupDoc::Nothing
+    }
+}
+
+/// Opens this launch's document through `open` and records it in `base_dir`:
+/// the letter's flag is removed, and the onboarding marker is written either
+/// way — after the letter too, so the welcome does not follow on the next
+/// launch. Returns whether a document opened. Split from `maybe_show` so the
+/// bookkeeping is testable without an `AppHandle`.
+fn show_startup_doc(
+    base_dir: &Path,
+    version: &str,
+    lang: &str,
+    mut open: impl FnMut(&str, &str) -> Result<(), String>,
+) -> bool {
+    let letter_pending = base_dir.join(RENAME_LETTER_FLAG).exists();
+    let stored = read_marker(base_dir);
+    let (filename, content) = match startup_doc(letter_pending, stored.as_deref(), version, lang) {
+        StartupDoc::Nothing => return false,
+        StartupDoc::RenameLetter => (format!("couplet-renamed-{}.md", lang), renamed_doc(lang)),
+        // The filename already carries `lang` (see `should_show`'s doc comment
+        // on why a language switch reaches this point), so writing it never
+        // overwrites a different language's welcome doc — each language gets
+        // its own file, and any previous one is simply left on disk.
+        StartupDoc::Welcome => (format!("welcome-{}-{}.md", version, lang), welcome_doc(lang)),
+    };
+    if let Err(e) = open(&filename, content) {
+        eprintln!("onboarding: {}", e);
+        return false;
+    }
+    if letter_pending {
         if let Err(e) = fs::remove_file(base_dir.join(RENAME_LETTER_FLAG)) {
             eprintln!("onboarding: failed to remove {}: {}", RENAME_LETTER_FLAG, e);
         }
-        if let Err(e) = write_marker(&base_dir, &version, lang) {
-            eprintln!("onboarding: failed to write marker: {}", e);
-        }
-        return;
     }
-
-    let stored = read_marker(&base_dir);
-    if !should_show(stored.as_deref(), &version, lang) {
-        return;
-    }
-
-    // The filename already carries `lang` (see `should_show`'s doc comment on
-    // why a language switch reaches this point), so writing it never
-    // overwrites a different language's welcome doc — each language gets its
-    // own file, and any previous one is simply left on disk.
-    let filename = format!("welcome-{}-{}.md", version, lang);
-    if let Err(e) = open_bundled_doc(app, &filename, welcome_doc(lang)) {
-        eprintln!("onboarding: {}", e);
-        return;
-    }
-    WELCOME_SHOWN_THIS_LAUNCH.store(true, Ordering::SeqCst);
-
-    if let Err(e) = write_marker(&base_dir, &version, lang) {
+    if let Err(e) = write_marker(base_dir, version, lang) {
         eprintln!("onboarding: failed to write marker: {}", e);
     }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -821,6 +845,53 @@ mod tests {
                 assert_ne!(doc, RENAMED_EN, "renamed.{lang}.md falls back to English");
             }
         }
+    }
+
+    #[test]
+    fn the_letter_wins_over_the_welcome_and_only_while_flagged() {
+        assert_eq!(startup_doc(true, None, "1.4.0", "en"), StartupDoc::RenameLetter);
+        assert_eq!(startup_doc(true, Some("1.4.0:en"), "1.4.0", "en"), StartupDoc::RenameLetter);
+        assert_eq!(startup_doc(false, Some("1.3.0:en"), "1.4.0", "en"), StartupDoc::Welcome);
+        assert_eq!(startup_doc(false, Some("1.4.0:en"), "1.4.0", "en"), StartupDoc::Nothing);
+    }
+
+    #[test]
+    fn the_letter_shows_once_and_the_welcome_does_not_follow() {
+        let dir = temp_base_dir("letter");
+        // A migrated install: the old marker came across, the flag was left
+        // by migration.rs.
+        fs::write(dir.join(MARKER_FILE), "1.3.0:ru").unwrap();
+        fs::write(dir.join(RENAME_LETTER_FLAG), "").unwrap();
+
+        let mut opened: Vec<(String, String)> = Vec::new();
+        let mut open = |name: &str, content: &str| {
+            opened.push((name.to_string(), content.to_string()));
+            Ok(())
+        };
+
+        assert!(show_startup_doc(&dir, "1.4.0", "ru", &mut open));
+        assert!(!dir.join(RENAME_LETTER_FLAG).exists(), "the flag must be gone once the letter opened");
+        assert_eq!(read_marker(&dir).as_deref(), Some("1.4.0:ru"));
+
+        // The next launch: nothing — neither the letter again nor the welcome
+        // for the version the letter already covered.
+        assert!(!show_startup_doc(&dir, "1.4.0", "ru", &mut open));
+
+        assert_eq!(opened.len(), 1);
+        assert_eq!(opened[0].0, "couplet-renamed-ru.md");
+        assert_eq!(opened[0].1, RENAMED_RU);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_letter_that_failed_to_open_stays_pending() {
+        let dir = temp_base_dir("letter-failed");
+        fs::write(dir.join(RENAME_LETTER_FLAG), "").unwrap();
+
+        assert!(!show_startup_doc(&dir, "1.4.0", "en", |_, _| Err("no window".into())));
+        assert!(dir.join(RENAME_LETTER_FLAG).exists(), "a letter nobody saw must be offered again");
+        assert_eq!(read_marker(&dir), None);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     // --- Startup nudge ------------------------------------------------------

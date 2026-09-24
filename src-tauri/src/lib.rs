@@ -734,10 +734,15 @@ pub(crate) fn resolve_path(path: &str, cwd: Option<&str>) -> String {
     path_norm::normalize_path(&joined).to_string_lossy().into_owned()
 }
 
+/// Where `scripts/couplet` leaves the file list when it has to launch the app
+/// with `open` (which passes no arguments). Spelled out in the script too —
+/// `cli_script_tests` pins the two together.
+pub(crate) const PENDING_FILES_PATH: &str = "/tmp/couplet-pending-files";
+
 /// Open pending files when app is already running (Reopen event): one new
 /// window, the files as its tabs.
 fn open_pending_files(app: &tauri::AppHandle) {
-    let path = std::path::Path::new("/tmp/couplet-pending-files");
+    let path = std::path::Path::new(PENDING_FILES_PATH);
     if !path.exists() {
         return;
     }
@@ -758,10 +763,10 @@ fn open_pending_files(app: &tauri::AppHandle) {
     }
 }
 
-/// Load files written by the CLI wrapper script to /tmp/couplet-pending-files:
+/// Load files written by the CLI wrapper script to `PENDING_FILES_PATH`:
 /// each becomes a tab of "main", as CLI args do.
 fn load_pending_open_files(app: &tauri::AppHandle) {
-    let path = std::path::Path::new("/tmp/couplet-pending-files");
+    let path = std::path::Path::new(PENDING_FILES_PATH);
     if !path.exists() {
         return;
     }
@@ -797,5 +802,61 @@ fn handle_cli_args(app: &tauri::AppHandle) {
                 }
             }
         }
+    }
+}
+
+/// `scripts/couplet` is bash, so it cannot read the config: it spells out the
+/// bundle path, both sockets and the pending-files path by hand. Each value
+/// has a Rust-side owner, and a mismatch fails silently — files not opened,
+/// commands waiting on a socket nobody binds. These tests read the script and
+/// hold every value to the thing it has to agree with.
+#[cfg(test)]
+mod cli_script_tests {
+    const SCRIPT: &str = include_str!("../../scripts/couplet");
+
+    fn config_str(key: &str) -> String {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("config is JSON");
+        config[key].as_str().unwrap_or_else(|| panic!("{key} is set")).to_string()
+    }
+
+    /// The value of a top-level `NAME="…"` assignment, as written.
+    fn raw(name: &str) -> String {
+        let prefix = format!("{name}=\"");
+        let line = SCRIPT
+            .lines()
+            .find(|l| l.starts_with(&prefix))
+            .unwrap_or_else(|| panic!("scripts/couplet assigns {name}"));
+        line[prefix.len()..].trim_end().trim_end_matches('"').to_string()
+    }
+
+    /// The same, with `$APP` expanded the way bash would.
+    fn var(name: &str) -> String {
+        raw(name).replace("$APP", &raw("APP"))
+    }
+
+    #[test]
+    fn app_and_binary_follow_the_bundle() {
+        let app = format!("/Applications/{}.app", config_str("productName"));
+        assert_eq!(var("APP"), app);
+        assert_eq!(var("BIN"), format!("{app}/Contents/MacOS/{}", config_str("mainBinaryName")));
+    }
+
+    #[test]
+    fn single_instance_socket_follows_the_identifier() {
+        // tauri-plugin-single-instance on macOS: `/tmp/{identifier, `.`/`-` as `_`}_si.sock`.
+        let identifier = config_str("identifier").replace(['.', '-'], "_");
+        assert_eq!(var("SOCK"), format!("/tmp/{identifier}_si.sock"));
+    }
+
+    #[test]
+    fn command_socket_is_the_one_the_app_binds() {
+        let expected = crate::ai_socket::socket_path(crate::paths::RELEASE_PRODUCT_NAME);
+        assert_eq!(var("CMD_SOCK"), expected.to_string_lossy());
+    }
+
+    #[test]
+    fn pending_files_path_is_the_one_the_app_reads() {
+        assert_eq!(var("PENDING"), super::PENDING_FILES_PATH);
     }
 }
