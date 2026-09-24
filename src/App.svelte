@@ -66,6 +66,7 @@
   import { AGENT_ERRORS, createAgentCommands, type AgentResponse, type AskResult } from './lib/tabs/agent-commands';
   import { createTypingTracker } from './lib/tabs/typing';
   import { emptyTabList, type TabListState } from './lib/tabs/tab-model';
+  import type { CarouselWindow, MoveTarget } from './lib/tabs/carousel';
   import { leaveEffects } from './lib/tabs/tab-cache';
   import { decideSaveAs } from './lib/tabs/save-as';
   import { createCommentWriter, adoptStartedDraft } from './lib/comment-writer';
@@ -656,6 +657,25 @@
     gitInfo: (paths: string[]) =>
       invoke<(GitInfo | null)[]>('tab_git_info', { paths }).catch(() => paths.map(() => null)),
   };
+
+  /** The other windows, for the drawer's carousel (plan 05, `tab_carousel_windows`). */
+  const carouselSource = {
+    windows: () =>
+      invoke<CarouselWindow[]>('tab_carousel_windows').catch((err: unknown): CarouselWindow[] => {
+        logTabIpc('tab_carousel_windows')(err);
+        return [];
+      }),
+  };
+
+  /** The window carousel is up: the page behind it blurs (D9, D11). */
+  let carouselOn = $state(false);
+
+  /** A move from the drawer's carousel (plan 05). A refusal already has its toast (`mayLeave`). */
+  async function moveTabs(tabIds: string[], target: MoveTarget): Promise<void> {
+    const paths = tabIds.map((id) => tabList.tabs.find((tab) => tab.id === id)?.path ?? null);
+    const outcome = await tabs.moveTabs(tabIds, target);
+    if (outcome?.kind === 'failed') reportStranded(paths.map((path) => ({ path, error: outcome.error })));
+  }
 
   /** Tabs a move left in this window; say so, or the gesture looks like it did nothing. */
   function reportStranded(stranded: readonly Stranded[]): void {
@@ -2293,7 +2313,7 @@
 <!-- Масштаб применяется зумом страницы webview, а не каскадом `font-size` —
      см. `lib/window-zoom.ts`. Атрибут ничего не масштабирует: это проба,
      по которой уровень видно в DOM (и в браузерном тесте) без IPC. -->
-<main data-zoom={zoom.level}>
+<main data-zoom={zoom.level} class:carousel-on={carouselOn}>
   <Editor
     bind:handle={editorHandle}
     onchange={handleChange}
@@ -2317,6 +2337,11 @@
   onclose={(tabIds) => void tabs.closeTabs(tabIds)}
   onreorder={(order) => void tabs.reorder(order)}
   onnewwindows={(tabIds) => void moveTabsToNewWindows(tabIds)}
+  {carouselSource}
+  onmove={(tabIds, target) => void moveTabs(tabIds, target)}
+  oncarousel={(on) => {
+    carouselOn = on;
+  }}
   onrestorefocus={() => editorHandle?.view?.focus()}
 />
 
@@ -2357,5 +2382,21 @@
   main {
     height: 100vh;
     width: 100vw;
+    transition: filter 0.28s var(--tabs-ease);
+  }
+
+  /* Plan 05: the page behind the window carousel (mockup `.carousel-on .editor`). */
+  main.carousel-on {
+    filter: blur(9px) saturate(0.85);
+  }
+
+  /* D11: no blur and no transition — the scrim alone dims the page. */
+  @media (prefers-reduced-motion: reduce) {
+    main {
+      transition: none;
+    }
+    main.carousel-on {
+      filter: none;
+    }
   }
 </style>

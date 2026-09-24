@@ -189,6 +189,7 @@
   "tabs.selection.drag_hint": "⇅ тянуть",
   "tabs.selection.new_window": "В новое окно",
   "tabs.selection.new_windows": "В новые окна",
+  "tabs.selection.to_window": "В окно…",
   "tabs.selection.close": "Закрыть выбранные",
   "tabs.selection.clear": "Снять выделение",
 

@@ -189,6 +189,7 @@
   "tabs.selection.drag_hint": "⇅ 拖动",
   "tabs.selection.new_window": "移到新窗口",
   "tabs.selection.new_windows": "移到新窗口",
+  "tabs.selection.to_window": "移到窗口…",
   "tabs.selection.close": "关闭所选",
   "tabs.selection.clear": "取消选择",
 

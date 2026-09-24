@@ -4,6 +4,7 @@ import { flushSync, mount, tick, unmount } from 'svelte';
 import TabDrawer, { type TabDrawerHandle } from './TabDrawer.svelte';
 import { DWELL_ARM_PX, DWELL_CAPTURE_MS, HOVER_OPEN_MS } from './drawer-state';
 import type { TabListState, TabMeta } from './tab-model';
+import type { CarouselWindow } from './carousel';
 
 /*
  * The drawer's keyboard and pointer contract against a stand-in for the
@@ -39,6 +40,9 @@ interface Harness {
   onreorder: ReturnType<typeof vi.fn>;
   onactivate: ReturnType<typeof vi.fn>;
   onrestorefocus: ReturnType<typeof vi.fn>;
+  windows: ReturnType<typeof vi.fn>;
+  onmove: ReturnType<typeof vi.fn>;
+  oncarousel: ReturnType<typeof vi.fn>;
   destroy: () => void;
 }
 
@@ -75,6 +79,9 @@ function setup(list: TabListState = initialList()): Harness {
   const onreorder = vi.fn();
   const onactivate = vi.fn();
   const onrestorefocus = vi.fn();
+  const windows = vi.fn(async (): Promise<CarouselWindow[]> => []);
+  const onmove = vi.fn();
+  const oncarousel = vi.fn();
   const component = mount(TabDrawer, {
     target,
     props: {
@@ -92,6 +99,9 @@ function setup(list: TabListState = initialList()): Harness {
       onclose: () => {},
       onreorder,
       onnewwindows: () => {},
+      carouselSource: { windows: () => windows() },
+      onmove,
+      oncarousel,
       onrestorefocus,
       get handle() {
         return props.handle;
@@ -114,6 +124,9 @@ function setup(list: TabListState = initialList()): Harness {
     onreorder,
     onactivate,
     onrestorefocus,
+    windows,
+    onmove,
+    oncarousel,
     destroy: () => {
       unmount(component);
       target.remove();
@@ -190,6 +203,7 @@ beforeEach(() => {
 afterEach(() => {
   h.destroy();
   vi.useRealTimers();
+  Reflect.deleteProperty(document, 'elementFromPoint');
 });
 
 describe('TabDrawer — the keyboard follows the drawer (I4a)', () => {
@@ -604,5 +618,180 @@ describe('TabDrawer — the selection bar', () => {
     await settle();
     expect(bar.classList.contains('on')).toBe(true);
     expect(bar.inert).toBe(false);
+  });
+});
+
+describe('TabDrawer — the window carousel (plan 05)', () => {
+  const other = (label: string, number: number): CarouselWindow => ({
+    label,
+    number,
+    project: 'p',
+    branch: null,
+    tabCount: 1,
+    activePath: `/p/${label}.md`,
+    head: '',
+  });
+  const page = () => h.root().parentElement!;
+  const carousel = () => page().querySelector('.carousel');
+  const option = (i: number) => page().querySelector<HTMLElement>(`[data-carousel-item="${i}"]`);
+  const listbox = () => page().querySelector<HTMLElement>('[role="listbox"]');
+
+  function shiftClick(id: string): void {
+    pointer(card(id), 'pointerdown', { button: 0, shiftKey: true, clientX: 100, clientY: 100 });
+    pointer(window, 'pointerup', { button: 0, clientX: 100, clientY: 100 });
+  }
+
+  /** Grab `id` and carry it onto the page, right of the (zero-width in jsdom) drawer. */
+  async function dragOut(id: string): Promise<void> {
+    pointer(card(id), 'pointerdown', { button: 0, buttons: 1, clientX: 10, clientY: 10 });
+    pointer(window, 'pointermove', { buttons: 1, clientX: 600, clientY: 300 });
+    await settle();
+    await settle();
+  }
+
+  it('DraggingACardOntoThePageOpensTheCarousel_BackOverTheDrawerClosesIt', async () => {
+    h.windows.mockResolvedValue([other('editor-2', 7)]);
+    h.handle().toggle();
+    await settle();
+    await dragOut('b');
+    expect(carousel()).not.toBeNull();
+    expect(option(1)).not.toBeNull();
+    expect(h.oncarousel).toHaveBeenLastCalledWith(true);
+    pointer(window, 'pointermove', { buttons: 1, clientX: -10, clientY: 300 });
+    await settle();
+    expect(carousel()).toBeNull();
+    expect(h.oncarousel).toHaveBeenLastCalledWith(false);
+  });
+
+  it('DroppingOnAThumbnailMovesTheDraggedTab', async () => {
+    h.windows.mockResolvedValue([other('editor-2', 7)]);
+    h.handle().toggle();
+    await settle();
+    await dragOut('b');
+    document.elementFromPoint = vi.fn(() => option(1));
+    pointer(window, 'pointermove', { buttons: 1, clientX: 610, clientY: 300 });
+    await settle();
+    expect(option(1)?.classList.contains('hot')).toBe(true);
+    expect(page().querySelector('.ghost-bar span')?.textContent).toBe('→ #7');
+    pointer(window, 'pointerup', { clientX: 610, clientY: 300 });
+    await settle();
+    expect(h.onmove).toHaveBeenCalledWith(['b'], { kind: 'window', label: 'editor-2' });
+    expect(h.onreorder).not.toHaveBeenCalled();
+  });
+
+  it('DroppingOnThePageOffAnyThumbnailCancels', async () => {
+    h.windows.mockResolvedValue([other('editor-2', 7)]);
+    h.handle().toggle();
+    await settle();
+    await dragOut('b');
+    document.elementFromPoint = vi.fn(() => page().querySelector<HTMLElement>('.car-view'));
+    pointer(window, 'pointermove', { buttons: 1, clientX: 610, clientY: 300 });
+    pointer(window, 'pointerup', { clientX: 610, clientY: 300 });
+    await settle();
+    expect(h.onmove).not.toHaveBeenCalled();
+    expect(h.onreorder).not.toHaveBeenCalled();
+    expect(carousel()).toBeNull();
+  });
+
+  it('BackOverTheDrawerADropReordersAsBefore', async () => {
+    h.handle().toggle();
+    await settle();
+    el('.tab-list').getBoundingClientRect = () => new DOMRect(0, 0, 300, 600);
+    await dragOut('b');
+    expect(carousel()).not.toBeNull();
+    pointer(window, 'pointermove', { buttons: 1, clientX: 100, clientY: 590 });
+    await settle();
+    expect(carousel()).toBeNull();
+    pointer(window, 'pointerup', { clientX: 100, clientY: 590 });
+    await settle();
+    expect(h.onmove).not.toHaveBeenCalled();
+    expect(h.onreorder).toHaveBeenCalledTimes(1);
+  });
+
+  it('DroppingOnNewWindowMovesTheGroupInListOrder_AsOneGhost', async () => {
+    h.handle().toggle();
+    await settle();
+    shiftClick('d');
+    shiftClick('b');
+    await settle();
+    await dragOut('d');
+    expect(page().querySelectorAll('.ghost')).toHaveLength(1);
+    expect(page().querySelector('.ghost-count')?.textContent).toBe('2');
+    document.elementFromPoint = vi.fn(() => option(0));
+    pointer(window, 'pointermove', { buttons: 1, clientX: 601, clientY: 300 });
+    pointer(window, 'pointerup', { clientX: 601, clientY: 300 });
+    await settle();
+    expect(h.onmove).toHaveBeenCalledWith(['b', 'd'], { kind: 'new-window' });
+  });
+
+  it('EscCancelsADrag_NothingMoves_TheDrawerStaysOpen', async () => {
+    h.handle().toggle();
+    await settle();
+    await dragOut('b');
+    press('Escape');
+    await settle();
+    expect(page().querySelector('.ghost')).toBeNull();
+    expect(carousel()).toBeNull();
+    pointer(window, 'pointerup', { clientX: 600, clientY: 300 });
+    expect(h.onmove).not.toHaveBeenCalled();
+    expect(el('.drawer').hasAttribute('inert')).toBe(false);
+  });
+
+  it('CmdMOpensTheCarouselForTheSelection_ArrowsAndEnterMoveIt', async () => {
+    h.windows.mockResolvedValue([other('editor-2', 7), other('editor-3', 8)]);
+    h.handle().toggle();
+    await settle();
+    shiftClick('c');
+    shiftClick('b');
+    await settle();
+    press('m', { metaKey: true, ctrlKey: true });
+    await settle();
+    await settle();
+    expect(document.activeElement).toBe(listbox());
+    expect(listbox()!.getAttribute('aria-activedescendant')).toBe(option(1)!.id);
+    press('ArrowDown');
+    await settle();
+    expect(listbox()!.getAttribute('aria-activedescendant')).toBe(option(2)!.id);
+    press('Enter');
+    await settle();
+    expect(h.onmove).toHaveBeenCalledWith(['b', 'c'], { kind: 'window', label: 'editor-3' });
+  });
+
+  it('CmdMWithoutASelectionMovesTheActiveTab_EscGivesTheKeysBackToTheList', async () => {
+    h.handle().toggle();
+    await settle();
+    press('m', { metaKey: true, ctrlKey: true });
+    await settle();
+    await settle();
+    // One window: only «+ Новое окно», and the keyboard is on it.
+    expect(listbox()!.getAttribute('aria-activedescendant')).toBe(option(0)!.id);
+    expect(option(1)).toBeNull();
+    press('x');
+    expect(query(), 'no key reaches the search behind the carousel').toBe('');
+    press('Escape');
+    await settle();
+    expect(carousel()).toBeNull();
+    expect(document.activeElement).toBe(el('.tab-list'));
+    press('m', { metaKey: true, ctrlKey: true });
+    await settle();
+    await settle();
+    press('Enter');
+    await settle();
+    expect(h.onmove).toHaveBeenCalledWith(['a'], { kind: 'new-window' });
+  });
+
+  it('ToAWindowOnTheSelectionBarOpensTheCarouselForTheSelection', async () => {
+    h.handle().toggle();
+    await settle();
+    shiftClick('c');
+    await settle();
+    const button = [...el('.sel-bar').querySelectorAll('button')].find((b) => b.textContent === 'To a window…');
+    button!.click();
+    await settle();
+    await settle();
+    expect(document.activeElement).toBe(listbox());
+    press('Enter');
+    await settle();
+    expect(h.onmove).toHaveBeenCalledWith(['c'], { kind: 'new-window' });
   });
 });

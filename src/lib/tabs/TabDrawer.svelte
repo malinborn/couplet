@@ -60,6 +60,19 @@
   import { dropBefore, moveIds, pastThreshold, sweptIds, type Box } from './drawer-geometry';
   import { tabName } from './tab-name';
   import { isEditableTarget } from './typing';
+  import WindowCarousel, { type CarouselHandle } from './WindowCarousel.svelte';
+  import {
+    GOT_MS,
+    carouselItems,
+    carouselKey,
+    initialKb,
+    moveKbIndex,
+    targetOf,
+    wantsCarousel,
+    type CarouselItem,
+    type CarouselWindow,
+    type MoveTarget,
+  } from './carousel';
 
   export interface TabDrawerHandle {
     /** ⌘J. */
@@ -82,6 +95,9 @@
     onclose,
     onreorder,
     onnewwindows,
+    carouselSource,
+    onmove,
+    oncarousel,
     onrestorefocus,
     handle = $bindable(),
   }: {
@@ -93,6 +109,12 @@
     onclose: (tabIds: string[]) => void;
     onreorder: (order: string[]) => void;
     onnewwindows: (tabIds: string[]) => void;
+    /** The other windows, for the carousel (`tab_carousel_windows`). */
+    carouselSource: { windows(): Promise<CarouselWindow[]> };
+    /** Move `tabIds` — this window's order — to `target`: the carousel's drop or Enter. */
+    onmove: (tabIds: string[], target: MoveTarget) => void;
+    /** The carousel came up or went: the page behind it blurs. */
+    oncarousel?: (on: boolean) => void;
     /**
      * Closing with focus nowhere useful and nothing remembered to give it back
      * to (it was on <body> at open, or that element is gone): the app puts it
@@ -128,6 +150,24 @@
   let flashing = $state<SortKind | null>(null);
   let bump = $state(0);
   let drag = $state<DragState | null>(null);
+
+  interface CarouselState {
+    mode: 'drag' | 'keys';
+    /** The tabs that move, in list order. */
+    ids: string[];
+    /** The first one's name, taken when it opened: the tab leaves the list before the carousel does. */
+    lead: string;
+    /** `null` while fetching. */
+    items: CarouselItem[] | null;
+    kb: number;
+    hot: number | null;
+    got: number | null;
+    left: number;
+  }
+  // `.raw`: always replaced whole, never mutated — and a deep proxy would make
+  // its arrays compare unequal to the ones it was given.
+  let car = $state.raw<CarouselState | null>(null);
+  let carHandle: CarouselHandle | undefined = $state();
   let selHintFits = $state(true);
   let rootEl: HTMLDivElement | undefined = $state();
   let listEl: HTMLDivElement | undefined = $state();
@@ -157,6 +197,11 @@
   let dwellArmed = false;
   /** Focus landed inside the drawer during this opening — only then is it ours to give back. */
   let tookFocus = false;
+  /** Fetched when a drag starts, so the thumbnails are there by the time the card reaches the page. */
+  let windowsFetch: Promise<CarouselItem[]> | null = null;
+  let carCloseTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Which opening a fetch belongs to: one that resolves after the carousel closed or reopened is dropped. */
+  let carOpening = 0;
 
   const data = createDrawerData(
     {
@@ -242,6 +287,10 @@
       close: () => closeDrawer(),
       shortcutTarget: (n) => (ds.open ? (visible[n - 1] ?? null) : undefined),
     };
+  });
+
+  $effect(() => {
+    oncarousel?.(car !== null);
   });
 
   // Where the last input went (tabs-questions Q5): a hover-open right after
@@ -331,7 +380,9 @@
   $effect(() => () => {
     removeWindowListeners();
     endGesture?.();
-    for (const timer of [hoverOpenTimer, hoverCloseTimer, expandTimer, flashTimer, dwellTimer]) clearTimeout(timer);
+    for (const timer of [hoverOpenTimer, hoverCloseTimer, expandTimer, flashTimer, dwellTimer, carCloseTimer]) {
+      clearTimeout(timer);
+    }
   });
 
   function reducedMotion(): boolean {
@@ -433,6 +484,7 @@
   function closeDrawer(): void {
     if (!ds.open) return;
     endGesture?.();
+    closeCarousel();
     clearTimeout(hoverCloseTimer);
     clearTimeout(expandTimer);
     clearTimeout(dwellTimer);
@@ -580,6 +632,17 @@
     trackShift(e);
     // The IME owns the key: a composed character is not a search letter.
     if (e.isComposing || e.keyCode === 229) return;
+    // While ⌘M's carousel is up every key is its own (D10).
+    if (car?.mode === 'keys') {
+      onCarouselKey(e);
+      return;
+    }
+    if (gesture === 'drag' && e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      endGesture?.();
+      return;
+    }
     const action = drawerKeyAction(e, ds.query, mac);
     // A hover-open right after typing in the editor: typing stays with the
     // editor until the pointer enters the drawer or it is pinned (Q5); sort
@@ -627,6 +690,7 @@
         break;
       }
       case 'carousel':
+        openMoveKeys();
         break;
     }
   }
@@ -675,6 +739,108 @@
     const ids = selectedIds();
     closeDrawer();
     onnewwindows(ids);
+  }
+
+  // --- the window carousel (plan 05) ---
+
+  function fetchWindows(): Promise<CarouselItem[]> {
+    return carouselSource.windows().then(carouselItems, () => carouselItems([]));
+  }
+
+  function openCarousel(mode: 'drag' | 'keys', ids: string[]): void {
+    clearTimeout(carCloseTimer);
+    car = {
+      mode,
+      ids,
+      lead: tabName(byId.get(ids[0])?.path ?? null),
+      items: null,
+      kb: 0,
+      hot: null,
+      got: null,
+      left: asideEl?.getBoundingClientRect().right ?? 0,
+    };
+    const opening = ++carOpening;
+    const fetching = windowsFetch ?? fetchWindows();
+    windowsFetch = null;
+    void fetching.then((items) => {
+      if (!car || opening !== carOpening) return;
+      car = { ...car, items, kb: initialKb(items) };
+      if (mode === 'keys') void tick().then(() => carHandle?.focus());
+      else refreshHot();
+    });
+  }
+
+  function closeCarousel(): void {
+    clearTimeout(carCloseTimer);
+    carOpening++;
+    car = null;
+  }
+
+  /** The option under the dragged card — also after the track scrolled under a still pointer. */
+  function refreshHot(): void {
+    const d = drag;
+    if (!car || car.mode !== 'drag' || !d || car.got !== null) return;
+    const hot = carHandle?.itemAt(d.x, d.y) ?? null;
+    if (hot !== car.hot) car = { ...car, hot };
+  }
+
+  function pick(index: number): void {
+    const c = car;
+    const item = c?.items?.[index];
+    if (!c || !item || c.got !== null) return;
+    onmove(c.ids, targetOf(item));
+    ds = clearSelection(ds);
+    car = { ...c, got: index, hot: null };
+    carCloseTimer = setTimeout(closeCarousel, motion(GOT_MS));
+    if (c.mode === 'keys') void tick().then(() => listEl?.focus({ preventScroll: true }));
+  }
+
+  /** ⌘M / «В окно…»: the selection, else the card the arrows are on, else the active tab. */
+  function openMoveKeys(): void {
+    const selectedNow = selectedIds();
+    const kb = kbTarget(ds, visible);
+    const ids = selectedNow.length > 0 ? selectedNow : kb ? [kb] : list.activeId ? [list.activeId] : [];
+    if (ids.length > 0) openCarousel('keys', ids);
+  }
+
+  function onCarouselKey(e: KeyboardEvent): void {
+    const key = carouselKey(e);
+    if (key === 'none') {
+      // Nothing may reach the search or the editor behind the carousel.
+      if (!e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    const c = car;
+    if (!c) return;
+    if (key === 'cancel') {
+      closeCarousel();
+      void tick().then(() => listEl?.focus({ preventScroll: true }));
+      return;
+    }
+    if (!c.items || c.got !== null) return;
+    if (key === 'choose') {
+      pick(c.kb);
+      return;
+    }
+    const kb = moveKbIndex(c.kb, key === 'up' ? -1 : 1, c.items.length);
+    car = { ...c, kb };
+    carHandle?.reveal(kb);
+  }
+
+  /** Over the page right of the drawer: the carousel; back over the drawer: gone (mockup `carouselFollow`). */
+  function followCarousel(x: number, y: number, inList: boolean): void {
+    const d = drag;
+    if (!d) return;
+    const right = asideEl?.getBoundingClientRect().right ?? 0;
+    const want = !inList && wantsCarousel(x, y, right, window.innerWidth, window.innerHeight);
+    if (want && !car) openCarousel('drag', d.ids);
+    else if (!want && car?.mode === 'drag' && car.got === null) closeCarousel();
+    refreshHot();
   }
 
   // --- pointer gestures ---
@@ -795,6 +961,7 @@
     const ids = selected.has(id) ? selectedIds() : [id];
     const r = card.getBoundingClientRect();
     drag = { ids, lead, x: sx, y: sy, ox: sx - r.left, oy: sy - r.top, width: r.width, before: null, inList: false };
+    windowsFetch = fetchWindows();
     return true;
   }
 
@@ -816,13 +983,19 @@
       before: inList ? dropBefore(cardBoxes(), ev.clientY, new Set(d.ids)) : null,
     };
     if (inList) autoScroll(ev.clientY);
+    followCarousel(ev.clientX, ev.clientY, inList);
   }
 
   function finishDrag(dropped: boolean): void {
     const d = drag;
     drag = null;
-    if (dropped && d?.inList) {
-      onreorder(moveIds(list.tabs.map((tab) => tab.id), d.ids, d.before));
+    windowsFetch = null;
+    const c = car;
+    if (dropped && c?.mode === 'drag' && c.hot !== null) {
+      pick(c.hot);
+    } else {
+      if (c?.mode === 'drag') closeCarousel();
+      if (dropped && d?.inList) onreorder(moveIds(list.tabs.map((tab) => tab.id), d.ids, d.before));
     }
     if (ds.mode === 'hover' && !inWrap) scheduleHoverClose();
   }
@@ -851,6 +1024,7 @@
   class:open={ds.open}
   class:compact
   class:shift={ds.open && ds.shiftHeld}
+  class:car={car !== null}
   bind:this={rootEl}
   onfocusin={onFocusIn}
   onfocusout={onFocusOut}
@@ -966,6 +1140,7 @@
       <!-- Hidden is not enough: inert keeps its buttons out of the Tab order too. -->
       <div class="sel-bar" class:on={ds.open && selected.size > 0} inert={selected.size === 0}>
         <span class="n">{plural(selected.size, 'tabs.selection.count')}<small>{t('tabs.selection.drag_hint')}</small></span>
+        <button type="button" onclick={openMoveKeys}>{t('tabs.selection.to_window')}</button>
         <button type="button" onclick={moveSelected}
           >{t(selected.size === 1 ? 'tabs.selection.new_window' : 'tabs.selection.new_windows')}</button
         >
@@ -1002,20 +1177,48 @@
   </div>
 
   {#if drag}
+    {@const inCar = car?.mode === 'drag'}
+    {@const hotItem = car && car.hot !== null ? car.items?.[car.hot] : undefined}
+    <!-- pointer-events: none (styles): the carousel's hit test must see the thumbnail under it. -->
     <div
       class="ghost"
       class:multi={drag.ids.length > 1}
-      class:cancel={!drag.inList}
+      class:cancel={!drag.inList && !hotItem}
+      class:as-car={inCar}
       aria-hidden="true"
-      style:width="{drag.width}px"
-      style:transform="translate({drag.x - drag.ox}px, {drag.y - drag.oy}px) rotate(-1.2deg)"
+      style:width={inCar ? null : `${drag.width}px`}
+      style:transform={inCar
+        ? `translate(${drag.x - 40}px, ${drag.y - 12}px)`
+        : `translate(${drag.x - drag.ox}px, ${drag.y - drag.oy}px) rotate(-1.2deg)`}
     >
+      <div class="ghost-bar">
+        <i></i><i></i><i></i><span
+          >{hotItem ? (hotItem.kind === 'new' ? t('tabs.carousel.new_window_short') : `→ #${hotItem.number ?? '?'}`) : ''}</span
+        >
+      </div>
       <div class="ghost-body">
         <div class="ghost-name">{tabName(drag.lead.path)}</div>
         <div class="ghost-meta">{metaText(drag.lead)}</div>
       </div>
       {#if drag.ids.length > 1}<div class="ghost-count">{drag.ids.length}</div>{/if}
     </div>
+  {/if}
+
+  {#if car}
+    <WindowCarousel
+      bind:handle={carHandle}
+      items={car.items}
+      mode={car.mode}
+      kb={car.kb}
+      hot={car.hot}
+      got={car.got}
+      left={car.left}
+      count={car.ids.length}
+      lead={car.lead}
+      pointer={car.mode === 'drag' && drag ? { x: drag.x, y: drag.y } : null}
+      onpick={pick}
+      onscroll={refreshHot}
+    />
   {/if}
 </div>
 
@@ -1050,6 +1253,11 @@
   .open .scrim {
     opacity: 0.7;
     pointer-events: auto;
+  }
+
+  /* Plan 05: darker behind the window carousel (mockup `.carousel-on .scrim`). */
+  .car .scrim {
+    opacity: 0.82;
   }
 
   .drawer-wrap {
@@ -1459,7 +1667,9 @@
     box-shadow:
       0 18px 44px rgba(var(--tabs-shadow-rgb), calc(var(--tabs-shadow-a) * 2)),
       0 2px 6px rgba(var(--tabs-shadow-rgb), var(--tabs-shadow-a));
-    transition: opacity 0.18s;
+    transition:
+      opacity 0.18s,
+      width 0.22s var(--tabs-ease);
   }
 
   .ghost.multi {
@@ -1473,6 +1683,42 @@
 
   .ghost.cancel {
     opacity: 0.6;
+  }
+
+  /* Over the page the ghost becomes a small window (mockup `.ghost-bar`, `.ghost.as-car`). */
+  .ghost-bar {
+    height: 0;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0 10px;
+    background: var(--bg-surface);
+    overflow: hidden;
+    transition: height 0.22s var(--tabs-ease);
+    font-size: 11px;
+    color: var(--text-subtle);
+  }
+
+  .ghost-bar i {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--highlight);
+    display: block;
+  }
+
+  .ghost-bar span {
+    margin-left: auto;
+    font-weight: 600;
+  }
+
+  .ghost.as-car {
+    width: 220px;
+    outline: 2px solid var(--tabs-brand-a);
+  }
+
+  .ghost.as-car .ghost-bar {
+    height: 24px;
   }
 
   .ghost-body {
@@ -1540,6 +1786,10 @@
     .drawer-wrap,
     .scrim {
       transition-duration: 0.01s !important;
+    }
+    .ghost,
+    .ghost-bar {
+      transition: none;
     }
   }
 </style>

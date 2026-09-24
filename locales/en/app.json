@@ -189,6 +189,7 @@
   "tabs.selection.drag_hint": "⇅ drag",
   "tabs.selection.new_window": "To a new window",
   "tabs.selection.new_windows": "To new windows",
+  "tabs.selection.to_window": "To a window…",
   "tabs.selection.close": "Close selected",
   "tabs.selection.clear": "Clear selection",
 

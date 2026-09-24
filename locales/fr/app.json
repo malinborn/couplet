@@ -189,6 +189,7 @@
   "tabs.selection.drag_hint": "⇅ glisser",
   "tabs.selection.new_window": "Vers une nouvelle fenêtre",
   "tabs.selection.new_windows": "Vers de nouvelles fenêtres",
+  "tabs.selection.to_window": "Vers une fenêtre…",
   "tabs.selection.close": "Fermer la sélection",
   "tabs.selection.clear": "Désélectionner",
 
