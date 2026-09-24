@@ -13,6 +13,7 @@ mod closed;
 pub mod comment_pause;
 pub mod comments;
 mod commands;
+mod git_info;
 mod i18n;
 mod locale;
 pub mod mcp_server;
@@ -158,6 +159,7 @@ pub fn run() {
             tab_commands::tab_release,
             tab_commands::tab_activate,
             tab_commands::tab_close,
+            git_info::tab_git_info,
             window::open_file_window_cmd,
             window::focus_if_open,
             recent::recent_files_list,
