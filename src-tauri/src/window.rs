@@ -592,6 +592,67 @@ pub(crate) fn hand_over_file(
     opened
 }
 
+/// The files of `paths` a live window already holds, with that window, and
+/// the rest, each in the order given. A file given twice counts once.
+pub fn partition_held(
+    reg: &TabRegistry,
+    paths: &[String],
+    is_live: impl Fn(&str) -> bool,
+) -> (Vec<(String, String)>, Vec<String>) {
+    let mut held: Vec<(String, String)> = Vec::new();
+    let mut free: Vec<String> = Vec::new();
+    for path in paths {
+        if free.contains(path) || held.iter().any(|(p, _)| p == path) {
+            continue;
+        }
+        match reg.label_of(path).filter(|label| is_live(label)) {
+            Some(owner) => held.push((path.clone(), owner)),
+            None => free.push(path.clone()),
+        }
+    }
+    (held, free)
+}
+
+/// A human's `mdmini a.md b.md` (spec §4): one new window holding every file
+/// that is not open yet, as tabs, the last one active. When all of them are
+/// open already, the window holding the first comes forward on that tab.
+pub fn open_files_window(app: &AppHandle, paths: &[String]) {
+    // Like `try_open_file_window_with`: one spelling before the registry.
+    let paths: Vec<String> = paths.iter().map(|p| crate::path_norm::normalize_str(p)).collect();
+    let (held, free) = {
+        let open_files = app.state::<OpenFiles>();
+        let reg = open_files.0.lock().unwrap();
+        partition_held(&reg, &paths, |label| app.get_webview_window(label).is_some())
+    };
+    if free.is_empty() {
+        if let Some((path, owner)) = held.first() {
+            if let Some(win) = app.get_webview_window(owner) {
+                reveal(&win);
+                let _ = win.emit_to(owner.as_str(), "open-file", path);
+            }
+        }
+        return;
+    }
+    let label = match build_window(app, Activation::Foreground) {
+        Ok(label) => label,
+        Err(e) => {
+            eprintln!("Failed to create window: {e}");
+            return;
+        }
+    };
+    let mut got_one = false;
+    for path in free {
+        got_one |= hand_over_file(app, &label, path, Activation::Foreground) == Opened::Created(label.clone());
+    }
+    if !got_one {
+        // Every file was claimed elsewhere while the window was built: as in
+        // `try_open_file_window_with`, an empty window nobody asked for goes.
+        if let Some(win) = app.get_webview_window(&label) {
+            let _ = win.destroy();
+        }
+    }
+}
+
 /// Where a file handed over to the new window `label` went — a tab of its
 /// own there, or the tab its holder already had — and which holder to bring
 /// forward on it. Only a foreground open does: a background one must not
@@ -846,6 +907,15 @@ pub enum OpenedRoute {
 /// still exists — a mapping whose window is gone is stale and routes as if
 /// absent.
 ///
+/// **tabs-questions Q4 — open, current behaviour kept.** A window of the
+/// file's project does not take it; a new window does. Q4's option 2 (a tab
+/// in the project's window, the one focused last) would be: after the
+/// `FocusExisting` check, `if let crate::routing::Route::Existing(label) =
+/// crate::routing::route(reg, path, None, &crate::routing::project_of(path),
+/// focus_order, &is_live)` return a new `OpenedRoute::ProjectWindow(label)`,
+/// taking `focus_order` from `FocusTracker::order()` in `RunEvent::Opened` —
+/// and flipping `route_opened_file_ignores_projects_until_q4_is_answered`.
+///
 /// The existing-window check must come first: "main" being empty says nothing
 /// about the file, and registering it to main while another window holds it
 /// would overwrite that window's `OpenFiles` entry — the file then open in two
@@ -1067,6 +1137,34 @@ mod tests {
     fn route_opened_file_opens_a_new_window_when_main_shows_another_file() {
         let reg = reg(&[("/tmp/b.md", "main")]);
         assert_eq!(route_opened_file(&reg, "/tmp/x.md", |_| true), OpenedRoute::NewWindow);
+    }
+
+    #[test]
+    fn route_opened_file_ignores_projects_until_q4_is_answered() {
+        // Pins today's Finder behaviour (tabs-questions Q4): a window of the
+        // file's project does not take it — a new window does, as before tabs.
+        let mut reg = reg(&[("/p/a.md", "editor-2"), ("/q/b.md", "main")]);
+        reg.bind_project("editor-2", "/p".to_string());
+        reg.bind_project("main", "/q".to_string());
+        assert_eq!(route_opened_file(&reg, "/p/docs/c.md", |_| true), OpenedRoute::NewWindow);
+    }
+
+    #[test]
+    fn partition_held_splits_files_a_live_window_holds_from_the_rest() {
+        let reg = reg(&[("/a.md", "editor-2"), ("/b.md", "editor-3")]);
+        let paths = vec!["/a.md".to_string(), "/c.md".to_string(), "/b.md".to_string()];
+        let (held, free) = partition_held(&reg, &paths, |label| label != "editor-3");
+        assert_eq!(held, vec![("/a.md".to_string(), "editor-2".to_string())]);
+        assert_eq!(free, vec!["/c.md".to_string(), "/b.md".to_string()], "a dead holder does not hold");
+    }
+
+    #[test]
+    fn partition_held_names_a_file_given_twice_once() {
+        let reg = reg(&[("/a.md", "editor-2")]);
+        let paths: Vec<String> = ["/c.md", "/a.md", "/c.md", "/a.md"].iter().map(|p| p.to_string()).collect();
+        let (held, free) = partition_held(&reg, &paths, |_| true);
+        assert_eq!(held, vec![("/a.md".to_string(), "editor-2".to_string())]);
+        assert_eq!(free, vec!["/c.md".to_string()], "one file, one tab — not a second handover into the new window");
     }
 
     #[test]

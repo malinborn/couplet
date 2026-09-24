@@ -104,20 +104,21 @@ pub fn run() {
     // feature the builder is never reassigned.
     #[cfg_attr(not(feature = "mcp-bridge"), allow(unused_mut))]
     let mut builder = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            // argv[0] is the binary path — skip it
-            let file_args: Vec<String> = argv.into_iter().skip(1).collect();
-
-            if file_args.is_empty() {
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            // argv[0] is the binary path — skip it. Relative paths are the
+            // caller's: resolved against its working directory, not ours.
+            let files: Vec<String> = argv
+                .into_iter()
+                .skip(1)
+                .filter(|arg| !arg.starts_with('-'))
+                .map(|path| resolve_path(&path, Some(cwd.as_str())))
+                .collect();
+            if files.is_empty() {
                 // No files — open a new empty window
                 window::open_file_window(app, None);
             } else {
-                for path in file_args {
-                    if !path.starts_with('-') {
-                        let abs_path = resolve_path(&path, None);
-                        window::open_file_window(app, Some(abs_path));
-                    }
-                }
+                // One new window with every file as a tab (spec §4).
+                window::open_files_window(app, &files);
             }
         }))
         .plugin(tauri_plugin_cli::init())
@@ -669,9 +670,33 @@ pub(crate) fn resolve_path(path: &str, cwd: Option<&str>) -> String {
     path_norm::normalize_path(&joined).to_string_lossy().into_owned()
 }
 
-/// Open pending files when app is already running (Reopen event).
-/// Each file gets a new window since "main" already exists.
+/// Open pending files when app is already running (Reopen event): one new
+/// window, the files as its tabs.
 fn open_pending_files(app: &tauri::AppHandle) {
+    let path = std::path::Path::new("/tmp/md-mini-pending-files");
+    if !path.exists() {
+        return;
+    }
+    let contents = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let _ = std::fs::remove_file(path);
+
+    let files: Vec<String> = contents
+        .lines()
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+        .map(|f| resolve_path(f, None))
+        .collect();
+    if !files.is_empty() {
+        window::open_files_window(app, &files);
+    }
+}
+
+/// Load files written by the CLI wrapper script to /tmp/md-mini-pending-files:
+/// each becomes a tab of "main", as CLI args do.
+fn load_pending_open_files(app: &tauri::AppHandle) {
     let path = std::path::Path::new("/tmp/md-mini-pending-files");
     if !path.exists() {
         return;
@@ -685,69 +710,25 @@ fn open_pending_files(app: &tauri::AppHandle) {
     for line in contents.lines() {
         let file = line.trim();
         if !file.is_empty() {
-            window::open_file_window(app, Some(resolve_path(file, None)));
+            // The wrapper writes absolute paths; this gives them their one spelling.
+            assign_file_to_main(app, resolve_path(file, None));
         }
     }
 }
 
-/// Load files written by the CLI wrapper script to /tmp/md-mini-pending-files.
-/// Uses the same PendingFiles mechanism as CLI args — first file goes into "main" window.
-fn load_pending_open_files(app: &tauri::AppHandle) {
-    let path = std::path::Path::new("/tmp/md-mini-pending-files");
-    if !path.exists() {
-        return;
-    }
-    let contents = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    let _ = std::fs::remove_file(path);
-
-    let pending = app.state::<PendingFiles>();
-    let mut map = pending.0.lock().unwrap();
-    let already_has_main = map.contains_key("main");
-
-    let mut first = !already_has_main; // only use "main" slot if CLI args didn't take it
-    drop(map);
-
-    for line in contents.lines() {
-        let file = line.trim();
-        if file.is_empty() {
-            continue;
-        }
-        // The wrapper writes absolute paths; this gives them their one spelling.
-        let file = resolve_path(file, None);
-        if first {
-            first = false;
-            assign_file_to_main(app, file);
-        } else {
-            window::open_file_window(app, Some(file));
-        }
-    }
-}
-
-/// Handle CLI file arguments on initial launch.
-/// The first file is loaded into the existing "main" window via PendingFiles;
-/// any additional files each get a new window (also via PendingFiles).
+/// Handle CLI file arguments on initial launch: every file is a tab of the
+/// "main" window, pulled via PendingFiles on mount (spec §4: one window, the
+/// files as tabs).
 fn handle_cli_args(app: &tauri::AppHandle) {
     if let Ok(matches) = app.cli().matches() {
         if let Some(files_arg) = matches.args.get("files") {
             if let serde_json::Value::Array(arr) = &files_arg.value {
-                let mut first = true;
                 for val in arr {
                     if let serde_json::Value::String(path) = val {
                         if path.is_empty() {
                             continue;
                         }
-                        let abs_path = resolve_path(path.as_str(), None);
-                        if first {
-                            first = false;
-                            // The "main" window pulls this on mount.
-                            assign_file_to_main(app, abs_path);
-                        } else {
-                            // Additional files each get a new window.
-                            window::open_file_window(app, Some(abs_path));
-                        }
+                        assign_file_to_main(app, resolve_path(path.as_str(), None));
                     }
                 }
             }
