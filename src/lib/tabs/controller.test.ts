@@ -300,7 +300,7 @@ describe('openPath', () => {
   it('SwitchingRightAfterTypingFlushesAndSucceeds_NoRefusal', async () => {
     // A keystroke still inside the 300 ms debounce is not "unsaved" in the
     // refusal sense: leaving flushes it first and only refuses a save that
-    // did not land (architect review of plan 02).
+    // did not land.
     const h = await started({ '/a.md': 'AAAA', '/b.md': 'BBBB' }, [fileTab('a', '/a.md')]);
     h.type('x');
 

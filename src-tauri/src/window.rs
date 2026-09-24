@@ -8,8 +8,7 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use crate::tabs::TabRegistry;
 
 /// Every window's tabs, and through them which tab holds each file — see
-/// `tabs.rs`. The name is kept from when this was a `path → label` map;
-/// every dedup check in the app still goes through it.
+/// `tabs.rs`. Every dedup check in the app goes through it.
 pub struct OpenFiles(pub Mutex<TabRegistry>);
 
 impl OpenFiles {
@@ -38,6 +37,7 @@ pub struct PendingOpen {
     pub active_tab_id: Option<String>,
 }
 
+#[cfg(test)]
 impl PendingOpen {
     /// A window opening one file in one tab.
     pub fn single_file(tab_id: String, path: String) -> Self {
@@ -99,7 +99,7 @@ pub fn window_init(
     }
 }
 
-/// IPC command: what this window shows on mount. Replaces `get_pending_file`.
+/// IPC command: what this window shows on mount.
 ///
 /// The contract with the frontend:
 /// - Its `open-file` and `reopen-tab` listeners are registered — awaited —
@@ -175,7 +175,7 @@ pub fn queue_tab(
     is_live: impl Fn(&str) -> bool,
 ) -> Handover {
     if let Some(path) = &tab.path {
-        if let Some(owner) = evict_dead(reg, path, is_live) {
+        if let Some(owner) = evict_dead(reg, pending, path, is_live) {
             return Handover::Held(owner);
         }
     }
@@ -235,16 +235,20 @@ impl FileWatchers {
     }
 }
 
-/// The live window holding `path`, if any. A holder whose window is already
-/// gone is stale — its entry is dropped so the file can be claimed again.
+/// The live window holding `path`, if any — `evict_dead` for a live app.
+/// Called with the `OpenFiles` lock held; takes `PendingFiles` itself.
 pub(crate) fn live_owner(app: &AppHandle, reg: &mut TabRegistry, path: &str) -> Option<String> {
-    evict_dead(reg, path, |label| app.get_webview_window(label).is_some())
+    let pending = app.state::<PendingFiles>();
+    let mut pending = pending.0.lock().unwrap();
+    evict_dead(reg, &mut pending, path, |label| app.get_webview_window(label).is_some())
 }
 
-/// `live_owner` without the app: `is_live` says whether a window label still
-/// exists.
+/// The live window holding `path`, if any. A holder whose window is gone
+/// (`is_live` says no) is stale: its registry entry and the payload it never
+/// came to pull are dropped, so the file can be claimed again.
 pub fn evict_dead(
     reg: &mut TabRegistry,
+    pending: &mut HashMap<String, PendingOpen>,
     path: &str,
     is_live: impl Fn(&str) -> bool,
 ) -> Option<String> {
@@ -253,6 +257,7 @@ pub fn evict_dead(
         return Some(label);
     }
     reg.remove_window(&label);
+    pending.remove(&label);
     None
 }
 
@@ -384,31 +389,31 @@ pub fn open_file_window(app: &AppHandle, path: Option<String>) {
             if moved {
                 save_window_counter(app);
             }
-            // Track the file path in OpenFiles and store it in PendingFiles
-            // so the frontend can pull it on mount via `get_window_init`.
-            if let Some(ref file_path) = path {
-                let tab_id = crate::session::new_tab_id();
-                {
-                    let open_files = app.state::<OpenFiles>();
-                    let mut reg = open_files.0.lock().unwrap();
-                    if !reg.add_tab(&label, &tab_id, Some(file_path.clone())) {
-                        eprintln!("open_file_window: {file_path} is already held by another tab; {label} is not registered for it");
-                        // Still registered, without the path: the frontend
-                        // reports under this id, and a later claim retargets
-                        // this tab instead of minting a second id.
-                        reg.add_tab(&label, &tab_id, None);
+            if let Some(file_path) = path {
+                let tab = PendingTab {
+                    tab_id: crate::session::new_tab_id(),
+                    path: Some(file_path.clone()),
+                    content: None,
+                    cursor: 0,
+                    top_line: 1,
+                };
+                match hand_over_tab(app, &label, tab) {
+                    Handover::Pending => set_watcher(app, &label, Some(&file_path)),
+                    // Mounted before the tab could be queued: its listeners
+                    // exist, and it opens and claims the tab itself.
+                    Handover::Mounted => {
+                        let _ = app.emit_to(label.as_str(), "open-file", &file_path);
                     }
-                }
-
-                let pending = app.state::<PendingFiles>();
-                let mut pending_map = pending.0.lock().unwrap();
-                pending_map.insert(label.clone(), PendingOpen::single_file(tab_id, file_path.clone()));
-
-                // Start watching the file for external changes
-                if let Ok(watcher) = crate::watcher::watch_file(app, label.clone(), file_path.clone()) {
-                    let watchers = app.state::<FileWatchers>();
-                    let mut wmap = watchers.0.lock().unwrap();
-                    wmap.insert(label.clone(), watcher);
+                    // Claimed since the check above. The file stays with its
+                    // holder — it must never be shown and autosaved in two
+                    // windows — and this window opens with one untitled tab.
+                    Handover::Held(owner) => {
+                        eprintln!("open_file_window: {file_path} is held by {owner}; {label} opens empty");
+                        if let Some(win) = app.get_webview_window(&owner) {
+                            reveal(&win);
+                            let _ = win.emit_to(owner.as_str(), "open-file", &file_path);
+                        }
+                    }
                 }
             }
         }
@@ -471,7 +476,7 @@ pub async fn open_file_window_cmd(app: AppHandle, path: Option<String>) -> Resul
 /// A tab whose file is already open elsewhere stays where it is (one file, one
 /// tab) and an untitled tab whose sidecar is gone has nothing to show. A
 /// window left with no tabs is not created; the window holding its first file
-/// is focused instead, as before tabs.
+/// is focused instead.
 pub fn open_restored_window(
     app: &AppHandle,
     snapshot: &crate::session::WindowSnapshot,
@@ -575,6 +580,9 @@ pub fn open_restored_window(
             }
 
             // A claim made since the check above wins; that tab is dropped.
+            // The payload goes in under the same registry lock that registers
+            // its tabs: `get_window_init` takes it under that lock too, so it
+            // never sees the tabs without their payload.
             let (active_path, number, moved) = {
                 let open_files = app.state::<OpenFiles>();
                 let mut reg = open_files.0.lock().unwrap();
@@ -593,6 +601,13 @@ pub fn open_restored_window(
                     .iter()
                     .find(|t| Some(&t.tab_id) == active_tab_id.as_ref())
                     .and_then(|t| t.path.clone());
+                app.state::<PendingFiles>().0.lock().unwrap().insert(
+                    label.clone(),
+                    PendingOpen {
+                        tabs: pending_tabs,
+                        active_tab_id,
+                    },
+                );
                 (active_path, reg.window(&label).and_then(|w| w.number), moved)
             };
             if moved {
@@ -602,14 +617,6 @@ pub fn open_restored_window(
             // differ from the snapshot's when that one was taken meanwhile.
             app.state::<crate::session::SessionState>()
                 .set_number(&label, number);
-
-            app.state::<PendingFiles>().0.lock().unwrap().insert(
-                label.clone(),
-                PendingOpen {
-                    tabs: pending_tabs,
-                    active_tab_id,
-                },
-            );
 
             if let Some(path) = active_path {
                 if let Ok(watcher) = crate::watcher::watch_file(app, label.clone(), path) {
@@ -779,26 +786,53 @@ mod tests {
     }
 
     #[test]
-    fn evict_dead_drops_a_holder_whose_window_is_gone() {
+    fn evict_dead_drops_a_holder_whose_window_is_gone_and_its_unpulled_payload() {
         let mut reg = reg(&[("/tmp/a.md", "editor-2"), ("/tmp/b.md", "main")]);
-        assert_eq!(evict_dead(&mut reg, "/tmp/a.md", |label| label != "editor-2"), None);
+        let mut pending = HashMap::from([
+            ("editor-2".to_string(), PendingOpen::default()),
+            ("main".to_string(), PendingOpen::default()),
+        ]);
+        assert_eq!(evict_dead(&mut reg, &mut pending, "/tmp/a.md", |label| label != "editor-2"), None);
         assert!(!reg.contains_path("/tmp/a.md"), "the file can be claimed again");
         assert!(reg.window("editor-2").is_none());
+        assert!(!pending.contains_key("editor-2"), "a payload nobody will pull");
         assert!(reg.contains_path("/tmp/b.md"), "live windows are untouched");
+        assert!(pending.contains_key("main"));
     }
 
     #[test]
     fn evict_dead_keeps_a_live_holder() {
         let mut reg = reg(&[("/tmp/a.md", "editor-2")]);
-        assert_eq!(evict_dead(&mut reg, "/tmp/a.md", |_| true), Some("editor-2".to_string()));
+        let mut pending = HashMap::from([("editor-2".to_string(), PendingOpen::default())]);
+        assert_eq!(evict_dead(&mut reg, &mut pending, "/tmp/a.md", |_| true), Some("editor-2".to_string()));
         assert_eq!(reg.label_of("/tmp/a.md").as_deref(), Some("editor-2"));
+        assert!(pending.contains_key("editor-2"));
     }
 
     #[test]
     fn evict_dead_is_none_when_nobody_holds_the_path() {
         let mut reg = reg(&[("/tmp/b.md", "main")]);
-        assert_eq!(evict_dead(&mut reg, "/tmp/a.md", |_| false), None);
+        let mut pending = HashMap::from([("main".to_string(), PendingOpen::default())]);
+        assert_eq!(evict_dead(&mut reg, &mut pending, "/tmp/a.md", |_| false), None);
         assert!(reg.contains_path("/tmp/b.md"), "an unrelated dead-looking window is not evicted");
+        assert!(pending.contains_key("main"));
+    }
+
+    #[test]
+    fn a_file_claimed_before_a_new_window_registers_it_stays_out_of_that_window() {
+        // `open_file_window`: the file was free when checked, then another
+        // window claimed it while this one was being built.
+        let mut reg = reg(&[("/a.md", "editor-2")]);
+        let mut pending = HashMap::new();
+        assert_eq!(
+            queue_tab(&mut reg, &mut pending, "editor-5", file_tab("n1", "/a.md"), |_| true),
+            Handover::Held("editor-2".to_string())
+        );
+        assert!(!pending.contains_key("editor-5"), "no payload carries the path");
+        assert_eq!(reg.label_of("/a.md").as_deref(), Some("editor-2"));
+        let init = window_init(&mut reg, "editor-5", pending.remove("editor-5"), || "u1".to_string());
+        assert_eq!(init.tabs.len(), 1);
+        assert_eq!(init.tabs[0].path, None, "the new window opens one untitled tab");
     }
 
     #[test]

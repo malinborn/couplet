@@ -8,8 +8,7 @@ import { aiAskField } from './ai-ask';
 
 describe('createDocumentState', () => {
   it('StartsEveryDocumentWithAnEmptyHistory', () => {
-    // The property plan 01 had to force with a compartment reset: undo can
-    // never reach into whatever the window showed before.
+    // Undo can never reach into whatever the window showed before.
     const edited = createDocumentState('a', null, []).update({ changes: { from: 1, insert: 'b' } }).state;
     expect(undoDepth(edited)).toBe(1);
     expect(undoDepth(createDocumentState('fresh', null, []))).toBe(0);

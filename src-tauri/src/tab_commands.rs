@@ -39,15 +39,6 @@ pub fn owner_for(
     }
 }
 
-/// `owner_for` said nobody: drop the entry of a dead window still holding it,
-/// and the payload it never came to pull.
-fn drop_dead_holder(reg: &mut TabRegistry, pending: &mut HashMap<String, PendingOpen>, path: &str) {
-    if let Some((label, _)) = reg.owner_of(path) {
-        reg.remove_window(&label);
-        pending.remove(&label);
-    }
-}
-
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum TabOpened {
@@ -79,7 +70,9 @@ pub fn open_tab(
         match owner_for(reg, path, caller, &is_live) {
             TabOwner::ThisWindow { tab_id } => return TabOpened::ThisWindow { tab_id },
             TabOwner::OtherWindow { label } => return TabOpened::OtherWindow { label },
-            TabOwner::None => drop_dead_holder(reg, pending, path),
+            TabOwner::None => {
+                window::evict_dead(reg, pending, path, &is_live);
+            }
         }
     }
     reg.add_tab(caller, &new_id, path.map(str::to_string));
@@ -114,7 +107,9 @@ pub fn claim_path(
         TabOwner::ThisWindow { tab_id: holder } if holder == tab_id => return TabClaim::Claimed,
         TabOwner::ThisWindow { tab_id: holder } => return TabClaim::ThisWindow { tab_id: holder },
         TabOwner::OtherWindow { label } => return TabClaim::OtherWindow { label },
-        TabOwner::None => drop_dead_holder(reg, pending, path),
+        TabOwner::None => {
+            window::evict_dead(reg, pending, path, &is_live);
+        }
     }
     if reg.set_tab_path(caller, tab_id, path) || reg.add_tab(caller, tab_id, Some(path.to_string())) {
         TabClaim::Claimed

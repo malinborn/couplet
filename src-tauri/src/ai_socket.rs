@@ -424,7 +424,11 @@ impl AiPending {
     }
 }
 
-/// Commands for windows created by an AI request, pulled by the frontend on mount.
+/// Commands for windows whose frontend has not mounted yet, pulled once by
+/// `ai_pull_pending` after `get_window_init`.
+///
+/// Lock order: `OpenFiles` → `AiQueue`, never the reverse — `deliver` pushes
+/// while holding the registry lock, see `queue_unless_mounted`.
 pub struct AiQueue(pub Mutex<HashMap<String, Vec<AiCommandPayload>>>);
 
 impl Default for AiQueue {
@@ -524,6 +528,62 @@ pub struct AiCommandPayload {
     /// lives. Rides the payload rather than being a separate event so a command
     /// pulled from `AiQueue` by a window that did not exist yet carries it too.
     pub first_use: bool,
+}
+
+/// How an AI command reaches its window — see `queue_unless_mounted`.
+#[derive(Debug)]
+enum Delivery {
+    /// Waiting in `AiQueue` for the window to pull it.
+    Queued,
+    /// The window has mounted: send it as an event.
+    Emit(AiCommandPayload),
+    /// The window is no longer registered: it closed.
+    Gone,
+}
+
+/// Queue `payload` for `label` while its frontend has not mounted; hand it
+/// back to be emitted once it has.
+///
+/// Called with the `OpenFiles` lock held. `get_window_init` marks a window
+/// mounted under that lock and `ai_pull_pending` runs after it, so a command
+/// is queued only while the pull is still to come: an event sent before the
+/// mount is lost, and one queued after the pull is never pulled.
+fn queue_unless_mounted(
+    reg: &crate::tabs::TabRegistry,
+    queue: &AiQueue,
+    label: &str,
+    payload: AiCommandPayload,
+) -> Delivery {
+    if reg.window(label).is_none() {
+        return Delivery::Gone;
+    }
+    if reg.is_mounted(label) {
+        return Delivery::Emit(payload);
+    }
+    queue.push(label, payload);
+    Delivery::Queued
+}
+
+/// Deliver `payload` to `label`. Its id must already be registered in
+/// `AiPending`: a delivery that fails answers it with an error at once.
+fn deliver(app: &AppHandle, label: &str, payload: AiCommandPayload) {
+    let id = payload.id;
+    let delivery = {
+        let open_files = app.state::<window::OpenFiles>();
+        let reg = open_files.0.lock().unwrap();
+        queue_unless_mounted(&reg, &app.state::<AiQueue>(), label, payload)
+    };
+    let error = match delivery {
+        Delivery::Queued => return,
+        // `emit_to`, not `emit`: a broadcast reaches every window, and one
+        // that does not own the file would race to answer with an error.
+        Delivery::Emit(payload) => match app.emit_to(label, "ai-command", &payload) {
+            Ok(()) => return,
+            Err(_) => "failed to deliver to window",
+        },
+        Delivery::Gone => "window closed before the command was delivered",
+    };
+    app.state::<AiPending>().respond(id, AiResponse::error(error));
 }
 
 /// How long to wait for `open_file_window` (run on the main thread) to register
@@ -645,17 +705,9 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
     };
 
     if let Some(label) = existing_label {
-        if let Some(win) = app.get_webview_window(&label) {
+        if app.get_webview_window(&label).is_some() {
             app.state::<AiPending>().register(id, label.clone(), Some(path.clone()), tx);
-            // emit() broadcasts to every window — a window that does not own the
-            // file would race to answer with an error. Target the owner only.
-            if win.emit_to(label.as_str(), "ai-command", &payload).is_ok() {
-                return id;
-            }
-            // Registered but never delivered — fail now instead of leaking
-            // until the connection's own timeout.
-            app.state::<AiPending>()
-                .respond(id, AiResponse::error("failed to deliver to window"));
+            deliver(app, &label, payload);
             return id;
         }
         // Label was in OpenFiles but the window is already gone (closed between
@@ -685,7 +737,7 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
         };
         if let Some(label) = label {
             app.state::<AiPending>().register(id, label.clone(), Some(path.clone()), tx);
-            app.state::<AiQueue>().push(&label, payload);
+            deliver(app, &label, payload);
             return id;
         }
         if Instant::now() >= deadline {
@@ -1724,6 +1776,42 @@ mod tests {
             free_text: false,
             first_use: false,
         }
+    }
+
+    #[test]
+    fn a_command_for_an_unmounted_window_waits_in_the_queue() {
+        let mut reg = crate::tabs::TabRegistry::new();
+        reg.add_tab("editor-3", "t", Some("/tmp/a.md".to_string()));
+        let queue = AiQueue::new();
+        assert!(matches!(
+            queue_unless_mounted(&reg, &queue, "editor-3", test_payload("show")),
+            Delivery::Queued
+        ));
+        assert_eq!(queue.pull("editor-3").len(), 1, "pulled after get_window_init");
+    }
+
+    #[test]
+    fn a_command_for_a_mounted_window_is_emitted_never_queued() {
+        let mut reg = crate::tabs::TabRegistry::new();
+        reg.add_tab("editor-3", "t", Some("/tmp/a.md".to_string()));
+        reg.mark_mounted("editor-3");
+        let queue = AiQueue::new();
+        match queue_unless_mounted(&reg, &queue, "editor-3", test_payload("edit")) {
+            Delivery::Emit(p) => assert_eq!(p.cmd, "edit"),
+            other => panic!("expected Emit, got {other:?}"),
+        }
+        assert!(queue.pull("editor-3").is_empty(), "a queue nobody pulls again");
+    }
+
+    #[test]
+    fn a_command_for_a_window_no_longer_registered_is_not_queued() {
+        let reg = crate::tabs::TabRegistry::new();
+        let queue = AiQueue::new();
+        assert!(matches!(
+            queue_unless_mounted(&reg, &queue, "editor-3", test_payload("ask")),
+            Delivery::Gone
+        ));
+        assert!(queue.pull("editor-3").is_empty());
     }
 
     #[test]

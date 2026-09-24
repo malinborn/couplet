@@ -3,12 +3,12 @@ import { createSerialQueue } from './serial-queue';
 /**
  * Every write to a document's comment sidecar, one at a time.
  *
- * Two writes of one thread used to overlap — the debounce timer fires one and
- * a tab switch's flush fires another before the first resolves. For a draft
- * that lost the comment: the first write had already turned the draft into a
- * thread, so the second sent the draft id to the sidecar, which rejected it.
- * Queued, the second write runs after the first and is sent to the id the
- * file gave the thread (`redirect`).
+ * Two writes of one thread can be requested at once — the debounce timer
+ * fires one and a tab switch's flush fires another before the first resolves.
+ * They must not overlap: for a draft, the first write turns the draft into a
+ * thread, and a second one sent in parallel carries the draft id, which the
+ * sidecar rejects — the comment is lost. Queued, the second write runs after
+ * the first and is sent to the id the file gave the thread (`redirect`).
  */
 export interface CommentWriter {
   /**

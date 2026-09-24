@@ -4,9 +4,8 @@
 //! the whole app. It is guarded by one lock (`window::OpenFiles`), so "is this
 //! file open anywhere?" and "give it to this tab" are never answered from two
 //! different moments. The path → owner direction is derived by scanning rather
-//! than stored: a second map kept "in step" is how a claim used to be
-//! overwritten behind another window's back, and a scan over a few dozen tabs
-//! costs nothing.
+//! than stored: a second map kept "in step" lets one claim overwrite another
+//! window's behind its back, and a scan over a few dozen tabs costs nothing.
 
 use std::collections::{HashMap, HashSet};
 
@@ -30,6 +29,10 @@ pub struct WindowTabs {
     /// file arrives as an event only, so the frontend's listeners must exist
     /// before it pulls — see `get_window_init`.
     pub mounted: bool,
+    /// Ids of tabs removed from this window. A heartbeat sent before the
+    /// removal can be processed after it, and must not bring the tab back —
+    /// nor, through the session, its untitled draft on the next launch.
+    pub closed_ids: HashSet<String>,
 }
 
 #[derive(Debug, Default)]
@@ -95,6 +98,9 @@ impl TabRegistry {
 
     /// Append a tab to `label`. Refused — nothing changes, `false` — when
     /// `path` is already held by any tab or `tab_id` is already in use.
+    ///
+    /// An explicit registration outranks a tombstone: only `sync`, which
+    /// cannot tell a stale report from a new tab, honours `closed_ids`.
     pub fn add_tab(&mut self, label: &str, tab_id: &str, path: Option<String>) -> bool {
         if path.as_deref().is_some_and(|p| self.contains_path(p)) {
             return false;
@@ -103,6 +109,7 @@ impl TabRegistry {
             return false;
         }
         let window = self.windows.entry(label.to_string()).or_default();
+        window.closed_ids.remove(tab_id);
         window.tabs.push(RegTab { id: tab_id.to_string(), path });
         if window.active.is_none() {
             window.active = Some(tab_id.to_string());
@@ -118,12 +125,14 @@ impl TabRegistry {
         self.windows.get(label).is_some_and(|w| w.mounted)
     }
 
-    /// Remove one tab. When it was active, the first remaining tab is active
-    /// until the frontend says otherwise.
+    /// Remove one tab, for good: its id is tombstoned against a late report.
+    /// When it was active, the first remaining tab is active until the
+    /// frontend says otherwise.
     pub fn remove_tab(&mut self, label: &str, tab_id: &str) -> Option<RegTab> {
         let window = self.windows.get_mut(label)?;
         let at = window.tabs.iter().position(|t| t.id == tab_id)?;
         let tab = window.tabs.remove(at);
+        window.closed_ids.insert(tab.id.clone());
         if window.active.as_deref() == Some(tab_id) {
             window.active = window.tabs.first().map(|t| t.id.clone());
         }
@@ -186,9 +195,10 @@ impl TabRegistry {
     ///
     /// Never claims a path: paths change only through calls that check
     /// ownership first. A reported untitled tab the registry does not know is
-    /// appended; a reported file tab it does not know is ignored. Tabs the
-    /// report does not mention keep their place after the reported ones — a
-    /// claim can be in flight while an older report is still on its way.
+    /// appended unless it was removed from this window (`closed_ids`); a
+    /// reported file tab it does not know is ignored. Tabs the report does not
+    /// mention keep their place after the reported ones — a claim can be in
+    /// flight while an older report is still on its way.
     pub fn sync(&mut self, label: &str, reported: &[(String, Option<String>)], active: Option<&str>) {
         let ids_elsewhere: HashSet<String> = self
             .windows
@@ -203,6 +213,7 @@ impl TabRegistry {
                 ordered.push(window.tabs.remove(i));
             } else if path.is_none()
                 && !ids_elsewhere.contains(id)
+                && !window.closed_ids.contains(id)
                 && !ordered.iter().any(|t| &t.id == id)
             {
                 ordered.push(RegTab { id: id.clone(), path: None });
@@ -243,7 +254,7 @@ mod tests {
     #[test]
     fn paths_are_looked_up_exactly_as_given() {
         let reg = reg_with(&[("main", "t1", Some("/tmp/a.md"))]);
-        assert_eq!(reg.owner_of("/tmp/./a.md"), None, "never canonicalized, like OpenFiles always was");
+        assert_eq!(reg.owner_of("/tmp/./a.md"), None, "never canonicalized");
     }
 
     #[test]
@@ -414,6 +425,37 @@ mod tests {
         assert!(!reg.is_mounted("main"));
         reg.mark_mounted("main");
         assert!(reg.is_mounted("main"));
+    }
+
+    #[test]
+    fn a_heartbeat_that_arrives_after_tab_close_does_not_bring_the_tab_back() {
+        let mut reg = reg_with(&[("main", "a", Some("/a.md")), ("main", "u", None)]);
+        let stale = [("a".to_string(), Some("/a.md".to_string())), ("u".to_string(), None)];
+        reg.remove_tab("main", "u");
+        reg.sync("main", &stale, Some("u"));
+        let w = reg.window("main").unwrap();
+        let ids: Vec<&str> = w.tabs.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["a"]);
+        assert_eq!(w.active.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn a_tombstone_binds_only_its_own_window() {
+        let mut reg = reg_with(&[("main", "u", None), ("editor-2", "x", None)]);
+        reg.remove_tab("main", "u");
+        reg.sync("editor-2", &[("x".to_string(), None), ("u".to_string(), None)], None);
+        let ids: Vec<&str> = reg.window("editor-2").unwrap().tabs.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["x", "u"]);
+    }
+
+    #[test]
+    fn an_explicit_registration_clears_a_tombstone() {
+        let mut reg = reg_with(&[("main", "u", None)]);
+        reg.remove_tab("main", "u");
+        assert!(reg.add_tab("main", "u", Some("/a.md".to_string())));
+        assert!(!reg.window("main").unwrap().closed_ids.contains("u"));
+        reg.sync("main", &[("u".to_string(), Some("/a.md".to_string()))], None);
+        assert_eq!(reg.owner_of("/a.md"), Some(("main".to_string(), "u".to_string())));
     }
 
     #[test]

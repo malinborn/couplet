@@ -173,7 +173,6 @@ pub fn run() {
             updater::report_update,
             updater::dismiss_update,
             updater::pending_update,
-            watcher::start_watching,
             ai_socket::ai_respond,
             ai_socket::ai_pull_pending,
             ai_socket::ai_is_pending,
@@ -607,11 +606,11 @@ fn focused_window(app: &tauri::AppHandle) -> Option<String> {
 /// Give the `main` window a tab for `path`.
 ///
 /// Before its frontend mounts, an event would be lost: the tab is registered
-/// in `OpenFiles` — every dedup check consults it, and registering only in
-/// `PendingFiles` once made the launch file invisible to them, so opening it
-/// again produced a duplicate window — and waits in main's pending payload. A
-/// tab, not a replacement: launch arguments may add several. Once mounted,
-/// main gets `open-file` and opens and claims the tab itself.
+/// in `OpenFiles` — every dedup check consults it, so a tab only in
+/// `PendingFiles` is invisible to them and opening the file again produces a
+/// duplicate window — and waits in main's pending payload. A tab, not a
+/// replacement: launch arguments may add several. Once mounted, main gets
+/// `open-file` and opens and claims the tab itself.
 ///
 /// Returns `false` when another live window already holds the file: that
 /// window is brought forward instead and main is left untouched.
