@@ -160,6 +160,11 @@ export function createToastStore() {
     dismissKind(kind: ToastKind): void {
       entries = entries.filter((e) => e.payload.kind !== kind);
     },
+
+    /** Whether a toast of `kind` is currently standing. */
+    hasKind(kind: ToastKind): boolean {
+      return entries.some((e) => e.payload.kind === kind);
+    },
   };
 }
 

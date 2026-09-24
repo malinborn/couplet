@@ -3,6 +3,7 @@
 
   "toast.save_error.headline": "Не удалось сохранить {fileName}",
   "toast.save_error.instruction": "Ваши изменения не потеряны — устраните причину и нажмите",
+  "toast.save_error.not_on_disk": "Последние правки ещё не записаны на диск, поэтому другой файл не открыт",
 
   "toast.comment_error.headline": "Не удалось сохранить комментарии к {fileName}",
   "toast.comment_error.instruction": "Введённый текст остался в поле — устраните причину и продолжайте печатать",

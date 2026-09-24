@@ -3,6 +3,7 @@
 
   "toast.save_error.headline": "Could not save {fileName}",
   "toast.save_error.instruction": "Your edits are still here — fix the cause, then press",
+  "toast.save_error.not_on_disk": "The latest edits have not reached the disk yet, so the other file was not opened",
 
   "toast.comment_error.headline": "Could not save comments on {fileName}",
   "toast.comment_error.instruction": "What you typed is still in the box — fix the cause, then keep typing",

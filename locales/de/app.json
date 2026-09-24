@@ -3,6 +3,7 @@
 
   "toast.save_error.headline": "{fileName} konnte nicht gespeichert werden",
   "toast.save_error.instruction": "Ihre Änderungen sind noch da — Ursache beheben, dann drücken",
+  "toast.save_error.not_on_disk": "Die letzten Änderungen sind noch nicht auf der Festplatte, daher wurde die andere Datei nicht geöffnet",
 
   "toast.comment_error.headline": "Kommentare zu {fileName} konnten nicht gespeichert werden",
   "toast.comment_error.instruction": "Ihr Text steht noch im Feld — Ursache beheben und weiterschreiben",

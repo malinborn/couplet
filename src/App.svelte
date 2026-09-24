@@ -52,7 +52,11 @@
     clearAiHighlights,
     aiHighlightRanges,
   } from './lib/editor/ai-highlight';
-  import { addAiAsk, removeAiAsk } from './lib/editor/ai-ask';
+  import { addAiAsk, removeAiAsk, clearAiAsks } from './lib/editor/ai-ask';
+  import { decideSwitchAction } from './lib/switch-document';
+  import { activeCellEditSession, endCellEditSession } from './lib/editor/cell-edit-session';
+  import { hideHoverMenu } from './lib/editor/hover-menu';
+  import { closeSearchPanel } from '@codemirror/search';
   import {
     addAiComment,
     aiCommentField,
@@ -194,6 +198,11 @@
   // Coalesces external-change events that arrive while the conflict dialog is
   // already up (FSEvents can fire more than once for one write).
   let conflictDialogOpen = false;
+  // True while `loadDocumentInPlace` hands the old document over and loads the
+  // new one. An agent command for the old path arriving in that window would
+  // pass the ownership check (the path has not changed yet) and then wait on
+  // a widget that is about to be cleared — see `handleAiCommand`.
+  let switchingDocument = false;
 
   function handleChange(doc: string) {
     fileState.isDirty = true;
@@ -292,28 +301,7 @@
   async function handleOpen(): Promise<void> {
     const path = await showOpenDialog();
     if (!path) return;
-    try {
-      const content = await readFile(path);
-      fileState.filePath = path;
-      // Register this window as the owner of `path` in the Rust-side
-      // `OpenFiles` map and (re)start its watcher. Without this, a file
-      // opened via the dialog into an already-open window is invisible to
-      // every dedup/routing check that consults `OpenFiles` (AI commands,
-      // "already open" focus-instead-of-duplicate), and never gets watched
-      // for external changes either.
-      invoke('register_open_file', { path }).catch(() => {});
-      diskBaseline = content;
-      dismissedDisk = null;
-      // After loadDocument: its dispatch re-dirties the buffer via
-      // handleChange (a real edit as far as CM6 is concerned), so isDirty
-      // must be cleared afterwards — clearing it first just gets it flipped
-      // back on and triggers a pointless autosave 300ms after open.
-      editorHandle?.loadDocument(content);
-      fileState.isDirty = false;
-      recentFiles.add(path);
-    } catch (err) {
-      console.error('Open failed:', err);
-    }
+    await switchDocument(path);
   }
 
   function handleNew(): void {
@@ -330,29 +318,172 @@
     });
   }
 
-  async function handleOpenFilePath(path: string): Promise<void> {
+  /**
+   * The one path that replaces the document a window shows — Cmd+O, Recent
+   * Files, an externally-opened file routed to this window, and a dropped
+   * file all go through this. See docs/investigations/2026-09-23-tabs-options.md
+   * §1 for the bugs this consolidation fixes (undo leak, lost autosave, no
+   * dedup, lost untitled text, orphaned `ask`).
+   */
+  async function switchDocument(path: string): Promise<void> {
+    await autoSave.flush();
+    // A keystroke that landed during that write is not covered by it; one
+    // more flush picks it up. Not after a failure — that would only repeat
+    // the write the standing toast already reports.
+    if (fileState.isDirty && !toasts.hasKind('save-error')) await autoSave.flush();
+
+    const alreadyOpenElsewhere = await invoke<boolean>('focus_if_open', { path }).catch(
+      () => false
+    );
+
+    const decision = decideSwitchAction({
+      targetPath: path,
+      currentPath: fileState.filePath,
+      currentIsDirty: fileState.isDirty,
+      saveErrorPending: toasts.hasKind('save-error'),
+      alreadyOpenElsewhere,
+    });
+
+    switch (decision.kind) {
+      case 'noop-already-showing':
+      case 'focus-other-window':
+        return;
+      case 'refuse-save-error':
+        // The standing `save-error` toast already explains why; nothing to
+        // add, and nothing here may touch the document that failed to save.
+        return;
+      case 'refuse-unsaved':
+        reportSwitchBlockedByUnsaved();
+        return;
+      case 'open-new-window':
+        await invoke('open_file_window_cmd', { path }).catch((err: unknown) => {
+          console.error('Failed to open new window:', err);
+        });
+        return;
+      case 'switch-in-place':
+        await loadDocumentInPlace(path);
+        return;
+    }
+  }
+
+  /**
+   * Say why a switch did nothing when the buffer it would have replaced is
+   * still not on disk.
+   *
+   * With the conflict dialog up there is nothing to add — the dialog is the
+   * reason, and it is on screen. A real write failure already has its own
+   * `save-error` toast with the OS's message, which must not be overwritten.
+   * What is left is a save that simply has not landed yet, and it is reported
+   * through the same toast because the remedy is the same: get it saved.
+   */
+  function reportSwitchBlockedByUnsaved(): void {
+    if (conflictDialogOpen || toasts.hasKind('save-error')) return;
+    const path = fileState.filePath ?? '';
+    toasts.push({
+      kind: 'save-error',
+      fileName: path.split('/').pop() ?? path,
+      message: t('toast.save_error.not_on_disk'),
+    });
+  }
+
+  /**
+   * Write every comment box typed into for `path` now, before the window
+   * stops showing it.
+   *
+   * The debounced write would otherwise fire after the switch — and a draft,
+   * whose anchor lives only in `commentDrafts`, would then reach the sidecar
+   * as a reply to a thread that does not exist, losing the text. Returns
+   * whether everything typed is now on disk; a failure has already raised the
+   * `comment-error` toast.
+   */
+  async function flushCommentsFor(path: string): Promise<boolean> {
+    for (const [id, entry] of [...commentPending]) {
+      if (entry.path === path) await writeComment(id);
+    }
+    return ![...commentPending.values()].some(
+      (e) => e.path === path && e.text.trim() !== '' && e.text !== e.saved
+    );
+  }
+
+  /** Drop the app-side comment state of `path` once its pauses are committed. */
+  function forgetCommentsFor(path: string): void {
+    for (const [id, entry] of [...commentPending]) {
+      if (entry.path === path) forgetCommentPending(id);
+    }
+    for (const [id, entry] of [...commentCountdowns]) {
+      if (entry.path === path) disarmCommentCountdown(id);
+    }
+    // A different document means different comments; drafts belonged to the
+    // file we just left and must not reappear anchored in this one.
+    commentDrafts = new Map();
+    commentEditable = new Map();
+    commentFocus = null;
+  }
+
+  async function loadDocumentInPlace(path: string): Promise<void> {
+    switchingDocument = true;
     try {
       const exists = await fileExists(path);
-      if (exists) {
-        const content = await readFile(path);
-        editorHandle?.loadDocument(content);
-        diskBaseline = content;
-      } else {
-        editorHandle?.loadDocument('');
-        diskBaseline = null;
+      const content = exists ? await readFile(path) : '';
+
+      const leavingPath = fileState.filePath;
+      if (leavingPath) {
+        // Comment text first: a pause committed before its text is written
+        // would hand an agent the text as of the last autosave.
+        if (!(await flushCommentsFor(leavingPath))) return;
+        await invoke('commit_document_pauses', { path: leavingPath }).catch(() => {});
+        await invoke('cancel_ai_ask', { path: leavingPath }).catch(() => {});
+        forgetCommentsFor(leavingPath);
       }
+
+      // Re-check right before the swap: the user may have typed during the
+      // awaits above. This is the last await before the swap, so nothing can
+      // be typed between the check and `loadDocument`.
+      await autoSave.flush();
+      if (fileState.isDirty) {
+        if (fileState.filePath) {
+          reportSwitchBlockedByUnsaved();
+        } else {
+          // Text typed into an Untitled buffer meanwhile — same rule as the
+          // `open-new-window` decision: it stays, the file goes elsewhere.
+          await invoke('open_file_window_cmd', { path }).catch((err: unknown) => {
+            console.error('Failed to open new window:', err);
+          });
+        }
+        return;
+      }
+
+      // Nothing from the old document may survive into the new one. The swap
+      // is a full-document replace inside the same state, so every field that
+      // maps through changes — asks, AI highlights, the search panel — keeps
+      // its old content unless cleared here.
+      const view = editorHandle?.view;
+      if (view) {
+        view.dispatch({ effects: [clearAiAsks.of(null), clearAiHighlights.of(null)] });
+        closeSearchPanel(view);
+      }
+      const activeEdit = activeCellEditSession();
+      if (activeEdit) endCellEditSession(activeEdit.textarea);
+      hideHoverMenu();
+      showRecentFiles = false;
+
+      // After loadDocument: its dispatch re-dirties the buffer via
+      // handleChange (a real edit as far as CM6 is concerned), so isDirty
+      // must be cleared afterwards — clearing it first just gets it flipped
+      // back on and triggers a pointless autosave 300ms after open.
+      editorHandle?.loadDocument(content);
+      diskBaseline = exists ? content : null;
       dismissedDisk = null;
       fileState.filePath = path;
-      // Register this window as the owner of `path` — see the matching call
-      // in `handleOpen`. Also (re)starts the file watcher, replacing the
-      // separate `start_watching` invoke this used to make.
+      // Register this window as the owner of `path` in the Rust-side
+      // `OpenFiles` map and (re)start its watcher. Without this the file is
+      // invisible to every dedup/routing check that consults `OpenFiles` (AI
+      // commands, `focus_if_open`), and never gets watched for external
+      // changes either.
       invoke('register_open_file', { path }).catch(() => {});
       fileState.isDirty = false;
       recentFiles.add(path);
 
-      // A different document means different comments; drafts belonged to the
-      // file we just left and must not reappear anchored in this one.
-      commentDrafts = new Map();
       void reloadComments();
 
       // Detect file type and switch editor mode
@@ -384,6 +515,8 @@
       applyPreviewConfig();
     } catch (err) {
       console.error('Failed to open file:', err);
+    } finally {
+      switchingDocument = false;
     }
   }
 
@@ -1219,6 +1352,13 @@
     if (payload.firstUse) {
       toasts.push({ kind: 'ai-first-use' });
     }
+    // Before the ownership check, which cannot tell: mid-switch the window
+    // still reports the old path, but `cancel_ai_ask` has already answered for
+    // it and the widget such a command would add is about to be cleared.
+    if (switchingDocument) {
+      await respondToAi(payload.id, { ok: false, error: 'window is switching documents' });
+      return;
+    }
     if (payload.path !== fileState.filePath) {
       await respondToAi(payload.id, { ok: false, error: 'window does not own this file' });
       return;
@@ -1434,7 +1574,7 @@
     invoke<PendingOpen | null>('get_pending_file').then(async (pending) => {
       if (!pending) return;
       if (pending.path) {
-        await handleOpenFilePath(pending.path);
+        await switchDocument(pending.path);
       } else if (pending.content !== null) {
         // Restored Untitled window — no file on disk, just the buffer.
         editorHandle?.loadDocument(pending.content);
@@ -1573,7 +1713,7 @@
     });
 
     const unlistenOpenFile = onOpenFile((path) => {
-      handleOpenFilePath(path);
+      void switchDocument(path);
     });
 
     const unlistenExternalChange = onFileChangedExternally((path) => {
@@ -1601,7 +1741,7 @@
         for (const path of paths) {
           if (!usedCurrentWindow && !fileState.filePath && !fileState.isDirty) {
             usedCurrentWindow = true;
-            await handleOpenFilePath(path);
+            await switchDocument(path);
           } else {
             await invoke('open_file_window_cmd', { path }).catch((err: unknown) => {
               console.error('Failed to open dropped file:', err);
@@ -1792,7 +1932,7 @@
    * Called both from the `$effect` below and imperatively after a file opens,
    * because `Editor.svelte`'s `setCodeMode`/`setEnvMode` reconfigure the SAME
    * compartment — and its markdown branch installs a bare `livePreviewPlugin`
-   * with no flavour facet and no live-render bundle. `handleOpenFilePath`
+   * with no flavour facet and no live-render bundle. `loadDocumentInPlace`
    * calls `setCodeMode(null)` for every markdown file, so on a freshly opened
    * window it wiped whatever this effect had just installed: live-render was
    * dead until the engine was toggled by hand, which re-ran the effect. Two
@@ -1852,7 +1992,7 @@
 
   // Keep the editor's idea of which file it holds in step with the store.
   //
-  // An effect rather than a call inside `handleOpen`, because the path also
+  // An effect rather than a call inside `loadDocumentInPlace`, because the path also
   // changes on Save As and on New, and the JSON formatter's fence decision has
   // to be right immediately in all three — a stale path here means a ```
   // line offered into a `.py` buffer.
@@ -1883,7 +2023,7 @@
 {#if showRecentFiles}
   <RecentFilesPanel
     files={recentFiles.list}
-    onopen={handleOpenFilePath}
+    onopen={switchDocument}
     onclose={() => { showRecentFiles = false; }}
   />
 {/if}

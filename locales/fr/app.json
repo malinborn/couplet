@@ -3,6 +3,7 @@
 
   "toast.save_error.headline": "Impossible d'enregistrer {fileName}",
   "toast.save_error.instruction": "Vos modifications sont toujours là — corrigez la cause, puis appuyez sur",
+  "toast.save_error.not_on_disk": "Les dernières modifications ne sont pas encore sur le disque, l'autre fichier n'a donc pas été ouvert",
 
   "toast.comment_error.headline": "Impossible d'enregistrer les commentaires sur {fileName}",
   "toast.comment_error.instruction": "Ce que vous avez saisi est toujours dans le champ — corrigez la cause, puis continuez à écrire",

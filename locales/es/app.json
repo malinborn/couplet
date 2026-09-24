@@ -3,6 +3,7 @@
 
   "toast.save_error.headline": "No se pudo guardar {fileName}",
   "toast.save_error.instruction": "Tus cambios siguen aquí — soluciona la causa y luego pulsa",
+  "toast.save_error.not_on_disk": "Los últimos cambios aún no están en el disco, así que no se abrió el otro archivo",
 
   "toast.comment_error.headline": "No se pudieron guardar los comentarios en {fileName}",
   "toast.comment_error.instruction": "Lo que escribiste sigue en el cuadro — soluciona la causa y sigue escribiendo",

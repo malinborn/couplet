@@ -45,6 +45,15 @@ describe('createToastStore', () => {
     expect(store.toasts[0].payload.kind).toBe('update');
   });
 
+  it('HasKind_TrueWhileThatKindIsStanding', () => {
+    const store = createToastStore();
+    expect(store.hasKind('save-error')).toBe(false);
+    store.push({ kind: 'save-error', fileName: 'a.md', message: 'disk full' });
+    expect(store.hasKind('save-error')).toBe(true);
+    store.dismissKind('save-error');
+    expect(store.hasKind('save-error')).toBe(false);
+  });
+
   it('UpdateSortsAboveSession_RegardlessOfPushOrder', () => {
     // The update check fires 15s after launch, so insertion order would put it
     // below the session toast. Order must be explicit.

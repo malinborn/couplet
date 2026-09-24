@@ -41,6 +41,15 @@ export const addAiAsk = StateEffect.define<{ spec: AskSpec; pos: number }>();
  * (e.g. the stale-widget cleanup timer racing an already-answered click). */
 export const removeAiAsk = StateEffect.define<number>();
 
+/**
+ * Clears every pending ask widget without invoking any `onAnswer` callback.
+ * Used by `switchDocument` right before it replaces the document: the CLI
+ * connection behind each ask is answered separately, in Rust, by
+ * `cancel_ai_ask` — this effect only takes the now-stale widget off the
+ * screen so it doesn't survive into whatever document loads next.
+ */
+export const clearAiAsks = StateEffect.define<null>();
+
 /** Exported for tests: `eq()` structural comparison and `toDOM()` wiring. */
 export class AskWidget extends WidgetType {
   /**
@@ -226,6 +235,8 @@ export const aiAskField = StateField.define<DecorationSet>({
         deco = deco.update({
           filter: (_from, _to, value) => !(isAskWidget(value.spec.widget) && value.spec.widget.spec.id === id),
         });
+      } else if (effect.is(clearAiAsks)) {
+        deco = Decoration.none;
       }
     }
     return deco;
