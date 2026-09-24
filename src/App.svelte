@@ -57,7 +57,7 @@
   import { decideSwitchAction } from './lib/switch-document';
   import { activeCellEditSession } from './lib/editor/cell-edit-session';
   import { createSerialQueue } from './lib/serial-queue';
-  import { createCommentWriter } from './lib/comment-writer';
+  import { createCommentWriter, adoptStartedDraft } from './lib/comment-writer';
   import { hideHoverMenu } from './lib/editor/hover-menu';
   import { closeSearchPanel } from '@codemirror/search';
   import {
@@ -1019,8 +1019,7 @@
         // recorded rather than the one this side guessed.
         disarmCommentCountdown(id);
         armCommentCountdown(realId, entry.path, started.until * 1000);
-        commentPending.delete(id);
-        commentPending.set(realId, { path: entry.path, text, saved: text, timer: null });
+        adoptStartedDraft(commentPending, id, realId, text);
         commentEditable.set(realId, text);
         // The card is about to be rebuilt under the id the file gave it; the
         // caret has to come along, or the first save silently ejects the user
@@ -1183,9 +1182,12 @@
   }
 
   const commentActions: CommentActions = {
-    save: (id, text) => {
+    save: (cardId, text) => {
       const path = fileState.filePath;
       if (!path) return;
+      // A draft's card keeps its draft id until the rebuild that follows its
+      // first write; keystrokes in that gap belong to the thread it became.
+      const id = commentWriter.idFor(cardId);
       const entry = commentPending.get(id) ?? {
         path,
         text,
@@ -1208,11 +1210,12 @@
       // Deliberately not "flush, then let the timer do its thing": the button
       // says now, and what it does is exactly what the countdown would have
       // done when it ran out.
-      void fireCommentCountdown(id);
+      void fireCommentCountdown(commentWriter.idFor(id));
     },
-    resolve: (id) => {
+    resolve: (cardId) => {
       const path = fileState.filePath;
       if (!path) return;
+      const id = commentWriter.idFor(cardId);
       forgetCommentPending(id);
       // A pause on a resolved thread has nothing left to hand over.
       disarmCommentCountdown(id);
@@ -1226,8 +1229,20 @@
       // card disappeared from the screen, so it came back on the next reload
       // with no explanation. `reloadComments` still runs, which is what puts
       // the card back — now with a toast saying why.
-      void commentResolve(path, id)
-        .catch((err) => reportCommentError(path, err))
+      //
+      // Queued: a draft whose first write is in flight is no longer in
+      // `commentDrafts` but has no real id yet either, and resolving it by its
+      // draft id is a write the sidecar rejects. Behind that write it runs
+      // under the id the file gave the thread — and forgets again under that
+      // id, because the start moved the pending entry there.
+      void commentWriter
+        .run(cardId, async (realId) => {
+          forgetCommentPending(realId);
+          disarmCommentCountdown(realId);
+          // The start failed and put the draft back: still nothing on disk.
+          if (commentDrafts.delete(realId)) return;
+          await commentResolve(path, realId).catch((err) => reportCommentError(path, err));
+        })
         .then(reloadComments);
     },
     handoff: (id) => {

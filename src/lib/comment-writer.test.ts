@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createCommentWriter } from './comment-writer';
+import { createCommentWriter, adoptStartedDraft } from './comment-writer';
 
 function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
   let resolve!: (v: T) => void;
@@ -95,5 +95,84 @@ describe('createCommentWriter', () => {
     });
     await expect(writer.write('bad')).resolves.toBeNull();
     await expect(writer.write('c-2')).resolves.toBe('c-2');
+  });
+
+  it('RunsAResolveQueuedBehindADraftStartAgainstTheRealId', async () => {
+    const first = deferred<string | null>();
+    const writer = createCommentWriter(async () => {
+      const realId = await first.promise;
+      writer.redirect('draft:1', 'c-abc');
+      return realId;
+    });
+    const started = writer.write('draft:1');
+    const resolved = writer.run('draft:1', async (id) => `resolved ${id}`);
+    first.resolve('c-abc');
+    await started;
+    await expect(resolved).resolves.toBe('resolved c-abc');
+  });
+
+  it('MapsADraftIdToItsRealIdOnceRedirected', () => {
+    const writer = createCommentWriter(async () => null);
+    expect(writer.idFor('draft:1')).toBe('draft:1');
+    writer.redirect('draft:1', 'c-abc');
+    expect(writer.idFor('draft:1')).toBe('c-abc');
+    expect(writer.idFor('c-other')).toBe('c-other');
+  });
+});
+
+interface Entry {
+  text: string;
+  saved: string;
+}
+
+describe('adoptStartedDraft', () => {
+  it('KeepsTextTypedWhileTheStartWasInFlight', () => {
+    const entry: Entry = { text: 'hello', saved: '' };
+    const pending = new Map<string, Entry>([['draft:1', entry]]);
+    entry.text = 'hello world';
+
+    adoptStartedDraft(pending, 'draft:1', 'c-abc', 'hello');
+
+    expect(pending.has('draft:1')).toBe(false);
+    expect(pending.get('c-abc')).toEqual({ text: 'hello world', saved: 'hello' });
+  });
+
+  it('DoesNotBringBackAnEntryForgottenWhileTheStartWasInFlight', () => {
+    const pending = new Map<string, Entry>();
+    adoptStartedDraft(pending, 'draft:1', 'c-abc', 'hello');
+    expect(pending.size).toBe(0);
+  });
+
+  it('SendsTheTextTypedDuringTheStartOnTheNextWrite', async () => {
+    // The App-level sequence: the first write creates the thread with what was
+    // in the box when it began; a keystroke lands before the file answers; the
+    // redirected follow-up write must carry that keystroke to the real id.
+    const first = deferred<string>();
+    const pending = new Map<string, Entry>([['draft:1', { text: 'hello', saved: '' }]]);
+    const replies: Array<[string, string]> = [];
+    const writer = createCommentWriter(async (id) => {
+      const entry = pending.get(id);
+      if (!entry || entry.text === entry.saved) return null;
+      const text = entry.text;
+      if (id.startsWith('draft:')) {
+        const realId = await first.promise;
+        writer.redirect(id, realId);
+        adoptStartedDraft(pending, id, realId, text);
+        return realId;
+      }
+      replies.push([id, text]);
+      entry.saved = text;
+      return id;
+    });
+
+    const debounced = writer.write('draft:1');
+    await tick();
+    pending.get('draft:1')!.text = 'hello world';
+    const next = writer.write('draft:1');
+    first.resolve('c-abc');
+
+    await expect(debounced).resolves.toBe('c-abc');
+    await expect(next).resolves.toBe('c-abc');
+    expect(replies).toEqual([['c-abc', 'hello world']]);
   });
 });

@@ -17,6 +17,14 @@ export interface CommentWriter {
    * there was nothing left to write — or `null` when nothing was written.
    */
   write(id: string): Promise<string | null>;
+  /**
+   * Any other sidecar operation on thread `id` (resolve), in the same queue
+   * and against the id it has by the time it runs. Resolves to `undefined` if
+   * `fn` threw.
+   */
+  run<T>(id: string, fn: (id: string) => Promise<T>): Promise<T | undefined>;
+  /** The id `id` currently stands for — the real one once a draft has been started. */
+  idFor(id: string): string;
   /** A draft became a real thread: every later write for `draftId` goes to `realId`. */
   redirect(draftId: string, realId: string): void;
 }
@@ -26,16 +34,46 @@ export function createCommentWriter(
 ): CommentWriter {
   const queue = createSerialQueue();
   const redirects = new Map<string, string>();
+  const idFor = (id: string): string => redirects.get(id) ?? id;
+  // Looked up when the task runs, not when it was queued: the redirect that
+  // matters is usually made by the write this one waited for.
+  const run = <T>(id: string, fn: (id: string) => Promise<T>): Promise<T | undefined> =>
+    queue.run(() => fn(idFor(id)));
 
   return {
     async write(id: string): Promise<string | null> {
-      // Looked up when the write runs, not when it was queued: the redirect
-      // that matters is usually made by the write this one waited for.
-      const written = await queue.run(() => writeNow(redirects.get(id) ?? id));
+      const written = await run(id, writeNow);
       return written ?? redirects.get(id) ?? null;
     },
+    run,
+    idFor,
     redirect(draftId: string, realId: string): void {
       redirects.set(draftId, realId);
     },
   };
+}
+
+/**
+ * Move a draft's pending entry to the id the file just gave it.
+ *
+ * The same entry object moves, not a copy made from `written`: keystrokes that
+ * landed while the start was in flight updated it, and rebuilding it from the
+ * text the start sent would mark them as saved — the next write would then
+ * find nothing to do and they would be gone. `saved` becomes what the start
+ * actually wrote, so that next write sends the rest.
+ *
+ * An entry that is no longer there was forgotten meanwhile (the thread is
+ * being resolved) and is not brought back.
+ */
+export function adoptStartedDraft<E extends { saved: string }>(
+  pending: Map<string, E>,
+  draftId: string,
+  realId: string,
+  written: string
+): void {
+  const entry = pending.get(draftId);
+  if (!entry) return;
+  pending.delete(draftId);
+  entry.saved = written;
+  pending.set(realId, entry);
 }
