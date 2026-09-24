@@ -39,7 +39,7 @@ A new family `x` needs all of these:
 1. `src/lib/theme/x.css` with the `:root[data-theme='x-light']` and `:root[data-theme='x-dark']` blocks, each with the full set. Import it in `App.svelte` next to the others.
 2. `theme-resolve.ts`: `ThemeFamily`, `THEME_FAMILIES`, `ConcreteTheme`. The stores (`createThemeStore`) and settings persistence follow from these.
 3. The menu. In `src-tauri/src/menu.rs`, the `theme_family_x` check item and its entry in `ThemeMenuItems.families` (family labels are not localized). In `lib/tauri/events.ts`, `MenuAction`. In `App.svelte`, the `case 'theme_family_x'` → `theme.setFamily('x')`.
-4. **Both app icons**: `design/couplet-icon/variants/x-light.png` and `x-dark.png` (classic's are `classic-*`). How they are rendered from the theme tokens is in [`design/couplet-icon/README.md`](../../../design/couplet-icon/README.md). A theme is not done without both.
+4. **Both app icons**: `design/couplet-icon/variants/x-light.png` and `x-dark.png` (classic's are `classic-*`). The Dock icon follows the resolved theme, so it switches between the two. How they are rendered from the theme tokens is in [`design/couplet-icon/README.md`](../../../design/couplet-icon/README.md), under «Смена иконки по теме». A theme is not done without both.
 5. Anything shared per half that the family wants different: the `$='light'` syntax palette in `editor.css`, and the tab shadows in `tabs.css`.
 
-Switching the Dock icon to match the active theme is planned but not implemented. Max is deciding where that work goes.
+**The Dock icon follows the theme.** That code is not on `feat/tabs` yet: `src-tauri/src/dock_icon.rs` is on the themes branch (`worktree-backlog-themes`, 639d5e8) and lands here via `main`. It runs from `sync_theme_menu` with the resolved theme: at startup, on an explicit pick, on a family change and under «Follow system». So every family needs both icons, or the Dock is left without one for that half.
