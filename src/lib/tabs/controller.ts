@@ -616,6 +616,10 @@ export function createTabController(deps: TabControllerDeps) {
     });
     if (verdict.kind === 'refuse-unsaved') deps.reportUnsaved();
     if (verdict.kind !== 'ok') return false;
+    // Nothing else here can be shown: releasing would close the window. Asked
+    // before anything is handed over — the lookup only reads.
+    const early = how === 'release' ? await prepareLoadable(removeTab(list, tabId).state) : null;
+    if (early !== null && early.tab === null) return false;
     if (path !== null) {
       if (!(await deps.comments.flush(path))) return false;
       await deps.comments.commitPauses(path);
@@ -626,12 +630,7 @@ export function createTabController(deps: TabControllerDeps) {
       topLine: deps.editor.topLine(),
     };
 
-    const next = await prepareLoadable(removeTab(list, tabId).state);
-    if (how === 'release' && next.tab === null) {
-      // Nothing else here can be shown: releasing would close the window.
-      void deps.comments.reload();
-      return false;
-    }
+    const next = early ?? (await prepareLoadable(removeTab(list, tabId).state));
     await flushWithRetries();
     if (path !== null && deps.doc.dirty()) {
       // Typed into during the awaits: the tab stays, its cards come back.
@@ -777,7 +776,12 @@ export function createTabController(deps: TabControllerDeps) {
         for (const id of backgroundFirst(ids)) {
           const path = findById(list, id)?.path ?? null;
           if (path === null || list.tabs.length <= 1) continue;
-          if (await closeNow(id, 'release')) out.push(path);
+          // The tabs already released need their windows whatever happens next.
+          try {
+            if (await closeNow(id, 'release')) out.push(path);
+          } catch (err) {
+            console.error('Failed to detach tab:', err);
+          }
         }
         return out;
       }),

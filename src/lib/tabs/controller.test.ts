@@ -987,4 +987,34 @@ describe('drawer operations', () => {
     expect(h.deps.rust.release).not.toHaveBeenCalled();
     expect(h.deps.rust.closeWindow).not.toHaveBeenCalled();
   });
+
+  it('ARefusedDetachLeavesTheAgentsPausesAlone', async () => {
+    const h = await started(files, three());
+    h.unreadable.add('/b.md');
+    h.unreadable.add('/c.md');
+
+    await h.controller.detachTabs(['a']);
+
+    expect(h.deps.comments.flush).not.toHaveBeenCalled();
+    expect(h.deps.comments.commitPauses).not.toHaveBeenCalled();
+  });
+
+  it('DetachReturnsWhatItReleasedEvenIfALaterTabFails', async () => {
+    const h = await started(files, three());
+    vi.mocked(h.deps.rust.release).mockImplementation(async (tabId: string) => {
+      if (tabId === 'c') throw new Error('ipc down');
+    });
+
+    expect(await h.controller.detachTabs(['b', 'c'])).toEqual(['/b.md']);
+  });
+
+  it('AReorderQueuedAfterACloseWithTheOldOrderIsIgnored', async () => {
+    const h = await started(files, three());
+
+    const closing = h.controller.closeTab('b');
+    const reordering = h.controller.reorder(['c', 'b', 'a']);
+    await Promise.all([closing, reordering]);
+
+    expect(h.ids()).toEqual(['a', 'c']);
+  });
 });
