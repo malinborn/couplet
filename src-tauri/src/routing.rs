@@ -57,7 +57,7 @@ pub enum Route {
 /// app-wide, and the answer names the window it is really in); a live
 /// `binding`; a live window of `file_project`, the most recently focused one
 /// (`focus_order`, most recent first; windows never focused in label order);
-/// else a new window.
+/// else `main` while it has never held a file; else a new window.
 pub fn route(
     reg: &TabRegistry,
     path: &str,
@@ -85,11 +85,34 @@ pub fn route(
             crate::session::label_order(label),
         )
     };
-    reg.all_windows()
+    let of_project = reg
+        .all_windows()
         .filter(|(label, w)| w.project.as_deref() == Some(file_project) && is_live(label))
         .map(|(label, _)| label.clone())
-        .min_by_key(|label| rank(label))
-        .map_or(Route::NewWindow, Route::Existing)
+        .min_by_key(|label| rank(label));
+    if let Some(label) = of_project {
+        return Route::Existing(label);
+    }
+    if main_never_held_a_file(reg, &is_live) {
+        return Route::Existing(MAIN.to_string());
+    }
+    Route::NewWindow
+}
+
+const MAIN: &str = "main";
+
+/// The window the app starts with, still as it started: live, registered
+/// (numbered at setup, so a command for it can be queued until it mounts),
+/// no project and no file tab. Step 4 fills it instead of building a second
+/// window beside an empty "Untitled" — what a cold-start `mdmini -b file`
+/// otherwise left in front. The rule `window::route_opened_file` uses for
+/// `UseMain`, plus the project: a main whose file was closed stays bound and
+/// is a window like any other.
+fn main_never_held_a_file(reg: &TabRegistry, is_live: impl Fn(&str) -> bool) -> bool {
+    is_live(MAIN)
+        && reg
+            .window(MAIN)
+            .is_some_and(|w| w.project.is_none() && w.tabs.iter().all(|t| t.path.is_none()))
 }
 
 /// `route` for the live app: projects bound first, the focus order from
@@ -299,9 +322,42 @@ mod tests {
     #[test]
     fn a_window_without_a_project_is_never_matched() {
         let mut reg = TabRegistry::new();
-        reg.add_tab("main", "u", None);
-        reg.set_number("main", Some(1));
+        reg.add_tab("editor-2", "u", None);
+        reg.set_number("editor-2", Some(1));
         assert_eq!(route(&reg, "/p/a.md", None, "/p", &[], live), Route::NewWindow);
+    }
+
+    #[test]
+    fn step_4_an_empty_main_takes_the_file_instead_of_a_new_window() {
+        let mut numbered_only = TabRegistry::new();
+        numbered_only.set_number("main", Some(1));
+        assert_eq!(route(&numbered_only, "/p/a.md", None, "/p", &[], live), existing("main"), "not mounted yet");
+        let mut untitled = TabRegistry::new();
+        untitled.set_number("main", Some(1));
+        untitled.add_tab("main", "u", None);
+        assert_eq!(route(&untitled, "/p/a.md", None, "/p", &[], live), existing("main"), "one Untitled tab");
+    }
+
+    #[test]
+    fn step_4_a_main_that_held_a_file_or_is_gone_or_unregistered_is_not_filled() {
+        let showing = reg(&[("main", 1, Some("/q"), &["/q/b.md"])]);
+        assert_eq!(route(&showing, "/p/a.md", None, "/p", &[], live), Route::NewWindow);
+        let mut closed_its_file = TabRegistry::new();
+        closed_its_file.set_number("main", Some(1));
+        closed_its_file.bind_project("main", "/q".to_string());
+        closed_its_file.add_tab("main", "u", None);
+        assert_eq!(route(&closed_its_file, "/p/a.md", None, "/p", &[], live), Route::NewWindow, "bound once, stays bound");
+        let mut empty = TabRegistry::new();
+        empty.set_number("main", Some(1));
+        assert_eq!(route(&empty, "/p/a.md", None, "/p", &[], |l| l != "main"), Route::NewWindow, "main closed");
+        assert_eq!(route(&TabRegistry::new(), "/p/a.md", None, "/p", &[], live), Route::NewWindow, "a command could not be queued for it");
+    }
+
+    #[test]
+    fn step_3_a_project_window_outranks_an_empty_main() {
+        let mut reg = reg(&[("editor-2", 7, Some("/p"), &["/p/a.md"])]);
+        reg.set_number("main", Some(1));
+        assert_eq!(route(&reg, "/p/b.md", None, "/p", &[], live), existing("editor-2"));
     }
 
     fn listed(window: u32, project: &str, files: &[Option<&str>]) -> WindowListing {

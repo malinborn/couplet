@@ -9,6 +9,9 @@ CMD_SOCK="/tmp/md_mini_cmd.sock"
 # Make sure the running app's command socket is up, launching the app if it
 # is not (no pending-files handoff needed — the request itself carries the
 # file). Exits the script with an error line if it never comes up.
+# `ensure_running background` launches without activating the app (`open -g`,
+# spec §4): a command that lands in the background must not bring md-mini to
+# the front just because it was not running yet.
 ensure_running() {
   if [ -S "$CMD_SOCK" ] && ! pgrep -f "md-mini.app/Contents/MacOS/md-mini" >/dev/null; then
     # Socket file survived a crash/kill-9 of the process that owned it — a
@@ -17,7 +20,11 @@ ensure_running() {
     rm -f "$CMD_SOCK"
   fi
   if [ ! -S "$CMD_SOCK" ]; then
-    open "$APP"
+    if [ "${1:-}" = "background" ]; then
+      open -g "$APP"
+    else
+      open "$APP"
+    fi
     waited=0
     while [ ! -S "$CMD_SOCK" ]; do
       sleep 0.1
@@ -54,11 +61,27 @@ if [ "$1" = "ls" ] || [ "$1" = "close" ]; then
   exec "$BIN" ai "$@"
 fi
 
+# The focus flag given on the command line: "background" for -b, "focus"
+# for -f, empty for neither (the binary rejects both at once).
+focus_flag() {
+  for arg in "$@"; do
+    case "$arg" in
+      -b|--background) echo background; return ;;
+      -f|--focus) echo focus; return ;;
+    esac
+  done
+}
+
 # AI interface: `mdmini show|edit|ask <file> ...` talk to the running app's
 # command socket instead of the file-open path below. stdin passes through
-# untouched for `edit`.
+# untouched for `edit`. `edit` and `ask` never switch tabs and `show -b`
+# stays behind, so none of them activates an app it has to launch.
 if [ "$1" = "show" ] || [ "$1" = "edit" ] || [ "$1" = "ask" ]; then
-  ensure_running
+  if [ "$1" != "show" ] || [ "$(focus_flag "$@")" = "background" ]; then
+    ensure_running background
+  else
+    ensure_running
+  fi
   exec "$BIN" ai "$@"
 fi
 
@@ -77,7 +100,14 @@ case "${1:-}" in
   ""|--version|-V|--help|-h) routed=0 ;;
 esac
 if [ "$routed" = 1 ]; then
-  ensure_running
+  # The binary's default, decided the same way: -b / -f win, else an agent's
+  # open is background and a human's (-t N) is focused.
+  flag="$(focus_flag "$@")"
+  if [ "$flag" = "background" ] || { [ -z "$flag" ] && [ -n "${CLAUDECODE:-}" ]; }; then
+    ensure_running background
+  else
+    ensure_running
+  fi
   exec "$BIN" ai open "$@"
 fi
 
