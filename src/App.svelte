@@ -1641,7 +1641,15 @@
       if (pending.cursor > 0 || pending.topLine > 1) {
         await applyRestorePosition(pending.cursor, pending.topLine);
       }
-    }).then(async () => {
+    })
+    // Register this window in the session right away, not 5s later — but only
+    // once the pending open has settled. Reported any earlier, a restored
+    // Untitled window still looks empty: Rust drops its `untitled` name, the
+    // ticker prunes the restored sidecar within a second, and a quit before
+    // the next heartbeat loses that draft for good. `finally`, so a failed
+    // pending open still registers the window.
+    .finally(reportSession)
+    .then(async () => {
       // Commands queued for this file before its window existed (e.g. an
       // `ai edit` of a file that wasn't open yet triggered this window's
       // creation) — drained once, after the pending-open/restore settles.
@@ -1900,9 +1908,6 @@
     const unlistenSessionRestored = onSessionRestored(() => {
       toasts.dismissKind('session');
     });
-
-    // Register this window in the session right away, not 5s later.
-    reportSession();
 
     return () => {
       if (stopUpdateChecker) stopUpdateChecker();
