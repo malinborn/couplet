@@ -341,8 +341,11 @@ export function createTabController(deps: TabControllerDeps) {
     }
   }
 
-  /** Step 1 of leaving: nothing has been handed over yet. */
-  async function mayLeave(): Promise<boolean> {
+  /**
+   * Step 1 of leaving: nothing has been handed over yet. `quiet`: an agent
+   * asked — its refusal lands in the background (D5) and shows no toast.
+   */
+  async function mayLeave(quiet = false): Promise<boolean> {
     deps.editor.commitCellEdit();
     await flushWithRetries();
     const verdict = decideLeave({
@@ -350,7 +353,7 @@ export function createTabController(deps: TabControllerDeps) {
       activeIsDirty: deps.doc.dirty(),
       saveErrorPending: deps.saveErrorPending(),
     });
-    if (verdict.kind === 'refuse-unsaved') deps.reportUnsaved();
+    if (verdict.kind === 'refuse-unsaved' && !quiet) deps.reportUnsaved();
     return verdict.kind === 'ok';
   }
 
@@ -361,7 +364,7 @@ export function createTabController(deps: TabControllerDeps) {
    * agent's questions are not cancelled: `stashActive` parks them. A file tab
    * typed into during these awaits stays, and its cards are rebuilt.
    */
-  async function handOver(): Promise<boolean> {
+  async function handOver(quiet = false): Promise<boolean> {
     const path = deps.doc.path();
     if (path !== null) {
       if (!(await deps.comments.flush(path))) return false;
@@ -370,7 +373,7 @@ export function createTabController(deps: TabControllerDeps) {
     await flushWithRetries();
     if (path !== null && deps.doc.dirty()) {
       void deps.comments.reload();
-      deps.reportUnsaved();
+      if (!quiet) deps.reportUnsaved();
       return false;
     }
     return true;
@@ -564,8 +567,10 @@ export function createTabController(deps: TabControllerDeps) {
 
   async function activateNow(
     tabId: string,
-    opts: { byAgent?: boolean; position?: Position } = {}
+    opts: { byAgent?: boolean; quiet?: boolean; position?: Position } = {}
   ): Promise<ActivateResult> {
+    // An agent's switch is refused without a toast (`mayLeave`).
+    const quiet = opts.byAgent === true || opts.quiet === true;
     const target = findById(list, tabId);
     if (!target) return 'failed';
     if (tabId === list.activeId) {
@@ -574,10 +579,10 @@ export function createTabController(deps: TabControllerDeps) {
     }
     // An agent never takes the view away from another agent's live question.
     if (opts.byAgent && deps.ai.hasLiveAsk()) return 'busy';
-    if (!(await mayLeave())) return 'refused';
+    if (!(await mayLeave(quiet))) return 'refused';
     const ready = await prepare(target);
     if (ready.kind === 'failed') return 'failed';
-    if (!(await handOver())) return 'refused';
+    if (!(await handOver(quiet))) return 'refused';
     stashActive();
     await enter(target, ready, opts.position ?? null, false);
     return 'ok';
@@ -586,7 +591,8 @@ export function createTabController(deps: TabControllerDeps) {
   async function openInNewTab(
     path: string,
     position: Position | null,
-    replace: boolean
+    replace: boolean,
+    quiet: boolean
   ): Promise<OpenPathResult> {
     let content = '';
     let exists = false;
@@ -612,14 +618,14 @@ export function createTabController(deps: TabControllerDeps) {
     }
     if (answer.kind === 'this-window') {
       if (findById(list, answer.tabId)) {
-        return fromActivate(answer.tabId, await activateNow(answer.tabId, { position: position ?? undefined }));
+        return fromActivate(answer.tabId, await activateNow(answer.tabId, { position: position ?? undefined, quiet }));
       }
       console.error('tab_open keeps answering with a tab this window does not have:', path);
       await deps.rust.release(answer.tabId);
       return { kind: 'failed' };
     }
     const tab = newMeta(answer.tabId, answer.path ?? path);
-    const shown = await showClaimed(tab, { kind: 'fresh', content, exists }, position, () => {
+    const shown = await showClaimed(tab, { kind: 'fresh', content, exists }, position, quiet, () => {
       const previous = activeTab(list);
       // Re-checked here, after the last await: text typed into the blank tab
       // while the file was read makes it a tab worth keeping.
@@ -650,12 +656,13 @@ export function createTabController(deps: TabControllerDeps) {
     tab: TabMeta,
     ready: Ready,
     position: Position | null,
+    quiet: boolean,
     place: () => T
   ): Promise<{ entry: Entry; placed: T } | null> {
     let shown = false;
     try {
       const entry = build(tab, ready, position);
-      if (!(await handOver())) return null;
+      if (!(await handOver(quiet))) return null;
       const placed = place();
       show(tab, entry);
       shown = true;
@@ -665,7 +672,8 @@ export function createTabController(deps: TabControllerDeps) {
     }
   }
 
-  async function openNow(path: string, position: Position | null): Promise<OpenPathResult> {
+  /** `quiet`: an agent's open (`openPathNow`) — a refusal shows no toast (D5). */
+  async function openNow(path: string, position: Position | null, quiet = false): Promise<OpenPathResult> {
     deps.editor.commitCellEdit();
     await flushWithRetries();
     const local = findByPath(list, path);
@@ -692,16 +700,16 @@ export function createTabController(deps: TabControllerDeps) {
         // The standing `save-error` toast already says why.
         return { kind: 'refused' };
       case 'refuse-unsaved':
-        deps.reportUnsaved();
+        if (!quiet) deps.reportUnsaved();
         return { kind: 'refused' };
       case 'focus-other-window':
         await deps.rust.focusElsewhere(path);
         return { kind: 'elsewhere' };
       case 'activate-tab':
-        return fromActivate(action.tabId, await activateNow(action.tabId, { position: position ?? undefined }));
+        return fromActivate(action.tabId, await activateNow(action.tabId, { position: position ?? undefined, quiet }));
       case 'replace-active':
       case 'open-new-tab':
-        return openInNewTab(path, position, action.kind === 'replace-active');
+        return openInNewTab(path, position, action.kind === 'replace-active', quiet);
     }
   }
 
@@ -710,7 +718,7 @@ export function createTabController(deps: TabControllerDeps) {
     const answer = await deps.rust.open(null);
     if (answer.kind !== 'created') return;
     const tab = newMeta(answer.tabId, null);
-    const shown = await showClaimed(tab, { kind: 'fresh', content: '', exists: false }, null, () => {
+    const shown = await showClaimed(tab, { kind: 'fresh', content: '', exists: false }, null, false, () => {
       stashActive();
       publish(insertAfterActive(list, tab));
     });
@@ -723,12 +731,14 @@ export function createTabController(deps: TabControllerDeps) {
    * closed-stack entry (Rust `tab_release`) — the tab moves to another window,
    * so a release never closes this one. `true` when the tab is gone from the list.
    * `onLastTab` runs when closing it is about to close the window — an agent's
-   * `close` answers there, before its window is gone.
+   * `close` answers there, before its window is gone. `quiet`: an agent's
+   * close — its refusal is the agent's answer, not a toast (D5).
    */
   async function closeNow(
     tabId: string,
     how: 'close' | 'release' = 'close',
-    onLastTab?: () => Promise<void>
+    onLastTab?: () => Promise<void>,
+    quiet = false
   ): Promise<boolean> {
     if (!findById(list, tabId)) return false;
     const finish = (position: Position) =>
@@ -756,7 +766,7 @@ export function createTabController(deps: TabControllerDeps) {
       activeIsDirty: deps.doc.dirty(),
       saveErrorPending: deps.saveErrorPending(),
     });
-    if (verdict.kind === 'refuse-unsaved') deps.reportUnsaved();
+    if (verdict.kind === 'refuse-unsaved' && !quiet) deps.reportUnsaved();
     if (verdict.kind !== 'ok') return false;
     // Nothing else here can be shown: releasing would close the window. Asked
     // before anything is handed over — the lookup only reads.
@@ -777,7 +787,7 @@ export function createTabController(deps: TabControllerDeps) {
     if (path !== null && deps.doc.dirty()) {
       // Typed into during the awaits: the tab stays, its cards come back.
       void deps.comments.reload();
-      deps.reportUnsaved();
+      if (!quiet) deps.reportUnsaved();
       return false;
     }
 
@@ -1068,7 +1078,7 @@ export function createTabController(deps: TabControllerDeps) {
     activateNow,
     /** `openPath` for an AI command, inside `runExclusive`. Says whether it opened the tab. */
     openPathNow: async (path: string, position?: Position): Promise<OpenPathResult> =>
-      requireExclusive('openPathNow') ? openNow(path, position ?? null) : { kind: 'failed' },
+      requireExclusive('openPathNow') ? openNow(path, position ?? null, true) : { kind: 'failed' },
     openBackgroundNow,
     placeCaretNow,
     applyToTabNow,
@@ -1080,7 +1090,7 @@ export function createTabController(deps: TabControllerDeps) {
     closeTabNow: async (tabId: string, onLastTab?: () => Promise<void>): Promise<boolean> => {
       if (!requireExclusive('closeTabNow')) return false;
       if (findById(list, tabId)?.path == null) return false;
-      return closeNow(tabId, 'close', onLastTab);
+      return closeNow(tabId, 'close', onLastTab, true);
     },
     findByPath: (path: string) => findByPath(list, path),
     /** Save As gave the active tab a new path. */

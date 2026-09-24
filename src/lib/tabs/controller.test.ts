@@ -1411,6 +1411,55 @@ describe('agent operations', () => {
     expect(h.active()).toBe('a');
   });
 
+  describe('an agent refused is not the human refused (D5)', () => {
+    // The human did not ask to leave the tab: an «unsaved» toast would blame
+    // them for an agent's switch that simply lands in the background.
+    it('ASwitchRefusedByAnUnsavedTabShowsNoToast', async () => {
+      const h = await started(files, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
+      h.setSaveSucceeds(false);
+      h.type('x');
+      expect(await exclusive(h, () => h.controller.activateNow('b', { byAgent: true }))).toBe('refused');
+      expect(await exclusive(h, () => h.controller.openPathNow('/b.md'))).toEqual({ kind: 'refused' });
+      expect(await exclusive(h, () => h.controller.openPathNow('/c.md'))).toEqual({ kind: 'refused' });
+      expect(h.deps.reportUnsaved).not.toHaveBeenCalled();
+      // The human's own switch still says why it did not happen.
+      await h.controller.activate('b');
+      expect(h.deps.reportUnsaved).toHaveBeenCalledTimes(1);
+    });
+
+    it('AnOpenRefusedByTypingDuringTheHandoverShowsNoToast', async () => {
+      const h = await started({ ...files, '/c.md': 'CCCC' }, [fileTab('a', '/a.md')]);
+      h.hooks.duringCommitPauses = () => {
+        h.setSaveSucceeds(false);
+        h.type('late');
+      };
+      expect(await exclusive(h, () => h.controller.openPathNow('/c.md'))).toEqual({ kind: 'refused' });
+      expect(h.deps.reportUnsaved).not.toHaveBeenCalled();
+      expect(h.active()).toBe('a');
+    });
+
+    it('ACloseRefusedByAnUnsavedTabShowsNoToast', async () => {
+      const h = await started(files, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
+      h.setSaveSucceeds(false);
+      h.type('x');
+      expect(await exclusive(h, () => h.controller.closeTabNow('a'))).toBe(false);
+      expect(h.deps.reportUnsaved).not.toHaveBeenCalled();
+      await h.controller.closeActive();
+      expect(h.deps.reportUnsaved).toHaveBeenCalledTimes(1);
+    });
+
+    it('ACloseRefusedByTypingDuringItShowsNoToast', async () => {
+      const h = await started(files, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
+      h.hooks.duringCommitPauses = () => {
+        h.setSaveSucceeds(false);
+        h.type('late');
+      };
+      expect(await exclusive(h, () => h.controller.closeTabNow('a'))).toBe(false);
+      expect(h.deps.reportUnsaved).not.toHaveBeenCalled();
+      expect(h.ids()).toEqual(['a', 'b']);
+    });
+  });
+
   it('EveryAgentOperationIsRefusedOutsideTheExclusiveSlot', async () => {
     const h = await started({ ...files, '/c.md': 'CCCC' }, [fileTab('a', '/a.md')]);
     await h.controller.openPath('/b.md');
