@@ -21,4 +21,7 @@ describe('tabNames', () => {
   it('CountsTheRestAfterThree', () => {
     expect(tabNames(['/1.md', '/2.md', '/3.md', '/4.md', '/5.md'])).toBe('1.md, 2.md, 3.md +2');
   });
+  it('NamesAnUntitledTabToo', () => {
+    expect(tabNames(['/a/x.md', null])).toBe('x.md, Untitled');
+  });
 });

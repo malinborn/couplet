@@ -1,6 +1,7 @@
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { RecentSnapshot } from '../stores.svelte';
+import type { PendingTab } from './commands';
 
 export type MenuAction =
   | 'new'
@@ -81,6 +82,19 @@ export interface ReopenTab {
 /** Targeted at the window the tab was closed from — see `onAiCommand` on why per-window. */
 export function onReopenTab(handler: (tab: ReopenTab) => void): Promise<() => void> {
   return getCurrentWebviewWindow().listen<ReopenTab>('reopen-tab', (event) => {
+    handler(event.payload);
+  });
+}
+
+/**
+ * Tabs another window moved here (plan 05, `tab_move`). Registered to this
+ * window already: the controller shows them and never `tab_open`s them. Per
+ * window, like `onAiCommand`; registered before `get_window_init` like every
+ * other tab source (the window init contract) — a window built for a move
+ * that mounted before the move took the lock gets its tabs this way.
+ */
+export function onTabsArrive(handler: (tabs: PendingTab[]) => void): Promise<() => void> {
+  return getCurrentWebviewWindow().listen<PendingTab[]>('tabs-arrive', (event) => {
     handler(event.payload);
   });
 }

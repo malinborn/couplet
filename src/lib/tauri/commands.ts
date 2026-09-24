@@ -3,6 +3,7 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import type { ConcreteTheme } from '../theme-resolve';
 import type { EditorEngine } from '../stores.svelte';
 import type { CommentThread } from '../comment-format';
+import type { InboxItem } from '../tabs/agent-inbox';
 
 export async function readFile(path: string): Promise<string> {
   return invoke<string>('read_file', { path });
@@ -82,6 +83,11 @@ export interface PendingTab {
   openedAt: number;
   viewedAt: number;
   unviewed: boolean;
+  /** A quick look carried by a move between windows (plan 05); `false` otherwise. */
+  transient: boolean;
+  transientSeenAt: number;
+  /** What waited for the tab in its old window's agent inbox; absent unless it moved. */
+  inbox?: InboxItem[];
 }
 
 /** What a window loads on mount. Matches `WindowInit` in src-tauri/src/window.rs. */

@@ -6,6 +6,8 @@ import {
   TRANSIENT_IGNORED_AFTER_MS,
   type BackgroundOpen,
   type InitTab,
+  type MoveDone,
+  type MovedTab,
   type OpenAnswer,
   type OpenPathResult,
   type QuickLookOrigin,
@@ -13,6 +15,8 @@ import {
   type TabControllerDeps,
 } from './controller';
 import type { TabOwner } from '../switch-document';
+import type { InboxItem } from './agent-inbox';
+import type { MoveTarget } from './carousel';
 
 const fileTab = (tabId: string, path: string): InitTab => ({
   tabId,
@@ -42,6 +46,8 @@ function makeHarness(initialFiles: Record<string, string>) {
   let live = EditorState.create({ doc: '' });
   let saveSucceeds = true;
   const parkOnLeave = new Set<string>();
+  const inboxes = new Map<string, InboxItem[]>();
+  let moveCount = 0;
   let writeFails = false;
   let nextId = 1;
   let snapshot = 0;
@@ -119,6 +125,13 @@ function makeHarness(initialFiles: Record<string, string>) {
         calls.push(`forget ${tabId}`);
       }),
       hasLiveAsk: vi.fn(() => false),
+      carry: vi.fn((tabId: string): InboxItem[] => {
+        calls.push(`carry ${tabId}`);
+        return inboxes.get(tabId) ?? [];
+      }),
+      adopt: vi.fn((tabId: string, items: readonly InboxItem[]) => {
+        calls.push(`adopt ${tabId} ${items.length}`);
+      }),
     },
     disk: {
       exists: async (path) => files.has(path),
@@ -152,8 +165,9 @@ function makeHarness(initialFiles: Record<string, string>) {
       closeWindow: vi.fn(async () => {
         calls.push('closeWindow');
       }),
-      openWindow: vi.fn(async (path: string) => {
-        calls.push(`openWindow ${path}`);
+      move: vi.fn(async (moving: MovedTab[], target: MoveTarget): Promise<MoveDone> => {
+        calls.push(`move ${moving.map((t) => t.tabId).join(',')} → ${target.kind === 'window' ? target.label : 'new'}`);
+        return { label: target.kind === 'window' ? target.label : `editor-${9 + moveCount++}`, number: 9 };
       }),
     },
     entered: vi.fn(),
@@ -185,6 +199,7 @@ function makeHarness(initialFiles: Record<string, string>) {
       saveSucceeds = value;
     },
     parkOnLeave,
+    inboxes,
     setWriteFails(value: boolean) {
       writeFails = value;
     },
@@ -194,12 +209,6 @@ function makeHarness(initialFiles: Record<string, string>) {
 }
 
 type Harness = ReturnType<typeof makeHarness>;
-
-/** "To new windows": the paths a window was asked for, in order. */
-async function moveOut(h: Harness, ids: string[]): Promise<string[]> {
-  await h.controller.moveToNewWindows(ids);
-  return vi.mocked(h.deps.rust.openWindow).mock.calls.map(([path]) => path);
-}
 
 /** A window already showing `init`, with call records cleared. */
 async function started(
@@ -989,166 +998,6 @@ describe('drawer operations', () => {
     expect(h.ids()).toEqual(['a', 'c']);
   });
 
-  it('DetachTabsReleasesInsteadOfClosing', async () => {
-    const h = await started(files, three());
-    expect(await moveOut(h, ['b'])).toEqual(['/b.md']);
-    expect(h.ids()).toEqual(['a', 'c']);
-    expect(h.deps.rust.release).toHaveBeenCalledWith('b');
-    expect(h.deps.rust.close).not.toHaveBeenCalled();
-  });
-
-  it('DetachingTheActiveTabHandsItOverAndSwitchesFirst', async () => {
-    const h = await started(files, three());
-    expect(await moveOut(h, ['a'])).toEqual(['/a.md']);
-    expect(h.active()).toBe('b');
-    expect(h.calls.indexOf('swap')).toBeLessThan(h.calls.indexOf('release a'));
-    expect(h.deps.rust.close).not.toHaveBeenCalled();
-  });
-
-  it('DetachNeverEmptiesTheWindow', async () => {
-    const h = await started(files, three());
-    expect(await moveOut(h, ['a', 'b', 'c'])).toEqual(['/b.md', '/c.md']);
-    expect(h.ids()).toEqual(['a']);
-    expect(h.deps.rust.closeWindow).not.toHaveBeenCalled();
-  });
-
-  it('DetachLeavesUntitledTabsWhereTheyAre', async () => {
-    const h = await started(files, [fileTab('a', '/a.md'), untitledTab('u', 'draft'), fileTab('b', '/b.md')]);
-    expect(await moveOut(h, ['u', 'b'])).toEqual(['/b.md']);
-    expect(h.ids()).toEqual(['a', 'u']);
-  });
-
-  it('DetachKeepsAnActiveTabWhoseSaveDidNotLand', async () => {
-    const h = await started(files, three());
-    h.setSaveSucceeds(false);
-    h.type('unsaved');
-
-    expect(await moveOut(h, ['a', 'b'])).toEqual(['/b.md']);
-
-    expect(h.ids()).toEqual(['a', 'c']);
-    expect(h.active()).toBe('a');
-    expect(h.deps.reportUnsaved).toHaveBeenCalledTimes(1);
-    expect(h.deps.rust.release).not.toHaveBeenCalledWith('a');
-    expect(h.live().doc.toString()).toBe('AAAAunsaved');
-  });
-
-  it('DetachKeepsTheActiveTabWhenNoOtherTabCanBeShown', async () => {
-    // Every neighbour is unreadable: releasing the active tab would close the window.
-    const h = await started(files, three());
-    h.unreadable.add('/b.md');
-    h.unreadable.add('/c.md');
-
-    expect(await moveOut(h, ['a'])).toEqual([]);
-
-    expect(h.ids()).toEqual(['a', 'b', 'c']);
-    expect(h.active()).toBe('a');
-    expect(h.deps.rust.release).not.toHaveBeenCalled();
-    expect(h.deps.rust.closeWindow).not.toHaveBeenCalled();
-  });
-
-  it('ARefusedDetachLeavesTheAgentsPausesAlone', async () => {
-    const h = await started(files, three());
-    h.unreadable.add('/b.md');
-    h.unreadable.add('/c.md');
-
-    await moveOut(h, ['a']);
-
-    expect(h.deps.comments.flush).not.toHaveBeenCalled();
-    expect(h.deps.comments.commitPauses).not.toHaveBeenCalled();
-  });
-
-  it('DetachOpensAWindowForWhatItReleasedEvenIfALaterTabFails', async () => {
-    const h = await started(files, three());
-    vi.mocked(h.deps.rust.release).mockImplementation(async (tabId: string) => {
-      if (tabId === 'c') throw new Error('ipc down');
-    });
-    // Rust never let go of it: it still answers with the old id.
-    vi.mocked(h.deps.rust.open).mockResolvedValueOnce({ kind: 'this-window', tabId: 'c' });
-
-    expect(await moveOut(h, ['b', 'c'])).toEqual(['/b.md']);
-    // Taken off the list before its release threw — and put back.
-    expect(h.ids()).toEqual(['a', 'c']);
-  });
-
-  it('ATabRustStillHoldsForThisWindowGetsNoWindow_ItComesBack', async () => {
-    // A release whose IPC failed is swallowed (logged) on the App side, so the
-    // controller sees a success; a window opened now would only focus this one.
-    const h = await started(files, three());
-    h.owners.set('/b.md', { kind: 'this-window', tabId: 'b' });
-    vi.mocked(h.deps.rust.open).mockResolvedValueOnce({ kind: 'this-window', tabId: 'b' });
-
-    const stranded = await h.controller.moveToNewWindows(['b', 'c']);
-
-    expect(stranded).toEqual([{ path: '/b.md', error: null }]);
-    expect(vi.mocked(h.deps.rust.openWindow).mock.calls.map(([p]) => p)).toEqual(['/c.md']);
-    expect(h.ids()).toEqual(['a', 'b']);
-  });
-
-  it('EachDetachedTabGetsItsWindowAfterItWasReleased', async () => {
-    const h = await started(files, three());
-    await moveOut(h, ['b', 'c']);
-    expect(h.calls.indexOf('release b')).toBeLessThan(h.calls.indexOf('openWindow /b.md'));
-    expect(h.calls.indexOf('release c')).toBeLessThan(h.calls.indexOf('openWindow /c.md'));
-  });
-
-  it('ATabWhoseWindowDidNotOpenComesBackWhereItWas_InTheBackground', async () => {
-    // Released and then no window: without this the tab is gone from every
-    // window at once (D-a).
-    const h = await started(files, three());
-    await h.controller.activate('b');
-    vi.mocked(h.deps.rust.openWindow).mockImplementation(async (path: string) => {
-      if (path === '/b.md') throw new Error('window build failed');
-    });
-    vi.mocked(h.deps.rust.open).mockResolvedValueOnce({ kind: 'created', tabId: 'b2' });
-
-    const stranded = await h.controller.moveToNewWindows(['b', 'c']);
-
-    expect(stranded).toEqual([{ path: '/b.md', error: 'window build failed' }]);
-    expect(h.deps.rust.open).toHaveBeenCalledWith('/b.md');
-    expect(h.ids()).toEqual(['a', 'b2']);
-    expect(h.controller.list.tabs[1]).toMatchObject({ path: '/b.md', dirty: false });
-    expect(h.active()).toBe('a');
-    expect(h.deps.settled).toHaveBeenCalled();
-  });
-
-  it('ABroughtBackTabKeepsItsStampsAndOpensAtItsOldCaret', async () => {
-    const h = await started(files, [fileTab('a', '/a.md'), { ...fileTab('b', '/b.md'), cursor: 3 }, fileTab('c', '/c.md')]);
-    h.clock.now = 5_000;
-    await h.controller.activate('b');
-    await h.controller.activate('a');
-    const before = h.controller.list.tabs.find((t) => t.id === 'b');
-    vi.mocked(h.deps.rust.openWindow).mockRejectedValue(new Error('no'));
-    vi.mocked(h.deps.rust.open).mockResolvedValueOnce({ kind: 'created', tabId: 'b2' });
-
-    await h.controller.moveToNewWindows(['b']);
-    const back = h.controller.list.tabs.find((t) => t.id === 'b2');
-    expect(back).toMatchObject({ openedAt: before?.openedAt, viewedAt: before?.viewedAt, unviewed: before?.unviewed });
-
-    vi.mocked(h.deps.editor.applyPosition).mockClear();
-    await h.controller.activate('b2');
-    expect(h.live().doc.toString()).toBe('BBBB');
-    expect(h.deps.editor.applyPosition).toHaveBeenCalledWith({ cursor: 3, topLine: 1 });
-  });
-
-  it('SeveralStrandedTabsComeBackInTheirOldOrder', async () => {
-    const four = [...three(), fileTab('d', '/d.md')];
-    const h = await started({ ...files, '/d.md': 'DDDD' }, four);
-    vi.mocked(h.deps.rust.openWindow).mockRejectedValue(new Error('no'));
-
-    await h.controller.moveToNewWindows(['b', 'd', 'a']);
-
-    expect(h.controller.list.tabs.map((t) => t.path)).toEqual(['/a.md', '/b.md', '/c.md', '/d.md']);
-  });
-
-  it('AStrandedTabSomeoneElseClaimedMeanwhileIsNotAddedTwice', async () => {
-    const h = await started(files, three());
-    vi.mocked(h.deps.rust.openWindow).mockRejectedValue(new Error('no'));
-    vi.mocked(h.deps.rust.open).mockResolvedValueOnce({ kind: 'other-window', label: 'editor-3' });
-
-    expect(await h.controller.moveToNewWindows(['b'])).toEqual([{ path: '/b.md', error: 'no' }]);
-    expect(h.ids()).toEqual(['a', 'c']);
-  });
-
   it('AReorderQueuedAfterACloseWithTheOldOrderIsIgnored', async () => {
     const h = await started(files, three());
 
@@ -1199,14 +1048,6 @@ describe('agent hooks', () => {
     expect(h.calls).toContain('forget t1');
     expect(h.calls).toContain('close t1');
     expect(h.deps.ai.leave, 'a closed tab parks nothing').not.toHaveBeenCalledWith('t1');
-  });
-
-  it('ATabMovedToAnotherWindowIsForgottenAndReleased', async () => {
-    const h = await started(files, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
-    await h.controller.moveToNewWindows(['b']);
-    // `tab_release` fails its agents with `tab released`.
-    expect(h.calls.indexOf('forget b')).toBeGreaterThanOrEqual(0);
-    expect(h.calls.indexOf('forget b')).toBeLessThan(h.calls.indexOf('release b'));
   });
 
   it('TheBlankTabAFileReplacesIsForgotten', async () => {
@@ -1742,5 +1583,292 @@ describe('quick looks', () => {
     const h = await started(files, [fileTab('a', '/a.md')]);
     h.controller.humanEdited();
     expect(h.deps.changed).not.toHaveBeenCalled();
+  });
+});
+
+describe('moving tabs to another window (plan 05)', () => {
+  const files = { '/a.md': 'AAAA', '/b.md': 'BBBB', '/c.md': 'CCCC', '/d.md': 'DDDD' };
+  const three = () => [fileTab('a', '/a.md'), fileTab('b', '/b.md'), fileTab('c', '/c.md')];
+  const to2: MoveTarget = { kind: 'window', label: 'editor-2' };
+  const sent = (h: Harness) => vi.mocked(h.deps.rust.move).mock.calls.map(([tabs]) => tabs);
+  const pulse = { kind: 'pulse', payload: { id: 9 } } as unknown as InboxItem;
+  const lastActivate = (h: Harness) => h.calls.filter((c) => c.startsWith('activate ')).pop();
+
+  it('MovesABackgroundTab_TheActiveStays_NothingIsReleasedOrClosed', async () => {
+    const h = await started(files, three());
+    expect(await h.controller.moveTabs(['b'], to2)).toEqual({ kind: 'moved', label: 'editor-2', number: 9, count: 1 });
+    expect(h.ids()).toEqual(['a', 'c']);
+    expect(h.active()).toBe('a');
+    expect(h.deps.rust.release).not.toHaveBeenCalled();
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+    expect(h.deps.ai.forget).not.toHaveBeenCalled();
+    expect(h.deps.settled).toHaveBeenCalled();
+  });
+
+  it('AGroupGoesInThisWindowsOrder', async () => {
+    const h = await started(files, [...three(), fileTab('d', '/d.md')]);
+    await h.controller.moveTabs(['d', 'b'], to2);
+    expect(sent(h)[0].map((t) => t.tabId)).toEqual(['b', 'd']);
+    expect(h.ids()).toEqual(['a', 'c']);
+  });
+
+  it('MovingTheActiveTabShowsItsRightNeighbourBeforeTheMoveIsSent', async () => {
+    const h = await started(files, three());
+    await h.controller.moveTabs(['a'], to2);
+    expect(h.active()).toBe('b');
+    expect(h.live().doc.toString()).toBe('BBBB');
+    expect(h.calls.indexOf('swap')).toBeLessThan(h.calls.indexOf('move a → editor-2'));
+    expect(h.calls.indexOf('move a → editor-2')).toBeLessThan(h.calls.indexOf('activate b'));
+    expect(h.deps.comments.commitPauses).toHaveBeenCalledWith('/a.md');
+  });
+
+  it('AnUntitledTabGoesWithItsText_TheActiveOneWithWhatWasJustTyped', async () => {
+    const h = await started(files, [untitledTab('u'), untitledTab('v', 'draft'), fileTab('b', '/b.md')]);
+    h.type('typed');
+    await h.controller.moveTabs(['v', 'u'], to2);
+    expect(sent(h)[0].map((t) => [t.tabId, t.content])).toEqual([
+      ['u', 'typed'],
+      ['v', 'draft'],
+    ]);
+    expect(h.ids()).toEqual(['b']);
+  });
+
+  it('StampsCaretAndQuickLookGoWithIt', async () => {
+    const b: InitTab = {
+      ...fileTab('b', '/b.md'),
+      cursor: 3,
+      topLine: 2,
+      openedAt: 50,
+      viewedAt: 60,
+      unviewed: true,
+      transient: true,
+      transientSeenAt: 70,
+    };
+    const h = await started(files, [fileTab('a', '/a.md'), b]);
+    await h.controller.moveTabs(['b'], to2);
+    expect(sent(h)[0]).toEqual([
+      {
+        tabId: 'b',
+        content: null,
+        cursor: 3,
+        topLine: 2,
+        openedAt: 50,
+        viewedAt: 60,
+        unviewed: true,
+        transient: true,
+        transientSeenAt: 70,
+        inbox: [],
+      },
+    ]);
+  });
+
+  it('WhereAnAgentPlacedTheCaretWinsOverWhereItWas', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), { ...fileTab('b', '/b.md'), cursor: 1 }]);
+    await h.controller.runExclusive(async () => {
+      h.controller.placeCaretNow('b', { cursor: 3, topLine: 4 });
+    });
+    await h.controller.moveTabs(['b'], to2);
+    expect(sent(h)[0][0]).toMatchObject({ cursor: 3, topLine: 4 });
+  });
+
+  it('WhatWaitedForTheTabGoesWithIt', async () => {
+    const h = await started(files, three());
+    h.inboxes.set('b', [pulse]);
+    await h.controller.moveTabs(['b'], to2);
+    expect(sent(h)[0][0].inbox).toEqual([pulse]);
+    expect(h.calls).toContain('carry b');
+  });
+
+  it('AnActiveFileTabWhoseSaveDidNotLandIsRefused_NothingMoves', async () => {
+    const h = await started(files, three());
+    h.setSaveSucceeds(false);
+    h.type('unsaved');
+    expect(await h.controller.moveTabs(['a', 'b'], to2)).toEqual({ kind: 'refused' });
+    expect(h.deps.reportUnsaved).toHaveBeenCalledTimes(1);
+    expect(h.deps.autosave.flush).toHaveBeenCalledTimes(FLUSH_ATTEMPTS);
+    expect(h.deps.rust.move).not.toHaveBeenCalled();
+    expect(h.ids()).toEqual(['a', 'b', 'c']);
+    expect(h.live().doc.toString()).toBe('AAAAunsaved');
+  });
+
+  it('AnActiveFileTabJustTypedIntoIsFlushedAndMoves', async () => {
+    const h = await started(files, three());
+    h.type('!');
+    expect(await h.controller.moveTabs(['a'], to2)).toMatchObject({ kind: 'moved' });
+    expect(h.files.get('/a.md')).toBe('AAAA!');
+    expect(h.deps.reportUnsaved).not.toHaveBeenCalled();
+  });
+
+  it('ASaveErrorRefusesTheMove', async () => {
+    const h = await started(files, three());
+    vi.mocked(h.deps.saveErrorPending).mockReturnValue(true);
+    expect(await h.controller.moveTabs(['a'], to2)).toEqual({ kind: 'refused' });
+    expect(h.deps.rust.move).not.toHaveBeenCalled();
+  });
+
+  it('MovingEveryTabClosesTheWindowAfterTheMove', async () => {
+    const h = await started(files, three());
+    const outcome = await h.controller.moveTabs(['c', 'a', 'b'], { kind: 'new-window' });
+    expect(outcome).toEqual({ kind: 'moved', label: 'editor-9', number: 9, count: 3 });
+    expect(h.calls.indexOf('move a,b,c → new')).toBeLessThan(h.calls.indexOf('closeWindow'));
+    expect(h.live().doc.toString()).toBe('');
+    expect(h.ids()).toEqual([]);
+  });
+
+  it('AFailedMovePutsTheTabsBackWhereTheyStood', async () => {
+    const h = await started(files, three());
+    h.inboxes.set('b', [pulse]);
+    vi.mocked(h.deps.rust.move).mockRejectedValueOnce(new Error('window editor-2 is gone'));
+    expect(await h.controller.moveTabs(['b'], to2)).toEqual({ kind: 'failed', error: 'window editor-2 is gone' });
+    expect(h.ids()).toEqual(['a', 'b', 'c']);
+    expect(h.active()).toBe('a');
+    expect(h.calls).toContain('adopt b 1');
+  });
+
+  it('AFailedMoveEndsWithRustToldWhichTabIsActive_SoTheWatcherIsRight', async () => {
+    const h = await started(files, three());
+    vi.mocked(h.deps.rust.move).mockRejectedValueOnce(new Error('no'));
+    await h.controller.moveTabs(['b'], to2);
+    expect(lastActivate(h)).toBe('activate a');
+
+    h.calls.length = 0;
+    vi.mocked(h.deps.rust.move).mockRejectedValueOnce(new Error('no'));
+    await h.controller.moveTabs(['a'], to2);
+    expect(h.ids()).toEqual(['a', 'b', 'c']);
+    expect(lastActivate(h)).toBe(`activate ${h.active()}`);
+    expect(h.calls.indexOf('move a → editor-2')).toBeLessThan(h.calls.lastIndexOf(`activate ${h.active()}`));
+  });
+
+  it('AFailedMoveOfTheWholeWindowShowsItsTabAgain', async () => {
+    const h = await started(files, three());
+    vi.mocked(h.deps.rust.move).mockRejectedValueOnce(new Error('no'));
+    await h.controller.moveTabs(['a', 'b', 'c'], { kind: 'new-window' });
+    expect(h.ids()).toEqual(['a', 'b', 'c']);
+    expect(h.active()).toBe('a');
+    expect(h.live().doc.toString()).toBe('AAAA');
+    expect(h.deps.rust.closeWindow).not.toHaveBeenCalled();
+    expect(lastActivate(h)).toBe('activate a');
+  });
+
+  it('MoveToNewWindowsSendsEachTabToAWindowOfItsOwn_InListOrder', async () => {
+    const h = await started(files, three());
+    const outcome = await h.controller.moveToNewWindows(['c', 'a']);
+    expect(h.calls.filter((c) => c.startsWith('move '))).toEqual(['move a → new', 'move c → new']);
+    expect(outcome?.moved.map((m) => m.label)).toEqual(['editor-9', 'editor-10']);
+    expect(outcome?.stranded).toEqual([]);
+    expect(h.ids()).toEqual(['b']);
+  });
+
+  it('MoveToNewWindowsNeverReleases_TheAgentsKeepWaiting_AndTheTabKeepsWhatItHad', async () => {
+    const b: InitTab = { ...fileTab('b', '/b.md'), cursor: 2, openedAt: 5, transient: true, transientSeenAt: 6 };
+    const h = await started(files, [fileTab('a', '/a.md'), b, untitledTab('u', 'draft')]);
+    h.inboxes.set('b', [pulse]);
+    await h.controller.moveToNewWindows(['b', 'u']);
+    expect(h.deps.rust.release).not.toHaveBeenCalled();
+    expect(h.deps.ai.forget).not.toHaveBeenCalled();
+    expect(sent(h)).toEqual([
+      [expect.objectContaining({ tabId: 'b', cursor: 2, openedAt: 5, transient: true, transientSeenAt: 6, inbox: [pulse] })],
+      [expect.objectContaining({ tabId: 'u', content: 'draft' })],
+    ]);
+    expect(h.ids()).toEqual(['a']);
+  });
+
+  it('MoveToNewWindowsReportsWhatStayed', async () => {
+    const h = await started(files, three());
+    vi.mocked(h.deps.rust.move)
+      .mockResolvedValueOnce({ label: 'editor-9', number: 9 })
+      .mockRejectedValueOnce(new Error('no'));
+    const outcome = await h.controller.moveToNewWindows(['b', 'c']);
+    expect(outcome?.stranded).toEqual([{ path: '/c.md', error: 'no' }]);
+    expect(h.ids()).toEqual(['a', 'c']);
+  });
+});
+
+describe('tabs arriving from another window (plan 05)', () => {
+  const files = { '/a.md': 'AAAA', '/b.md': 'BBBB', '/c.md': 'CCCC', '/x.md': 'XXXX' };
+  const three = () => [fileTab('a', '/a.md'), fileTab('b', '/b.md'), fileTab('c', '/c.md')];
+  const meta = (h: Harness, id: string) => h.controller.list.tabs.find((t) => t.id === id);
+  const ask = { kind: 'ask', payload: { id: 4 }, deadline: 9_999_999 } as unknown as InboxItem;
+
+  it('ArrivalsGoRightAfterTheActiveTab_InOrder_AndTheFirstIsShown', async () => {
+    const h = await started(files, three());
+    h.clock.focused = false;
+    await h.controller.arrive([fileTab('x', '/x.md'), untitledTab('y', 'note')]);
+    expect(h.ids()).toEqual(['a', 'x', 'y', 'b', 'c']);
+    expect(h.active()).toBe('x');
+    expect(h.live().doc.toString()).toBe('XXXX');
+    expect(h.deps.rust.activate).toHaveBeenCalledWith('x');
+    expect(h.deps.rust.open, 'Rust registered them already').not.toHaveBeenCalled();
+    expect(meta(h, 'y')?.dirty, 'an untitled tab with text').toBe(true);
+  });
+
+  it('ArrivalsKeepTheirStampsAndQuickLook', async () => {
+    const h = await started(files, three());
+    h.clock.focused = false;
+    await h.controller.arrive([
+      { ...fileTab('x', '/x.md'), openedAt: 7, viewedAt: 8, unviewed: true, transient: true, transientSeenAt: 9 },
+    ]);
+    expect(meta(h, 'x')).toMatchObject({ openedAt: 7, viewedAt: 8, unviewed: true, transient: true, transientSeenAt: 9 });
+  });
+
+  it('WhatWaitedArrivesInTheInboxBeforeTheTabIsEntered', async () => {
+    const h = await started(files, three());
+    await h.controller.arrive([{ ...fileTab('x', '/x.md'), inbox: [ask] }]);
+    expect(h.calls.indexOf('adopt x 1')).toBeGreaterThanOrEqual(0);
+    expect(h.calls.indexOf('adopt x 1')).toBeLessThan(h.calls.indexOf('enter x'));
+  });
+
+  it('AWindowThatMayNotLeaveItsTabKeepsArrivalsInTheBackground_Quietly', async () => {
+    const h = await started(files, three());
+    h.setSaveSucceeds(false);
+    h.type('unsaved');
+    await h.controller.arrive([fileTab('x', '/x.md')]);
+    expect(h.ids()).toEqual(['a', 'x', 'b', 'c']);
+    expect(h.active()).toBe('a');
+    expect(h.deps.reportUnsaved).not.toHaveBeenCalled();
+    expect(h.deps.settled).toHaveBeenCalled();
+  });
+
+  it('ABlankUntitledGivesWayToArrivals', async () => {
+    const h = await started(files, [untitledTab('u')]);
+    await h.controller.arrive([fileTab('x', '/x.md')]);
+    expect(h.ids()).toEqual(['x']);
+    expect(h.calls).toContain('release u');
+  });
+
+  it('ANewWindowThatMountedBeforeTheMove_ItsBlankUntitledGivesWayToTheEvent', async () => {
+    // Built for the move, it called get_window_init before `tab_move` took the
+    // lock: an empty init (a blank Untitled of its own), then `tabs-arrive`.
+    const h = makeHarness(files);
+    await h.controller.init([], null);
+    expect(h.ids()).toEqual(['t1']);
+    await h.controller.arrive([untitledTab('y', 'note'), fileTab('x', '/x.md')]);
+    expect(h.ids()).toEqual(['y', 'x']);
+    expect(h.active()).toBe('y');
+    expect(h.live().doc.toString()).toBe('note');
+    expect(h.calls).toContain('release t1');
+    expect(h.deps.rust.closeWindow).not.toHaveBeenCalled();
+  });
+
+  it('AnUntitledTypedIntoDoesNotGiveWay', async () => {
+    const h = await started(files, [untitledTab('u')]);
+    h.type('mine');
+    await h.controller.arrive([fileTab('x', '/x.md')]);
+    expect(h.ids()).toEqual(['u', 'x']);
+    expect(h.deps.rust.release).not.toHaveBeenCalled();
+  });
+
+  it('ANewWindowsInitCarriesQuickLookAndInbox', async () => {
+    const h = makeHarness(files);
+    await h.controller.init([{ ...fileTab('x', '/x.md'), transient: true, transientSeenAt: 5, inbox: [ask] }], 'x');
+    expect(meta(h, 'x')).toMatchObject({ transient: true, transientSeenAt: 5 });
+    expect(h.calls).toContain('adopt x 1');
+  });
+
+  it('AnArrivalThisWindowAlreadyHasIsIgnored', async () => {
+    const h = await started(files, three());
+    await h.controller.arrive([fileTab('b', '/b.md')]);
+    expect(h.ids()).toEqual(['a', 'b', 'c']);
+    expect(h.deps.rust.activate).not.toHaveBeenCalled();
   });
 });

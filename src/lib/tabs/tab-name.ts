@@ -7,7 +7,7 @@ export function tabName(path: string | null): string {
 }
 
 /** Several files' names for one line of text: the first three, then "+N". */
-export function tabNames(paths: readonly string[]): string {
+export function tabNames(paths: readonly (string | null)[]): string {
   const shown = paths.slice(0, 3).map(tabName).join(', ');
   return paths.length > 3 ? `${shown} +${paths.length - 3}` : shown;
 }

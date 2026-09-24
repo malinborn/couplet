@@ -12,6 +12,7 @@ import {
   insertAt,
   neighbour,
   removeTab,
+  removeTabs,
   reorderTabs,
   replaceTab,
   setActive,
@@ -20,6 +21,8 @@ import {
   type TabListState,
   type TabMeta,
 } from './tab-model';
+import type { InboxItem } from './agent-inbox';
+import type { MoveTarget } from './carousel';
 
 /** Flush attempts before a still-dirty file tab refuses to be left. */
 export const FLUSH_ATTEMPTS = 3;
@@ -55,6 +58,11 @@ export interface InitTab {
   openedAt?: number;
   viewedAt?: number;
   unviewed?: boolean;
+  /** A quick look carried by a move between windows (plan 05); absent for every other tab. */
+  transient?: boolean;
+  transientSeenAt?: number;
+  /** What waited for the tab in its old window's agent inbox (plan 05). */
+  inbox?: readonly InboxItem[];
 }
 
 /** One tab on the heartbeat — the shape `tabs_sync` takes. */
@@ -67,6 +75,39 @@ export interface TabReport {
   openedAt: number;
   viewedAt: number;
   unviewed: boolean;
+}
+
+/** One tab as it leaves for another window — the shape `tab_move` takes (Rust `MovedTab`). */
+export interface MovedTab {
+  tabId: string;
+  /** An untitled tab's text; `null` for a file tab — the target reads its file. */
+  content: string | null;
+  cursor: number;
+  topLine: number;
+  openedAt: number;
+  viewedAt: number;
+  unviewed: boolean;
+  transient: boolean;
+  transientSeenAt: number;
+  inbox: InboxItem[];
+}
+
+/** `tab_move`'s answer: where the tabs are now. */
+export interface MoveDone {
+  label: string;
+  number: number | null;
+}
+
+export type MoveOutcome =
+  | { kind: 'moved'; label: string; number: number | null; count: number }
+  /** The active tab may not be left (its save has not landed, or a save error stands); the toast says why. */
+  | { kind: 'refused' }
+  /** Rust refused or could not be asked; the tabs are back where they stood. */
+  | { kind: 'failed'; error: string };
+
+export interface NewWindowsOutcome {
+  moved: MoveDone[];
+  stranded: Stranded[];
 }
 
 /**
@@ -149,6 +190,10 @@ export interface TabControllerDeps {
      * its agents — `tab closed`, `tab released`, `window closed`.
      */
     forget(tabId: string): void;
+    /** `tabId` leaves for another window: what waits for it, taken out (`agent.carry`). */
+    carry(tabId: string): InboxItem[];
+    /** `tabId` arrived with what waited for it in its old window (`agent.adopt`). */
+    adopt(tabId: string, items: readonly InboxItem[]): void;
     hasLiveAsk(): boolean;
   };
   disk: {
@@ -165,8 +210,8 @@ export interface TabControllerDeps {
     close(tabId: string, position: Position): Promise<void>;
     focusElsewhere(path: string): Promise<void>;
     closeWindow(): Promise<void>;
-    /** A window of its own for `path` (Rust `open_file_window_cmd`). Rejects when none opened. */
-    openWindow(path: string): Promise<void>;
+    /** Move tabs of this window to `target` (Rust `tab_move`, atomic). Rejects when Rust refused. */
+    move(tabs: MovedTab[], target: MoveTarget): Promise<MoveDone>;
   };
   /** A tab became active (`opened`: it was just opened, not switched to). */
   entered(path: string | null, opened: boolean): void;
@@ -210,19 +255,10 @@ interface Entry {
   restore: Position | null;
 }
 
-/** A file tab taken out of this window, as it was — to put back if its new window never opens. */
-interface Detached {
-  meta: TabMeta;
-  path: string;
-  /** Its index just before it left. */
-  index: number;
-  position: Position;
-}
-
-/** A tab "to new windows" left in this window: its window did not open. */
+/** A tab «В новые окна» left in this window: its move was refused, or failed. */
 export interface Stranded {
-  path: string;
-  /** Why no window opened; `null`: this window never let go of the file. */
+  path: string | null;
+  /** Why it failed; `null`: refused here — the active tab could not be left, and the toast says why. */
   error: string | null;
 }
 
@@ -289,6 +325,37 @@ export function createTabController(deps: TabControllerDeps) {
 
   function newMeta(id: string, path: string | null): TabMeta {
     return { id, path, dirty: false, openedAt: deps.now(), viewedAt: 0, unviewed: false };
+  }
+
+  function cacheFromInit(t: InitTab): TabCache {
+    return {
+      state: null,
+      content: t.content,
+      cursor: t.cursor,
+      topLine: t.topLine,
+      scroll: null,
+      baseline: null,
+      enterAt: null,
+    };
+  }
+
+  function metaFromInit(t: InitTab, now: number): TabMeta {
+    return {
+      id: t.tabId,
+      path: t.path,
+      dirty: t.path === null && (t.content ?? '') !== '',
+      openedAt: t.openedAt || now,
+      viewedAt: t.viewedAt ?? 0,
+      unviewed: t.unviewed ?? false,
+      ...(t.transient ? { transient: true, transientSeenAt: t.transientSeenAt ?? 0 } : {}),
+    };
+  }
+
+  /** What waited for tabs that moved here, back into this window's inbox. */
+  function adoptInboxes(tabs: readonly InitTab[]): void {
+    for (const t of tabs) {
+      if (t.inbox && t.inbox.length > 0) deps.ai.adopt(t.tabId, t.inbox);
+    }
   }
 
   /**
@@ -529,26 +596,11 @@ export function createTabController(deps: TabControllerDeps) {
   }
 
   async function initNow(tabs: readonly InitTab[], activeTabId: string | null): Promise<void> {
-    for (const t of tabs) {
-      cache.set(t.tabId, {
-        state: null,
-        content: t.content,
-        cursor: t.cursor,
-        topLine: t.topLine,
-        scroll: null,
-        baseline: null,
-        enterAt: null,
-      });
-    }
+    for (const t of tabs) cache.set(t.tabId, cacheFromInit(t));
     const now = deps.now();
-    const metas: TabMeta[] = tabs.map((t) => ({
-      id: t.tabId,
-      path: t.path,
-      dirty: t.path === null && (t.content ?? '') !== '',
-      openedAt: t.openedAt || now,
-      viewedAt: t.viewedAt ?? 0,
-      unviewed: t.unviewed ?? false,
-    }));
+    const metas: TabMeta[] = tabs.map((t) => metaFromInit(t, now));
+    // A window built for a move (plan 05) is born with them.
+    adoptInboxes(tabs);
     const start = metas.some((m) => m.id === activeTabId) ? activeTabId : (metas[0]?.id ?? null);
     const found = await prepareLoadable({ tabs: metas, activeId: start });
     await releaseAll(found.failed);
@@ -563,6 +615,36 @@ export function createTabController(deps: TabControllerDeps) {
     const tab = newMeta(answer.tabId, null);
     publish(insertAfterActive(found.working, tab));
     await enter(tab, { kind: 'fresh', content: '', exists: false }, null, false);
+  }
+
+  /**
+   * Tabs another window moved here (plan 05, D4). Rust registered them to this
+   * window already: never `tab_open`ed. They go right after the active tab, in
+   * order; the first one is shown unless the active tab may not be left — then
+   * they wait in the background, and no toast says so: the human is in the
+   * other window. A blank Untitled gives way, as it does for an agent's open —
+   * among them the one a window built for the move shows when it mounted
+   * before `tab_move` took the lock (its tabs then come by event, not init).
+   */
+  async function arriveNow(tabs: readonly InitTab[]): Promise<void> {
+    const fresh = tabs.filter((t) => !findById(list, t.tabId));
+    if (fresh.length === 0) return;
+    const blank = isEmptyUntitled() ? list.activeId : null;
+    const now = deps.now();
+    const at = list.tabs.findIndex((t) => t.id === list.activeId);
+    let next = list;
+    fresh.forEach((t, k) => {
+      cache.set(t.tabId, cacheFromInit(t));
+      next = insertAt(next, at === -1 ? next.tabs.length : at + 1 + k, metaFromInit(t, now));
+    });
+    publish(next);
+    adoptInboxes(fresh);
+    const shown = await activateNow(fresh[0].tabId, { quiet: true });
+    if (shown === 'ok' && blank !== null && blank !== fresh[0].tabId && findById(list, blank)) {
+      await closeNow(blank, 'release');
+      return;
+    }
+    if (shown !== 'ok') deps.settled();
   }
 
   async function activateNow(
@@ -728,8 +810,8 @@ export function createTabController(deps: TabControllerDeps) {
   /**
    * Take `tabId` out of this window. `'close'` records it for ⌘⇧T and fails
    * its agents (Rust `tab_close`); `'release'` gives the claim back without a
-   * closed-stack entry (Rust `tab_release`) — the tab moves to another window,
-   * so a release never closes this one. `true` when the tab is gone from the list.
+   * closed-stack entry (Rust `tab_release`) — a blank Untitled that gave way
+   * to arrivals — so a release never closes this one. `true` when the tab is gone from the list.
    * `onLastTab` runs when closing it is about to close the window — an agent's
    * `close` answers there, before its window is gone. `quiet`: an agent's
    * close — its refusal is the agent's answer, not a toast (D5).
@@ -820,58 +902,105 @@ export function createTabController(deps: TabControllerDeps) {
     return [...ids.filter((id) => id !== active), ...ids.filter((id) => id === active)];
   }
 
-  function positionOf(tabId: string): Position {
-    if (tabId === list.activeId) {
-      return { cursor: deps.editor.current()?.selection.main.head ?? 0, topLine: deps.editor.topLine() };
+  /** One tab as it leaves: what the target needs to show it as it was here (D2). */
+  function outgoing(tab: TabMeta): MovedTab {
+    const c = cache.get(tab.id);
+    // Where an agent asked the caret to be on the next showing wins over where it was.
+    const at = c?.enterAt ?? null;
+    return {
+      tabId: tab.id,
+      content: tab.path === null ? (c?.state?.doc.toString() ?? c?.content ?? '') : null,
+      cursor: at?.cursor ?? c?.cursor ?? 0,
+      topLine: at?.topLine ?? c?.topLine ?? 1,
+      openedAt: tab.openedAt,
+      viewedAt: tab.viewedAt,
+      unviewed: tab.unviewed,
+      transient: tab.transient === true,
+      transientSeenAt: tab.transientSeenAt ?? 0,
+      inbox: deps.ai.carry(tab.id),
+    };
+  }
+
+  /** Rust refused the move: the tabs come back where they stood, in the background, with what waited for them. */
+  function putBack(before: TabListState, gone: readonly MovedTab[]): void {
+    const ids = new Set(gone.map((g) => g.tabId));
+    let back = list;
+    for (const [index, tab] of before.tabs.entries()) {
+      if (ids.has(tab.id) && !findById(back, tab.id)) back = insertAt(back, index, tab);
     }
-    const c = cache.get(tabId);
-    return { cursor: c?.cursor ?? 0, topLine: c?.topLine ?? 1 };
+    publish(back);
+    for (const g of gone) {
+      if (g.inbox.length > 0) deps.ai.adopt(g.tabId, g.inbox);
+    }
   }
 
   /**
-   * Release file tabs for new windows of their own. Untitled tabs stay (a new
-   * window opens by path), and the window is never emptied — its last tab
-   * stays. Each released tab needs its window whatever happens next.
+   * Move `ids` to another window (plan 05, D3): check → prepare → hand over →
+   * swap → the one `await`, `tab_move` → settle. Nothing awaits between the
+   * last dirty check and the swap, and the IPC comes after the swap: a key
+   * typed meanwhile lands in the neighbour (or in a blank scratch state when
+   * the window empties), never in a tab that is leaving. A move is neither a
+   * close nor a release (D13): no `tab_close`/`tab_release`, and `ai.forget`
+   * is not called — `outgoing` carries the inbox instead. Whatever Rust
+   * answers, the window ends with `tab_activate` for the tab it shows (or
+   * closes): Rust stops a watcher whose file moved.
    */
-  async function detachNow(ids: readonly string[]): Promise<Detached[]> {
-    const out: Detached[] = [];
-    for (const id of backgroundFirst(ids)) {
-      const meta = findById(list, id);
-      if (!meta || meta.path === null || list.tabs.length <= 1) continue;
-      const detached = { meta, path: meta.path, index: list.tabs.indexOf(meta), position: positionOf(id) };
-      try {
-        if (await closeNow(id, 'release')) out.push(detached);
-      } catch (err) {
-        console.error('Failed to detach tab:', err);
-        // A background tab leaves the list before its release is sent; one
-        // that threw is still ours in Rust and would be in no window at all.
-        if (!findById(list, id)) await adoptNow(detached);
-      }
+  async function moveNow(ids: readonly string[], target: MoveTarget): Promise<MoveOutcome> {
+    const wanted = new Set(ids);
+    // This window's order, not the caller's: a group lands as it stood here (D7).
+    const moving = list.tabs.filter((t) => wanted.has(t.id)).map((t) => t.id);
+    if (moving.length === 0) return { kind: 'failed', error: 'no such tab' };
+    const activeMoves = list.activeId !== null && wanted.has(list.activeId);
+    let next: Loadable | null = null;
+    if (activeMoves) {
+      if (!(await mayLeave())) return { kind: 'refused' };
+      next = await prepareLoadable(removeTabs(list, moving).state);
+      if (!(await handOver())) return { kind: 'refused' };
+      // The swap starts here; nothing awaits until the IPC below.
+      stashActive();
     }
-    return out;
-  }
-
-  /**
-   * A detached tab whose window never opened comes back where it was, in the
-   * background: released and windowless it would be in no window at all. Its
-   * text is on disk (only a clean tab can be detached), so it is re-registered
-   * and read when next shown. Nothing is added when another window has it now.
-   */
-  async function adoptNow(d: Detached): Promise<void> {
-    if (findByPath(list, d.path)) return;
-    const answer = await deps.rust.open(d.path);
-    if (answer.kind !== 'created' && answer.kind !== 'this-window') return;
-    if (findById(list, answer.tabId)) return;
-    cache.set(answer.tabId, {
-      state: null,
-      content: null,
-      cursor: d.position.cursor,
-      topLine: d.position.topLine,
-      scroll: null,
-      baseline: null,
-      enterAt: null,
+    const before = list;
+    const leaving = moving.flatMap((id) => {
+      const tab = findById(list, id);
+      return tab ? [outgoing(tab)] : [];
     });
-    publish(insertAt(list, d.index, { ...d.meta, id: answer.tabId, dirty: false }));
+    const failed = next?.failed ?? [];
+    for (const id of failed) cache.delete(id);
+    publish(next ? next.working : removeTabs(list, moving).state);
+    let entry: Entry | null = null;
+    if (next?.tab) {
+      entry = build(next.tab, next.ready, null);
+      show(next.tab, entry);
+    } else if (activeMoves) {
+      // The window empties: nothing of the leaving tabs stays in the live view.
+      deps.editor.swap(deps.editor.createState('', null), { blur: true, scroll: 'top' });
+      deps.doc.setActive(null, false, null);
+    }
+    let done: MoveDone | null = null;
+    let error = '';
+    try {
+      done = await deps.rust.move(leaving, target);
+    } catch (err) {
+      error = message(err);
+    }
+    await releaseAll(failed);
+    if (done === null) {
+      putBack(before, leaving);
+      if (next?.tab && entry) await settle(next.tab, entry.restore, false);
+      else if (list.activeId === null) {
+        if (before.activeId !== null) await activateNow(before.activeId, { quiet: true });
+      } else {
+        await deps.rust.activate(list.activeId);
+      }
+      deps.settled();
+      return { kind: 'failed', error };
+    }
+    for (const id of moving) cache.delete(id);
+    if (next?.tab && entry) await settle(next.tab, entry.restore, false);
+    else deps.settled();
+    // D6: an emptied window closes — after Rust holds its tabs elsewhere.
+    if (list.tabs.length === 0) await deps.rust.closeWindow();
+    return { kind: 'moved', label: done.label, number: done.number, count: leaving.length };
   }
 
   /** An agent opens `path` without switching to it (spec §5). The tab shimmers. */
@@ -1184,41 +1313,26 @@ export function createTabController(deps: TabControllerDeps) {
       queue.run(async () => {
         for (const id of backgroundFirst(ids)) await closeNow(id, 'close');
       }),
+    /** Move `ids` (in this window's order) to another window or a new one (plan 05). */
+    moveTabs: (ids: readonly string[], target: MoveTarget) => queue.run(() => moveNow(ids, target)),
+    /** Tabs another window moved here (`tabs-arrive`). */
+    arrive: (tabs: readonly InitTab[]) => queue.run(() => arriveNow(tabs)),
     /**
-     * "To new windows" (spec §6): each selected file tab is released from this
-     * window and opened in a window of its own, `open_file_window` cascading
-     * them. Released first — a window opened while this one still held the
-     * file would only focus this one. A tab whose window did not open comes
-     * back here; resolves to those.
+     * «В новые окна» (spec §6, D7): each selected tab, in this window's order,
+     * into a window of its own — the one move every move is, never a release:
+     * agents keep waiting, and stamps, caret and quick look go with the tab. A
+     * tab whose move was refused or failed stays here and is reported.
      */
     moveToNewWindows: (ids: readonly string[]) =>
-      queue.run(async (): Promise<Stranded[]> => {
-        const stranded: (Detached & { error: string | null })[] = [];
-        for (const d of await detachNow(ids)) {
-          // A release that failed in IPC is logged, not thrown: Rust may still
-          // hold the file for this window, and a window opened for it would
-          // only focus this one.
-          if ((await deps.rust.owner(d.path)).kind === 'this-window') {
-            stranded.push({ ...d, error: null });
-            continue;
-          }
-          try {
-            await deps.rust.openWindow(d.path);
-          } catch (err) {
-            console.error('open_file_window_cmd failed:', err);
-            stranded.push({ ...d, error: err instanceof Error ? err.message : String(err) });
-          }
+      queue.run(async (): Promise<NewWindowsOutcome> => {
+        const moved: MoveDone[] = [];
+        const stranded: Stranded[] = [];
+        for (const tab of list.tabs.filter((t) => ids.includes(t.id))) {
+          const outcome = await moveNow([tab.id], { kind: 'new-window' });
+          if (outcome.kind === 'moved') moved.push({ label: outcome.label, number: outcome.number });
+          else stranded.push({ path: tab.path, error: outcome.kind === 'failed' ? outcome.error : null });
         }
-        // In reverse: each goes back to the index it had just before it left.
-        for (const d of [...stranded].reverse()) {
-          try {
-            await adoptNow(d);
-          } catch (err) {
-            console.error('Failed to bring a tab back:', err);
-          }
-        }
-        if (stranded.length > 0) deps.settled();
-        return stranded.map(({ path, error }) => ({ path, error }));
+        return { moved, stranded };
       }),
     /**
      * A tab's text without I/O: the live view for the active tab, the cached

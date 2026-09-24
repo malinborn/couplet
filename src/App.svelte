@@ -11,6 +11,7 @@
     onMenuEvent,
     onOpenFile,
     onReopenTab,
+    onTabsArrive,
     onFileChangedExternally,
     onSessionRestored,
     onRecentChanged,
@@ -61,7 +62,7 @@
   import { activeCellEditSession } from './lib/editor/cell-edit-session';
   import { closeSearchPanel } from '@codemirror/search';
   import { hideHoverMenu } from './lib/editor/hover-menu';
-  import { createTabController, type OpenAnswer } from './lib/tabs/controller';
+  import { createTabController, type MoveDone, type OpenAnswer, type Stranded } from './lib/tabs/controller';
   import { AGENT_ERRORS, createAgentCommands, type AgentResponse, type AskResult } from './lib/tabs/agent-commands';
   import { createTypingTracker } from './lib/tabs/typing';
   import { emptyTabList, type TabListState } from './lib/tabs/tab-model';
@@ -557,6 +558,8 @@
       leave: (tabId) => agent.leave(tabId),
       enter: (tabId) => agent.enter(tabId),
       forget: (tabId) => agent.forget(tabId),
+      carry: (tabId) => agent.carry(tabId),
+      adopt: (tabId, items) => agent.adopt(tabId, items),
       hasLiveAsk: () => liveAskShown(),
     },
     disk: {
@@ -598,7 +601,7 @@
         import('@tauri-apps/api/window')
           .then(({ getCurrentWindow }) => getCurrentWindow().close())
           .catch(logTabIpc('window close')),
-      openWindow: (path) => invoke<void>('open_file_window_cmd', { path }),
+      move: (moving, target) => invoke<MoveDone>('tab_move', { tabs: moving, target }),
     },
     entered: (path, opened) => {
       if (path === null) return;
@@ -654,13 +657,8 @@
       invoke<(GitInfo | null)[]>('tab_git_info', { paths }).catch(() => paths.map(() => null)),
   };
 
-  /**
-   * "To new windows" (spec §6). A tab whose window could not be opened is
-   * back in this window's list by the time this resolves; say so, or the
-   * gesture looks like it did nothing.
-   */
-  async function moveTabsToNewWindows(tabIds: string[]): Promise<void> {
-    const stranded = (await tabs.moveToNewWindows(tabIds)) ?? [];
+  /** Tabs a move left in this window; say so, or the gesture looks like it did nothing. */
+  function reportStranded(stranded: readonly Stranded[]): void {
     if (stranded.length === 0) return;
     // One toast for all of them: a toast replaces any other of its kind.
     const errors = [...new Set(stranded.flatMap(({ error }) => (error ? [error] : [])))];
@@ -670,6 +668,12 @@
       count: stranded.length,
       message: errors.length > 0 ? errors.join('; ') : null,
     });
+  }
+
+  /** «В новые окна» (spec §6): each tab through `tab_move`, into a window of its own. */
+  async function moveTabsToNewWindows(tabIds: string[]): Promise<void> {
+    const outcome = await tabs.moveToNewWindows(tabIds);
+    if (outcome) reportStranded(outcome.stranded);
   }
 
   // --- Restored caret / scroll ---
@@ -1752,12 +1756,18 @@
     const unlistenAiCommand = onAiCommand((payload) => {
       void tabSourcesReady.then(() => handleAiCommand(payload));
     });
+    // Tabs another window moved here. A window built for a move can mount
+    // before the move takes the lock: its init is then a blank Untitled, and
+    // the tabs come this way (the blank tab gives way to them).
+    const unlistenTabsArrive = onTabsArrive((arrived) => {
+      void tabSourcesReady.then(() => tabs.arrive(arrived));
+    });
 
     // Pull what the backend stored for this window (its tabs, restored or
     // handed over before it mounted) — pulled, so it cannot race the listeners.
     // Retried once: a window that never gets here stays unmounted in Rust, and
     // files meant for it pile up in a payload nobody pulls.
-    Promise.all([unlistenOpenFile, unlistenReopenTab, unlistenAiCommand])
+    Promise.all([unlistenOpenFile, unlistenReopenTab, unlistenAiCommand, unlistenTabsArrive])
       .then(() => invoke<WindowInit>('get_window_init'))
       .catch((err: unknown) => {
         console.error('get_window_init failed, retrying once:', err);
@@ -2112,6 +2122,7 @@
       unlistenMenu.then((fn) => fn());
       unlistenOpenFile.then((fn) => fn());
       unlistenReopenTab.then((fn) => fn());
+      unlistenTabsArrive.then((fn) => fn());
       unlistenExternalChange.then((fn) => fn());
       unlistenAiCommand.then((fn) => fn());
       unlistenComments.then((fn) => fn());
