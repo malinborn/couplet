@@ -80,10 +80,12 @@ focus_flag() {
 
 # AI interface: `mdmini show|edit|ask <file> ...` talk to the running app's
 # command socket instead of the file-open path below. stdin passes through
-# untouched for `edit`. `edit` and `ask` never switch tabs and `show -b`
-# stays behind, so none of them activates an app it has to launch.
+# untouched for `edit`. `edit` never switches tabs and `show -b` stays behind,
+# so neither activates an app it has to launch. `ask` does (tabs-questions
+# Q7): an app that was not running has no window to type in, and its question
+# would otherwise wait unseen behind the terminal while its timeout runs.
 if [ "$1" = "show" ] || [ "$1" = "edit" ] || [ "$1" = "ask" ]; then
-  if [ "$1" != "show" ] || [ "$(focus_flag "$@")" = "background" ]; then
+  if [ "$1" = "edit" ] || { [ "$1" = "show" ] && [ "$(focus_flag "$@")" = "background" ]; }; then
     ensure_running background
   else
     ensure_running

@@ -874,6 +874,26 @@ fn quiet_answer(response: &mut AiResponse) {
     }
 }
 
+/// How the window built for `req` comes up — step 4, no window took it.
+/// `focus` is the payload's, after Q10's downgrade (`quiet_payload`): a
+/// command that may take the view brings its window forward (spec §4), any
+/// other is built behind. An `ask` is the exception (tabs-questions Q7): its
+/// question stands in that new window while its timeout runs, so the window
+/// comes forward and the app activates — unless the human types somewhere
+/// (Q10), when it too is built behind.
+///
+/// A file claimed elsewhere while the window was being built is the one case
+/// where a foreground `ask` raises a window it did not create: its holder,
+/// the way a foreground open does (`window::try_open_file_window_with`).
+fn new_window_activation(req: &AiRequest, focus: bool, typing_elsewhere: bool) -> window::Activation {
+    let ask_raises = matches!(req, AiRequest::Ask { .. }) && !typing_elsewhere;
+    if focus || ask_raises {
+        window::Activation::Foreground
+    } else {
+        window::Activation::Background
+    }
+}
+
 /// Route a parsed request to its window (spec §5 — see `routing::route`),
 /// opening one first if needed, and arrange for the response to come back on `tx`.
 fn dispatch(app: &AppHandle, mut req: AiRequest, tx: mpsc::Sender<AiResponse>) -> Dispatched {
@@ -976,7 +996,7 @@ fn dispatch(app: &AppHandle, mut req: AiRequest, tx: mpsc::Sender<AiResponse>) -
     // and its outcome comes back on `opened_rx`: the file may have been
     // opened elsewhere since `route_now`, and then this command's tab is the
     // one the human already had.
-    let activation = if payload.focus { window::Activation::Foreground } else { window::Activation::Background };
+    let activation = new_window_activation(&req, payload.focus, typing_elsewhere);
     let (opened_tx, opened_rx) = mpsc::channel();
     let ticket = Arc::new(OpenTicket::new());
     let ticket_for_open = Arc::clone(&ticket);
@@ -2541,6 +2561,26 @@ mod tests {
             let mut p = payload_for(&parse_request(line).unwrap(), 3, false);
             assert!(!quiet_payload(&mut p, true), "never took the view, nothing to downgrade: {line}");
         }
+    }
+
+    #[test]
+    fn a_new_window_for_an_ask_comes_forward_unless_the_human_types() {
+        use crate::window::Activation::{Background, Foreground};
+        let ask = parse_request(r#"{"v":1,"cmd":"ask","path":"/a.md","question":"Q?","options":["A","B"]}"#).unwrap();
+        assert_eq!(new_window_activation(&ask, false, false), Foreground, "Q7: the question is in front");
+        assert_eq!(new_window_activation(&ask, false, true), Background, "Q10: typing keeps it behind");
+
+        let edit = parse_request(r#"{"v":1,"cmd":"edit","path":"/a.md","content":"x"}"#).unwrap();
+        let open = parse_request(r#"{"v":1,"cmd":"open","path":"/a.md"}"#).unwrap();
+        let show_bg = parse_request(r#"{"v":1,"cmd":"show","path":"/a.md","focus":false}"#).unwrap();
+        for req in [&edit, &open, &show_bg] {
+            assert_eq!(new_window_activation(req, false, false), Background, "other verbs unchanged: {req:?}");
+        }
+        let show = parse_request(r#"{"v":1,"cmd":"show","path":"/a.md"}"#).unwrap();
+        let mut p = payload_for(&show, 1, false);
+        assert_eq!(new_window_activation(&show, p.focus, false), Foreground);
+        quiet_payload(&mut p, true);
+        assert_eq!(new_window_activation(&show, p.focus, true), Background, "downgraded by typing");
     }
 
     #[test]
