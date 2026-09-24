@@ -59,6 +59,8 @@
   import { closeSearchPanel } from '@codemirror/search';
   import { hideHoverMenu } from './lib/editor/hover-menu';
   import { createTabController, type OpenAnswer } from './lib/tabs/controller';
+  import { AGENT_ERRORS, createAgentCommands, type AgentResponse, type AskResult } from './lib/tabs/agent-commands';
+  import { createTypingTracker } from './lib/tabs/typing';
   import { emptyTabList, type TabListState } from './lib/tabs/tab-model';
   import { leaveEffects } from './lib/tabs/tab-cache';
   import { decideSaveAs } from './lib/tabs/save-as';
@@ -540,15 +542,12 @@
       reload: reloadComments,
     },
     ai: {
-      // Wired to the agent orchestrator in the next tasks; until then nothing
-      // is parked, and a question on a tab that is left waits out its timeout.
-      leave: () => false,
-      enter: async () => {},
-      forget: () => {},
-      hasLiveAsk: () => {
-        const view = editorHandle?.view;
-        return view ? activeAskIds(view.state).length > 0 : false;
-      },
+      // `agent` is created further down from `tabs` itself; the controller
+      // calls these only around a switch or a close, after the script ran.
+      leave: (tabId) => agent.leave(tabId),
+      enter: (tabId) => agent.enter(tabId),
+      forget: (tabId) => agent.forget(tabId),
+      hasLiveAsk: () => liveAskShown(),
     },
     disk: {
       exists: (path) => readingForTab(path, () => fileExists(path)),
@@ -1468,87 +1467,21 @@
     });
   }
 
-  // --- AI command handling (`mdmini show`/`edit`) ---
-  interface AiResponse {
-    ok: boolean;
-    error?: string;
-    changed_lines?: [number, number][];
-    answer?: string;
-    answers?: string[];
-    custom?: string;
-    /** `#N`, filled in by Rust. */
-    window?: number;
-    /** The tab is its window's active tab afterwards. */
-    focused?: boolean;
+  // --- AI commands (`mdmini show`/`edit`/`ask`, routed opens, `close`) ---
+  //
+  // Where a command lands, and what it does to a tab in the background, is
+  // `lib/tabs/agent-commands.ts`. What stays here is the live view.
+
+  const typingTracker = createTypingTracker({ now: () => Date.now(), focused: () => document.hasFocus() });
+
+  /** Capture phase on the window: every key, before anything stops it. */
+  function noteTyping(e: KeyboardEvent): void {
+    typingTracker.note(e);
   }
 
-  const AI_ACTIVATION_ERRORS: Record<'refused' | 'busy' | 'failed', string> = {
-    refused: 'the current tab has unsaved changes',
-    busy: "the window is showing another agent's question",
-    failed: 'could not open the tab',
-  };
-
-  /**
-   * Route an agent's command to the tab that holds its file.
-   *
-   * A background tab is activated first, as if the user had clicked it —
-   * interim behaviour until plan 04's routing contract (`docs/ai-interface.md`,
-   * "Tabs"). It runs in the tab queue, so a command arriving mid-switch waits
-   * for the switch instead of failing, and it never takes the view away from
-   * another agent's live question.
-   */
-  async function handleAiCommand(payload: AiCommandPayload): Promise<void> {
-    // Before any of the command's own outcomes: an agent has reached this
-    // install for the first time, and this is the one moment the user is
-    // certain to be looking. Raised even if the command below then fails —
-    // something visibly happened either way, and the point is to explain what.
-    if (payload.firstUse) {
-      toasts.push({ kind: 'ai-first-use' });
-    }
-    // Until the orchestrator (Task 12) handles them: a verb this window does
-    // not know is refused before anything below activates or marks a tab, and
-    // must never fall through to `handleAiCommandForActive`'s `edit` branch.
-    if (payload.cmd !== 'show' && payload.cmd !== 'ask' && payload.cmd !== 'edit') {
-      await respondToAi(payload.id, { ok: false, error: `unsupported command: ${payload.cmd}` });
-      return;
-    }
-    await tabs.runExclusive(async () => {
-      // A command can wait here behind a switch that cancelled it (the tab
-      // it was for was left or closed) or past its own timeout. Its agent has
-      // been answered already; activating a tab or placing an ask for it now
-      // would act for nobody.
-      const stillWanted = await invoke<boolean>('ai_is_pending', { id: payload.id }).catch(
-        (err: unknown) => {
-          logTabIpc('ai_is_pending')(err);
-          return true;
-        }
-      );
-      if (!stillWanted) return;
-      if (payload.path !== fileState.filePath) {
-        const tab = tabs.findByPath(payload.path);
-        if (!tab) {
-          await respondToAi(payload.id, { ok: false, error: 'window does not own this file' });
-          return;
-        }
-        const result = await tabs.activateNow(tab.id, { byAgent: true });
-        if (result === 'refused' || result === 'busy' || result === 'failed') {
-          await respondToAi(payload.id, { ok: false, error: AI_ACTIVATION_ERRORS[result] });
-          return;
-        }
-      }
-      // Nobody is looking at this window: the tab the agent just used stays
-      // unviewed until someone does (spec §2). A no-op while it has focus.
-      // Here, inside the exclusive slot, like every stamp an agent causes.
-      const target = tabs.findByPath(payload.path);
-      if (target) tabs.markUnviewedNow(target.id);
-      await handleAiCommandForActive(payload);
-    });
-  }
-
-  async function respondToAi(id: number, response: AiResponse): Promise<void> {
-    await invoke('ai_respond', { id, response }).catch((err: unknown) => {
-      console.error('Failed to respond to AI command:', err);
-    });
+  function liveAskShown(): boolean {
+    const view = editorHandle?.view;
+    return view ? activeAskIds(view.state).length > 0 : false;
   }
 
   /** Pulse is purely visual; clear it once its animation finishes unless a real
@@ -1564,132 +1497,151 @@
     }, 1600);
   }
 
-  /** Invariant: the edit branch below must stay synchronous between reading
-   * `view.state.doc` (via `buildAiEdit`) and calling `view.dispatch` —
-   * no `await` in between. Two AI edit commands delivered back-to-back would
-   * otherwise both read the same pre-edit state and diff against it, and
-   * whichever dispatches second would clobber the first's change instead of
-   * building on top of it. */
-  async function handleAiCommandForActive(payload: AiCommandPayload): Promise<void> {
-    if (payload.path !== fileState.filePath) {
-      await respondToAi(payload.id, { ok: false, error: 'window does not own this file' });
-      return;
-    }
+  function liveShow(payload: AiCommandPayload, keepCaret: boolean): AgentResponse {
     const view = editorHandle?.view;
-    if (!view) {
-      await respondToAi(payload.id, { ok: false, error: 'editor not ready' });
-      return;
-    }
-
-    if (payload.cmd === 'show') {
-      const pos = resolveShowTarget(view.state, { line: payload.line, find: payload.find });
-      if (pos === null) {
-        await respondToAi(payload.id, { ok: false, error: 'target not found' });
-        return;
-      }
+    if (!view) return { ok: false, error: AGENT_ERRORS.editorNotReady };
+    const pos = resolveShowTarget(view.state, { line: payload.line, find: payload.find });
+    if (pos === null) return { ok: false, error: AGENT_ERRORS.targetNotFound };
+    view.dispatch({
       // Move the caret along with the view: otherwise it stays wherever it
       // was (often position 0 in a fresh window) and the next arrow key
       // snaps the view back there — reads as "cursor jumped to the top".
-      view.dispatch({
-        selection: { anchor: pos },
-        effects: [EditorView.scrollIntoView(pos, { y: 'center' }), pulseAiLine.of(pos)],
-      });
-      schedulePulseCleanup();
-      await respondToAi(payload.id, { ok: true });
-      return;
-    }
+      // Not while the human types: then neither the caret nor the view moves
+      // (D19), and the pulse alone says where to look.
+      ...(keepCaret ? {} : { selection: { anchor: pos } }),
+      effects: [...(keepCaret ? [] : [EditorView.scrollIntoView(pos, { y: 'center' })]), pulseAiLine.of(pos)],
+    });
+    schedulePulseCleanup();
+    return { ok: true };
+  }
 
-    if (payload.cmd === 'ask') {
-      let pos: number;
-      if (payload.line === null && payload.find === null) {
-        pos = view.state.doc.length;
-      } else {
-        const resolved = resolveShowTarget(view.state, { line: payload.line, find: payload.find });
-        if (resolved === null) {
-          await respondToAi(payload.id, { ok: false, error: 'target not found' });
-          return;
-        }
-        pos = resolved;
-      }
+  /**
+   * A background `show` arriving with its tab. The caret and the view were
+   * placed on entry already (`placeCaretNow`), so this only pulses: it never
+   * scrolls, and there is nothing for `quiet` to hold back.
+   */
+  function livePulse(payload: AiCommandPayload): void {
+    const view = editorHandle?.view;
+    if (!view) return;
+    const pos = resolveShowTarget(view.state, { line: payload.line, find: payload.find });
+    if (pos === null) return;
+    view.dispatch({ effects: pulseAiLine.of(pos) });
+    schedulePulseCleanup();
+  }
 
-      const askId = payload.id;
-      const onAnswer = (
-        answerId: number,
-        result: string | string[] | { custom: string } | { answers: string[]; custom: string } | null
-      ): void => {
-        const currentView = editorHandle?.view;
-        currentView?.dispatch({ effects: removeAiAsk.of(answerId) });
-        if (result === null) {
-          respondToAi(answerId, { ok: false, error: 'dismissed by user' });
-        } else if (Array.isArray(result)) {
-          respondToAi(answerId, { ok: true, answers: result });
-        } else if (typeof result === 'string') {
-          respondToAi(answerId, { ok: true, answer: result });
-        } else if ('answers' in result) {
-          respondToAi(answerId, { ok: true, answers: result.answers, custom: result.custom });
-        } else {
-          respondToAi(answerId, { ok: true, custom: result.custom });
-        }
-      };
-
-      view.dispatch({
-        // Caret follows the question's anchor for the same reason as `show`:
-        // a later arrow key must not yank the view back to a stale caret.
-        selection: { anchor: pos },
-        effects: [
-          addAiAsk.of({
-            spec: {
-              id: askId,
-              question: payload.question ?? '',
-              options: payload.options,
-              multi: payload.multi,
-              freeText: payload.freeText,
-              onAnswer,
-            },
-            pos,
-          }),
-          EditorView.scrollIntoView(pos, { y: 'center' }),
-        ],
-      });
-
-      // The Rust side owns the timeout/window-close deadline; this is only a
-      // fallback to drop a widget the server has already stopped waiting on.
-      // Answering after the server timeout is a harmless no-op there, and
-      // removing an id the field no longer has is a no-op here too.
-      setTimeout(
-        () => {
-          editorHandle?.view?.dispatch({ effects: removeAiAsk.of(askId) });
-        },
-        payload.timeoutSecs * 1000 + 2000
-      );
-
-      // The socket call is blocking on the user — respond only from the
-      // button callbacks above, never immediately here.
-      return;
-    }
-
-    // cmd === 'edit' — the same edit, CRLF handling and undo step as a
-    // background tab's (`buildAiEdit` / `aiEditTransaction`).
+  /** Invariant: synchronous between reading `view.state.doc` (in `buildAiEdit`)
+   * and calling `view.dispatch` — no `await` in between. Two AI edit commands
+   * delivered back-to-back would otherwise both read the same pre-edit state
+   * and diff against it, and whichever dispatches second would clobber the
+   * first's change instead of building on top of it. The same edit, CRLF
+   * handling and undo step as a background tab's (`buildAiEdit` /
+   * `aiEditTransaction`). */
+  function liveEdit(payload: AiCommandPayload, keepCaret: boolean): AgentResponse {
+    const view = editorHandle?.view;
+    if (!view) return { ok: false, error: AGENT_ERRORS.editorNotReady };
     const edit = buildAiEdit(view.state, payload.content ?? '');
-    if (!edit) {
-      await respondToAi(payload.id, { ok: true, changed_lines: [] });
-      return;
-    }
-
-    // Single-span diff, exactly mirroring Editor.svelte's updateContent: keeps
-    // CM6's automatic selection mapping intact and preserves scroll position.
+    if (!edit) return { ok: true, changed_lines: [] };
+    // With `show` the user is being led to the change — the caret and the
+    // view go there. Not while they type: the caret stays under their fingers
+    // and the view keeps its place (the snapshot, mapped through the edit).
+    const lead = payload.show && !keepCaret;
     const scrollEffect = view.scrollSnapshot().map(edit.changes);
     view.dispatch(
-      aiEditTransaction(edit, payload.show, [
+      aiEditTransaction(edit, lead, [
         ...(scrollEffect ? [scrollEffect] : []),
-        // With `show` the user is being led to the change.
-        ...(payload.show ? [EditorView.scrollIntoView(edit.from, { y: 'center' })] : []),
+        ...(lead ? [EditorView.scrollIntoView(edit.from, { y: 'center' })] : []),
       ])
     );
     // docChanged still fires the update listener (handleChange), which arms
     // dirty state + autosave — no separate call needed here.
+    return { ok: true, changed_lines: edit.changedLines };
+  }
 
-    await respondToAi(payload.id, { ok: true, changed_lines: edit.changedLines });
+  function livePlaceAsk(
+    payload: AiCommandPayload,
+    deadline: number,
+    onAnswer: (result: AskResult) => void,
+    quiet: boolean
+  ): boolean {
+    const view = editorHandle?.view;
+    if (!view) return false;
+    let pos: number;
+    if (payload.line === null && payload.find === null) {
+      pos = view.state.doc.length;
+    } else {
+      const resolved = resolveShowTarget(view.state, { line: payload.line, find: payload.find });
+      if (resolved === null) return false;
+      pos = resolved;
+    }
+    const askId = payload.id;
+    view.dispatch({
+      // The caret follows the question's anchor for the same reason as
+      // `show` — unless `quiet` (the human is typing): then the widget
+      // appears and nothing moves.
+      ...(quiet ? {} : { selection: { anchor: pos } }),
+      effects: [
+        addAiAsk.of({
+          spec: {
+            id: askId,
+            question: payload.question ?? '',
+            options: payload.options,
+            multi: payload.multi,
+            freeText: payload.freeText,
+            onAnswer: (answerId, result) => {
+              editorHandle?.view?.dispatch({ effects: removeAiAsk.of(answerId) });
+              onAnswer(result);
+            },
+          },
+          pos,
+        }),
+        ...(quiet ? [] : [EditorView.scrollIntoView(pos, { y: 'center' })]),
+      ],
+    });
+    // Rust owns the deadline; this only drops a widget nobody waits on any
+    // more. Removing an id the field no longer has is a no-op.
+    setTimeout(
+      () => {
+        editorHandle?.view?.dispatch({ effects: removeAiAsk.of(askId) });
+      },
+      Math.max(0, deadline - Date.now()) + 2000
+    );
+    return true;
+  }
+
+  const agent = createAgentCommands({
+    tabs,
+    // Rejects when Rust cannot be asked; the orchestrator answers the agent
+    // then instead of guessing either way.
+    isPending: (id) => invoke<boolean>('ai_is_pending', { id }),
+    respond: (id, response) =>
+      invoke<void>('ai_respond', { id, response }).catch((err: unknown) => {
+        console.error('Failed to respond to AI command:', err);
+      }),
+    typing: () => typingTracker.typing(),
+    liveAsk: liveAskShown,
+    revealWindow: () => invoke<void>('reveal_window').catch(logTabIpc('reveal_window')),
+    now: () => Date.now(),
+    live: {
+      show: liveShow,
+      edit: liveEdit,
+      placeAsk: livePlaceAsk,
+      pulse: livePulse,
+      askIds: () => {
+        const view = editorHandle?.view;
+        return view ? activeAskIds(view.state) : [];
+      },
+    },
+  });
+
+  async function handleAiCommand(payload: AiCommandPayload): Promise<void> {
+    // Before any of the command's own outcomes: an agent has reached this
+    // install for the first time, and this is the one moment the user is
+    // certain to be looking. Raised even if the command below then fails —
+    // something visibly happened either way, and the point is to explain what.
+    if (payload.firstUse) {
+      toasts.push({ kind: 'ai-first-use' });
+    }
+    await agent.handle(payload);
   }
 
   // --- Recovery save (every 5s if dirty) ---
@@ -2031,6 +1983,7 @@
 
     // Save on window blur
     window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener('keydown', noteTyping, true);
     window.addEventListener('focus', handleWindowFocus);
 
     // Start recovery interval
@@ -2140,6 +2093,7 @@
       unlistenUpdateDismissed.then((fn) => fn());
       unlistenLanguageChangeFailed.then((fn) => fn());
       window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener('keydown', noteTyping, true);
       window.removeEventListener('focus', handleWindowFocus);
       autoSave.cancel();
       if (recoveryInterval !== null) clearInterval(recoveryInterval);
