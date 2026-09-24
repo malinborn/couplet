@@ -22,8 +22,7 @@
   "toast.session.windows.few": "{count} окна из прошлой сессии",
   "toast.session.windows.many": "{count} окон из прошлой сессии",
   "toast.session.windows.other": "{count} окон из прошлой сессии",
-  "toast.session.reopen_prefix": "Нажмите",
-  "toast.session.reopen_suffix": ", чтобы восстановить",
+  "toast.session.restore_action": "Восстановить",
 
   "toast.ai_nudge.message": "<strong>Ваш AI умеет управлять md-mini</strong> <span class=\"md-toast-dim\">— смотрите меню <strong>AI</strong></span>",
   "toast.ai_nudge.action": "Начало работы",

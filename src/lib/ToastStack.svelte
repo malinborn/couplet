@@ -46,6 +46,13 @@
     });
     dismiss(entry);
   }
+
+  async function restoreSession(): Promise<void> {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('restore_session').catch((err: unknown) => {
+      console.error('Failed to restore session:', err);
+    });
+  }
 </script>
 
 {#if store.toasts.length > 0}
@@ -119,9 +126,12 @@
           <span class="md-toast-text">
             <strong>{plural(toast.payload.count, 'toast.session.windows')}</strong>
           </span>
-          <span class="md-toast-dim">
-            {t('toast.session.reopen_prefix')} <kbd>⇧⌘T</kbd> {t('toast.session.reopen_suffix')}
-          </span>
+          <!-- A button, not a ⇧⌘T hint: once any window has been closed, ⇧⌘T
+               brings that window back first, so the key stops meaning "restore
+               the session". The `session-restored` event retires this toast. -->
+          <button class="md-toast-cmd md-toast-action" onclick={restoreSession}>
+            {t('toast.session.restore_action')}
+          </button>
         {:else if toast.payload.kind === 'ai-nudge'}
           <!-- The menu is named in the body text, not only on the button: a
                dismissed toast still delivers the one fact worth keeping.

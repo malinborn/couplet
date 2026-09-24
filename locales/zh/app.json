@@ -22,8 +22,7 @@
   "toast.session.windows.few": "{count} 个来自上次会话的窗口",
   "toast.session.windows.many": "{count} 个来自上次会话的窗口",
   "toast.session.windows.other": "{count} 个来自上次会话的窗口",
-  "toast.session.reopen_prefix": "按",
-  "toast.session.reopen_suffix": "以重新打开",
+  "toast.session.restore_action": "恢复",
 
   "toast.ai_nudge.message": "<strong>你的 AI 可以操作 md-mini</strong> <span class=\"md-toast-dim\">——看看 <strong>AI</strong> 菜单</span>",
   "toast.ai_nudge.action": "快速上手",

@@ -131,6 +131,7 @@ pub fn run() {
         .manage(PendingFiles::new())
         .manage(FileWatchers::new())
         .manage(SessionState::new())
+        .manage(closed::ClosedStack::new())
         .manage(UpdateState::new())
         .manage(ai_socket::AiPending::new())
         .manage(ai_socket::AiQueue::new())
@@ -233,7 +234,6 @@ pub fn run() {
             app.manage(view_toggles);
             app.manage(engine_items);
             app.manage(session_menu_items);
-            app.manage(closed::ClosedStack::new());
 
             let app_handle = app.handle().clone();
             app.on_menu_event(move |_app, event| {
@@ -444,12 +444,13 @@ pub fn run() {
                     let app = window.app_handle();
                     let label = window.label();
                     let session_state = app.state::<SessionState>();
-                    // Read before `remove` erases it below.
-                    let closed_entry = session_state.snapshot_for(label).and_then(|snap| {
-                        closed::ClosedEntry::from_snapshot(session_state.is_quitting(), &snap)
-                    });
-                    if let Some(entry) = closed_entry {
-                        app.state::<closed::ClosedStack>().push_entry(entry);
+                    // Before `remove` and `untrack_window` below erase what
+                    // this window was showing. `open_path_of` has released the
+                    // `OpenFiles` lock by the time `record_close` takes the
+                    // stack's — see `ClosedStack` on lock order.
+                    let open_path = window::open_path_of(app, label);
+                    let stack = app.state::<closed::ClosedStack>();
+                    if closed::record_close(&session_state, &stack, label, open_path.as_deref()) {
                         closed::refresh_reopen_item(app);
                     }
                     // No-op while quitting, so an exit keeps every window.

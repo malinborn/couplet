@@ -137,6 +137,16 @@ pub fn open_file_window(app: &AppHandle, path: Option<String>) {
     }
 }
 
+/// The file `label` is registered as showing in `OpenFiles`, if any. The lock
+/// is released before this returns.
+pub fn open_path_of(app: &AppHandle, label: &str) -> Option<String> {
+    let open_files = app.state::<OpenFiles>();
+    let map = open_files.0.lock().unwrap();
+    map.iter()
+        .find(|(_, v)| v.as_str() == label)
+        .map(|(k, _)| k.clone())
+}
+
 /// Removes a file path from the open files tracking when a window is closed.
 /// Also cleans up any recovery file for that path.
 pub fn untrack_window(app: &AppHandle, label: &str) {

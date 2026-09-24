@@ -22,8 +22,7 @@
   "toast.session.windows.few": "{count} fenêtres de votre dernière session",
   "toast.session.windows.many": "{count} fenêtres de votre dernière session",
   "toast.session.windows.other": "{count} fenêtres de votre dernière session",
-  "toast.session.reopen_prefix": "Appuyez sur",
-  "toast.session.reopen_suffix": "pour rouvrir",
+  "toast.session.restore_action": "Restaurer",
 
   "toast.ai_nudge.message": "<strong>Votre IA peut piloter md-mini</strong> <span class=\"md-toast-dim\">— voir le menu <strong>IA</strong></span>",
   "toast.ai_nudge.action": "Prise en main",

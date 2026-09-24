@@ -22,8 +22,7 @@
   "toast.session.windows.few": "{count} Fenster aus Ihrer letzten Sitzung",
   "toast.session.windows.many": "{count} Fenster aus Ihrer letzten Sitzung",
   "toast.session.windows.other": "{count} Fenster aus Ihrer letzten Sitzung",
-  "toast.session.reopen_prefix": "Drücken Sie",
-  "toast.session.reopen_suffix": "zum Wiederöffnen",
+  "toast.session.restore_action": "Wiederherstellen",
 
   "toast.ai_nudge.message": "<strong>Ihre KI kann md-mini steuern</strong> <span class=\"md-toast-dim\">— siehe das Menü <strong>KI</strong></span>",
   "toast.ai_nudge.action": "Erste Schritte",

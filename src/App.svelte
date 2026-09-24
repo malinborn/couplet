@@ -297,6 +297,10 @@
     if (!path) return;
     fileState.filePath = path;
     await performSave();
+    // The window now shows `path`: without this `OpenFiles` still maps it to
+    // the old file (or to nothing, from Untitled), so dedup, the watcher and
+    // Cmd+Shift+T's closed-window record all go on seeing the old document.
+    invoke('register_open_file', { path }).catch(() => {});
     recentFiles.add(path);
   }
 

@@ -22,8 +22,7 @@
   "toast.session.windows.few": "{count} windows from your last session",
   "toast.session.windows.many": "{count} windows from your last session",
   "toast.session.windows.other": "{count} windows from your last session",
-  "toast.session.reopen_prefix": "Press",
-  "toast.session.reopen_suffix": "to reopen",
+  "toast.session.restore_action": "Restore",
 
   "toast.ai_nudge.message": "<strong>Your AI can drive md-mini</strong> <span class=\"md-toast-dim\">— see the <strong>AI</strong> menu</span>",
   "toast.ai_nudge.action": "Getting Started",
