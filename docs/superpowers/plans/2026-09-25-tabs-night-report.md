@@ -202,6 +202,50 @@
 - «Печатает» считает и навигационные клавиши (стрелки, PageDown, Esc) — в безопасную сторону: пока листаешь, команда агента уйдёт в фон.
 - Старая ручная копия `/usr/local/bin/mdmini` (через `install.sh`) примет `ls`/`close` за имена файлов — перезапустить `scripts/install.sh` после обновления (Homebrew не затронут).
 
+## План 05 — карусель окон
+
+План: [`2026-09-25-tabs-05-carousel.md`](2026-09-25-tabs-05-carousel.md), 13 задач, решения D1–D13. Построено: атомарный `tab_move` в Rust (реестр, AiPending, передача цели под одним замком `OpenFiles`), `ai_forward` для поздних команд агента, `tab_carousel_windows` (MRU, начало активного документа) и `reveal_other_window`; во фронте `removeTabs`, модель карусели, ⌘M, перенос входящих агента вместе с вкладкой, `moveNow`/`arriveNow` в контроллере, «В новые окна» на том же переносе, `WindowCarousel.svelte`, вынос карточки из дровера, «В окно…», тост «Перенесено в #N · Перейти» (6 с).
+
+**QA (задача 13).** Гейты: vitest 86 файлов / 1838 тестов, `npm run check` 0/0, cargo 582 passed / 3 ignored, clippy 50 (базовая линия), `check:x86` собирается.
+
+Playwright против макета, 4 темы, 52 проверки — все `true`, ошибок консоли нет (порядок миниатюр = макет: «+ Новое окно», #12 #7 #15 #18 #19; блюр страницы; прокрутка краем; hot #18 и «→ #18»; сброс → `tab_move` в `editor-18` и тост; группа — один призрак с «2», сброс на «+ Новое окно» в порядке списка; ⌘M — listbox на #12, ↓ #7, ↑↑ «новое», Enter → `editor-7`; клавиши после Enter доходят до дровера; одно окно — только «+ Новое окно»; Esc закрывает карусель, дровер держит клавиши; reduced motion — без блюра и анимации; Esc отменяет перетаскивание; дровер, открытый наведением, держит карусель и принимает сброс). Скриншоты «приложение | макет» — `night-shots/tabs05-app-<тема>-NN-<что>.png` в папке макета:
+
+| Тема | Перетаскивание | Группа | Прокрутка | Hot | Тост | ⌘M | Одно окно |
+|---|---|---|---|---|---|---|---|
+| light | [01](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-light-01-drag.png) | [02](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-light-02-group.png) | [03](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-light-03-scrolled.png) | [04](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-light-04-hot.png) | [05](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-light-05-toast.png) | [06](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-light-06-keys.png) | [07](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-light-07-alone.png) |
+| dark | [01](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-dark-01-drag.png) | [02](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-dark-02-group.png) | [03](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-dark-03-scrolled.png) | [04](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-dark-04-hot.png) | [05](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-dark-05-toast.png) | [06](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-dark-06-keys.png) | [07](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-dark-07-alone.png) |
+| aurora-light | [01](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-aurora-light-01-drag.png) | [02](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-aurora-light-02-group.png) | [03](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-aurora-light-03-scrolled.png) | [04](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-aurora-light-04-hot.png) | [05](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-aurora-light-05-toast.png) | [06](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-aurora-light-06-keys.png) | [07](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-aurora-light-07-alone.png) |
+| aurora-dark | [01](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-aurora-dark-01-drag.png) | [02](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-aurora-dark-02-group.png) | [03](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-aurora-dark-03-scrolled.png) | [04](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-aurora-dark-04-hot.png) | [05](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-aurora-dark-05-toast.png) | [06](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-aurora-dark-06-keys.png) | [07](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-aurora-dark-07-alone.png) |
+
+Reduced motion: [aurora-light-08](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-aurora-light-08-reduced-motion.png). В макете нет пути ⌘M и режима «одно окно»: ⌘M стоит рядом с его карусель-перетаскиванием, «одно окно» — без пары.
+
+**Отличия от макета (для глаза Max, не исправлялись):**
+- **Полоса выделения переполнена.** Добавленная «В окно…» не помещается: «Закрыть выбранные» обрезана, кнопки «×» (снять выделение) не видно — `scrollWidth 468 > clientWidth 393` (en, окно 1000 px), в ru то же ([dark-02](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-app-dark-02-group.png), слева внизу). В макете этой кнопки нет, решения по раскладке нет.
+- Миниатюры рисуют документ текстом (D8): заголовки без цвета/градиента Aurora, нумерованный список — маркерами «•», у цитаты нет полосы. В макете — полный markdown.
+- Тост — карточка стека тостов (моноширинный, «Перенесено в #18 · Перейти», без имени вкладки); в макете — плашка по центру снизу «tabs-options.md → окно #18» (D5 выбрал стек).
+- В режиме одного окна заголовок карусели: «… в окно · 0 окон».
+- Untitled в миниатюре — «Без названия» (локаль), в макете «Untitled».
+
+**Живой dev:app** (`tabs-05 · local`, мост MCP, AX-хелпер, CLI только с `--socket /tmp/md_mini_dev_cmd.sock`):
+
+| # | Сценарий | Итог |
+|---|---|---|
+| 1 | Файл перетаскиванием A→B | PASS: в `ls` у B, номера 21/22 те же, тост «Moved to #22 · Go there», «Go there» → B в фокусе, `c.md` активна ([01](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-dev-01-moved.png)) |
+| 2 | Untitled с текстом (⌘M, B→A) | PASS: `draft text` в A; `session-v2.json` — вкладка под #21, имя `untitled-<id>.md` не изменилось, sidecar на месте и пережил выход |
+| 3 | Группа на «+ Новое окно» | PASS: призрак «2», новое #23 с `a.md, f.md` в порядке списка, построено **за** окном A (порядок окон CGWindowList), A в фокусе ([02](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-dev-02-group.png)) |
+| 4 | Последняя вкладка закрывает окно | PASS: после второй — #23 закрыто, B держит обе |
+| 5 | `ask` агента едет с вкладкой | PASS: `{"ok":true,"answer":"Yes","window":22}`, не `tab released` ([03](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-dev-03-ask-followed.png)) |
+| 5b | Поздняя команда (`ai_forward`) | PASS: поток JS источника заблокирован на 4 с, `show` отправлен посреди блока (маршрут ещё в источник), после переноса ответ `{"ok":true,"window":22}` — от цели |
+| 6 | Клавиатура ⌘M | PASS: listbox с `aria-activedescendant`, ↑/↓ двигают, Esc закрывает, дровер держит клавиши; Enter переносит; после Enter буква уходит в поиск дровера ([04](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-dev-04-keys.png)) |
+| 7 | Одно окно | PASS: только «+ New window» ([05](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-dev-05-alone.png)) |
+| 8 | Esc отменяет перетаскивание | PASS: ни призрака, ни карусели, ничего не перенесено |
+| 9 | Четыре темы с удержанным перетаскиванием | PASS: [light](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-dev-carousel-light.png) · [dark](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-dev-carousel-dark.png) · [aurora-light](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-dev-carousel-aurora-light.png) · [aurora-dark](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-dev-carousel-aurora-dark.png); смена темы не сбивает перетаскивание |
+| + | «В новые окна» | PASS: #24 `b.md`, #25 `c.md`, B остаётся спереди |
+| + | Ошибка сохранения отказывает перенос | PASS: каталог только для чтения → тост «Could not save», ⌘M+Enter — вкладка осталась ([06](../../investigations/2026-09-24-tabs-mockup/night-shots/tabs05-dev-06-refused.png)) |
+| + | Дровер наведением: карусель кликабельна | PASS в Playwright (настоящая мышь); в dev:app синтетикой наведение не воспроизвести |
+
+Known gaps плана (без изменений): перетаскивание за край окна не построено; история ⌘Z не переезжает; миниатюры — данные, не снимки; список окон читается в начале жеста; цель, закрытая между `tab_move` и `tabs-arrive`, забирает вкладки; нечитаемый в цели файл освобождается (`tab released` агенту); входящие в цель, чью вкладку нельзя покинуть, ждут в фоне без тоста.
+
 ## Что осталось
 - **План 05 — на паузе по просьбе Max** (беречь лимиты). Основа решена: перенос вкладок через **карусель окон** внутри окна (идея Max, одобрена им и архитектором; макет [`drawer-carousel.html`](../../investigations/2026-09-24-tabs-mockup/drawer-carousel.html), скриншоты `night-shots/tabs05-carousel-*`). Обязательные пункты архитектора записаны: клавиатурный путь (listbox), группа одним призраком, атомарный перенос через реестр (claim в цели до release в источнике), untitled переезжает с буфером, метки/каретка/входящие агента/AiPending едут с вкладкой, «В новые окна» — тот же перенос, reduced-motion.
 - Перед планом 05: ручной тест pointer-событий за краем окна (мыши у меня нет) — будет в вопросах на утро.
