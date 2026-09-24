@@ -23,6 +23,8 @@ pub struct WindowTabs {
     pub tabs: Vec<RegTab>,
     /// The tab the window shows. `None` only for a window with no tabs.
     pub active: Option<String>,
+    /// `#N` in the title; `None` only when all 99 were in use.
+    pub number: Option<u32>,
 }
 
 #[derive(Debug, Default)]
@@ -41,6 +43,14 @@ impl TabRegistry {
 
     pub fn remove_window(&mut self, label: &str) -> Option<WindowTabs> {
         self.windows.remove(label)
+    }
+
+    pub fn numbers_in_use(&self) -> HashSet<u32> {
+        self.windows.values().filter_map(|w| w.number).collect()
+    }
+
+    pub fn set_number(&mut self, label: &str, number: Option<u32>) {
+        self.windows.entry(label.to_string()).or_default().number = number;
     }
 
     /// The window and tab holding `path`. Looked up exactly as given, never
@@ -372,6 +382,17 @@ mod tests {
         let ids: Vec<&str> = reg.window("main").unwrap().tabs.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(ids, vec!["a", "u"], "an unknown file tab and another window's id are ignored");
         assert_eq!(reg.label_of("/x.md").as_deref(), Some("editor-2"));
+    }
+
+    #[test]
+    fn numbers_in_use_are_the_numbered_windows() {
+        let mut reg = reg_with(&[("main", "t1", None), ("editor-2", "t2", None), ("editor-3", "t3", None)]);
+        reg.set_number("main", Some(4));
+        reg.set_number("editor-3", Some(9));
+        assert_eq!(reg.numbers_in_use(), [4, 9].into_iter().collect());
+        assert_eq!(reg.window("editor-2").unwrap().number, None);
+        reg.remove_window("main");
+        assert_eq!(reg.numbers_in_use(), [9].into_iter().collect(), "a closed window's number is free");
     }
 
     #[test]

@@ -30,6 +30,7 @@ mod updater;
 pub mod watch;
 mod watcher;
 mod window;
+mod window_numbers;
 
 use tauri::{Emitter, Manager};
 use tauri_plugin_cli::CliExt;
@@ -191,6 +192,11 @@ pub fn run() {
             // release directory — a dev build would load the installed app's list.
             // No IPC reaches a command before `setup` returns.
             app.manage(recent::RecentFiles::load());
+            // After `paths::init`, for the same reason as `RecentFiles::load`.
+            app.manage(window_numbers::WindowNumbers::load());
+            // Before anything can register a file to `main` (CLI args, the
+            // pending-files list) and before its frontend asks for its number.
+            window::number_main_window(app.handle());
 
             // Locale resolution: stored preference -> system locale -> "en".
             // Must run before `menu::build_menu` — the menu's labels come from

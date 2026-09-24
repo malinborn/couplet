@@ -126,6 +126,7 @@
   "ui.untitled": "Без названия",
   "ui.untitled_filename": "Без названия.md",
   "ui.window_title": "{name} — {product}",
+  "ui.window_title_numbered": "{name} — #{number}",
 
   "ui.recent_files.title": "Последние файлы",
   "ui.recent_files.close": "Закрыть",

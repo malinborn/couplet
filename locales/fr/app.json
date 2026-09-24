@@ -126,6 +126,7 @@
   "ui.untitled": "Sans titre",
   "ui.untitled_filename": "Sans titre.md",
   "ui.window_title": "{name} — {product}",
+  "ui.window_title_numbered": "{name} — #{number}",
 
   "ui.recent_files.title": "Fichiers récents",
   "ui.recent_files.close": "Fermer",

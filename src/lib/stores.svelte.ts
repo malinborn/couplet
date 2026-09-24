@@ -12,6 +12,7 @@ import {
 import { invoke } from '@tauri-apps/api/core';
 import { t } from './i18n';
 import { applyWindowZoom, clampZoom, stepZoom } from './window-zoom';
+import { windowTitle } from './window-title';
 
 /**
  * Third mode added alongside the original binary `live-preview | raw`:
@@ -286,6 +287,13 @@ export function setProductName(name: string): void {
   if (name) productName = name;
 }
 
+/** `#N` of this window, from `get_window_init`. */
+let windowNumber = $state<number | null>(null);
+
+export function setWindowNumber(n: number | null): void {
+  windowNumber = n;
+}
+
 export function createFileState() {
   let filePath = $state<string | null>(null);
   let isDirty = $state(false);
@@ -311,8 +319,8 @@ export function createFileState() {
       lastSavedAt = v;
     },
     get title() {
-      const name = filePath ? filePath.split('/').pop() : t('ui.untitled');
-      return `${isDirty ? '\u25cf ' : ''}${t('ui.window_title', { name, product: productName })}`;
+      const name = filePath ? (filePath.split('/').pop() ?? filePath) : t('ui.untitled');
+      return windowTitle({ name, dirty: isDirty, number: windowNumber, product: productName });
     },
   };
 }

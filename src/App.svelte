@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import Editor from './lib/editor/Editor.svelte';
   import type { EditorHandle } from './lib/editor/Editor.svelte';
-  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createFileState, createRecentFilesStore, setProductName } from './lib/stores.svelte';
+  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createFileState, createRecentFilesStore, setProductName, setWindowNumber } from './lib/stores.svelte';
   import { getName } from '@tauri-apps/api/app';
   import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type WindowInit } from './lib/tauri/commands';
   import {
@@ -1681,6 +1681,7 @@
         throw err;
       })
       .then(async (init) => {
+      setWindowNumber(init.number);
       const tab = init.tabs.find((t) => t.tabId === init.activeTabId) ?? init.tabs[0];
       if (!tab) return;
       activeTabId = tab.tabId;

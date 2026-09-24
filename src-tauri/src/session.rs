@@ -67,6 +67,9 @@ impl TabSnapshot {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowSnapshot {
+    /// The window's `#N`, kept across restarts. Absent in migrated v1 data.
+    #[serde(default)]
+    pub number: Option<u32>,
     pub x: i32,
     pub y: i32,
     pub width: u32,
@@ -80,6 +83,7 @@ pub struct WindowSnapshot {
 impl WindowSnapshot {
     fn empty() -> Self {
         Self {
+            number: None,
             x: 0,
             y: 0,
             width: 0,
@@ -94,6 +98,7 @@ impl WindowSnapshot {
     pub fn from_closed_entry(entry: crate::closed::ClosedEntry) -> Self {
         let tab_id = new_tab_id();
         Self {
+            number: None,
             x: entry.x,
             y: entry.y,
             width: entry.width,
@@ -174,6 +179,7 @@ fn migrate_legacy(legacy: LegacySession) -> Session {
             .windows
             .into_iter()
             .map(|w| WindowSnapshot {
+                number: None,
                 x: w.x,
                 y: w.y,
                 width: w.width,
@@ -336,6 +342,19 @@ impl SessionState {
             .or_insert_with(WindowSnapshot::empty);
         entry.tabs = with_omitted_tabs(reported, registry_ids, Some(&*entry));
         entry.active_tab = active_tab;
+        drop(map);
+        self.touch();
+    }
+
+    pub fn set_number(&self, label: &str, number: Option<u32>) {
+        if self.is_quitting() {
+            return;
+        }
+        let mut map = self.entries.lock().unwrap();
+        let entry = map
+            .entry(label.to_string())
+            .or_insert_with(WindowSnapshot::empty);
+        entry.number = number;
         drop(map);
         self.touch();
     }
@@ -710,18 +729,23 @@ pub async fn tabs_sync(
 ) -> Result<(), String> {
     use tauri::Manager;
     let label = window.label().to_string();
-    let registry_ids: Vec<String> = {
+    let (registry_ids, number): (Vec<String>, Option<u32>) = {
         // Released before any `SessionState` lock is taken.
         let open_files = app.state::<crate::window::OpenFiles>();
         let mut reg = open_files.0.lock().unwrap();
         let reported: Vec<(String, Option<String>)> =
             tabs.iter().map(|t| (t.tab_id.clone(), t.path.clone())).collect();
         reg.sync(&label, &reported, active.as_deref());
-        reg.window(&label)
-            .map(|w| w.tabs.iter().map(|t| t.id.clone()).collect())
-            .unwrap_or_default()
+        let window = reg.window(&label);
+        (
+            window
+                .map(|w| w.tabs.iter().map(|t| t.id.clone()).collect())
+                .unwrap_or_default(),
+            window.and_then(|w| w.number),
+        )
     };
 
+    state.set_number(&label, number);
     record_heartbeat(&state, &label, tabs, active, &registry_ids, write_untitled)?;
 
     // Geometry also rides the heartbeat, because `Moved`/`Resized` never fire for
@@ -790,6 +814,7 @@ mod tests {
 
     fn window(tabs: Vec<TabSnapshot>) -> WindowSnapshot {
         WindowSnapshot {
+            number: None,
             x: 10,
             y: 20,
             width: 900,
@@ -1253,6 +1278,27 @@ mod tests {
         .unwrap();
         assert!(!state.referenced_untitled().contains("untitled-u.md"));
         assert!(prune_missing(state.snapshot(0), |_| true).windows.is_empty(), "a blank tab never comes back");
+    }
+
+    #[test]
+    fn the_window_number_survives_a_json_roundtrip_and_v1_has_none() {
+        let mut w = window(vec![tab("t", Some("/tmp/a.md"))]);
+        w.number = Some(7);
+        let json = serde_json::to_string(&session(vec![w])).unwrap();
+        assert!(json.contains("\"number\":7"), "got {json}");
+        assert_eq!(parse_session(&json).unwrap().windows[0].number, Some(7));
+
+        let v1 = r#"{"version":1,"savedAt":0,"windows":[{"path":"/a.md","x":0,"y":0,"width":9,"height":9}]}"#;
+        assert_eq!(parse_session(v1).unwrap().windows[0].number, None);
+    }
+
+    #[test]
+    fn a_heartbeat_keeps_the_window_number() {
+        let state = SessionState::new();
+        state.set_number("editor-2", Some(7));
+        let reports = vec![TabReport { tab_id: "a".into(), path: Some("/tmp/a.md".into()), cursor: 0, top_line: 1, content: None }];
+        record_heartbeat(&state, "editor-2", reports, Some("a".to_string()), &["a".to_string()], |_, _| Ok(())).unwrap();
+        assert_eq!(state.snapshot_for("editor-2").unwrap().number, Some(7));
     }
 
     #[test]

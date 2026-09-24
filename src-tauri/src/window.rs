@@ -59,6 +59,7 @@ impl PendingOpen {
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowInit {
+    pub number: Option<u32>,
     pub tabs: Vec<PendingTab>,
     pub active_tab_id: Option<String>,
 }
@@ -72,14 +73,17 @@ pub fn window_init(
     pending: Option<PendingOpen>,
     new_id: impl FnOnce() -> String,
 ) -> WindowInit {
+    let number = reg.window(label).and_then(|w| w.number);
     if let Some(p) = pending.filter(|p| !p.tabs.is_empty()) {
         return WindowInit {
+            number,
             tabs: p.tabs,
             active_tab_id: p.active_tab_id,
         };
     }
     let window = reg.ensure_tab(label, new_id);
     WindowInit {
+        number,
         tabs: window
             .tabs
             .iter()
@@ -147,6 +151,28 @@ pub fn evict_dead(
     None
 }
 
+/// Give `label` its window number: `preferred` (a restored window's own) when
+/// it is free, else the next one. Lock order: `OpenFiles` → `WindowNumbers`.
+///
+/// `try_state`: the single-instance callback can open a window from its own
+/// task before `setup` has managed `WindowNumbers`, and a panic there would
+/// end that listener for the rest of the run. Such a window goes unnumbered.
+fn assign_number(app: &AppHandle, reg: &mut TabRegistry, label: &str, preferred: Option<u32>) {
+    let live = reg.numbers_in_use();
+    let number = crate::window_numbers::pick_restored(preferred, &live).or_else(|| {
+        app.try_state::<crate::window_numbers::WindowNumbers>()
+            .and_then(|numbers| numbers.allocate(&live))
+    });
+    reg.set_number(label, number);
+}
+
+/// Number the `main` window — created by `tauri.conf.json`, not by us.
+pub fn number_main_window(app: &AppHandle) {
+    let open_files = app.state::<OpenFiles>();
+    let mut reg = open_files.0.lock().unwrap();
+    assign_number(app, &mut reg, "main", None);
+}
+
 static WINDOW_COUNTER: AtomicU32 = AtomicU32::new(1);
 
 const CASCADE_OFFSET: f64 = 30.0;
@@ -201,6 +227,11 @@ pub fn open_file_window(app: &AppHandle, path: Option<String>) {
                 // is `bool` on aarch64 but `i8` everywhere else, so a literal
                 // type-checks on Apple Silicon and fails to compile for x86_64.
                 ns_app.activateIgnoringOtherApps_(cocoa::base::YES);
+            }
+            {
+                let open_files = app.state::<OpenFiles>();
+                let mut reg = open_files.0.lock().unwrap();
+                assign_number(app, &mut reg, &label, None);
             }
             // Track the file path in OpenFiles and store it in PendingFiles
             // so the frontend can pull it on mount via `get_window_init`.
@@ -442,9 +473,10 @@ pub fn open_restored_window(
             }
 
             // A claim made since the check above wins; that tab is dropped.
-            let active_path = {
+            let (active_path, number) = {
                 let open_files = app.state::<OpenFiles>();
                 let mut reg = open_files.0.lock().unwrap();
+                assign_number(app, &mut reg, &label, snapshot.number);
                 pending_tabs.retain(|t| {
                     let added = reg.add_tab(&label, &t.tab_id, t.path.clone());
                     if !added {
@@ -455,11 +487,16 @@ pub fn open_restored_window(
                     }
                     added
                 });
-                pending_tabs
+                let active_path = pending_tabs
                     .iter()
                     .find(|t| Some(&t.tab_id) == active_tab_id.as_ref())
-                    .and_then(|t| t.path.clone())
+                    .and_then(|t| t.path.clone());
+                (active_path, reg.window(&label).and_then(|w| w.number))
             };
+            // The seeded entry carries the number it actually got, which may
+            // differ from the snapshot's when that one was taken meanwhile.
+            app.state::<crate::session::SessionState>()
+                .set_number(&label, number);
 
             app.state::<PendingFiles>().0.lock().unwrap().insert(
                 label.clone(),
@@ -723,6 +760,13 @@ mod tests {
         }]);
         assert_eq!(init.active_tab_id.as_deref(), Some("u1"));
         assert!(reg.window("main").is_some_and(|w| w.tabs.len() == 1), "registered, not just reported");
+    }
+
+    #[test]
+    fn window_init_carries_the_window_number() {
+        let mut reg = TabRegistry::new();
+        reg.set_number("main", Some(7));
+        assert_eq!(window_init(&mut reg, "main", None, || "u".to_string()).number, Some(7));
     }
 
     #[test]

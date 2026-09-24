@@ -72,6 +72,8 @@ export interface PendingTab {
 
 /** What a window loads on mount. Matches `WindowInit` in src-tauri/src/window.rs. */
 export interface WindowInit {
+  /** `#N`; null when all 99 were taken. */
+  number: number | null;
   tabs: PendingTab[];
   activeTabId: string | null;
 }
