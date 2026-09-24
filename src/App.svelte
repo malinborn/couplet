@@ -2,9 +2,9 @@
   import { onMount } from 'svelte';
   import Editor from './lib/editor/Editor.svelte';
   import type { EditorHandle } from './lib/editor/Editor.svelte';
-  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createFileState, createRecentFilesStore, setProductName, setWindowNumber } from './lib/stores.svelte';
+  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createTabsCompactStore, createFileState, createRecentFilesStore, setProductName, setWindowNumber, getWindowNumber } from './lib/stores.svelte';
   import { getName } from '@tauri-apps/api/app';
-  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type TabClaim, type WindowInit } from './lib/tauri/commands';
+  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, syncTabsCompactMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type TabClaim, type WindowInit } from './lib/tauri/commands';
   import {
     onMenuEvent,
     onOpenFile,
@@ -27,7 +27,9 @@
   import ToastStack from './lib/ToastStack.svelte';
   import AiHintBadge from './lib/AiHintBadge.svelte';
   import AiBindButton from './lib/AiBindButton.svelte';
-  import TabListTemp from './lib/TabListTemp.svelte';
+  import TabDrawer from './lib/tabs/TabDrawer.svelte';
+  import type { TabDrawerHandle } from './lib/tabs/TabDrawer.svelte';
+  import type { GitInfo } from './lib/tabs/drawer-data';
   import { createToastStore } from './lib/toasts.svelte';
   import { shouldShowHint, nextCheckDelay } from './lib/ai-hint';
   import { previewCompartment, lineGlowCompartment } from './lib/editor/setup';
@@ -107,17 +109,19 @@
   const zoom = createZoomStore();
   const lineGlow = createLineGlowStore();
   const ocdAlignment = createOcdAlignmentStore();
+  const tabsCompact = createTabsCompactStore();
   const fileState = createFileState();
   const recentFiles = createRecentFilesStore();
   const toasts = createToastStore();
 
   let showRecentFiles = $state(false);
   let activePreview: 'markdown' | 'env' | 'code' | 'shell' = $state('markdown');
-  // This window's tabs, for the tab list. The controller owns the truth;
-  // this is its last published copy.
+  // This window's tabs, for the drawer. The controller owns the truth; this
+  // is its last published copy.
   let tabList = $state<TabListState>(emptyTabList());
 
   let editorHandle: EditorHandle | undefined = $state(undefined);
+  let drawerHandle: TabDrawerHandle | undefined = $state(undefined);
 
   // --- AI-edit highlight hint (bottom-left "Esc" nudge) ---
   const AI_HINT_SEEN_KEY = 'md-mini.ai-hint-seen';
@@ -585,6 +589,7 @@
         import('@tauri-apps/api/window')
           .then(({ getCurrentWindow }) => getCurrentWindow().close())
           .catch(logTabIpc('window close')),
+      openWindow: (path) => invoke<void>('open_file_window_cmd', { path }),
     },
     entered: (path, opened) => {
       if (path === null) return;
@@ -613,6 +618,39 @@
 
   function openTab(path: string, position?: { cursor: number; topLine: number }): Promise<void> {
     return tabSourcesReady.then(() => tabs.openPath(path, position));
+  }
+
+  /**
+   * Native menu actions that open something in the page or put the caret in
+   * the editor. The drawer closes first: its focus handling keeps the
+   * keyboard while it is open and would fight them.
+   */
+  const DRAWER_CLOSING_ACTIONS: ReadonlySet<string> = new Set([
+    'find',
+    'recent_files',
+    'ai_comment',
+    'select_all',
+    'open',
+    'save_as',
+  ]);
+
+  /** What the drawer reads its cards' text and project line from. */
+  const drawerSource = {
+    held: (tabId: string) => tabs.textOf(tabId),
+    read: (path: string) => readFile(path),
+    gitInfo: (paths: string[]) =>
+      invoke<(GitInfo | null)[]>('tab_git_info', { paths }).catch(() => paths.map(() => null)),
+  };
+
+  /**
+   * "To new windows" (spec §6). A tab whose window could not be opened is
+   * back in this window's list by the time this resolves; say so, or the
+   * gesture looks like it did nothing.
+   */
+  async function moveTabsToNewWindows(tabIds: string[]): Promise<void> {
+    for (const { path, error } of (await tabs.moveToNewWindows(tabIds)) ?? []) {
+      toasts.push({ kind: 'open-error', fileName: path.split('/').pop() ?? path, message: error });
+    }
   }
 
   // --- Restored caret / scroll ---
@@ -1477,6 +1515,11 @@
           return;
         }
       }
+      // Nobody is looking at this window: the tab the agent just used stays
+      // unviewed until someone does (spec §2). A no-op while it has focus.
+      // Here, inside the exclusive slot, like every stamp an agent causes.
+      const target = tabs.findByPath(payload.path);
+      if (target) tabs.markUnviewedNow(target.id);
       await handleAiCommandForActive(payload);
     });
   }
@@ -1700,6 +1743,7 @@
 
   // --- Save on blur ---
   function handleWindowBlur(): void {
+    void tabs.windowFocusChanged(false);
     // Same reason as the autosave-timer guard: writing now would overwrite
     // the disk state the open conflict dialog is asking about.
     if (fileState.isDirty && fileState.filePath && !conflictDialogOpen) {
@@ -1717,6 +1761,10 @@
     // and the last one is the deadline on the marker line, which needs no
     // process at all.
     commitAllCommentPauses();
+  }
+
+  function handleWindowFocus(): void {
+    void tabs.windowFocusChanged(true);
   }
 
   onMount(() => {
@@ -1803,6 +1851,7 @@
 
     // Menu events
     const unlistenMenu = onMenuEvent((action) => {
+      if (DRAWER_CLOSING_ACTIONS.has(action)) drawerHandle?.close();
       switch (action) {
         case 'new':
           handleNew();
@@ -1821,6 +1870,15 @@
           break;
         case 'prev_tab':
           void tabSourcesReady.then(() => tabs.cycle(-1));
+          break;
+        case 'toggle_drawer':
+          drawerHandle?.toggle();
+          break;
+        case 'toggle_tabs_compact:on':
+          tabsCompact.set(true);
+          break;
+        case 'toggle_tabs_compact:off':
+          tabsCompact.set(false);
           break;
         case 'save':
           handleSave();
@@ -1911,7 +1969,18 @@
       }
 
       const tabDigit = /^select_tab_([1-9])$/.exec(action);
-      if (tabDigit) void tabSourcesReady.then(() => tabs.selectIndex(Number(tabDigit[1])));
+      if (tabDigit) {
+        const n = Number(tabDigit[1]);
+        // With the drawer open, ⌘n is the card whose hint reads ⌘n — in a
+        // filtered view that is not the n-th tab.
+        const picked = drawerHandle?.shortcutTarget(n);
+        if (picked === undefined) {
+          void tabSourcesReady.then(() => tabs.selectIndex(n));
+        } else if (picked !== null) {
+          drawerHandle?.close();
+          void tabs.activate(picked);
+        }
+      }
 
       // macOS/muda toggles the clicked CheckMenuItem natively before this
       // handler runs. Re-clicking the already-active theme assigns the same
@@ -1932,6 +2001,9 @@
       // значение пишут все окна, а отметка одна.
       if (action.startsWith('toggle_ocd_alignment')) {
         syncOcdAlignmentMenu(ocdAlignment.enabled);
+      }
+      if (action.startsWith('toggle_tabs_compact')) {
+        syncTabsCompactMenu(tabsCompact.enabled);
       }
     });
 
@@ -1960,6 +2032,7 @@
 
     // Save on window blur
     window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener('focus', handleWindowFocus);
 
     // Start recovery interval
     startRecoveryInterval();
@@ -2068,6 +2141,7 @@
       unlistenUpdateDismissed.then((fn) => fn());
       unlistenLanguageChangeFailed.then((fn) => fn());
       window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener('focus', handleWindowFocus);
       autoSave.cancel();
       if (recoveryInterval !== null) clearInterval(recoveryInterval);
       clearAiHintTimer();
@@ -2094,6 +2168,9 @@
   });
   $effect(() => {
     syncOcdAlignmentMenu(ocdAlignment.enabled);
+  });
+  $effect(() => {
+    syncTabsCompactMenu(tabsCompact.enabled);
   });
 
   $effect(() => {
@@ -2230,12 +2307,17 @@
 
 <AiBindButton onclick={copyBindPrompt} />
 
-<!-- TEMPORARY (tabs plan 02) — replaced by plan 03's drawer. -->
-<TabListTemp
+<TabDrawer
+  bind:handle={drawerHandle}
   list={tabList}
-  activeDirty={fileState.isDirty}
+  windowNumber={getWindowNumber()}
+  compact={tabsCompact.enabled}
+  source={drawerSource}
   onactivate={(tabId) => void tabs.activate(tabId)}
-  onclose={(tabId) => void tabs.closeTab(tabId)}
+  onclose={(tabIds) => void tabs.closeTabs(tabIds)}
+  onreorder={(order) => void tabs.reorder(order)}
+  onnewwindows={(tabIds) => void moveTabsToNewWindows(tabIds)}
+  onrestorefocus={() => editorHandle?.view?.focus()}
 />
 
 {#if showRecentFiles}

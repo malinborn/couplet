@@ -95,12 +95,16 @@ src/                    # Frontend (Svelte + TypeScript)
     tab-cache.ts        # What is stripped from a state going to the background; reuse-or-reload on return
     controller.ts       # The one path that changes what a window shows (open/activate/new/close/init; AI via runExclusive)
     save-as.ts          # decideSaveAs: Save As writes only after Rust granted the claim
+    TabNotch.svelte / TabDrawer.svelte / TabCard.svelte # Notch (#N, count, ⌘J) + drawer (hover/⌘J, filter, sorts, ⇧-selection, drag); thin DOM over the pure drawer-* modules
+    drawer-state.ts     # Drawer reducer, timings, keyboard routing (who has the keys, Q5)
+    drawer-filter.ts / drawer-preview.ts / drawer-sort.ts / drawer-geometry.ts / drawer-keys.ts # Ranking+highlight, structured previews, ⌘L/⌘R/⌘U, sweep/drop, sort-key table
+    drawer-data.ts      # Per-opening text digests + tab_git_info cache
+    tab-name.ts         # A tab's caption
   lib/switch-document.ts # decideLeave / decideOpenAction — may the active tab be left, what "open this path" does
   lib/autosave.ts       # Debounced autosave with a synchronous flush() for tab switches
   lib/serial-queue.ts   # Runs async tasks one at a time; a failing task never poisons the queue
   lib/comment-writer.ts # Serialized comment sidecar writes (draft → real id)
   lib/window-title.ts   # "name — #N"
-  lib/TabListTemp.svelte # TEMPORARY tab list — plan 03's drawer replaces it
   lib/stores.svelte.ts  # Svelte stores (fileState, theme, mode, zoom, recentFiles)
   lib/toasts.svelte.ts  # Toast stack store (update + session notifications)
   lib/ToastStack.svelte # Bottom-right toast stack

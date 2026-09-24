@@ -51,6 +51,13 @@ export function insertAfterActive(s: TabListState, tab: TabMeta): TabListState {
   return { ...s, tabs };
 }
 
+/** At `index`, clamped to the end. Does not activate it. */
+export function insertAt(s: TabListState, index: number, tab: TabMeta): TabListState {
+  const tabs = [...s.tabs];
+  tabs.splice(Math.min(Math.max(index, 0), tabs.length), 0, tab);
+  return { ...s, tabs };
+}
+
 /** `tab` takes `oldId`'s place; if `oldId` was active, `tab` is. */
 export function replaceTab(s: TabListState, oldId: string, tab: TabMeta): TabListState {
   return {

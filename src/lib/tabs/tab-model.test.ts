@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   emptyTabList,
   insertAfterActive,
+  insertAt,
   replaceTab,
   removeTab,
   setActive,
@@ -39,6 +40,12 @@ describe('tab list', () => {
 
   it('InsertsAtTheEndWhenNothingIsActive', () => {
     expect(ids(insertAfterActive(emptyTabList(), tab('n')))).toEqual(['n']);
+  });
+
+  it('InsertsAtAnIndex_ClampedToTheEnd_WithoutActivating', () => {
+    expect(ids(insertAt(list(['a', 'b'], 'a'), 1, tab('n')))).toEqual(['a', 'n', 'b']);
+    expect(ids(insertAt(list(['a', 'b'], 'a'), 9, tab('n')))).toEqual(['a', 'b', 'n']);
+    expect(insertAt(list(['a', 'b'], 'a'), 0, tab('n')).activeId).toBe('a');
   });
 
   it('ReplacesATabInPlaceAndMovesActiveWithIt', () => {

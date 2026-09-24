@@ -8,6 +8,7 @@ import {
   findById,
   findByPath,
   insertAfterActive,
+  insertAt,
   neighbour,
   removeTab,
   reorderTabs,
@@ -137,6 +138,8 @@ export interface TabControllerDeps {
     close(tabId: string, position: Position): Promise<void>;
     focusElsewhere(path: string): Promise<void>;
     closeWindow(): Promise<void>;
+    /** A window of its own for `path` (Rust `open_file_window_cmd`). Rejects when none opened. */
+    openWindow(path: string): Promise<void>;
   };
   /** A tab became active (`opened`: it was just opened, not switched to). */
   entered(path: string | null, opened: boolean): void;
@@ -176,6 +179,21 @@ interface Entry {
   dirty: boolean;
   baseline: string | null;
   restore: Position | null;
+}
+
+/** A file tab taken out of this window, as it was — to put back if its new window never opens. */
+interface Detached {
+  meta: TabMeta;
+  path: string;
+  /** Its index just before it left. */
+  index: number;
+  position: Position;
+}
+
+/** A tab "to new windows" left in this window: its window did not open. */
+export interface Stranded {
+  path: string;
+  error: string;
 }
 
 type Loadable =
@@ -666,6 +684,56 @@ export function createTabController(deps: TabControllerDeps) {
     return [...ids.filter((id) => id !== active), ...ids.filter((id) => id === active)];
   }
 
+  function positionOf(tabId: string): Position {
+    if (tabId === list.activeId) {
+      return { cursor: deps.editor.current()?.selection.main.head ?? 0, topLine: deps.editor.topLine() };
+    }
+    const c = cache.get(tabId);
+    return { cursor: c?.cursor ?? 0, topLine: c?.topLine ?? 1 };
+  }
+
+  /**
+   * Release file tabs for new windows of their own. Untitled tabs stay (a new
+   * window opens by path), and the window is never emptied — its last tab
+   * stays. Each released tab needs its window whatever happens next.
+   */
+  async function detachNow(ids: readonly string[]): Promise<Detached[]> {
+    const out: Detached[] = [];
+    for (const id of backgroundFirst(ids)) {
+      const meta = findById(list, id);
+      if (!meta || meta.path === null || list.tabs.length <= 1) continue;
+      const detached = { meta, path: meta.path, index: list.tabs.indexOf(meta), position: positionOf(id) };
+      try {
+        if (await closeNow(id, 'release')) out.push(detached);
+      } catch (err) {
+        console.error('Failed to detach tab:', err);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * A detached tab whose window never opened comes back where it was, in the
+   * background: released and windowless it would be in no window at all. Its
+   * text is on disk (only a clean tab can be detached), so it is re-registered
+   * and read when next shown. Nothing is added when another window has it now.
+   */
+  async function adoptNow(d: Detached): Promise<void> {
+    if (findByPath(list, d.path)) return;
+    const answer = await deps.rust.open(d.path);
+    if (answer.kind !== 'created' && answer.kind !== 'this-window') return;
+    if (findById(list, answer.tabId)) return;
+    cache.set(answer.tabId, {
+      state: null,
+      content: null,
+      cursor: d.position.cursor,
+      topLine: d.position.topLine,
+      scroll: null,
+      baseline: null,
+    });
+    publish(insertAt(list, d.index, { ...d.meta, id: answer.tabId, dirty: false }));
+  }
+
   function report(live: { cursor: number; topLine: number; content: string }): {
     tabs: TabReport[];
     active: string | null;
@@ -766,24 +834,33 @@ export function createTabController(deps: TabControllerDeps) {
         for (const id of backgroundFirst(ids)) await closeNow(id, 'close');
       }),
     /**
-     * Take file tabs out of this window for new windows of their own. Untitled
-     * tabs stay (a new window opens by path), and the window is never emptied
-     * — its last tab stays. Resolves to the paths taken out, in order.
+     * "To new windows" (spec §6): each selected file tab is released from this
+     * window and opened in a window of its own, `open_file_window` cascading
+     * them. Released first — a window opened while this one still held the
+     * file would only focus this one. A tab whose window did not open comes
+     * back here; resolves to those.
      */
-    detachTabs: (ids: readonly string[]) =>
-      queue.run(async () => {
-        const out: string[] = [];
-        for (const id of backgroundFirst(ids)) {
-          const path = findById(list, id)?.path ?? null;
-          if (path === null || list.tabs.length <= 1) continue;
-          // The tabs already released need their windows whatever happens next.
+    moveToNewWindows: (ids: readonly string[]) =>
+      queue.run(async (): Promise<Stranded[]> => {
+        const stranded: (Detached & { error: string })[] = [];
+        for (const d of await detachNow(ids)) {
           try {
-            if (await closeNow(id, 'release')) out.push(path);
+            await deps.rust.openWindow(d.path);
           } catch (err) {
-            console.error('Failed to detach tab:', err);
+            console.error('open_file_window_cmd failed:', err);
+            stranded.push({ ...d, error: err instanceof Error ? err.message : String(err) });
           }
         }
-        return out;
+        // In reverse: each goes back to the index it had just before it left.
+        for (const d of [...stranded].reverse()) {
+          try {
+            await adoptNow(d);
+          } catch (err) {
+            console.error('Failed to bring a tab back:', err);
+          }
+        }
+        if (stranded.length > 0) deps.settled();
+        return stranded.map(({ path, error }) => ({ path, error }));
       }),
     /**
      * A tab's text without I/O: the live view for the active tab, the cached

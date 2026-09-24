@@ -360,6 +360,15 @@ const DEFAULT_HEIGHT: f64 = 700.0;
 /// Opens a file in a new window, or focuses an existing window if the file is already open.
 /// If `path` is None, opens a new empty window.
 pub fn open_file_window(app: &AppHandle, path: Option<String>) {
+    if let Err(e) = try_open_file_window(app, path) {
+        eprintln!("Failed to create window: {}", e);
+    }
+}
+
+/// `open_file_window`, answering `Err` when the window could not be built —
+/// for a caller that has already let go of the file and must take it back
+/// (the drawer's "to new windows").
+pub fn try_open_file_window(app: &AppHandle, path: Option<String>) -> Result<(), String> {
     if let Some(ref file_path) = path {
         let open_files = app.state::<OpenFiles>();
         let mut reg = open_files.0.lock().unwrap();
@@ -367,7 +376,7 @@ pub fn open_file_window(app: &AppHandle, path: Option<String>) {
             if let Some(window) = app.get_webview_window(&label) {
                 let _ = window.set_focus();
             }
-            return;
+            return Ok(());
         }
     }
 
@@ -442,10 +451,9 @@ pub fn open_file_window(app: &AppHandle, path: Option<String>) {
                     }
                 }
             }
+            Ok(())
         }
-        Err(e) => {
-            eprintln!("Failed to create window: {}", e);
-        }
+        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -492,8 +500,7 @@ pub fn untrack_window(app: &AppHandle, label: &str) {
 /// Pass `path: null` to open a new empty window.
 #[tauri::command]
 pub async fn open_file_window_cmd(app: AppHandle, path: Option<String>) -> Result<(), String> {
-    open_file_window(&app, path);
-    Ok(())
+    try_open_file_window(&app, path)
 }
 
 /// Recreate a window from a session snapshot — geometry, tabs, and a payload

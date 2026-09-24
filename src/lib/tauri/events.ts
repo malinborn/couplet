@@ -38,6 +38,9 @@ export type MenuAction =
   | 'new_tab'
   | 'next_tab'
   | 'prev_tab'
+  | 'toggle_drawer'
+  | 'toggle_tabs_compact:on'
+  | 'toggle_tabs_compact:off'
   | `select_tab_${'1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'}`;
 
 /**
