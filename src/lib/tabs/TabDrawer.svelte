@@ -6,13 +6,12 @@
    * pure functions in this folder with their own tests; this component holds
    * the DOM, the timers and the pointer gestures.
    *
-   * Keys: while open, a capture-phase `keydown` on `window` routes every key
-   * through `drawerKeyAction` and takes it only if `actionAllowed` says so, so
-   * CodeMirror never sees one the drawer used. Sort keys work in any open
-   * drawer; typing only once the drawer has the keyboard (`typing`, Q5). The
-   * moment it does, focus moves into the drawer and is kept there: keys the
-   * drawer does not use (Backspace on an empty query, Space, Tab) then land on
-   * the drawer, not on the document hidden behind it. ⌘J and ⌘1…⌘9 are native
+   * Keys: while open — hover-opened included (tabs-questions Q5) — a
+   * capture-phase `keydown` on `window` routes every key through
+   * `drawerKeyAction`, so CodeMirror never sees one the drawer used. Opening
+   * moves focus into the drawer and keeps it there: keys the drawer does not
+   * use (Backspace on an empty query, Space, Tab) then land on the drawer, not
+   * on the document hidden behind it; closing gives it back. ⌘J and ⌘1…⌘9 are native
    * menu items; App.svelte forwards them through `handle`.
    */
   import { tick, untrack } from 'svelte';
@@ -27,13 +26,9 @@
   import type { TabListState, TabMeta } from './tab-model';
   import {
     CLOSED,
-    DWELL_ARM_PX,
-    DWELL_CAPTURE_MS,
     EXPAND_MS,
     HOVER_CLOSE_MS,
     HOVER_OPEN_MS,
-    actionAllowed,
-    captureTyping,
     clearSelection,
     close as closeState,
     drawerKeyAction,
@@ -41,7 +36,6 @@
     escape as escapeState,
     hintVisible,
     kbTarget,
-    keysCaptured,
     moveKb,
     neighbourAfterRemoval,
     open as openState,
@@ -59,7 +53,6 @@
   import { createDrawerData, type DrawerDataDeps, type GitInfo, type TabText } from './drawer-data';
   import { dropBefore, moveIds, pastThreshold, sweptIds, type Box } from './drawer-geometry';
   import { tabName } from './tab-name';
-  import { isEditableTarget } from './typing';
   import WindowCarousel, { type CarouselHandle } from './WindowCarousel.svelte';
   import {
     GOT_MS,
@@ -183,20 +176,12 @@
   let inWrap = false;
   /** `null` until the list first has tabs: the count a window starts with is not an arrival. */
   let lastUnviewed: number | null = null;
-  /** The last input (key or press) went into an editable field outside the drawer (Q5). */
-  let lastInputInEditable = false;
   /** The list as it was last rendered — to find the neighbour of a focused card that went away. */
   let lastVisible: readonly string[] = [];
   let hoverOpenTimer: ReturnType<typeof setTimeout> | undefined;
   let hoverCloseTimer: ReturnType<typeof setTimeout> | undefined;
   let expandTimer: ReturnType<typeof setTimeout> | undefined;
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
-  let dwellTimer: ReturnType<typeof setTimeout> | undefined;
-  /** The pointer's last known position over the notch or the drawer. */
-  let lastPointer: { x: number; y: number } | null = null;
-  /** Where the pointer was when this opening began; the dwell arms DWELL_ARM_PX away from it. */
-  let dwellOrigin: { x: number; y: number } | null = null;
-  let dwellArmed = false;
   /** Focus landed inside the drawer during this opening — only then is it ours to give back. */
   let tookFocus = false;
   /** Fetched when a drag starts, so the thumbnails are there by the time the card reaches the page. */
@@ -217,7 +202,6 @@
   );
 
   const isOpen = $derived(ds.open);
-  const captured = $derived(keysCaptured(ds));
   const byId = $derived(new Map(list.tabs.map((tab) => [tab.id, tab])));
   const texts = $derived.by(() => {
     void dataVersion;
@@ -279,8 +263,8 @@
 
   $effect(() => {
     handle = {
-      // ⌘J on a hover-opened drawer takes it (tabs-questions Q5) rather than
-      // closing it — the same as a click on the notch.
+      // ⌘J on a hover-opened drawer pins it rather than closing it — the
+      // same as a click on the notch.
       toggle: () => {
         if (!ds.open) openDrawer('pinned');
         else if (ds.mode === 'hover') pinNow();
@@ -309,28 +293,11 @@
     });
   });
 
-  // Where the last input went (tabs-questions Q5): a hover-open right after
-  // typing in — or clicking into — the editor leaves the keyboard there. Input
-  // into the drawer itself (its search, a press on the notch) is input
-  // somewhere else; so is typing in the editor behind a drawer that left it
-  // the keys.
+  // An open drawer has the keyboard (Q5): focus goes with it. Keys it does
+  // not use — Backspace on an empty query, Space, Tab — would otherwise still
+  // land in the editor behind it and edit a document nobody can see.
   $effect(() => {
-    const note = (e: Event) => {
-      lastInputInEditable = !insideDrawer(e.target) && isEditableTarget(e.target);
-    };
-    window.addEventListener('keydown', note, true);
-    window.addEventListener('pointerdown', note, true);
-    return () => {
-      window.removeEventListener('keydown', note, true);
-      window.removeEventListener('pointerdown', note, true);
-    };
-  });
-
-  // The drawer took the keyboard: focus goes with it. Keys it does not use —
-  // Backspace on an empty query, Space, Tab — would otherwise still land in
-  // the editor behind it and edit a document nobody can see.
-  $effect(() => {
-    if (captured) focusList();
+    if (isOpen) focusList();
   });
 
   // Tabs that arrive while the drawer is open get their text too.
@@ -360,13 +327,13 @@
     untrack(() => {
       const before = lastVisible;
       lastVisible = now;
-      if (!keysCaptured(ds)) return;
+      if (!ds.open) return;
       const kb = ds.kb;
       void tick().then(() => {
         const focused = document.activeElement;
         const focusedId = focused instanceof HTMLElement ? focused.closest<HTMLElement>('[data-tab-id]')?.dataset.tabId : undefined;
         const lost = !focused || focused === document.body || (focusedId !== undefined && !now.includes(focusedId));
-        if (!lost || !keysCaptured(ds)) return;
+        if (!lost || !ds.open) return;
         const gone = focusedId ?? (kb !== null && !now.includes(kb) ? kb : null);
         const next = gone === null ? null : neighbourAfterRemoval(before, now, gone);
         if (next !== null && gone === kb) {
@@ -411,7 +378,7 @@
   $effect(() => () => {
     removeWindowListeners();
     endGesture?.();
-    for (const timer of [hoverOpenTimer, hoverCloseTimer, expandTimer, flashTimer, dwellTimer, carCloseTimer]) {
+    for (const timer of [hoverOpenTimer, hoverCloseTimer, expandTimer, flashTimer, carCloseTimer]) {
       clearTimeout(timer);
     }
   });
@@ -491,7 +458,7 @@
   /** After the render that lifts `inert` — an inert list cannot take focus. */
   function focusList(): void {
     void tick().then(() => {
-      if (keysCaptured(ds) && !insideDrawer(document.activeElement)) listEl?.focus({ preventScroll: true });
+      if (ds.open && !insideDrawer(document.activeElement)) listEl?.focus({ preventScroll: true });
     });
   }
 
@@ -504,9 +471,7 @@
     }
     const focused = document.activeElement;
     restoreFocus = focused instanceof HTMLElement && focused !== document.body && !insideDrawer(focused) ? focused : null;
-    ds = openState(ds, mode, !lastInputInEditable);
-    dwellOrigin = lastPointer;
-    dwellArmed = false;
+    ds = openState(ds, mode);
     tookFocus = false;
     data.refresh(list.tabs);
     addWindowListeners();
@@ -518,7 +483,6 @@
     closeCarousel();
     clearTimeout(hoverCloseTimer);
     clearTimeout(expandTimer);
-    clearTimeout(dwellTimer);
     removeWindowListeners();
     data.release();
     const active = document.activeElement;
@@ -554,48 +518,13 @@
   }
 
   function onFocusOut(e: FocusEvent): void {
-    if (!keysCaptured(ds)) return;
+    if (!ds.open) return;
     const next = e.relatedTarget;
     if (!(next instanceof Element) || insideDrawer(next)) return;
     // A panel with a keyboard of its own (CodeMirror's search, Recent Files)
     // may take it; the app closes the drawer for those anyway.
     if (next.closest('.cm-panels, [role="dialog"]')) return;
     focusList();
-  }
-
-  // --- pointer takes the keyboard (Q5) ---
-  //
-  // Not on entering: a hover-open slides the drawer under a pointer resting on
-  // the notch, so the first twitch is already "inside". A press, a scroll, or
-  // a rest of DWELL_CAPTURE_MS is a decision to use the drawer — a true rest:
-  // every move starts the wait again, so a slow pass never captures, and only
-  // after the pointer has travelled DWELL_ARM_PX from where it was at the
-  // hover-open, so a twitch of the hand on the notch does not either.
-
-  function captureNow(): void {
-    clearTimeout(dwellTimer);
-    ds = captureTyping(ds);
-  }
-
-  function restDwell(e: PointerEvent): void {
-    clearTimeout(dwellTimer);
-    if (!ds.open || ds.typing) return;
-    if (!dwellArmed) {
-      dwellOrigin ??= { x: e.clientX, y: e.clientY };
-      if (Math.hypot(e.clientX - dwellOrigin.x, e.clientY - dwellOrigin.y) < DWELL_ARM_PX) return;
-      dwellArmed = true;
-    }
-    dwellTimer = setTimeout(captureNow, DWELL_CAPTURE_MS);
-  }
-
-  function drawerEnter(e: PointerEvent): void {
-    trackShift(e);
-    restDwell(e);
-  }
-
-  function drawerLeave(e: PointerEvent): void {
-    trackShift(e);
-    clearTimeout(dwellTimer);
   }
 
   // --- hover ---
@@ -619,13 +548,8 @@
     else openDrawer('pinned');
   }
 
-  function wrapMove(e: PointerEvent): void {
-    trackShift(e);
-    lastPointer = { x: e.clientX, y: e.clientY };
-  }
-
   function wrapEnter(e: PointerEvent): void {
-    wrapMove(e);
+    trackShift(e);
     inWrap = true;
     clearTimeout(hoverCloseTimer);
   }
@@ -681,10 +605,7 @@
       return;
     }
     const action = drawerKeyAction(e, ds.query, mac);
-    // A hover-open right after typing in the editor: typing stays with the
-    // editor until the pointer enters the drawer or it is pinned (Q5); sort
-    // keys work regardless.
-    if (action.kind === 'none' || !actionAllowed(ds, action)) return;
+    if (action.kind === 'none') return;
     // Enter on a button in the panel presses it, and with no card to open it
     // is not the drawer's either. Not the notch: a query's top result wins.
     if (
@@ -1094,7 +1015,7 @@
     role="presentation"
     onpointerenter={wrapEnter}
     onpointerleave={wrapLeave}
-    onpointermove={wrapMove}
+    onpointermove={trackShift}
     onpointerdown={trackShift}
   >
     <aside
@@ -1103,11 +1024,6 @@
       aria-label={listLabel}
       inert={!ds.open}
       bind:this={asideEl}
-      onpointerenter={drawerEnter}
-      onpointermove={restDwell}
-      onpointerleave={drawerLeave}
-      onpointerdown={captureNow}
-      onwheel={captureNow}
     >
       <div class="drawer-head">
         <!-- One text baseline for all three items: plain blocks aligned by the

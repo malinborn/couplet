@@ -7,19 +7,6 @@ export const HOVER_OPEN_MS = 200;
 export const HOVER_CLOSE_MS = 320;
 /** Resting on a card this long pulls it out, showing more text (spec §6). */
 export const EXPAND_MS = 600;
-/**
- * A hover-opened drawer that left the keyboard with the editor takes it once
- * the pointer has rested inside it this long (tabs-questions Q5). Entering
- * alone is not enough: the drawer slides in under a pointer resting on the
- * notch, so the first twitch of the mouse would already be "inside".
- */
-export const DWELL_CAPTURE_MS = 500;
-/**
- * The dwell is not armed until the pointer has moved this far from where it
- * was when the drawer hover-opened: a twitch of the hand resting on the notch
- * is not a decision to use the drawer.
- */
-export const DWELL_ARM_PX = 20;
 
 /** A hover-opened drawer closes when the pointer leaves; a pinned one stays. */
 export type DrawerMode = 'hover' | 'pinned';
@@ -35,14 +22,6 @@ export interface DrawerState {
   selected: ReadonlySet<string>;
   /** ⇧ is held: the bottom hint shows only then (spec §6). */
   shiftHeld: boolean;
-  /**
-   * The drawer takes the keyboard. `false` only for a hover-open that came
-   * right after typing in the editor (tabs-questions Q5, approved): the
-   * pointer resting on the notch mid-sentence must not steal the next
-   * letters. It becomes `true` once the pointer enters the drawer, it is
-   * pinned (click, ⌘J), or it was opened pinned.
-   */
-  typing: boolean;
 }
 
 export const CLOSED: DrawerState = {
@@ -52,13 +31,15 @@ export const CLOSED: DrawerState = {
   kb: null,
   selected: new Set(),
   shiftHeld: false,
-  typing: false,
 };
 
-/** `captureTyping`: for a hover-open, whether the last key before it went somewhere other than an editable field. */
-export function open(s: DrawerState, mode: DrawerMode, captureTyping = true): DrawerState {
+/**
+ * However it opens, an open drawer has the keyboard (spec §6, tabs-questions
+ * Q5): hover and pinned differ only in whether the pointer leaving closes it.
+ */
+export function open(s: DrawerState, mode: DrawerMode): DrawerState {
   if (s.open) return mode === 'pinned' ? pin(s) : s;
-  return { ...CLOSED, open: true, mode, shiftHeld: s.shiftHeld, typing: mode === 'pinned' || captureTyping };
+  return { ...CLOSED, open: true, mode, shiftHeld: s.shiftHeld };
 }
 
 export function close(s: DrawerState): DrawerState {
@@ -66,25 +47,13 @@ export function close(s: DrawerState): DrawerState {
 }
 
 export function pin(s: DrawerState): DrawerState {
-  return s.open && (s.mode !== 'pinned' || !s.typing) ? { ...s, mode: 'pinned', typing: true } : s;
+  return s.open && s.mode !== 'pinned' ? { ...s, mode: 'pinned' } : s;
 }
 
-/** The pointer entered the drawer itself: from now on it takes the keyboard. */
-export function captureTyping(s: DrawerState): DrawerState {
-  return s.open && !s.typing ? { ...s, typing: true } : s;
-}
-
-export function keysCaptured(s: DrawerState): boolean {
-  return s.open && s.typing;
-}
-
-/**
- * Typing commits to the drawer: a hover-opened one stops closing on leave,
- * and keeps the keyboard (pinned ⇒ typing).
- */
+/** Typing commits to the drawer: a hover-opened one stops closing on leave. */
 export function setQuery(s: DrawerState, query: string): DrawerState {
   if (!s.open) return s;
-  return { ...s, query, kb: null, mode: query ? 'pinned' : s.mode, typing: s.typing || !!query };
+  return { ...s, query, kb: null, mode: query ? 'pinned' : s.mode };
 }
 
 /** First Esc clears the query, the next the selection, the last closes. */
@@ -201,8 +170,8 @@ export type DrawerKeyAction =
  * native menu item and never reaches the webview. ⌥+letter is text (on a Mac
  * it types ą, @, [), so it searches like any other character.
  *
- * The caller computes the action first and then asks `actionAllowed` whether
- * the drawer may take it; only an allowed action stops the event.
+ * Every action but `none` is the drawer's in any open drawer, hover-opened
+ * included (tabs-questions Q5: strictly the spec) — Esc too.
  */
 export function drawerKeyAction(e: KeyLike, query: string, mac: boolean): DrawerKeyAction {
   if (e.isComposing || e.keyCode === 229) return { kind: 'none' };
@@ -223,14 +192,4 @@ export function drawerKeyAction(e: KeyLike, query: string, mac: boolean): Drawer
   if (e.key === 'ArrowUp') return { kind: 'move', delta: -1 };
   if (e.key === 'Enter') return { kind: 'enter' };
   return { kind: 'none' };
-}
-
-/**
- * Whether the drawer may take `a`. Sort keys and ⌘G work in any open drawer:
- * the Q5 rule only keeps printable typing (and, for now, Esc) with the editor
- * until the drawer has the keyboard, and letting ⌘U or ⌘G through would run
- * CodeMirror's `undoSelection` or `findNext` behind an open drawer.
- */
-export function actionAllowed(s: DrawerState, a: DrawerKeyAction): boolean {
-  return s.open && (s.typing || a.kind === 'sort' || a.kind === 'carousel');
 }

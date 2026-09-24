@@ -2,7 +2,9 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, tick, unmount } from 'svelte';
 import TabDrawer, { type TabDrawerHandle } from './TabDrawer.svelte';
-import { DWELL_ARM_PX, DWELL_CAPTURE_MS, HOVER_CLOSE_MS, HOVER_OPEN_MS } from './drawer-state';
+import { EditorView } from '@codemirror/view';
+import { EditorSelection } from '@codemirror/state';
+import { HOVER_CLOSE_MS, HOVER_OPEN_MS } from './drawer-state';
 import type { TabListState, TabMeta } from './tab-model';
 import { GOT_MS, type CarouselWindow } from './carousel';
 
@@ -226,15 +228,6 @@ describe('TabDrawer — the keyboard follows the drawer (I4a)', () => {
     expect(h.editorKeys).toEqual([]);
   });
 
-  it('a hover-open when the last input was not in the editor takes the keyboard at once', async () => {
-    vi.useFakeTimers();
-    h.editor.focus(); // focused, but nothing was typed or clicked there
-    await hoverOpen();
-    expect(drawerHasKeys()).toBe(true);
-    press('Backspace');
-    expect(h.editorKeys).toEqual([]);
-  });
-
   it('focus pulled back to the editor while the drawer has the keyboard returns to the drawer', async () => {
     h.handle().toggle();
     await settle();
@@ -260,121 +253,94 @@ describe('TabDrawer — the keyboard follows the drawer (I4a)', () => {
   });
 });
 
-describe('TabDrawer — the pointer takes the keyboard only on purpose (Q5)', () => {
-  it('a hover-open after typing in the editor leaves the keys there', async () => {
+describe('TabDrawer — a hover-opened drawer has the keys too (Q5: strictly the spec)', () => {
+  it('right after typing in the editor, the next letter goes to the search', async () => {
     vi.useFakeTimers();
     typeInEditor();
     await hoverOpen();
-    expect(document.activeElement).toBe(h.editor);
+    expect(drawerHasKeys()).toBe(true);
     press('q');
-    press('Backspace');
-    expect(h.editorKeys).toEqual(['q', 'Backspace']);
-    expect(query()).toBe('');
+    await settle();
+    expect(query()).toBe('q');
+    expect(h.editorKeys).toEqual([]);
   });
 
-  it('a click into the editor counts as input there too ("the last input")', async () => {
+  it('keys the drawer does not use never reach the editor behind it', async () => {
+    vi.useFakeTimers();
+    typeInEditor();
+    await hoverOpen();
+    for (const key of ['Backspace', ' ', 'Tab', 'Enter', 'Delete']) press(key);
+    expect(h.editorKeys).toEqual([]);
+  });
+
+  it('a click into the editor before the hover-open changes nothing', async () => {
     vi.useFakeTimers();
     h.editor.focus();
     pointer(h.editor, 'pointerdown');
     await hoverOpen();
-    expect(document.activeElement).toBe(h.editor);
-    press('q');
-    expect(h.editorKeys).toEqual(['q']);
-  });
-
-  it('the pointer passing through the drawer does not take the keys', async () => {
-    vi.useFakeTimers();
-    typeInEditor();
-    await hoverOpen();
-    pointer(el('.drawer'), 'pointerenter');
-    vi.advanceTimersByTime(300);
-    pointer(el('.drawer'), 'pointerleave');
-    vi.advanceTimersByTime(DWELL_CAPTURE_MS);
-    await settle();
-    expect(document.activeElement).toBe(h.editor);
-    press('q');
-    expect(h.editorKeys).toEqual(['q']);
-  });
-
-  it('a slow pass across the drawer does not take them: every move restarts the wait', async () => {
-    vi.useFakeTimers();
-    typeInEditor();
-    await hoverOpen();
-    pointer(el('.drawer'), 'pointerenter', NOTCH);
-    for (let i = 1; i <= 6; i++) {
-      vi.advanceTimersByTime(100);
-      pointer(el('.drawer'), 'pointermove', { clientX: NOTCH.clientX + i * 60, clientY: NOTCH.clientY });
-    }
-    pointer(el('.drawer'), 'pointerleave');
-    vi.advanceTimersByTime(DWELL_CAPTURE_MS * 2);
-    await settle();
-    expect(document.activeElement).toBe(h.editor);
-  });
-
-  it('a twitch of the hand that rests on the notch does not arm the wait', async () => {
-    vi.useFakeTimers();
-    typeInEditor();
-    await hoverOpen();
-    // The drawer slid in under the pointer; a few pixels of movement land inside.
-    pointer(el('.drawer'), 'pointerenter', { clientX: 12, clientY: 62 });
-    pointer(el('.drawer'), 'pointermove', { clientX: 14, clientY: 63 });
-    vi.advanceTimersByTime(DWELL_CAPTURE_MS * 2);
-    await settle();
-    expect(document.activeElement).toBe(h.editor);
-    press('q');
-    expect(h.editorKeys).toEqual(['q']);
-  });
-
-  it('moving into the drawer and resting there takes them: focus moves in, Backspace stays out of the editor', async () => {
-    vi.useFakeTimers();
-    typeInEditor();
-    await hoverOpen();
-    pointer(el('.drawer'), 'pointerenter', NOTCH);
-    pointer(el('.drawer'), 'pointermove', { clientX: NOTCH.clientX + DWELL_ARM_PX, clientY: NOTCH.clientY });
-    vi.advanceTimersByTime(DWELL_CAPTURE_MS - 1);
-    await settle();
-    expect(document.activeElement).toBe(h.editor);
-    vi.advanceTimersByTime(1);
-    await settle();
     expect(drawerHasKeys()).toBe(true);
-    press('Backspace');
-    press(' ');
-    press('z');
+  });
+
+  it('Esc is the drawer\'s: it closes, and the keys are the editor\'s again', async () => {
+    vi.useFakeTimers();
+    typeInEditor();
+    await hoverOpen();
+    press('Escape');
     await settle();
+    expect(el('.drawer').inert, 'closed (jsdom does not reflect inert)').toBe(true);
+    expect(document.activeElement).toBe(h.editor);
     expect(h.editorKeys).toEqual([]);
-    expect(query()).toBe('z');
+    press('k');
+    expect(h.editorKeys).toEqual(['k']);
   });
 
-  it('a press inside the drawer takes them at once', async () => {
+  it('the pointer leaving closes it and gives focus back to the editor', async () => {
     vi.useFakeTimers();
     typeInEditor();
     await hoverOpen();
-    pointer(el('.drawer-head'), 'pointerdown', { button: 0 });
+    pointer(el('.drawer-wrap'), 'pointerleave');
+    vi.advanceTimersByTime(HOVER_CLOSE_MS);
     await settle();
-    expect(drawerHasKeys()).toBe(true);
-  });
-
-  it('so does a scroll inside the drawer', async () => {
-    vi.useFakeTimers();
-    typeInEditor();
-    await hoverOpen();
-    el('.tab-list').dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 40 }));
-    await settle();
-    expect(drawerHasKeys()).toBe(true);
-  });
-
-  it('typing into the drawer is input outside the editor: the next hover-open takes the keys', async () => {
-    vi.useFakeTimers();
-    typeInEditor();
-    h.handle().toggle();
-    await settle();
-    press('b');
-    press('Escape');
-    press('Escape');
-    await settle();
+    expect(el('.drawer').inert, 'closed (jsdom does not reflect inert)').toBe(true);
     expect(document.activeElement).toBe(h.editor);
+    press('k');
+    expect(h.editorKeys).toEqual(['k']);
+  });
+
+  it('a letter pins it: the pointer leaving no longer closes it', async () => {
+    vi.useFakeTimers();
     await hoverOpen();
-    expect(drawerHasKeys()).toBe(true);
+    press('b');
+    pointer(el('.drawer-wrap'), 'pointerleave');
+    vi.advanceTimersByTime(HOVER_CLOSE_MS * 3);
+    await settle();
+    expect(el('.drawer').hasAttribute('inert')).toBe(false);
+    expect(query()).toBe('b');
+  });
+
+  it('the editor gets its caret back where it was, the document untouched', async () => {
+    vi.useFakeTimers();
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+    const view = new EditorView({ doc: 'hello world', parent });
+    try {
+      view.focus();
+      view.dispatch({ selection: EditorSelection.cursor(5) });
+      await hoverOpen();
+      expect(view.hasFocus).toBe(false);
+      press('w');
+      await settle();
+      expect(query()).toBe('w');
+      press('Escape'); // clears the query
+      press('Escape'); // closes
+      await settle();
+      expect(view.hasFocus).toBe(true);
+      expect(view.state.selection.main.head).toBe(5);
+      expect(view.state.doc.toString()).toBe('hello world');
+    } finally {
+      view.destroy();
+      parent.remove();
+    }
   });
 });
 
@@ -434,16 +400,16 @@ describe('TabDrawer — focus comes back on close', () => {
     expect(h.onactivate).toHaveBeenCalledWith('c');
   });
 
-  it('focus that was on <body> all along is not the drawer\'s to give back', async () => {
+  it('hover-opened with focus nowhere: closing asks the app to put it in the editor, like a pinned one', async () => {
     vi.useFakeTimers();
     typeInEditor();
     h.editor.blur(); // a fresh load blurs the editor on purpose
     await hoverOpen();
-    expect(document.activeElement).toBe(document.body);
-    h.handle().close();
+    expect(drawerHasKeys()).toBe(true);
+    pointer(el('.drawer-wrap'), 'pointerleave');
+    vi.advanceTimersByTime(HOVER_CLOSE_MS);
     await settle();
-    expect(h.onrestorefocus).not.toHaveBeenCalled();
-    expect(document.activeElement).toBe(document.body);
+    expect(h.onrestorefocus).toHaveBeenCalledTimes(1);
   });
 
   it('with the keyboard dropped on <body> anyway, Esc still gives it back', async () => {
@@ -468,7 +434,7 @@ describe('TabDrawer — key routing', () => {
     expect(query()).toBe('');
   });
 
-  it('sort keys work before the drawer has the keyboard (I4d)', async () => {
+  it('sort keys work in a hover-opened drawer (I4d)', async () => {
     vi.useFakeTimers();
     typeInEditor();
     await hoverOpen();
@@ -972,7 +938,7 @@ describe('TabDrawer — the window carousel (plan 05)', () => {
     expect(carousel()).toBeNull();
   });
 
-  it('CmdGIsTheDrawersEvenBeforeItTookTheKeys_ClosedItIsTheEditors', async () => {
+  it('CmdGIsTheDrawersInAHoverOpenedDrawer_ClosedItIsTheEditors', async () => {
     vi.useFakeTimers();
     typeInEditor();
     // Closed: CodeMirror's findNext gets it.
@@ -980,8 +946,7 @@ describe('TabDrawer — the window carousel (plan 05)', () => {
     expect(h.editorKeys).toEqual(['g']);
     h.editorKeys.length = 0;
     await hoverOpen();
-    expect(document.activeElement).toBe(h.editor);
-    // Open, even a hover drawer that left the keys with the editor: never findNext behind it.
+    // Open, a hover drawer too: never findNext behind it.
     expect(press('g', { metaKey: true, ctrlKey: true }).defaultPrevented).toBe(true);
     expect(h.editorKeys).toEqual([]);
     await settle();

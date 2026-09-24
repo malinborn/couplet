@@ -1,11 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   CLOSED,
-  actionAllowed,
-  captureTyping,
   clearSelection,
   close,
-  keysCaptured,
   drawerKeyAction,
   enterTarget,
   escape,
@@ -53,18 +50,16 @@ describe('open / close / pin', () => {
   });
 });
 
-describe('who gets the keyboard (tabs-questions Q5)', () => {
-  it('AHoverOpenRightAfterEditorTypingLeavesKeysToTheEditor', () => {
-    const s = open(CLOSED, 'hover', false);
-    expect(keysCaptured(s)).toBe(false);
-    expect(keysCaptured(captureTyping(s))).toBe(true);
-    expect(keysCaptured(pin(s))).toBe(true);
+describe('hover and pinned (tabs-questions Q5: strictly the spec)', () => {
+  it('AHoverOpenDiffersFromAPinnedOneOnlyInItsMode', () => {
+    // Nothing in the state says "the keys are still the editor's".
+    expect({ ...open(CLOSED, 'hover'), mode: 'pinned' }).toEqual(open(CLOSED, 'pinned'));
   });
 
-  it('APinnedOpenOrAHoverOpenAfterOtherInputCapturesKeys', () => {
-    expect(keysCaptured(open(CLOSED, 'pinned', false))).toBe(true);
-    expect(keysCaptured(open(CLOSED, 'hover'))).toBe(true);
-    expect(keysCaptured(CLOSED)).toBe(false);
+  it('PinningAPinnedDrawerChangesNothing', () => {
+    const pinned = open(CLOSED, 'pinned');
+    expect(pin(pinned)).toBe(pinned);
+    expect(pin(CLOSED)).toBe(CLOSED);
   });
 });
 
@@ -78,10 +73,8 @@ describe('query', () => {
     expect(setQuery(CLOSED, 'x')).toBe(CLOSED);
   });
 
-  it('AQueryHandsTheKeyboardToTheDrawer_PinnedImpliesTyping', () => {
-    const s = setQuery(open(CLOSED, 'hover', false), 'x');
-    expect(s).toMatchObject({ mode: 'pinned', typing: true });
-    expect(setQuery(open(CLOSED, 'hover', false), '').typing).toBe(false);
+  it('AnEmptyQueryLeavesAHoverDrawerClosingOnLeave', () => {
+    expect(setQuery(open(CLOSED, 'hover'), '').mode).toBe('hover');
   });
 });
 
@@ -162,34 +155,6 @@ describe('selection and shift', () => {
     expect(hintVisible(setShift(open(CLOSED, 'pinned'), true))).toBe(true);
     expect(hintVisible(open(CLOSED, 'pinned'))).toBe(false);
     expect(hintVisible(setShift(CLOSED, true))).toBe(false);
-  });
-});
-
-describe('actionAllowed', () => {
-  const sort = { kind: 'sort', sort: 'ai' } as const;
-  const type = { kind: 'type', char: 'a' } as const;
-  const esc = { kind: 'escape' } as const;
-
-  it('SortKeysAndCmdGWorkInAnOpenDrawerBeforeItTookTheKeyboard', () => {
-    // Let through, ⌘G would run CodeMirror's findNext behind the drawer.
-    const s = open(CLOSED, 'hover', false);
-    expect(actionAllowed(s, sort)).toBe(true);
-    expect(actionAllowed(s, { kind: 'carousel' })).toBe(true);
-    expect(actionAllowed(s, type)).toBe(false);
-    expect(actionAllowed(s, esc)).toBe(false);
-  });
-
-  it('EverythingOnceTheDrawerHasTheKeyboard', () => {
-    const s = open(CLOSED, 'pinned');
-    expect(actionAllowed(s, sort)).toBe(true);
-    expect(actionAllowed(s, type)).toBe(true);
-    expect(actionAllowed(s, esc)).toBe(true);
-  });
-
-  it('NothingWhileClosed', () => {
-    expect(actionAllowed(CLOSED, sort)).toBe(false);
-    expect(actionAllowed(CLOSED, type)).toBe(false);
-    expect(actionAllowed(CLOSED, { kind: 'carousel' })).toBe(false);
   });
 });
 
