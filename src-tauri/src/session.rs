@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
@@ -11,6 +11,21 @@ pub const SESSION_VERSION: u32 = 1;
 
 fn default_top_line() -> usize {
     1
+}
+
+static TAB_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A fresh id, unique for the lifetime of this process, salted with the wall
+/// clock and the pid so two different launches never collide either — the
+/// property `untitled-<label>.md` lacked, since `label` (`main`, `editor-2`, …)
+/// is reused by every launch. Only digits and `-`: it ends up in a file name.
+pub fn new_tab_id() -> String {
+    let millis = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let n = TAB_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
+    format!("{}-{}-{}", millis, std::process::id(), n)
 }
 
 /// One window as it was when the session was captured.
@@ -31,6 +46,13 @@ pub struct WindowSnapshot {
     pub cursor: usize,
     #[serde(default = "default_top_line")]
     pub top_line: usize,
+    /// Process-and-time-unique id for this window, stable across a restore.
+    /// A session.json written before this field existed has none — such an
+    /// entry gets a fresh id on load, which is harmless: `untitled` already
+    /// holds the sidecar's literal file name from that older run, so restore
+    /// still finds the right file regardless of this field's value.
+    #[serde(default = "new_tab_id")]
+    pub tab_id: String,
 }
 
 impl WindowSnapshot {
@@ -44,6 +66,7 @@ impl WindowSnapshot {
             height: 0,
             cursor: 0,
             top_line: 1,
+            tab_id: new_tab_id(),
         }
     }
 
@@ -75,9 +98,10 @@ impl Default for Session {
     }
 }
 
-/// Name of the sidecar file that stores an Untitled window's text.
-pub fn untitled_file_name(label: &str) -> String {
-    format!("untitled-{}.md", label)
+/// Name of the sidecar file that stores an Untitled window's text — keyed by
+/// the window's `tab_id` rather than its label, which every launch reuses.
+pub fn untitled_file_name(tab_id: &str) -> String {
+    format!("untitled-{}.md", tab_id)
 }
 
 /// Drop snapshots whose file no longer exists. Untitled snapshots are always kept
@@ -212,6 +236,57 @@ impl SessionState {
         map.remove(label);
         drop(map);
         self.touch();
+    }
+
+    /// The persistent tab id for `label`, creating its entry (with a fresh
+    /// id) if this is the first time anything has been recorded for it.
+    ///
+    /// Creating the entry does not mark the session dirty: one with neither a
+    /// path nor an untitled name is dropped by `prune_missing` on read, so on
+    /// its own it is nothing worth writing.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn tab_id_for(&self, label: &str) -> String {
+        let mut map = self.entries.lock().unwrap();
+        map.entry(label.to_string())
+            .or_insert_with(WindowSnapshot::empty)
+            .tab_id
+            .clone()
+    }
+
+    /// The sidecar this window's unsaved buffer goes to: the name its entry
+    /// already carries, else one derived from its `tab_id`.
+    ///
+    /// Keeping an existing name lets a window restored from an older session,
+    /// whose sidecar is still `untitled-<label>.md`, go on writing to the file
+    /// it was restored from instead of orphaning it.
+    pub fn untitled_file_for(&self, label: &str) -> String {
+        let mut map = self.entries.lock().unwrap();
+        let entry = map
+            .entry(label.to_string())
+            .or_insert_with(WindowSnapshot::empty);
+        entry
+            .untitled
+            .clone()
+            .unwrap_or_else(|| untitled_file_name(&entry.tab_id))
+    }
+
+    /// Seed this window's session entry from a restored snapshot — so the
+    /// first heartbeat merges into it, keeping the same `tab_id`. No-op if an
+    /// entry already exists.
+    pub fn seed(&self, label: &str, snapshot: WindowSnapshot) {
+        if self.is_quitting() {
+            return;
+        }
+        let mut map = self.entries.lock().unwrap();
+        map.entry(label.to_string()).or_insert(snapshot);
+        drop(map);
+        self.touch();
+    }
+
+    /// A copy of this window's current entry, if it has one.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn snapshot_for(&self, label: &str) -> Option<WindowSnapshot> {
+        self.entries.lock().unwrap().get(label).cloned()
     }
 
     pub fn snapshot(&self, saved_at: u64) -> Session {
@@ -415,7 +490,7 @@ pub async fn update_session_document(
         // blank window instead of the file. With it, the entry has neither a path
         // nor an untitled name and is pruned on read.
         (None, Some(text)) if !text.is_empty() => {
-            let file_name = untitled_file_name(&label);
+            let file_name = state.untitled_file_for(&label);
             write_untitled(&file_name, &text)?;
             state.set_untitled(&label, Some(file_name));
         }
@@ -469,6 +544,7 @@ mod tests {
             height: 700,
             cursor: 5,
             top_line: 3,
+            tab_id: new_tab_id(),
         }
     }
 
@@ -625,9 +701,147 @@ mod tests {
     }
 
     #[test]
-    fn untitled_file_name_is_derived_from_label() {
-        assert_eq!(untitled_file_name("editor-3"), "untitled-editor-3.md");
-        assert_eq!(untitled_file_name("main"), "untitled-main.md");
+    fn untitled_file_name_is_derived_from_tab_id() {
+        assert_eq!(untitled_file_name("17-42-3"), "untitled-17-42-3.md");
+    }
+
+    #[test]
+    fn two_launches_reusing_the_same_window_label_get_different_tab_ids() {
+        // Regression: `untitled-main.md` used to be shared by every launch's
+        // "main" window, so starting to type in one before Reopen Session
+        // silently overwrote the previous run's unsaved buffer.
+        let launch_one = SessionState::new();
+        let launch_two = SessionState::new();
+
+        let id_one = launch_one.tab_id_for("main");
+        let id_two = launch_two.tab_id_for("main");
+
+        assert_ne!(id_one, id_two);
+        assert_ne!(
+            launch_one.untitled_file_for("main"),
+            launch_two.untitled_file_for("main")
+        );
+    }
+
+    #[test]
+    fn tab_id_is_file_name_safe() {
+        let id = new_tab_id();
+        assert!(!id.is_empty());
+        assert!(
+            id.chars().all(|c| c.is_ascii_digit() || c == '-'),
+            "got {}",
+            id
+        );
+    }
+
+    #[test]
+    fn tab_id_for_is_stable_across_repeated_calls() {
+        let state = SessionState::new();
+        let first = state.tab_id_for("editor-2");
+        let second = state.tab_id_for("editor-2");
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn tab_id_for_does_not_mark_the_session_dirty() {
+        let state = SessionState::new();
+        state.tab_id_for("editor-2");
+        assert!(!state.take_dirty());
+    }
+
+    #[test]
+    fn seed_preserves_the_restored_tab_id() {
+        let state = SessionState::new();
+        let mut snapshot = WindowSnapshot::empty();
+        snapshot.tab_id = "restored-id-123".to_string();
+        state.seed("editor-5", snapshot);
+
+        assert_eq!(state.tab_id_for("editor-5"), "restored-id-123");
+    }
+
+    #[test]
+    fn seed_does_not_overwrite_an_entry_that_already_exists() {
+        let state = SessionState::new();
+        let first_id = state.tab_id_for("editor-5");
+
+        let mut snapshot = WindowSnapshot::empty();
+        snapshot.tab_id = "should-be-ignored".to_string();
+        state.seed("editor-5", snapshot);
+
+        assert_eq!(state.tab_id_for("editor-5"), first_id);
+    }
+
+    #[test]
+    fn seeded_untitled_stays_referenced_after_the_pending_restore_is_taken() {
+        let state = SessionState::new();
+        let mut pending = snap(None);
+        pending.untitled = Some("untitled-main.md".to_string());
+        state.set_pending(vec![pending]);
+
+        let restored = state.take_pending().remove(0);
+        state.seed("editor-4", restored);
+
+        assert!(state.referenced_untitled().contains("untitled-main.md"));
+    }
+
+    #[test]
+    fn untitled_file_for_keeps_a_restored_legacy_name() {
+        // A session written before `tab_id` existed names its sidecar after
+        // the old window label. Writing a restored window's buffer anywhere
+        // else would orphan that file.
+        let state = SessionState::new();
+        let mut restored = snap(None);
+        restored.untitled = Some("untitled-editor-3.md".to_string());
+        state.seed("editor-7", restored);
+
+        assert_eq!(state.untitled_file_for("editor-7"), "untitled-editor-3.md");
+    }
+
+    #[test]
+    fn untitled_file_for_a_fresh_window_is_named_by_its_tab_id() {
+        let state = SessionState::new();
+        let tab_id = state.tab_id_for("main");
+        assert_eq!(
+            state.untitled_file_for("main"),
+            format!("untitled-{}.md", tab_id)
+        );
+    }
+
+    #[test]
+    fn legacy_entry_without_tab_id_gets_a_fresh_one_on_load() {
+        let json = r#"{"version":1,"savedAt":0,"windows":[
+            {"path":null,"untitled":"untitled-main.md","x":0,"y":0,"width":900,"height":700}
+        ]}"#;
+        let session = parse_session(json).expect("should parse");
+        assert!(!session.windows[0].tab_id.is_empty());
+        assert_eq!(
+            session.windows[0].untitled.as_deref(),
+            Some("untitled-main.md")
+        );
+    }
+
+    #[test]
+    fn tab_id_survives_a_json_roundtrip() {
+        let mut s = snap(None);
+        s.tab_id = "123-45-6".to_string();
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains(r#""tabId":"123-45-6""#), "got {}", json);
+        let back: WindowSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.tab_id, "123-45-6");
+    }
+
+    #[test]
+    fn snapshot_for_returns_the_recorded_entry() {
+        let state = SessionState::new();
+        state.set_document("editor-1", Some("/tmp/a.md".to_string()), 3, 2);
+        let snap = state.snapshot_for("editor-1").expect("entry exists");
+        assert_eq!(snap.path.as_deref(), Some("/tmp/a.md"));
+    }
+
+    #[test]
+    fn snapshot_for_returns_none_for_an_unknown_label() {
+        let state = SessionState::new();
+        assert!(state.snapshot_for("no-such-window").is_none());
     }
 
     #[test]

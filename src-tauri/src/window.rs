@@ -253,6 +253,14 @@ pub fn open_restored_window(app: &AppHandle, snapshot: &crate::session::WindowSn
     let count = WINDOW_COUNTER.fetch_add(1, Ordering::SeqCst);
     let label = format!("editor-{}", count);
 
+    // Seed the session entry with the restored tab_id before this window's
+    // frontend ever sends its first heartbeat — otherwise `tab_id_for` would
+    // mint a brand new one on that first call (the restored untitled sidecar
+    // would then be written under a new name while the old one goes
+    // unreferenced and gets pruned).
+    app.state::<crate::session::SessionState>()
+        .seed(&label, snapshot.clone());
+
     let product_name = app
         .config()
         .product_name
@@ -319,6 +327,8 @@ pub fn open_restored_window(app: &AppHandle, snapshot: &crate::session::WindowSn
         }
         Err(e) => {
             eprintln!("Failed to restore window: {}", e);
+            // No window will ever heartbeat or be destroyed under this label.
+            app.state::<crate::session::SessionState>().remove(&label);
         }
     }
 }
