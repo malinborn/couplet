@@ -2564,7 +2564,7 @@ mod tests {
 
         let old_wk = dir.join("com.md-mini.dev");
         write(&old_wk.join("secret.txt"), "never gets read");
-        fs::set_permissions(&old_wk.join("secret.txt"), fs::Permissions::from_mode(0o000)).unwrap();
+        fs::set_permissions(old_wk.join("secret.txt"), fs::Permissions::from_mode(0o000)).unwrap();
         let new_wk = dir.join("pro.couplet.dev");
 
         let env = testing::MockEnv::new();
@@ -2583,7 +2583,7 @@ mod tests {
             assert_eq!(fs::read_to_string(new_app.join("session.json")).unwrap(), "real data");
             assert_eq!(*env.letters_left.borrow(), vec![new_app.clone()]);
         }
-        fs::set_permissions(&old_wk.join("secret.txt"), fs::Permissions::from_mode(0o600)).ok();
+        fs::set_permissions(old_wk.join("secret.txt"), fs::Permissions::from_mode(0o600)).ok();
         fs::remove_dir_all(&dir).ok();
     }
 
