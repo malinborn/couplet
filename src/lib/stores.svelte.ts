@@ -11,6 +11,7 @@ import {
 } from './theme-resolve';
 import { t } from './i18n';
 import { applyWindowZoom, clampZoom, stepZoom } from './window-zoom';
+import type { LineEnding } from './line-endings';
 
 /**
  * Third mode added alongside the original binary `live-preview | raw`:
@@ -309,6 +310,11 @@ export function createFileState() {
   let filePath = $state<string | null>(null);
   let isDirty = $state(false);
   let lastSavedAt = $state<number | null>(null);
+  // Line ending the open file uses on disk. The buffer is always LF (see
+  // `line-endings.ts`); this is what a save converts back to, so a CRLF file
+  // stays CRLF. A fresh window starts at LF, which is also what an untitled
+  // document gets saved as.
+  let lineEnding = $state<LineEnding>('lf');
 
   return {
     get filePath() {
@@ -322,6 +328,12 @@ export function createFileState() {
     },
     set isDirty(v: boolean) {
       isDirty = v;
+    },
+    get lineEnding() {
+      return lineEnding;
+    },
+    set lineEnding(v: LineEnding) {
+      lineEnding = v;
     },
     get lastSavedAt() {
       return lastSavedAt;

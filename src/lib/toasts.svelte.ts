@@ -40,6 +40,32 @@ export type ToastPayload =
    * item. Carries the OS's own message for the same reason `save-error` does.
    */
   | { kind: 'language-error'; message: string }
+  /**
+   * A document could not be opened: the read failed (not valid UTF-8,
+   * permissions) or the editor refused the text.
+   *
+   * Before this it reached `console.error` and nothing else. A CRLF file threw
+   * inside the editor, the open's catch swallowed it, and the user got an
+   * empty Untitled window with no hint that anything had been attempted; a
+   * file that is not valid UTF-8 did the same with Rust's own perfectly good
+   * explanation thrown away. Carries the file name and that message, same
+   * reasoning as `save-error`. Withdrawn by the next successful open.
+   */
+  | { kind: 'open-error'; fileName: string; message: string }
+  /**
+   * The open file changed on disk and could not be re-read — typically a
+   * non-atomic writer caught mid-write, whose half-written multibyte character
+   * reads as invalid UTF-8.
+   *
+   * Its own kind rather than a flavour of `open-error`, because the two are
+   * about different files and different lifetimes: this one is about the
+   * document the window is showing, and it stands for exactly as long as
+   * autosave is paused (see `canAutoSave` in `document-sync.ts`). A failed
+   * open of some other file must not replace it, and a successful open of
+   * that other file says nothing about it. Withdrawn by the next successful
+   * read or save of the document.
+   */
+  | { kind: 'reload-error'; fileName: string; message: string }
   | { kind: 'update'; latest: string; current: string; highlight?: string }
   /**
    * Answers to a manual "Check for Updates…" click (#82) — the automatic
@@ -105,6 +131,12 @@ const ORDER: Record<ToastKind, number> = {
   // Same rank again, same reasoning: a read-only app data directory that
   // breaks a language change is exactly as urgent as a failed save.
   'language-error': 0,
+  // Same rank: it answers something the user just did, and an error that
+  // sorts below a "you have 3 windows to restore" notice reads as a notice.
+  // Unlike the three above it loses no work — the file on disk is untouched.
+  'open-error': 0,
+  // Same rank, and this one does guard work: autosave is paused while it is up.
+  'reload-error': 0,
   update: 1,
   // Direct responses to the same menu click that produces `update` above —
   // sorts right beside it rather than with the "just clicked" group below,

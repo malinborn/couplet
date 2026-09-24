@@ -4,7 +4,7 @@
   import type { EditorHandle } from './lib/editor/Editor.svelte';
   import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createFileState, createRecentFilesStore, setProductName } from './lib/stores.svelte';
   import { getName } from '@tauri-apps/api/app';
-  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, broadcastTheme, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type PendingOpen } from './lib/tauri/commands';
+  import { readDocument, writeDocument, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, broadcastTheme, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type PendingOpen } from './lib/tauri/commands';
   import { concreteTheme, halfOf, type ThemeFamily } from './lib/theme-resolve';
   import type { ThemeControl } from './lib/editor/slash-theme';
   import {
@@ -42,6 +42,13 @@
   import { reinitializeTheme } from './lib/editor/preview/mermaid';
   import { computeReplacement, computeChangedLineRanges } from './lib/editor/content-diff';
   import { resolveExternalChange } from './lib/external-change';
+  import { normalizeLineEndings, type DiskDocument, type LineEnding } from './lib/line-endings';
+  import {
+    canAutoSave,
+    lineEndingAfterExternalChange,
+    reloadRetryDelay,
+    shouldReleaseUnopenedPath,
+  } from './lib/document-sync';
   import {
     resolveShowTarget,
     changedLineRanges,
@@ -244,6 +251,55 @@
   // Coalesces external-change events that arrive while the conflict dialog is
   // already up (FSEvents can fire more than once for one write).
   let conflictDialogOpen = false;
+  // The last read of this window's file failed while the file still existed
+  // (a non-atomic writer caught mid-write, invalid UTF-8, permissions). Until a
+  // read succeeds, disk holds a version the window has never seen, so
+  // automatic saves are paused — see `canAutoSave`. The watcher's leading-edge
+  // debounce may drop the follow-up event, so the read is retried on a timer.
+  let diskUnreadable = false;
+  let reloadRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let reloadRetryAttempt = 0;
+
+  function saveGate() {
+    return {
+      isDirty: fileState.isDirty,
+      filePath: fileState.filePath,
+      conflictDialogOpen,
+      diskUnreadable,
+    };
+  }
+
+  /** The file could not be re-read: pause autosave, say so, try again later. */
+  function markDiskUnreadable(path: string, err: unknown): void {
+    diskUnreadable = true;
+    console.error('Reload failed:', err);
+    toasts.push({
+      kind: 'reload-error',
+      fileName: path.split('/').pop() ?? path,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    if (reloadRetryTimer !== null) clearTimeout(reloadRetryTimer);
+    reloadRetryTimer = setTimeout(() => {
+      reloadRetryTimer = null;
+      void handleExternalChange(path);
+    }, reloadRetryDelay(reloadRetryAttempt++));
+  }
+
+  /**
+   * Disk and window agree again — a read succeeded, a save landed, or the
+   * window moved on to another file. Returns whether autosave had been paused.
+   */
+  function endDiskUnreadable(): boolean {
+    const was = diskUnreadable;
+    diskUnreadable = false;
+    reloadRetryAttempt = 0;
+    if (reloadRetryTimer !== null) {
+      clearTimeout(reloadRetryTimer);
+      reloadRetryTimer = null;
+    }
+    toasts.dismissKind('reload-error');
+    return was;
+  }
 
   function handleChange(doc: string) {
     fileState.isDirty = true;
@@ -257,11 +313,10 @@
     }
     autoSaveTimer = setTimeout(() => {
       autoSaveTimer = null;
-      // Saving now would write the buffer over the disk state the open
-      // conflict dialog is asking the user about — the dialog's own "Yes"
-      // path needs that state to still be there when it re-reads the file.
-      if (conflictDialogOpen) return;
-      if (fileState.isDirty && fileState.filePath) {
+      // Not while the conflict dialog is up (its "Yes" re-reads the disk
+      // state it is asking about) and not while the file is unreadable (the
+      // unread version would be overwritten) — see `canAutoSave`.
+      if (canAutoSave(saveGate())) {
         performSave();
       }
     }, 300);
@@ -287,9 +342,13 @@
 
   async function doSave(path: string): Promise<void> {
     saveGeneration += 1;
+    // `content` stays LF: it is what the buffer holds, so it is also what the
+    // dirty check and the disk baseline below compare against. Only the bytes
+    // that reach the disk carry the file's own line ending.
     const content = editorHandle?.view?.state.doc.toString() ?? '';
+    const lineEnding = fileState.lineEnding;
     try {
-      await writeFile(path, content);
+      await writeDocument(path, content, lineEnding);
       // A window can switch to a different file (Cmd+O) while this write is
       // in flight; the bookkeeping below belongs to `path`, not to whatever
       // file the window holds by the time the write resolves.
@@ -308,6 +367,9 @@
         dismissedDisk = null;
         // A previous failure is over the moment a save lands.
         toasts.dismissKind('save-error');
+        // So is an unreadable disk: it now holds exactly what we wrote. Only
+        // an explicit ⌘S gets here while it was paused.
+        endDiskUnreadable();
       }
       // Clean up recovery file on successful save
       await invoke('delete_recovery', { path }).catch(() => {});
@@ -349,8 +411,21 @@
     const path = await showOpenDialog();
     if (!path) return;
     try {
-      const content = await readFile(path);
+      const doc = await readDocument(path);
+      if (!editorHandle?.view) throw new Error('editor not ready');
+      // Content first, bookkeeping after — same order as `handleOpenFilePath`.
+      // If the dispatch throws, nothing below has run: the window is still
+      // bound to the document it already had, with that document's buffer.
+      // The other order bound it to `path` while it still held the old text,
+      // and the next autosave wrote the old document into the new file.
+      //
+      // It also has to come before `isDirty = false`: the dispatch re-dirties
+      // the buffer via handleChange (a real edit as far as CM6 is concerned),
+      // so clearing it first just gets it flipped back on and triggers a
+      // pointless autosave 300ms after open.
+      editorHandle.replaceContent(doc.text);
       fileState.filePath = path;
+      fileState.lineEnding = doc.lineEnding;
       // Register this window as the owner of `path` in the Rust-side
       // `OpenFiles` map and (re)start its watcher. Without this, a file
       // opened via the dialog into an already-open window is invisible to
@@ -358,18 +433,31 @@
       // "already open" focus-instead-of-duplicate), and never gets watched
       // for external changes either.
       invoke('register_open_file', { path }).catch(() => {});
-      diskBaseline = content;
+      diskBaseline = doc.text;
       dismissedDisk = null;
-      // After replaceContent: its dispatch re-dirties the buffer via
-      // handleChange (a real edit as far as CM6 is concerned), so isDirty
-      // must be cleared afterwards — clearing it first just gets it flipped
-      // back on and triggers a pointless autosave 300ms after open.
-      editorHandle?.replaceContent(content);
+      endDiskUnreadable();
       fileState.isDirty = false;
       recentFiles.add(path);
+      toasts.dismissKind('open-error');
     } catch (err) {
-      console.error('Open failed:', err);
+      // Failing before `filePath` is assigned leaves the window on the
+      // document it already had — nothing to undo, only something to say.
+      reportOpenError(path, err);
     }
+  }
+
+  /**
+   * Say that a document could not be opened. Until this, every such failure
+   * was a `console.error` — which meant an empty Untitled window and no hint
+   * that a file had been asked for at all.
+   */
+  function reportOpenError(path: string, err: unknown): void {
+    console.error('Open failed:', err);
+    toasts.push({
+      kind: 'open-error',
+      fileName: path.split('/').pop() ?? path,
+      message: err instanceof Error ? err.message : String(err),
+    });
   }
 
   function handleNew(): void {
@@ -387,25 +475,43 @@
   }
 
   async function handleOpenFilePath(path: string): Promise<void> {
+    let doc: DiskDocument | null;
     try {
-      const exists = await fileExists(path);
-      if (exists) {
-        const content = await readFile(path);
-        editorHandle?.replaceContent(content);
-        diskBaseline = content;
-      } else {
-        editorHandle?.replaceContent('');
-        diskBaseline = null;
-      }
-      dismissedDisk = null;
-      fileState.filePath = path;
-      // Register this window as the owner of `path` — see the matching call
-      // in `handleOpen`. Also (re)starts the file watcher, replacing the
-      // separate `start_watching` invoke this used to make.
-      invoke('register_open_file', { path }).catch(() => {});
-      fileState.isDirty = false;
-      recentFiles.add(path);
+      // A path that does not exist yet is a new file (`mdmini new.md`), not an
+      // error: it opens empty and the first save creates it, as LF.
+      doc = (await fileExists(path)) ? await readDocument(path) : null;
+    } catch (err) {
+      reportOpenError(path, err);
+      releaseUnopenedPath(path);
+      return;
+    }
+    try {
+      if (!editorHandle?.view) throw new Error('editor not ready');
+      editorHandle.replaceContent(doc?.text ?? '');
+    } catch (err) {
+      // Nothing is committed yet: the window keeps whatever it had.
+      reportOpenError(path, err);
+      releaseUnopenedPath(path);
+      return;
+    }
 
+    // Committed. From here on the file IS open — a failure below is a
+    // half-configured editor, not a failed open, and must not be reported as
+    // "Could not open".
+    diskBaseline = doc?.text ?? null;
+    dismissedDisk = null;
+    endDiskUnreadable();
+    fileState.filePath = path;
+    fileState.lineEnding = doc?.lineEnding ?? 'lf';
+    // Register this window as the owner of `path` — see the matching call
+    // in `handleOpen`. Also (re)starts the file watcher, replacing the
+    // separate `start_watching` invoke this used to make.
+    invoke('register_open_file', { path }).catch(() => {});
+    fileState.isDirty = false;
+    recentFiles.add(path);
+    toasts.dismissKind('open-error');
+
+    try {
       // A different document means different comments; drafts belonged to the
       // file we just left and must not reappear anchored in this one.
       commentDrafts = new Map();
@@ -439,8 +545,30 @@
       // firing first.
       applyPreviewConfig();
     } catch (err) {
-      console.error('Failed to open file:', err);
+      console.error('Opened, but configuring the editor for it failed:', err);
     }
+  }
+
+  /**
+   * After an open that never got as far as `fileState.filePath`: give back a
+   * claim Rust made on this window's behalf.
+   *
+   * A window created for a CLI path (`open_file_window`, `assign_file_to_main`)
+   * is registered in `OpenFiles` as that path's owner, and its watcher is
+   * started, before the frontend has read a byte. If the read then fails, the
+   * window deliberately stays Untitled — keeping the path would arm autosave to
+   * write whatever is typed next over a file that could not even be read — and
+   * a stale registration would make every later open of the same path focus
+   * this window instead of trying again. Only when the window holds no file:
+   * one that already shows a document keeps it, and its registration with it.
+   *
+   * By path, compare-and-delete: Rust drops the entry only if `path` still
+   * maps to this window, so an out-of-order IPC can never undo a successful
+   * `register_open_file` for another path.
+   */
+  function releaseUnopenedPath(path: string): void {
+    if (!shouldReleaseUnopenedPath(fileState.filePath)) return;
+    invoke('unregister_open_file', { path }).catch(() => {});
   }
 
   // --- Restored caret / scroll ---
@@ -463,6 +591,24 @@
   // The watcher fires on every write to the path, our own autosave included —
   // there is no OS-level way to tell those apart from a real external edit.
   // `resolveExternalChange` tells them apart by content instead.
+  /**
+   * A watcher event for our file, and the file would not read.
+   *
+   * A file that is simply gone is not this case: that was never an error
+   * here, and the next save recreates it, as it always has. A file that is
+   * still there but unreadable is — its content is a version the window has
+   * not seen, so autosave pauses until a read succeeds.
+   */
+  async function handleReloadFailure(path: string, err: unknown): Promise<void> {
+    const exists = await fileExists(path).catch(() => true);
+    if (path !== fileState.filePath) return;
+    if (!exists) {
+      endDiskUnreadable();
+      return;
+    }
+    markDiskUnreadable(path, err);
+  }
+
   async function handleExternalChange(path: string): Promise<void> {
     if (path !== fileState.filePath) return;
 
@@ -472,6 +618,7 @@
     // a state caught mid-write. Retry the read until no save landed while it
     // was in flight.
     let disk: string;
+    let diskLineEnding: LineEnding;
     for (;;) {
       while (currentSave) await currentSave.catch(() => {});
       // Cmd+O (or another window event) may have switched this window to a
@@ -479,9 +626,11 @@
       if (path !== fileState.filePath) return;
       const generation = saveGeneration;
       try {
-        disk = await readFile(path);
+        // No line break on disk says nothing about the file's convention, so
+        // keep the one the document already has (see `detectLineEnding`).
+        ({ text: disk, lineEnding: diskLineEnding } = await readDocument(path, fileState.lineEnding));
       } catch (err) {
-        console.error('Failed to read externally changed file:', err);
+        if (path === fileState.filePath) await handleReloadFailure(path, err);
         return;
       }
       // A save that began during the read may have landed on either side of
@@ -489,7 +638,11 @@
       if (generation === saveGeneration) break;
     }
     if (path !== fileState.filePath) return;
+    const wasUnreadable = endDiskUnreadable();
 
+    // Every comparison below is between LF texts: `disk` is normalized by
+    // `readDocument`, and the buffer and baseline never held anything else.
+    // That is what keeps our own CRLF save from echoing back as a change.
     const decision = resolveExternalChange({
       disk,
       buffer: editorHandle?.view?.state.doc.toString() ?? '',
@@ -497,8 +650,19 @@
       dismissedDisk,
     });
 
+    fileState.lineEnding = lineEndingAfterExternalChange({
+      decision,
+      disk,
+      baseline: diskBaseline,
+      diskLineEnding,
+      current: fileState.lineEnding,
+    });
+
     switch (decision) {
       case 'ignore':
+        // Edits typed while autosave was paused are still only in the buffer,
+        // and the disk turned out to be the version they were made on top of.
+        if (wasUnreadable && fileState.isDirty) scheduleAutoSave();
         return;
       case 'adopt':
         // Buffer already matches disk — nothing to reload, just resync.
@@ -528,14 +692,15 @@
           if (reload) {
             // Disk may have moved on again while the dialog was up.
             try {
-              const latest = await readFile(path);
+              const latest = await readDocument(path, fileState.lineEnding);
               if (path !== fileState.filePath) return;
-              editorHandle?.updateContent(latest);
-              diskBaseline = latest;
+              editorHandle?.updateContent(latest.text);
+              diskBaseline = latest.text;
+              fileState.lineEnding = latest.lineEnding;
               fileState.isDirty = false;
               dismissedDisk = null;
             } catch (err) {
-              console.error('Failed to reload externally changed file:', err);
+              if (path === fileState.filePath) await handleReloadFailure(path, err);
             }
           } else {
             // Suppress repeats for this exact disk state; a further external
@@ -1094,9 +1259,13 @@
       // thread, so it gets the same wash and the same Escape to dismiss —
       // without it, a paragraph the user did not write appears in their
       // document with nothing marking it as not theirs.
+      //
+      // The agent's text may carry `\r\n`; CM6 would normalize it on insert,
+      // and a highlight measured on the raw string would overrun the span.
+      const clean = normalizeLineEndings(text);
       view.dispatch({
-        changes: { from: at, insert: `\n${text}\n` },
-        effects: setAiHighlights.of([{ from: at + 1, to: at + 1 + text.length }]),
+        changes: { from: at, insert: `\n${clean}\n` },
+        effects: setAiHighlights.of([{ from: at + 1, to: at + 1 + clean.length }]),
       });
     },
   };
@@ -1374,7 +1543,10 @@
 
     // cmd === 'edit'
     const oldContent = view.state.doc.toString();
-    const newContent = payload.content ?? '';
+    // An agent editing a CRLF file hands back CRLF text. The buffer is LF, so
+    // un-normalized content would diff as "every line changed" and the
+    // highlight positions below would drift by one per line.
+    const newContent = normalizeLineEndings(payload.content ?? '');
     const repl = computeReplacement(oldContent, newContent);
     if (!repl) {
       await respondToAi(payload.id, { ok: true, changed_lines: [] });
@@ -1458,9 +1630,9 @@
 
   // --- Save on blur ---
   function handleWindowBlur(): void {
-    // Same reason as the autosave-timer guard: writing now would overwrite
-    // the disk state the open conflict dialog is asking about.
-    if (fileState.isDirty && fileState.filePath && !conflictDialogOpen) {
+    // Same gate as the autosave timer: not over a disk state the conflict
+    // dialog is asking about, not over one we could not read.
+    if (canAutoSave(saveGate())) {
       performSave();
     }
     // Leaving md-mini ends every running comment pause on the spot.
@@ -1493,7 +1665,7 @@
         await handleOpenFilePath(pending.path);
       } else if (pending.content !== null) {
         // Restored Untitled window — no file on disk, just the buffer.
-        editorHandle?.replaceContent(pending.content);
+        editorHandle?.replaceContent(normalizeLineEndings(pending.content));
         fileState.isDirty = true;
       }
       if (pending.cursor > 0 || pending.topLine > 1) {
@@ -1778,6 +1950,7 @@
       window.removeEventListener('blur', handleWindowBlur);
       if (autoSaveTimer !== null) clearTimeout(autoSaveTimer);
       if (recoveryInterval !== null) clearInterval(recoveryInterval);
+      if (reloadRetryTimer !== null) clearTimeout(reloadRetryTimer);
       clearAiHintTimer();
     };
   });

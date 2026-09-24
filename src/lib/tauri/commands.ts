@@ -3,13 +3,27 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import type { ConcreteTheme, ThemeFamily, ThemeHalf } from '../theme-resolve';
 import type { EditorEngine } from '../stores.svelte';
 import type { CommentThread } from '../comment-format';
+import { applyLineEnding, fromDisk, type DiskDocument, type LineEnding } from '../line-endings';
 
-export async function readFile(path: string): Promise<string> {
-  return invoke<string>('read_file', { path });
+/**
+ * Read a document from disk, normalized to LF for the editor.
+ *
+ * The one read boundary for document text: the raw string from `read_file`
+ * never reaches the editor, because CM6 would normalize `\r\n` itself and
+ * every length computed from the raw string would then be wrong — see
+ * `line-endings.ts`. `fallback` is the ending to assume when the file has no
+ * line break at all.
+ */
+export async function readDocument(path: string, fallback: LineEnding = 'lf'): Promise<DiskDocument> {
+  return fromDisk(await invoke<string>('read_file', { path }), fallback);
 }
 
-export async function writeFile(path: string, content: string): Promise<void> {
-  return invoke('write_file', { path, content });
+/**
+ * Write editor (LF) text to disk in the file's own line ending — the mirror of
+ * `readDocument`, and the one write boundary for document text.
+ */
+export async function writeDocument(path: string, text: string, lineEnding: LineEnding): Promise<void> {
+  return invoke('write_file', { path, content: applyLineEnding(text, lineEnding) });
 }
 
 export async function fileExists(path: string): Promise<boolean> {

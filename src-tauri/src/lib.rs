@@ -145,6 +145,7 @@ pub fn run() {
             comment_pause::comment_commit,
             window::open_file_window_cmd,
             window::register_open_file,
+            window::unregister_open_file,
             recovery::save_recovery,
             recovery::delete_recovery,
             recovery::check_recovery,

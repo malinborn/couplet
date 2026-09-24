@@ -168,6 +168,73 @@ describe('createToastStore', () => {
     expect(kinds[2]).toBe('update');
   });
 
+  it('OpenError_SortsWithTheOtherErrorsAboveNotices', () => {
+    // A failed open is the answer to what the user just did; below a session
+    // or update notice it would read as one more notice.
+    const store = createToastStore();
+    store.push({ kind: 'session', count: 2 });
+    store.push({ kind: 'update', latest: 'v1.0.0', current: '0.9.0' });
+    store.push({
+      kind: 'open-error',
+      fileName: 'invoice.md',
+      message: 'Cannot open: file is not valid text.',
+    });
+    expect(store.toasts.map((t) => t.payload.kind)).toEqual(['open-error', 'update', 'session']);
+  });
+
+  it('OpenError_CarriesFileNameAndMessage', () => {
+    const store = createToastStore();
+    store.push({ kind: 'open-error', fileName: 'a.md', message: 'Permission denied' });
+    expect(store.toasts[0].payload).toEqual({
+      kind: 'open-error',
+      fileName: 'a.md',
+      message: 'Permission denied',
+    });
+  });
+
+  it('OpenError_RepeatedFailures_DoNotStack', () => {
+    const store = createToastStore();
+    store.push({ kind: 'open-error', fileName: 'a.md', message: 'one' });
+    store.push({ kind: 'open-error', fileName: 'b.md', message: 'two' });
+    expect(store.toasts).toHaveLength(1);
+    const payload = store.toasts[0].payload;
+    expect(payload.kind === 'open-error' && payload.fileName).toBe('b.md');
+  });
+
+  it('OpenError_SurvivesASuccessfulSave', () => {
+    // A save of the document the window still holds says nothing about the
+    // file that failed to open — `performSave` only dismisses `save-error`.
+    const store = createToastStore();
+    store.push({ kind: 'open-error', fileName: 'a.md', message: 'x' });
+    store.dismissKind('save-error');
+    expect(store.toasts).toHaveLength(1);
+  });
+
+  it('ReloadErrorAndOpenError_DoNotDisplaceEachOther', () => {
+    // Different files, different lifetimes: the reload error stands for as
+    // long as autosave of the current document is paused, and a failed open
+    // of some other file must not knock it off the screen.
+    const store = createToastStore();
+    store.push({ kind: 'reload-error', fileName: 'doc.md', message: 'not valid text' });
+    store.push({ kind: 'open-error', fileName: 'other.md', message: 'Permission denied' });
+    expect(store.toasts.map((t) => t.payload.kind).sort()).toEqual(['open-error', 'reload-error']);
+  });
+
+  it('ReloadError_SurvivesASuccessfulOpenOfAnotherFile', () => {
+    const store = createToastStore();
+    store.push({ kind: 'reload-error', fileName: 'doc.md', message: 'x' });
+    store.dismissKind('open-error');
+    expect(store.toasts).toHaveLength(1);
+    expect(store.toasts[0].payload.kind).toBe('reload-error');
+  });
+
+  it('ReloadError_SortsAboveNotices', () => {
+    const store = createToastStore();
+    store.push({ kind: 'update', latest: 'v1.0.0', current: '0.9.0' });
+    store.push({ kind: 'reload-error', fileName: 'doc.md', message: 'x' });
+    expect(store.toasts.map((t) => t.payload.kind)).toEqual(['reload-error', 'update']);
+  });
+
   it('OnlyOneToastPerKind', () => {
     // The update checker runs hourly and must not stack duplicates.
     const store = createToastStore();

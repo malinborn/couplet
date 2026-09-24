@@ -9,6 +9,11 @@
 
   "toast.language_error.headline": "Could not change the language",
 
+  "toast.open_error.headline": "Could not open {fileName}",
+
+  "toast.reload_error.headline": "Could not reload {fileName}",
+  "toast.reload_error.instruction": "Autosave is paused until the file can be read again. To keep your version, press",
+
   "toast.update.headline": "mdmini {latest} available",
   "toast.update.current": "you have v{current}",
   "toast.update.copy_title": "Click to copy",

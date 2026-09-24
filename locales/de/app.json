@@ -9,6 +9,11 @@
 
   "toast.language_error.headline": "Die Sprache konnte nicht geändert werden",
 
+  "toast.open_error.headline": "{fileName} konnte nicht geöffnet werden",
+
+  "toast.reload_error.headline": "{fileName} konnte nicht neu geladen werden",
+  "toast.reload_error.instruction": "Automatisches Speichern ist pausiert, bis die Datei wieder lesbar ist. Um Ihre Fassung zu behalten, drücken",
+
   "toast.update.headline": "mdmini {latest} verfügbar",
   "toast.update.current": "Sie haben v{current}",
   "toast.update.copy_title": "Zum Kopieren klicken",

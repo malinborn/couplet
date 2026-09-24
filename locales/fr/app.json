@@ -9,6 +9,11 @@
 
   "toast.language_error.headline": "Impossible de changer la langue",
 
+  "toast.open_error.headline": "Impossible d'ouvrir {fileName}",
+
+  "toast.reload_error.headline": "Impossible de recharger {fileName}",
+  "toast.reload_error.instruction": "L'enregistrement automatique est suspendu jusqu'à ce que le fichier soit de nouveau lisible. Pour garder votre version, appuyez sur",
+
   "toast.update.headline": "mdmini {latest} disponible",
   "toast.update.current": "vous avez la v{current}",
   "toast.update.copy_title": "Cliquer pour copier",
