@@ -2,9 +2,9 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, tick, unmount } from 'svelte';
 import TabDrawer, { type TabDrawerHandle } from './TabDrawer.svelte';
-import { DWELL_ARM_PX, DWELL_CAPTURE_MS, HOVER_OPEN_MS } from './drawer-state';
+import { DWELL_ARM_PX, DWELL_CAPTURE_MS, HOVER_CLOSE_MS, HOVER_OPEN_MS } from './drawer-state';
 import type { TabListState, TabMeta } from './tab-model';
-import type { CarouselWindow } from './carousel';
+import { GOT_MS, type CarouselWindow } from './carousel';
 
 /*
  * The drawer's keyboard and pointer contract against a stand-in for the
@@ -793,5 +793,164 @@ describe('TabDrawer — the window carousel (plan 05)', () => {
     press('Enter');
     await settle();
     expect(h.onmove).toHaveBeenCalledWith(['c'], { kind: 'new-window' });
+  });
+
+  it('AHoverOpenedDrawerStaysWhileTheCarouselIsUp_AThumbnailClickMoves', async () => {
+    vi.useFakeTimers();
+    await hoverOpen();
+    press('m', { metaKey: true, ctrlKey: true });
+    await settle();
+    await settle();
+    expect(carousel()).not.toBeNull();
+    // On its way to a thumbnail the pointer leaves the wrap.
+    pointer(el('.drawer-wrap'), 'pointerleave');
+    vi.advanceTimersByTime(HOVER_CLOSE_MS * 3);
+    await settle();
+    expect(carousel()).not.toBeNull();
+    expect(el('.drawer').hasAttribute('inert')).toBe(false);
+    option(0)!.click();
+    expect(h.onmove).toHaveBeenCalledWith(['a'], { kind: 'new-window' });
+    // The pulse plays out, then the hover close it held off.
+    vi.advanceTimersByTime(GOT_MS - 1);
+    await settle();
+    expect(carousel()).not.toBeNull();
+    vi.advanceTimersByTime(1);
+    await settle();
+    expect(carousel()).toBeNull();
+    vi.advanceTimersByTime(HOVER_CLOSE_MS);
+    await settle();
+    expect(el('.drawer').inert, 'closed (jsdom does not reflect inert)').toBe(true);
+  });
+
+  it('AHoverOpenedDrawerOutlivesTheDropsPulse', async () => {
+    vi.useFakeTimers();
+    await hoverOpen();
+    await dragOut('b');
+    pointer(el('.drawer-wrap'), 'pointerleave');
+    document.elementFromPoint = vi.fn(() => option(0));
+    pointer(window, 'pointermove', { buttons: 1, clientX: 610, clientY: 300 });
+    pointer(window, 'pointerup', { clientX: 610, clientY: 300 });
+    await settle();
+    expect(h.onmove).toHaveBeenCalledWith(['b'], { kind: 'new-window' });
+    vi.advanceTimersByTime(HOVER_CLOSE_MS);
+    await settle();
+    expect(option(0)?.classList.contains('got')).toBe(true);
+    vi.advanceTimersByTime(GOT_MS - HOVER_CLOSE_MS);
+    await settle();
+    expect(carousel()).toBeNull();
+    expect(el('.drawer').hasAttribute('inert')).toBe(false);
+    vi.advanceTimersByTime(HOVER_CLOSE_MS);
+    await settle();
+    expect(el('.drawer').inert, 'closed (jsdom does not reflect inert)').toBe(true);
+  });
+
+  it('DuringThePulseAfterEnterTheKeysAreTheListsAgain', async () => {
+    h.handle().toggle();
+    await settle();
+    press('m', { metaKey: true, ctrlKey: true });
+    await settle();
+    await settle();
+    press('Enter');
+    await settle();
+    expect(carousel()).not.toBeNull();
+    press('x');
+    await settle();
+    expect(query()).toBe('x');
+  });
+
+  it('DuringADragKeysAreSwallowed_CmdMDoesNothing', async () => {
+    h.handle().toggle();
+    await settle();
+    await dragOut('b');
+    expect(press('x').defaultPrevented).toBe(true);
+    press('ArrowDown');
+    press('m', { metaKey: true, ctrlKey: true });
+    await settle();
+    await settle();
+    expect(query()).toBe('');
+    expect(listbox()!.hasAttribute('aria-activedescendant')).toBe(false);
+    document.elementFromPoint = vi.fn(() => option(0));
+    pointer(window, 'pointermove', { buttons: 1, clientX: 610, clientY: 300 });
+    pointer(window, 'pointerup', { clientX: 610, clientY: 300 });
+    await settle();
+    expect(h.onmove).toHaveBeenCalledTimes(1);
+    expect(h.onmove).toHaveBeenCalledWith(['b'], { kind: 'new-window' });
+  });
+
+  it('ADragStartedUnderCmdMsCarouselGetsItsOwn', async () => {
+    h.handle().toggle();
+    await settle();
+    press('m', { metaKey: true, ctrlKey: true });
+    await settle();
+    await settle();
+    expect(document.activeElement).toBe(listbox());
+    await dragOut('b');
+    expect(carousel()).not.toBeNull();
+    expect(listbox()!.hasAttribute('aria-activedescendant')).toBe(false);
+    document.elementFromPoint = vi.fn(() => option(0));
+    pointer(window, 'pointermove', { buttons: 1, clientX: 610, clientY: 300 });
+    pointer(window, 'pointerup', { clientX: 610, clientY: 300 });
+    await settle();
+    expect(h.onmove).toHaveBeenCalledTimes(1);
+    expect(h.onmove).toHaveBeenCalledWith(['b'], { kind: 'new-window' });
+  });
+
+  it('InKeysModeAPressOffTheThumbnailsCancels_OnOneItDoesNot', async () => {
+    h.handle().toggle();
+    await settle();
+    press('m', { metaKey: true, ctrlKey: true });
+    await settle();
+    await settle();
+    pointer(option(0)!, 'pointerdown', { button: 0 });
+    await settle();
+    expect(carousel()).not.toBeNull();
+    pointer(page().querySelector('.car-view')!, 'pointerdown', { button: 0 });
+    await settle();
+    expect(carousel()).toBeNull();
+    expect(document.activeElement).toBe(el('.tab-list'));
+    expect(h.onmove).not.toHaveBeenCalled();
+  });
+
+  it('AWindowBlurOrAClosedDrawerMidDragTakesTheCarouselDown', async () => {
+    h.handle().toggle();
+    await settle();
+    await dragOut('b');
+    expect(h.oncarousel).toHaveBeenLastCalledWith(true);
+    window.dispatchEvent(new Event('blur'));
+    await settle();
+    expect(carousel()).toBeNull();
+    expect(h.oncarousel).toHaveBeenLastCalledWith(false);
+    await dragOut('c');
+    expect(h.oncarousel).toHaveBeenLastCalledWith(true);
+    h.handle().close();
+    await settle();
+    expect(carousel()).toBeNull();
+    expect(h.oncarousel).toHaveBeenLastCalledWith(false);
+    expect(el('.drawer').inert, 'closed (jsdom does not reflect inert)').toBe(true);
+    expect(h.onmove).not.toHaveBeenCalled();
+  });
+
+  it('AWindowsFetchThatResolvesAfterCloseIsDropped', async () => {
+    let resolve: (windows: CarouselWindow[]) => void = () => {};
+    h.windows.mockReturnValueOnce(
+      new Promise<CarouselWindow[]>((r) => {
+        resolve = r;
+      })
+    );
+    h.handle().toggle();
+    await settle();
+    press('m', { metaKey: true, ctrlKey: true });
+    await settle();
+    press('Escape');
+    await settle();
+    press('m', { metaKey: true, ctrlKey: true });
+    await settle();
+    await settle();
+    expect(option(0)).not.toBeNull();
+    resolve([other('editor-2', 7)]);
+    await settle();
+    await settle();
+    expect(option(0)).not.toBeNull();
+    expect(option(1)).toBeNull();
   });
 });

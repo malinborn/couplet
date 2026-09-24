@@ -608,8 +608,11 @@
   function scheduleHoverClose(): void {
     clearTimeout(hoverCloseTimer);
     if (!ds.open || ds.mode !== 'hover') return;
+    // Not while the carousel is up: it lies outside the wrap, so the pointer
+    // on its way to a thumbnail has "left" the drawer (D10: a click works in
+    // either mode). `closeCarousel` schedules again.
     hoverCloseTimer = setTimeout(() => {
-      if (!gesture && !inWrap && ds.mode === 'hover') closeDrawer();
+      if (!gesture && !inWrap && car === null && ds.mode === 'hover') closeDrawer();
     }, HOVER_CLOSE_MS);
   }
 
@@ -632,15 +635,18 @@
     trackShift(e);
     // The IME owns the key: a composed character is not a search letter.
     if (e.isComposing || e.keyCode === 229) return;
-    // While ⌘M's carousel is up every key is its own (D10).
-    if (car?.mode === 'keys') {
+    // While ⌘M's carousel is up every key is its own (D10) — not during the
+    // «got» pulse after a pick, when the keys are the list's again.
+    if (car?.mode === 'keys' && car.got === null) {
       onCarouselKey(e);
       return;
     }
-    if (gesture === 'drag' && e.key === 'Escape') {
+    // A drag owns the keys: Esc cancels it, and nothing else may change the
+    // query (and with it the drop target) under the dragged card.
+    if (gesture === 'drag') {
       e.preventDefault();
       e.stopPropagation();
-      endGesture?.();
+      if (e.key === 'Escape') endGesture?.();
       return;
     }
     const action = drawerKeyAction(e, ds.query, mac);
@@ -690,7 +696,7 @@
         break;
       }
       case 'carousel':
-        openMoveKeys();
+        if (!gesture) openMoveKeys();
         break;
     }
   }
@@ -774,6 +780,14 @@
     clearTimeout(carCloseTimer);
     carOpening++;
     car = null;
+    // The hover close it held off (`scheduleHoverClose`); `closeDrawer` clears it again.
+    if (ds.open && ds.mode === 'hover' && !inWrap) scheduleHoverClose();
+  }
+
+  /** Esc, or a press off the thumbnails: the keys go back to the list. */
+  function cancelKeysCarousel(): void {
+    closeCarousel();
+    void tick().then(() => listEl?.focus({ preventScroll: true }));
   }
 
   /** The option under the dragged card — also after the track scrolled under a still pointer. */
@@ -818,8 +832,7 @@
     const c = car;
     if (!c) return;
     if (key === 'cancel') {
-      closeCarousel();
-      void tick().then(() => listEl?.focus({ preventScroll: true }));
+      cancelKeysCarousel();
       return;
     }
     if (!c.items || c.got !== null) return;
@@ -884,6 +897,8 @@
     trackShift(e);
     // A gesture still running here lost its pointerup: drop it.
     endGesture?.();
+    // A press in the list leaves ⌘M's carousel: a drag from here gets its own.
+    if (car?.mode === 'keys') closeCarousel();
     if (e.button !== 0 || !(e.target instanceof Element)) return;
     if (e.target.closest('.card-close')) return;
     const card = e.target.closest<HTMLElement>('[data-tab-id]');
@@ -1217,6 +1232,7 @@
       lead={car.lead}
       pointer={car.mode === 'drag' && drag ? { x: drag.x, y: drag.y } : null}
       onpick={pick}
+      oncancel={cancelKeysCarousel}
       onscroll={refreshHot}
     />
   {/if}

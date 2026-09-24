@@ -701,6 +701,7 @@
   function announceMoved(moved: readonly MoveDone[]): void {
     if (moved.length === 0) return;
     const id = toasts.push({ kind: 'tabs-moved', label: moved[0].label, numbers: moved.map((m) => m.number) });
+    // Never cleared, and needn't be: dismiss is by id, so once a newer toast replaced this one it closes nothing.
     setTimeout(() => toasts.dismiss(id), TABS_MOVED_TOAST_MS);
   }
 

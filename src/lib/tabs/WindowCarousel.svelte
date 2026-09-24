@@ -42,6 +42,7 @@
     lead,
     pointer,
     onpick,
+    oncancel,
     onscroll,
     handle = $bindable(),
   }: {
@@ -63,6 +64,8 @@
     /** The dragged pointer, for the edge zones; `null` in keys mode. */
     pointer: { x: number; y: number } | null;
     onpick: (index: number) => void;
+    /** Keys mode: a press on the carousel off every thumbnail (mockup). */
+    oncancel?: () => void;
     /** The track moved under a still pointer: the drawer re-reads `itemAt`. */
     onscroll?: () => void;
     handle?: CarouselHandle;
@@ -189,6 +192,13 @@
     const item = e.target instanceof Element ? e.target.closest<HTMLElement>('[data-carousel-item]') : null;
     if (item) onpick(Number(item.dataset.carouselItem));
   }
+
+  /** A drag cancels on its release instead (TabDrawer's `finishDrag`). */
+  function onViewPointerDown(e: PointerEvent): void {
+    if (mode !== 'keys') return;
+    const onItem = e.target instanceof Element && e.target.closest('[data-carousel-item]') !== null;
+    if (!onItem) oncancel?.();
+  }
 </script>
 
 {#snippet segments(list: InlineSeg[])}
@@ -205,7 +215,7 @@
   <div class="car-head">
     {head[0]}<b>{what}</b>{head[1] ?? ''} · {plural(windowCount, 'tabs.carousel.windows')}
   </div>
-  <div class="car-view" bind:this={viewEl}>
+  <div class="car-view" role="presentation" bind:this={viewEl} onpointerdown={onViewPointerDown}>
     <div class="car-edge top" class:on={edges.top} class:hot={edges.v < 0}>{t('tabs.carousel.more_up')}</div>
     <!-- The listbox takes the keys through the drawer's capture handler (D10). -->
     <div
