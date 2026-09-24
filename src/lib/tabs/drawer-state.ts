@@ -7,6 +7,13 @@ export const HOVER_OPEN_MS = 200;
 export const HOVER_CLOSE_MS = 320;
 /** Resting on a card this long pulls it out, showing more text (spec §6). */
 export const EXPAND_MS = 600;
+/**
+ * A hover-opened drawer that left the keyboard with the editor takes it once
+ * the pointer has rested inside it this long (tabs-questions Q5). Entering
+ * alone is not enough: the drawer slides in under a pointer resting on the
+ * notch, so the first twitch of the mouse would already be "inside".
+ */
+export const DWELL_CAPTURE_MS = 500;
 
 /** A hover-opened drawer closes when the pointer leaves; a pinned one stays. */
 export type DrawerMode = 'hover' | 'pinned';
@@ -109,6 +116,29 @@ export function moveKb(
   if (from === -1) return { ...s, kb: delta === 1 ? visible[0] : visible[visible.length - 1] };
   const to = Math.min(visible.length - 1, Math.max(0, from + delta));
   return { ...s, kb: visible[to] };
+}
+
+/** The keyboard ring moves to `id` — the neighbour of a focused card that went away. */
+export function setKb(s: DrawerState, id: string | null): DrawerState {
+  return s.open && s.kb !== id ? { ...s, kb: id } : s;
+}
+
+/**
+ * Where the keyboard goes when card `gone` disappears from the list (×,
+ * ⌘-click, a group close): the next card that is still there, else the
+ * nearest one above it. `null`: nothing of the old list is left.
+ */
+export function neighbourAfterRemoval(
+  before: readonly string[],
+  now: readonly string[],
+  gone: string
+): string | null {
+  const i = before.indexOf(gone);
+  if (i === -1) return null;
+  const left = new Set(now);
+  for (let j = i + 1; j < before.length; j++) if (left.has(before[j])) return before[j];
+  for (let j = i - 1; j >= 0; j--) if (left.has(before[j])) return before[j];
+  return null;
 }
 
 /** ⇧-click toggles one card; a ⇧-sweep toggles every card it passes, once. */

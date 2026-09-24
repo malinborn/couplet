@@ -24,8 +24,8 @@
     count: number;
     /** How many tabs are unviewed. */
     unviewed: number;
-    /** Set anew each time an unviewed tab arrives: the count gives a small jump. */
-    bump: boolean;
+    /** Goes up each time an unviewed tab arrives: the count gives a small jump. */
+    bump: number;
     open: boolean;
     keyLabel: string;
     onenter: () => void;
@@ -44,6 +44,18 @@
   );
 
   let shapeEl: HTMLSpanElement | undefined = $state();
+  let notchEl: HTMLButtonElement | undefined = $state();
+
+  // Restart, not just set: a class that is already on replays nothing, and
+  // off-then-on inside one frame never reaches the style engine. Drop it,
+  // force a reflow, put it back (the mockup's `aiOpensBackground`).
+  $effect(() => {
+    const el = notchEl;
+    if (!el || bump === 0) return;
+    el.classList.remove('bump');
+    void el.offsetWidth;
+    el.classList.add('bump');
+  });
 
   // The AI button below the notch rests out by exactly the notch's visible
   // depth, so the two read as one column at the window edge (spec §6: «Под
@@ -70,7 +82,7 @@
   type="button"
   class="notch"
   class:ai={unviewed > 0}
-  class:bump
+  bind:this={notchEl}
   aria-expanded={open}
   aria-controls="tab-drawer"
   aria-label={label}
@@ -78,6 +90,11 @@
   onpointerenter={onenter}
   onpointerleave={onleave}
   {onclick}
+  onmousedown={(e) => {
+    // A press on the button blurs the editor (WebKit), and the drawer can only
+    // give focus back on close if it saw where it was when it opened.
+    e.preventDefault();
+  }}
 >
   <span class="shape" aria-hidden="true" bind:this={shapeEl}><span class="glow"></span></span>
   <span class="wid" aria-hidden="true">#{number ?? ''}</span>
@@ -217,7 +234,7 @@
     opacity: 0.75;
   }
 
-  .notch.bump .cnt {
+  .notch:global(.bump) .cnt {
     animation: bump 0.5s var(--tabs-ease);
   }
 
@@ -255,7 +272,7 @@
       animation: none;
       background-position: 50% 50%;
     }
-    .notch.bump .cnt {
+    .notch:global(.bump) .cnt {
       animation: none;
     }
   }

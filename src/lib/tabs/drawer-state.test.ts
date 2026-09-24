@@ -12,8 +12,10 @@ import {
   hintVisible,
   kbTarget,
   moveKb,
+  neighbourAfterRemoval,
   open,
   pin,
+  setKb,
   setQuery,
   setShift,
   toggleMany,
@@ -126,6 +128,21 @@ describe('keyboard cursor', () => {
 
   it('WithoutAQueryOrArrowsThereIsNoTarget', () => {
     expect(enterTarget(open(CLOSED, 'pinned'), visible)).toBeNull();
+  });
+
+  it('SetKbMovesTheRing_OnlyWhileOpen', () => {
+    expect(setKb(open(CLOSED, 'pinned'), 'b').kb).toBe('b');
+    expect(setKb(CLOSED, 'b')).toBe(CLOSED);
+    const s = setKb(open(CLOSED, 'pinned'), 'b');
+    expect(setKb(s, 'b')).toBe(s);
+  });
+
+  it('ARemovedCardHandsTheKeyboardToTheNextSurvivor_ElseTheOneAbove', () => {
+    expect(neighbourAfterRemoval(visible, ['a', 'c', 'd'], 'b')).toBe('c');
+    expect(neighbourAfterRemoval(visible, ['a', 'd'], 'b')).toBe('d');
+    expect(neighbourAfterRemoval(visible, ['a', 'b'], 'd')).toBe('b');
+    expect(neighbourAfterRemoval(visible, [], 'b')).toBeNull();
+    expect(neighbourAfterRemoval(visible, visible, 'gone')).toBeNull();
   });
 
   it('ACursorOnATabThatIsNoLongerVisibleIsIgnored', () => {

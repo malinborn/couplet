@@ -15,7 +15,7 @@
    * the drawer, not on the document hidden behind it. ⌘J and ⌘1…⌘9 are native
    * menu items; App.svelte forwards them through `handle`.
    */
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { flip } from 'svelte/animate';
   import { cubicOut } from 'svelte/easing';
   import type { TransitionConfig } from 'svelte/transition';
@@ -27,6 +27,7 @@
   import type { TabListState, TabMeta } from './tab-model';
   import {
     CLOSED,
+    DWELL_CAPTURE_MS,
     EXPAND_MS,
     HOVER_CLOSE_MS,
     HOVER_OPEN_MS,
@@ -41,8 +42,10 @@
     kbTarget,
     keysCaptured,
     moveKb,
+    neighbourAfterRemoval,
     open as openState,
     pin,
+    setKb,
     setQuery as setQueryState,
     setShift,
     toggleMany,
@@ -77,6 +80,7 @@
     onclose,
     onreorder,
     onnewwindows,
+    onrestorefocus,
     handle = $bindable(),
   }: {
     list: TabListState;
@@ -87,6 +91,12 @@
     onclose: (tabIds: string[]) => void;
     onreorder: (order: string[]) => void;
     onnewwindows: (tabIds: string[]) => void;
+    /**
+     * Closing with focus nowhere useful and nothing remembered to give it back
+     * to (it was on <body> at open, or that element is gone): the app puts it
+     * in the editor.
+     */
+    onrestorefocus?: () => void;
     handle?: TabDrawerHandle;
   } = $props();
 
@@ -114,7 +124,7 @@
   let dataVersion = $state(0);
   let expandedId = $state<string | null>(null);
   let flashing = $state<SortKind | null>(null);
-  let bump = $state(false);
+  let bump = $state(0);
   let drag = $state<DragState | null>(null);
   let selHintFits = $state(true);
   let rootEl: HTMLDivElement | undefined = $state();
@@ -127,12 +137,15 @@
   let endGesture: (() => void) | null = null;
   let inWrap = false;
   let lastUnviewed = 0;
-  /** The last input (key or press) while the drawer was in went into an editable field (Q5). */
+  /** The last input (key or press) went into an editable field outside the drawer (Q5). */
   let lastInputInEditable = false;
+  /** The list as it was last rendered — to find the neighbour of a focused card that went away. */
+  let lastVisible: readonly string[] = [];
   let hoverOpenTimer: ReturnType<typeof setTimeout> | undefined;
   let hoverCloseTimer: ReturnType<typeof setTimeout> | undefined;
   let expandTimer: ReturnType<typeof setTimeout> | undefined;
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
+  let dwellTimer: ReturnType<typeof setTimeout> | undefined;
 
   const data = createDrawerData(
     {
@@ -220,13 +233,14 @@
     };
   });
 
-  // Where the last input went while the drawer was in (tabs-questions Q5): a
-  // hover-open right after typing in — or clicking into — the editor leaves
-  // the keyboard there.
+  // Where the last input went (tabs-questions Q5): a hover-open right after
+  // typing in — or clicking into — the editor leaves the keyboard there. Input
+  // into the drawer itself (its search, a press on the notch) is input
+  // somewhere else; so is typing in the editor behind a drawer that left it
+  // the keys.
   $effect(() => {
     const note = (e: Event) => {
-      if (ds.open || insideDrawer(e.target)) return;
-      lastInputInEditable = editable(e.target);
+      lastInputInEditable = !insideDrawer(e.target) && editable(e.target);
     };
     window.addEventListener('keydown', note, true);
     window.addEventListener('pointerdown', note, true);
@@ -251,13 +265,35 @@
   // The count gives a small jump when an unviewed tab arrives.
   $effect(() => {
     const n = unviewedCount;
-    if (n > lastUnviewed) {
-      bump = false;
-      requestAnimationFrame(() => {
-        bump = true;
-      });
-    }
+    if (n > lastUnviewed) bump = untrack(() => bump) + 1;
     lastUnviewed = n;
+  });
+
+  // A focused card that goes away (×, ⌘-click, a group close) would drop the
+  // keyboard onto <body> with no focusout the trap could see: hand it to the
+  // neighbour card, or to the list.
+  $effect(() => {
+    const now = visible;
+    untrack(() => {
+      const before = lastVisible;
+      lastVisible = now;
+      if (!keysCaptured(ds)) return;
+      const kb = ds.kb;
+      void tick().then(() => {
+        const focused = document.activeElement;
+        const focusedId = focused instanceof HTMLElement ? focused.closest<HTMLElement>('[data-tab-id]')?.dataset.tabId : undefined;
+        const lost = !focused || focused === document.body || (focusedId !== undefined && !now.includes(focusedId));
+        if (!lost || !keysCaptured(ds)) return;
+        const gone = focusedId ?? (kb !== null && !now.includes(kb) ? kb : null);
+        const next = gone === null ? null : neighbourAfterRemoval(before, now, gone);
+        if (next !== null && gone === kb) {
+          ds = setKb(ds, next);
+          void tick().then(() => cardEl(next)?.focus({ preventScroll: true }));
+        } else {
+          listEl?.focus({ preventScroll: true });
+        }
+      });
+    });
   });
 
   // «⇧ — выделить» is the first thing to go when the header row is too narrow.
@@ -277,7 +313,7 @@
   $effect(() => () => {
     removeWindowListeners();
     endGesture?.();
-    for (const timer of [hoverOpenTimer, hoverCloseTimer, expandTimer, flashTimer]) clearTimeout(timer);
+    for (const timer of [hoverOpenTimer, hoverCloseTimer, expandTimer, flashTimer, dwellTimer]) clearTimeout(timer);
   });
 
   function reducedMotion(): boolean {
@@ -383,16 +419,23 @@
     endGesture?.();
     clearTimeout(hoverCloseTimer);
     clearTimeout(expandTimer);
+    clearTimeout(dwellTimer);
     removeWindowListeners();
     const active = document.activeElement;
-    const focusInside = active instanceof HTMLElement && insideDrawer(active);
+    // Focus on <body> is focus the drawer lost (a removed card, a press that
+    // blurred): give it back too, not only focus still inside.
+    const restore = !active || active === document.body || insideDrawer(active);
     ds = closeState(ds);
     expandedId = null;
     const target = restoreFocus;
     restoreFocus = null;
-    if (!focusInside) return;
-    if (target?.isConnected) target.focus({ preventScroll: true });
-    else (active as HTMLElement).blur();
+    if (!restore) return;
+    if (target?.isConnected) {
+      target.focus({ preventScroll: true });
+    } else {
+      if (active instanceof HTMLElement && insideDrawer(active)) active.blur();
+      onrestorefocus?.();
+    }
   }
 
   function activate(id: string): void {
@@ -408,7 +451,33 @@
   function onFocusOut(e: FocusEvent): void {
     if (!keysCaptured(ds)) return;
     const next = e.relatedTarget;
-    if (next instanceof Node && !insideDrawer(next)) focusList();
+    if (!(next instanceof Element) || insideDrawer(next)) return;
+    // A panel with a keyboard of its own (CodeMirror's search, Recent Files)
+    // may take it; the app closes the drawer for those anyway.
+    if (next.closest('.cm-panels, [role="dialog"]')) return;
+    focusList();
+  }
+
+  // --- pointer takes the keyboard (Q5) ---
+  //
+  // Not on entering: a hover-open slides the drawer under a pointer resting on
+  // the notch, so the first twitch is already "inside". A press, a scroll, or
+  // a rest of DWELL_CAPTURE_MS is a decision to use the drawer.
+
+  function captureNow(): void {
+    clearTimeout(dwellTimer);
+    ds = captureTyping(ds);
+  }
+
+  function drawerEnter(e: PointerEvent): void {
+    trackShift(e);
+    clearTimeout(dwellTimer);
+    if (ds.open && !ds.typing) dwellTimer = setTimeout(captureNow, DWELL_CAPTURE_MS);
+  }
+
+  function drawerLeave(e: PointerEvent): void {
+    trackShift(e);
+    clearTimeout(dwellTimer);
   }
 
   // --- hover ---
@@ -476,6 +545,14 @@
     // editor until the pointer enters the drawer or it is pinned (Q5); sort
     // keys work regardless.
     if (action.kind === 'none' || !actionAllowed(ds, action)) return;
+    // Enter on a focused drawer button presses it; with no card to open it is
+    // not the drawer's either.
+    if (
+      action.kind === 'enter' &&
+      ((e.target instanceof HTMLButtonElement && insideDrawer(e.target)) || enterTarget(ds, visible) === null)
+    ) {
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     switch (action.kind) {
@@ -517,6 +594,8 @@
   }
 
   function onWindowBlur(): void {
+    // A pointerup outside the window may never arrive: cancel, not finish.
+    endGesture?.();
     ds = setShift(ds, false);
   }
 
@@ -565,6 +644,11 @@
   function track(move: (ev: PointerEvent) => void, finish: (ev: PointerEvent | null) => void): void {
     const onMove = (ev: PointerEvent) => {
       trackShift(ev);
+      // The button is up but the pointerup was lost (released outside the window).
+      if (ev.buttons === 0) {
+        cancel();
+        return;
+      }
       move(ev);
     };
     const up = (ev: PointerEvent) => {
@@ -590,6 +674,8 @@
 
   function onListPointerDown(e: PointerEvent): void {
     trackShift(e);
+    // A gesture still running here lost its pointerup: drop it.
+    endGesture?.();
     if (e.button !== 0 || !(e.target instanceof Element)) return;
     if (e.target.closest('.card-close')) return;
     const card = e.target.closest<HTMLElement>('[data-tab-id]');
@@ -600,11 +686,21 @@
       onclose([id]);
       return;
     }
+    capturePointer(e);
     if (e.shiftKey) {
       startSweep(id, e);
       return;
     }
     startPress(id, card, e);
+  }
+
+  /** Moves and the release keep coming to the list even past the window's edge. */
+  function capturePointer(e: PointerEvent): void {
+    try {
+      listEl?.setPointerCapture?.(e.pointerId);
+    } catch {
+      // Not an active pointer (a synthetic event): the window listeners still track it.
+    }
   }
 
   function startSweep(id: string, e: PointerEvent): void {
@@ -716,7 +812,13 @@
   bind:this={rootEl}
   onfocusout={onFocusOut}
 >
-  <div class="scrim" aria-hidden="true" onpointerdown={() => closeDrawer()}></div>
+  <!-- mousedown's default would blur the editor closeDrawer just refocused. -->
+  <div
+    class="scrim"
+    aria-hidden="true"
+    onpointerdown={() => closeDrawer()}
+    onmousedown={(e) => e.preventDefault()}
+  ></div>
   <div
     class="drawer-wrap"
     role="presentation"
@@ -730,10 +832,10 @@
       id="tab-drawer"
       aria-label={listLabel}
       inert={!ds.open}
-      onpointerenter={(e) => {
-        trackShift(e);
-        ds = captureTyping(ds);
-      }}
+      onpointerenter={drawerEnter}
+      onpointerleave={drawerLeave}
+      onpointerdown={captureNow}
+      onwheel={captureNow}
     >
       <div class="drawer-head">
         <!-- One text baseline for all three items: plain blocks aligned by the
