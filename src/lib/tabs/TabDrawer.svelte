@@ -138,7 +138,8 @@
   let gesture: 'press' | 'drag' | 'sweep' | null = null;
   let endGesture: (() => void) | null = null;
   let inWrap = false;
-  let lastUnviewed = 0;
+  /** `null` until the list first has tabs: the count a window starts with is not an arrival. */
+  let lastUnviewed: number | null = null;
   /** The last input (key or press) went into an editable field outside the drawer (Q5). */
   let lastInputInEditable = false;
   /** The list as it was last rendered — to find the neighbour of a focused card that went away. */
@@ -271,9 +272,16 @@
     if (isOpen) data.ensure(list.tabs);
   });
 
-  // The count gives a small jump when an unviewed tab arrives.
+  // The count gives a small jump when an unviewed tab arrives. The first
+  // list with tabs in it sets the baseline instead: a restored window
+  // publishing yesterday's unviewed tabs at launch has had nothing arrive.
   $effect(() => {
     const n = unviewedCount;
+    const hasTabs = list.tabs.length > 0;
+    if (lastUnviewed === null) {
+      if (hasTabs) lastUnviewed = n;
+      return;
+    }
     if (n > lastUnviewed) bump = untrack(() => bump) + 1;
     lastUnviewed = n;
   });
@@ -433,6 +441,7 @@
     clearTimeout(expandTimer);
     clearTimeout(dwellTimer);
     removeWindowListeners();
+    data.release();
     const active = document.activeElement;
     // Focus on <body> after the drawer held it is focus the drawer lost (a
     // removed card, a press that blurred): give it back too. Focus that was on
@@ -580,8 +589,6 @@
     // editor until the pointer enters the drawer or it is pinned (Q5); sort
     // keys work regardless.
     if (action.kind === 'none' || !actionAllowed(ds, action)) return;
-    // Enter on a focused drawer button presses it; with no card to open it is
-    // not the drawer's either.
     // Enter on a button in the panel presses it, and with no card to open it
     // is not the drawer's either. Not the notch: a query's top result wins.
     if (
@@ -958,7 +965,8 @@
         <div class="drop-ind" class:on={dropTop !== null} style:top={dropTop === null ? null : `${dropTop}px`}></div>
       </div>
 
-      <div class="sel-bar" class:on={ds.open && selected.size > 0}>
+      <!-- Hidden is not enough: inert keeps its buttons out of the Tab order too. -->
+      <div class="sel-bar" class:on={ds.open && selected.size > 0} inert={selected.size === 0}>
         <span class="n">{plural(selected.size, 'tabs.selection.count')}<small>{t('tabs.selection.drag_hint')}</small></span>
         <button type="button" onclick={moveSelected}
           >{t(selected.size === 1 ? 'tabs.selection.new_window' : 'tabs.selection.new_windows')}</button

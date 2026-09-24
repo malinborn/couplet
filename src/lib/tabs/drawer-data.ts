@@ -10,7 +10,11 @@ export interface GitInfo {
 
 /** One tab's text, digested for the card and the search. */
 export interface TabText {
-  index: SearchIndex;
+  /**
+   * `null` while the drawer is closed: the lowercase copy of every line is
+   * the heavy part, so it lives only for one opening (`release`).
+   */
+  index: SearchIndex | null;
   preview: PreviewLine[];
   /** The first non-empty line — the whole preview in Compact (spec §6). */
   first: string;
@@ -137,6 +141,17 @@ export function createDrawerData(deps: DrawerDataDeps, onChange: () => void) {
       // Every live path, not just fresh tabs': Save As moves a known tab to a new one.
       loadGit(filePaths(tabs).filter((p) => !gitAsked.has(p)));
       if (fresh.length > 0) onChange();
+    },
+    /**
+     * The drawer closed: drop every search index — the one copy of each tab's
+     * whole text this holds — and keep what a card shows. Reads still in
+     * flight are dropped; the next `refresh` digests everything again.
+     * Notifies, so a caller's derived copy lets go of the old digests too.
+     */
+    release(): void {
+      inflight.clear();
+      for (const [id, t] of texts) texts.set(id, { ...t, index: null });
+      onChange();
     },
     text: (tabId: string): TabText | null => texts.get(tabId) ?? null,
     /** `undefined`: not answered yet; `null`: could not be resolved. */

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createDrawerData, type DrawerDataDeps, type GitInfo } from './drawer-data';
+import { filterEntries } from './drawer-filter';
 import type { TabMeta } from './tab-model';
 
 const meta = (id: string, path: string | null): TabMeta => ({
@@ -53,7 +54,7 @@ describe('createDrawerData', () => {
     expect(h.reads.map((r) => r.path)).toEqual(['/b.md']);
     h.reads[0].d.resolve('Bravo line');
     await flush();
-    expect(h.data.text('b')?.index.lines).toEqual(['Bravo line']);
+    expect(h.data.text('b')?.index?.lines).toEqual(['Bravo line']);
     expect(h.onChange).toHaveBeenCalled();
   });
 
@@ -210,5 +211,40 @@ describe('createDrawerData', () => {
     await flush();
     expect(h.data.git('/a.md')).toEqual({ project: 'md-mini', branch: 'main' });
     expect(h.data.git('/b.md')).toBeUndefined();
+  });
+
+  it('ReleaseDropsTheSearchIndex_KeepsTheCard_AndTheNextOpeningRebuildsIt', async () => {
+    const held: Record<string, string> = { a: '# Alpha\n\nneedle here' };
+    const h = harness(held);
+    const tabs = [meta('a', '/a.md'), meta('b', '/b.md')];
+    h.data.refresh(tabs);
+    h.reads[0].d.resolve('bravo needle');
+    await flush();
+
+    const before = h.data.text('a');
+    expect(before?.index).not.toBeNull();
+
+    h.onChange.mockClear();
+    h.data.release();
+
+    expect(h.onChange).toHaveBeenCalled();
+    expect(h.data.text('a')).toEqual({ index: null, preview: before?.preview, first: 'Alpha' });
+    expect(h.data.text('b')?.index).toBeNull();
+    expect(h.data.text('b')?.first).toBe('bravo needle');
+
+    h.data.refresh(tabs);
+    h.reads[1].d.resolve('bravo needle');
+    await flush();
+    const entries = tabs.map((t) => ({ id: t.id, name: t.id, index: h.data.text(t.id)?.index ?? null }));
+    expect(filterEntries(entries, 'needle').map((f) => f.id)).toEqual(['a', 'b']);
+  });
+
+  it('ReleaseDropsAReadStillInFlight', async () => {
+    const h = harness();
+    h.data.refresh([meta('b', '/b.md')]);
+    h.data.release();
+    h.reads[0].d.resolve('late');
+    await flush();
+    expect(h.data.text('b')).toBeNull();
   });
 });

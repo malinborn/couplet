@@ -11,6 +11,8 @@
   "toast.unsaved_blocked.headline": "{fileName} aún no está en el disco",
   "toast.unsaved_blocked.message": "Los últimos cambios aún se están guardando; inténtalo de nuevo en un momento",
   "toast.open_error.headline": "No se pudo abrir {fileName}",
+  "toast.tabs_stranded.one": "{fileName} se quedó en esta ventana",
+  "toast.tabs_stranded.other": "{fileName} se quedaron en esta ventana",
   "toast.save_as_blocked.headline": "No se pudo guardar como {fileName}",
   "toast.save_as_blocked.held": "Ese archivo está abierto en otra pestaña; no se escribió nada",
   "toast.save_as_blocked.tab_gone": "La pestaña para la que se eligió el nombre está cerrada; no se escribió nada",

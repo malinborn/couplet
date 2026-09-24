@@ -657,9 +657,10 @@
     // One toast for all of them: a toast replaces any other of its kind.
     const errors = [...new Set(stranded.flatMap(({ error }) => (error ? [error] : [])))];
     toasts.push({
-      kind: 'open-error',
-      fileName: tabNames(stranded.map(({ path }) => path)),
-      message: errors.join('; '),
+      kind: 'tabs-stranded',
+      fileNames: tabNames(stranded.map(({ path }) => path)),
+      count: stranded.length,
+      message: errors.length > 0 ? errors.join('; ') : null,
     });
   }
 

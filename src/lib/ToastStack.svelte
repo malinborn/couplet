@@ -115,6 +115,18 @@
             <strong>{t('toast.open_error.headline', { fileName: toast.payload.fileName })}</strong>
           </span>
           <span class="md-toast-highlight">{toast.payload.message}</span>
+        {:else if toast.payload.kind === 'tabs-stranded'}
+          <!-- The verb agrees with how many files the line names, not with
+               the count's plural category: «a, b, c +18» is plural in
+               Russian even though 21 takes the "one" form. -->
+          <span class="md-toast-text">
+            <strong>{t(toast.payload.count === 1 ? 'toast.tabs_stranded.one' : 'toast.tabs_stranded.other', {
+              fileName: toast.payload.fileNames,
+            })}</strong>
+          </span>
+          {#if toast.payload.message}
+            <span class="md-toast-highlight">{toast.payload.message}</span>
+          {/if}
         {:else if toast.payload.kind === 'save-as-blocked'}
           <span class="md-toast-text">
             <strong>{t('toast.save_as_blocked.headline', { fileName: toast.payload.fileName })}</strong>

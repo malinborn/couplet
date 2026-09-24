@@ -524,7 +524,7 @@ describe('close', () => {
     await h.controller.openPath('/b.md');
     h.calls.length = 0;
 
-    await h.controller.closeTab('a');
+    await h.controller.closeTabs(['a']);
 
     expect(h.deps.rust.close).toHaveBeenCalledWith('a', { cursor: 2, topLine: 1 });
     expect(h.active()).toBe('t1');
@@ -750,7 +750,7 @@ describe('close, continued', () => {
   it('ClosingABackgroundUntitledTabDropsItsText', async () => {
     const h = await started({ '/a.md': 'AAAA' }, [untitledTab('u', 'draft'), fileTab('a', '/a.md')], 'a');
 
-    await h.controller.closeTab('u');
+    await h.controller.closeTabs(['u']);
 
     expect(h.deps.rust.close).toHaveBeenCalledWith('u', { cursor: 0, topLine: 1 });
     const { tabs } = h.controller.report({ cursor: 0, topLine: 1, content: 'AAAA' });
@@ -1103,7 +1103,7 @@ describe('drawer operations', () => {
   it('AReorderQueuedAfterACloseWithTheOldOrderIsIgnored', async () => {
     const h = await started(files, three());
 
-    const closing = h.controller.closeTab('b');
+    const closing = h.controller.closeTabs(['b']);
     const reordering = h.controller.reorder(['c', 'b', 'a']);
     await Promise.all([closing, reordering]);
 

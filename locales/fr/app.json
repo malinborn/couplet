@@ -11,6 +11,8 @@
   "toast.unsaved_blocked.headline": "{fileName} n'est pas encore sur le disque",
   "toast.unsaved_blocked.message": "Les dernières modifications sont en cours d'enregistrement — réessayez dans un instant",
   "toast.open_error.headline": "Impossible d'ouvrir {fileName}",
+  "toast.tabs_stranded.one": "{fileName} est resté dans cette fenêtre",
+  "toast.tabs_stranded.other": "{fileName} sont restés dans cette fenêtre",
   "toast.save_as_blocked.headline": "Impossible d'enregistrer sous {fileName}",
   "toast.save_as_blocked.held": "Ce fichier est ouvert dans un autre onglet — rien n’a été écrit",
   "toast.save_as_blocked.tab_gone": "L’onglet pour lequel ce nom a été choisi est fermé — rien n’a été écrit",

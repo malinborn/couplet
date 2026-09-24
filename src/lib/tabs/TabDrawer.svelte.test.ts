@@ -61,7 +61,7 @@ beforeAll(() => {
   CSS.escape ??= (s: string) => s;
 });
 
-function setup(): Harness {
+function setup(list: TabListState = initialList()): Harness {
   const editor = document.createElement('div');
   editor.setAttribute('contenteditable', 'true');
   editor.tabIndex = 0;
@@ -71,7 +71,7 @@ function setup(): Harness {
 
   const target = document.createElement('div');
   document.body.appendChild(target);
-  const props = $state<Props>({ list: initialList(), handle: undefined });
+  const props = $state<Props>({ list, handle: undefined });
   const onreorder = vi.fn();
   const onactivate = vi.fn();
   const onrestorefocus = vi.fn();
@@ -569,5 +569,40 @@ describe('TabDrawer — the notch count', () => {
     add('f');
     expect(removed).toHaveBeenCalledWith('bump');
     expect(notch.classList.contains('bump')).toBe(true);
+  });
+
+  it('does not jump when a restored window first publishes its unviewed tabs', () => {
+    h.destroy();
+    h = setup({ tabs: [], activeId: null });
+    h.props.list = { tabs: [tab('a', '/p/alpha.md'), tab('e', '/p/e.md', true)], activeId: 'a' };
+    flushSync();
+    expect(el('.notch').classList.contains('bump')).toBe(false);
+    // An arrival after that still does.
+    h.props.list = { ...h.props.list, tabs: [...h.props.list.tabs, tab('f', '/p/f.md', true)] };
+    flushSync();
+    expect(el('.notch').classList.contains('bump')).toBe(true);
+  });
+
+  it('does not jump for unviewed tabs it was mounted with', () => {
+    h.destroy();
+    h = setup({ tabs: [tab('a', '/p/alpha.md'), tab('e', '/p/e.md', true)], activeId: 'a' });
+    expect(el('.notch').classList.contains('bump')).toBe(false);
+  });
+});
+
+describe('TabDrawer — the selection bar', () => {
+  it('keeps its buttons out of the Tab order while nothing is selected', async () => {
+    h.handle().toggle();
+    await settle();
+    // The property, not the attribute: jsdom does not reflect `inert`.
+    const bar = el('.sel-bar');
+    expect(bar.inert).toBe(true);
+    expect(bar.querySelectorAll('button').length).toBeGreaterThan(0);
+
+    pointer(card('b'), 'pointerdown', { button: 0, shiftKey: true, clientX: 100, clientY: 100 });
+    pointer(window, 'pointerup', { button: 0, clientX: 100, clientY: 100 });
+    await settle();
+    expect(bar.classList.contains('on')).toBe(true);
+    expect(bar.inert).toBe(false);
   });
 });

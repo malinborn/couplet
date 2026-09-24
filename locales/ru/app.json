@@ -11,6 +11,8 @@
   "toast.unsaved_blocked.headline": "{fileName} ещё не записан на диск",
   "toast.unsaved_blocked.message": "Последние правки ещё сохраняются — повторите через мгновение",
   "toast.open_error.headline": "Не удалось открыть {fileName}",
+  "toast.tabs_stranded.one": "{fileName} остался в этом окне",
+  "toast.tabs_stranded.other": "{fileName} остались в этом окне",
   "toast.save_as_blocked.headline": "Не удалось сохранить как {fileName}",
   "toast.save_as_blocked.held": "Этот файл открыт в другой вкладке — ничего не записано",
   "toast.save_as_blocked.tab_gone": "Вкладка, для которой выбрано имя, закрыта — ничего не записано",

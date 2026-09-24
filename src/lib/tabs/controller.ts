@@ -778,7 +778,6 @@ export function createTabController(deps: TabControllerDeps) {
     openPath: (path: string, position?: Position) => queue.run(() => openNow(path, position ?? null)),
     activate: (tabId: string) => queue.run(() => activateNow(tabId)),
     newTab: () => queue.run(newTabNow),
-    closeTab: (tabId: string) => queue.run(() => closeNow(tabId)),
     closeActive: () =>
       queue.run(async () => {
         if (list.activeId !== null) await closeNow(list.activeId);

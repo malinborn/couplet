@@ -11,6 +11,8 @@
   "toast.unsaved_blocked.headline": "{fileName} is not on disk yet",
   "toast.unsaved_blocked.message": "The latest edits are still being saved — try again in a moment",
   "toast.open_error.headline": "Could not open {fileName}",
+  "toast.tabs_stranded.one": "{fileName} stayed in this window",
+  "toast.tabs_stranded.other": "{fileName} stayed in this window",
   "toast.save_as_blocked.headline": "Could not save as {fileName}",
   "toast.save_as_blocked.held": "That file is open in another tab — nothing was written",
   "toast.save_as_blocked.tab_gone": "The tab it was chosen for is closed — nothing was written",

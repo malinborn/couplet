@@ -11,6 +11,8 @@
   "toast.unsaved_blocked.headline": "{fileName} 尚未写入磁盘",
   "toast.unsaved_blocked.message": "最新的修改仍在保存中，请稍后再试",
   "toast.open_error.headline": "无法打开 {fileName}",
+  "toast.tabs_stranded.one": "{fileName} 仍留在此窗口",
+  "toast.tabs_stranded.other": "{fileName} 仍留在此窗口",
   "toast.save_as_blocked.headline": "无法另存为 {fileName}",
   "toast.save_as_blocked.held": "该文件已在另一个标签页中打开，未写入任何内容",
   "toast.save_as_blocked.tab_gone": "选择该名称的标签页已关闭，未写入任何内容",
