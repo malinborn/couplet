@@ -9,9 +9,9 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -806,25 +806,36 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
     // one the human already had.
     let activation = if payload.focus { window::Activation::Foreground } else { window::Activation::Background };
     let (opened_tx, opened_rx) = mpsc::channel();
+    let ticket = Arc::new(OpenTicket::new());
+    let ticket_for_open = Arc::clone(&ticket);
     let handle = app.clone();
     let path_for_open = path.clone();
     if app
         .run_on_main_thread(move || {
-            let _ = opened_tx.send(window::try_open_file_window_with(&handle, Some(path_for_open), activation));
+            if ticket_for_open.start() {
+                let _ = opened_tx.send(window::try_open_file_window_with(&handle, Some(path_for_open), activation));
+            }
         })
         .is_err()
     {
         let _ = tx.send(AiResponse::error("failed to open window for file"));
         return id;
     }
-    let label = match opened_rx.recv_timeout(OPEN_WINDOW_TIMEOUT) {
-        Ok(Ok(opened)) => land_on(opened, &mut payload),
-        Ok(Err(e)) => {
+    let outcome = match opened_rx.recv_timeout(OPEN_WINDOW_TIMEOUT) {
+        Ok(outcome) => Some(outcome),
+        // The open started before the deadline: it is building the window
+        // right now, and that window must get the command.
+        Err(mpsc::RecvTimeoutError::Timeout) if !ticket.abandon() => opened_rx.recv().ok(),
+        Err(_) => None,
+    };
+    let label = match outcome {
+        Some(Ok(opened)) => land_on(opened, &mut payload),
+        Some(Err(e)) => {
             eprintln!("ai: failed to open a window for {path}: {e}");
             let _ = tx.send(AiResponse::error("failed to open window for file"));
             return id;
         }
-        Err(_) => {
+        None => {
             let _ = tx.send(AiResponse::error("failed to open window for file"));
             return id;
         }
@@ -832,6 +843,35 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
     app.state::<AiPending>().register(id, label.clone(), Some(path), tx);
     deliver(app, &label, payload);
     id
+}
+
+/// A main-thread open the connection thread may give up on. Exactly one side
+/// wins: the open starts, or the wait abandons it — an agent answered
+/// "failed to open" never gets a window built for it afterwards.
+struct OpenTicket(AtomicU8);
+
+impl OpenTicket {
+    const WAITING: u8 = 0;
+    const STARTED: u8 = 1;
+    const ABANDONED: u8 = 2;
+
+    fn new() -> Self {
+        Self(AtomicU8::new(Self::WAITING))
+    }
+
+    /// The open may run. `false`: it was abandoned, and must not.
+    fn start(&self) -> bool {
+        self.0
+            .compare_exchange(Self::WAITING, Self::STARTED, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    /// Give up on the open. `false`: it has started, and its result is coming.
+    fn abandon(&self) -> bool {
+        self.0
+            .compare_exchange(Self::WAITING, Self::ABANDONED, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
 }
 
 /// The window `opened` put the file in. `fresh` only for a tab created for
@@ -1996,6 +2036,21 @@ mod tests {
         assert!(!p.fresh, "the file was open already: the human's tab never becomes a quick look");
         assert_eq!(land_on(window::Opened::Created("editor-4".to_string()), &mut p), "editor-4");
         assert!(p.fresh);
+    }
+
+    #[test]
+    fn an_abandoned_open_never_starts() {
+        let ticket = OpenTicket::new();
+        assert!(ticket.abandon());
+        assert!(!ticket.start(), "the agent was told it failed: no window is built after all");
+    }
+
+    #[test]
+    fn a_started_open_cannot_be_abandoned() {
+        let ticket = OpenTicket::new();
+        assert!(ticket.start());
+        assert!(!ticket.abandon(), "the wait goes on for the window being built");
+        assert!(!ticket.start(), "it starts once");
     }
 
     #[test]

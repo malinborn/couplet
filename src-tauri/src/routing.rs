@@ -67,7 +67,7 @@ pub fn route(
     is_live: impl Fn(&str) -> bool,
 ) -> Route {
     let bound = match binding {
-        Some(number) => match reg.label_with_number(number).filter(|l| is_live(l)) {
+        Some(number) => match reg.live_label_with_number(number, &is_live) {
             Some(label) => Some(label),
             None => return Route::DeadNumber(number),
         },
@@ -238,6 +238,18 @@ mod tests {
             route(&reg, "/p/new.md", Some(7), "/p", &[], |l| l != "editor-2"),
             Route::DeadNumber(7),
             "a number whose window is gone is dead too"
+        );
+    }
+
+    #[test]
+    fn step_1_a_stale_entry_sharing_the_number_never_shadows_the_live_window() {
+        let mut reg = two_projects();
+        for i in 0..8 {
+            reg.set_number(&format!("gone-{i}"), Some(7));
+        }
+        assert_eq!(
+            route(&reg, "/p/new.md", Some(7), "/p", &[], |l| !l.starts_with("gone-")),
+            existing("editor-2")
         );
     }
 

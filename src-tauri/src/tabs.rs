@@ -62,11 +62,13 @@ impl TabRegistry {
         self.windows.values().filter_map(|w| w.number).collect()
     }
 
-    /// The window showing `#number`.
-    pub fn label_with_number(&self, number: u32) -> Option<String> {
+    /// The live window showing `#number`. Liveness is part of the lookup: an
+    /// entry left by a window that is gone can still carry the number, and
+    /// must not shadow the window that shows it now.
+    pub fn live_label_with_number(&self, number: u32, is_live: impl Fn(&str) -> bool) -> Option<String> {
         self.windows
             .iter()
-            .find(|(_, w)| w.number == Some(number))
+            .find(|(label, w)| w.number == Some(number) && is_live(label))
             .map(|(label, _)| label.clone())
     }
 
