@@ -19,6 +19,7 @@
   "menu.file.reopen_session.few": "恢复上次会话的 {n} 个窗口",
   "menu.file.reopen_session.many": "恢复上次会话的 {n} 个窗口",
   "menu.file.reopen_session.other": "恢复上次会话的 {n} 个窗口",
+  "menu.file.reopen_last_session": "恢复上次会话的窗口",
   "menu.file.reopen_closed": "重新打开已关闭的标签页",
 
   "menu.edit.title": "编辑",

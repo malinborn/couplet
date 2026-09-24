@@ -178,9 +178,9 @@
           <span class="md-toast-text">
             <strong>{plural(toast.payload.count, 'toast.session.windows')}</strong>
           </span>
-          <!-- A button, not a ⇧⌘T hint: once any window has been closed, ⇧⌘T
-               brings that window back first, so the key stops meaning "restore
-               the session". The `session-restored` event retires this toast. -->
+          <!-- A button, not a ⇧⌘T hint: ⇧⌘T reopens only what was closed; the
+               session has its own File menu item, with no key (tabs-questions
+               Q1). The `session-restored` event retires this toast. -->
           <button class="md-toast-cmd md-toast-action" onclick={restoreSession}>
             {t('toast.session.restore_action')}
           </button>

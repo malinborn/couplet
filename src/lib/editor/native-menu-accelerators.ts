@@ -32,7 +32,7 @@ export const NATIVE_MENU_ACCELERATORS: readonly NativeMenuAccelerator[] = [
   { id: 'save', accelerator: 'CmdOrCtrl+S' },
   { id: 'save_as', accelerator: 'CmdOrCtrl+Shift+S' },
   { id: 'close', accelerator: 'CmdOrCtrl+W' },
-  { id: 'reopen_session', accelerator: 'CmdOrCtrl+Shift+T' },
+  { id: 'reopen_closed', accelerator: 'CmdOrCtrl+Shift+T' },
   { id: 'select_all', accelerator: 'CmdOrCtrl+A' },
   { id: 'find', accelerator: 'CmdOrCtrl+F' },
   { id: 'format_json', accelerator: 'CmdOrCtrl+Shift+J' },

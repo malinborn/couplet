@@ -48,7 +48,7 @@ src-tauri/src/          # Rust (Tauri backend)
   path_norm.rs          # The one spelling of a path (./.. and symlinks resolved), applied at every entry that takes a path from outside
   window_numbers.rs     # #N allocator (1–99, wrap, skip live) + persisted counter
   git_info.rs           # Project + branch for a path, read from .git/HEAD (no git process); tab_git_info for the drawer's grey line
-  closed.rs             # Recently-closed tab stack (Cmd+Shift+T); saved files only, back into their window while it lives
+  closed.rs             # Recently-closed tab stack (Cmd+Shift+T); saved files only, back into their window while it lives. ⌘⇧T never restores the session: File → "Reopen Windows from Last Session" (no key) does (Q1)
   recent.rs             # Recent Files list (recent.json), versioned broadcasts to every window; managed after paths::init
   paths.rs              # App data directory, named after the product (isolates dev from release)
   recovery.rs           # Crash recovery (temp files)

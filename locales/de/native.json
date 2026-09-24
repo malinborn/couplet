@@ -19,6 +19,7 @@
   "menu.file.reopen_session.few": "{n} Fenster aus letzter Sitzung wiederherstellen",
   "menu.file.reopen_session.many": "{n} Fenster aus letzter Sitzung wiederherstellen",
   "menu.file.reopen_session.other": "{n} Fenster aus letzter Sitzung wiederherstellen",
+  "menu.file.reopen_last_session": "Fenster aus letzter Sitzung wiederherstellen",
   "menu.file.reopen_closed": "Geschlossenen Tab wieder öffnen",
 
   "menu.edit.title": "Bearbeiten",

@@ -251,8 +251,8 @@ pub struct ReopenTab {
 }
 
 /// Pop the most recently closed tab and bring it back. Returns `false` (and
-/// does nothing) when no live entry is left, so callers can fall back to
-/// session restore.
+/// does nothing) when no live entry is left. The previous session is never
+/// the fallback: it has a menu item of its own (tabs-questions Q1).
 ///
 /// A file that is open in some tab again by now is not live either:
 /// reopening it would only focus that tab and use up the press, while the
@@ -317,8 +317,8 @@ pub fn reopen_closed(app: &tauri::AppHandle) -> bool {
     true
 }
 
-/// Bring the "Reopen…" menu item in line with what Cmd+Shift+T would do now.
-/// Call after anything that changes the closed stack or the pending restore.
+/// Bring the two "Reopen…" menu items in line with the closed stack and the
+/// pending restore. Call after anything that changes either.
 pub fn refresh_reopen_item(app: &tauri::AppHandle) {
     use tauri::Manager;
     let (Some(items), Some(stack), Some(session)) = (

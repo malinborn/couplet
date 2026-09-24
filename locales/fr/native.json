@@ -19,6 +19,7 @@
   "menu.file.reopen_session.few": "Rouvrir {n} fenêtres de la dernière session",
   "menu.file.reopen_session.many": "Rouvrir {n} fenêtres de la dernière session",
   "menu.file.reopen_session.other": "Rouvrir {n} fenêtres de la dernière session",
+  "menu.file.reopen_last_session": "Rouvrir les fenêtres de la dernière session",
   "menu.file.reopen_closed": "Rouvrir l'onglet fermé",
 
   "menu.edit.title": "Édition",

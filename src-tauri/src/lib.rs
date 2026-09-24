@@ -277,14 +277,17 @@ pub fn run() {
                     return;
                 }
 
-                // Restore windows in Rust, like "new" — it creates windows. The
-                // last closed window comes back first; only with none left does
-                // the previous session's restore run.
-                if id == "reopen_session" {
-                    if !closed::reopen_closed(&app_handle) {
-                        session::restore_pending(&app_handle);
-                    }
+                // Restore windows in Rust, like "new" — they create windows.
+                // Cmd+Shift+T brings back only what was closed; the previous
+                // session has an item of its own, Safari-style (tabs-questions Q1).
+                if id == "reopen_closed" {
+                    closed::reopen_closed(&app_handle);
                     closed::refresh_reopen_item(&app_handle);
+                    return;
+                }
+                if id == "restore_session" {
+                    // Refreshes the items itself.
+                    session::restore_pending(&app_handle);
                     return;
                 }
 

@@ -113,48 +113,45 @@ pub struct ViewToggleItems {
     pub compact_enabled: Toggle,
 }
 
-/// A live handle to the "Reopen…" item, so it can be re-enabled once the
-/// closed-window stack gets an entry — macOS disables the accelerator along
-/// with the item, so without this Cmd+Shift+T would stay dead for the rest of
-/// the process on any launch that starts with nothing pending.
+/// Live handles to the two "Reopen…" items, so they follow the closed stack
+/// and the pending restore — macOS disables an accelerator along with its
+/// item, so without this Cmd+Shift+T would stay dead for the rest of the
+/// process on any launch that starts with nothing closed.
 pub struct SessionMenuItems {
-    pub reopen_session: tauri::menu::MenuItem<Wry>,
+    /// Cmd+Shift+T: the most recently closed tab or window (`closed.rs`).
+    pub reopen_closed: tauri::menu::MenuItem<Wry>,
+    /// The previous session's windows, Safari-style: no key (tabs-questions Q1).
+    pub restore_session: tauri::menu::MenuItem<Wry>,
 }
 
-/// What Cmd+Shift+T would do right now, and so what its item must say.
-#[derive(Debug, PartialEq)]
-pub enum ReopenLabel {
-    /// Reopen the most recently closed window (also the idle, disabled label).
-    LastClosed,
-    /// Restore the previous session's windows.
-    Session(usize),
+/// Which of the two items are enabled: `(reopen_closed, restore_session)`.
+/// Independent — Cmd+Shift+T never restores the session, and the session
+/// item stays on after a close, until the session is restored.
+pub fn session_items_enabled(closed_count: usize, pending_count: usize) -> (bool, bool) {
+    (closed_count > 0, pending_count > 0)
 }
 
-/// The closed stack wins over the pending session — the same order the
-/// `reopen_session` handler tries them in.
-pub fn reopen_item_state(closed_count: usize, pending_count: usize) -> (ReopenLabel, bool) {
-    let label = if closed_count == 0 && pending_count > 0 {
-        ReopenLabel::Session(pending_count)
+/// The session item's text: "Reopen 3 Windows from Last Session" while there
+/// is a session to restore, the count-free "Reopen Windows from Last Session"
+/// once there is none (the item is then disabled).
+fn restore_session_text(pending_count: usize) -> String {
+    restore_session_text_for(crate::i18n::active_language(), pending_count)
+}
+
+fn restore_session_text_for(lang: &str, pending_count: usize) -> String {
+    if pending_count > 0 {
+        crate::i18n::t_plural_for(lang, "menu.file.reopen_session", pending_count as u64)
     } else {
-        ReopenLabel::LastClosed
-    };
-    (label, closed_count > 0 || pending_count > 0)
-}
-
-impl ReopenLabel {
-    fn text(&self) -> String {
-        match self {
-            Self::LastClosed => t("menu.file.reopen_closed"),
-            Self::Session(n) => crate::i18n::t_plural("menu.file.reopen_session", *n as u64),
-        }
+        crate::i18n::t_for(lang, "menu.file.reopen_last_session")
     }
 }
 
 impl SessionMenuItems {
     pub fn sync(&self, closed_count: usize, pending_count: usize) {
-        let (label, enabled) = reopen_item_state(closed_count, pending_count);
-        let _ = self.reopen_session.set_text(label.text());
-        let _ = self.reopen_session.set_enabled(enabled);
+        let (reopen, restore) = session_items_enabled(closed_count, pending_count);
+        let _ = self.reopen_closed.set_enabled(reopen);
+        let _ = self.restore_session.set_text(restore_session_text(pending_count));
+        let _ = self.restore_session.set_enabled(restore);
     }
 }
 
@@ -199,11 +196,15 @@ pub fn build_menu(
     SessionMenuItems,
     TransientMenuItems,
 )> {
-    let (reopen_label, reopen_enabled) = reopen_item_state(0, pending_session_count);
-    let reopen_session_item = MenuItemBuilder::with_id("reopen_session", reopen_label.text())
+    let (reopen_enabled, restore_enabled) = session_items_enabled(0, pending_session_count);
+    let reopen_closed_item = MenuItemBuilder::with_id("reopen_closed", t("menu.file.reopen_closed"))
         .accelerator("CmdOrCtrl+Shift+T")
         .enabled(reopen_enabled)
         .build(app)?;
+    let restore_session_item =
+        MenuItemBuilder::with_id("restore_session", restore_session_text(pending_session_count))
+            .enabled(restore_enabled)
+            .build(app)?;
 
     let transient_keep =
         CheckMenuItemBuilder::with_id("transient_ignored_keep", t("menu.file.transient_keep")).build(app)?;
@@ -253,7 +254,8 @@ pub fn build_menu(
         .item(&MenuItemBuilder::with_id("recent_files", t("menu.file.recent_files")).build(app)?)
         .item(&transient_submenu)
         .separator()
-        .item(&reopen_session_item)
+        .item(&reopen_closed_item)
+        .item(&restore_session_item)
         .build()?;
 
     let edit_menu = SubmenuBuilder::new(app, t("menu.edit.title"))
@@ -555,7 +557,8 @@ pub fn build_menu(
     };
 
     let session_items = SessionMenuItems {
-        reopen_session: reopen_session_item,
+        reopen_closed: reopen_closed_item,
+        restore_session: restore_session_item,
     };
     let transient_items = TransientMenuItems { keep: transient_keep, close: transient_close };
     Ok((menu, theme_items, engine_items, view_toggles, session_items, transient_items))
@@ -566,19 +569,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reopen_item_offers_the_session_until_something_is_closed() {
-        assert_eq!(reopen_item_state(0, 3), (ReopenLabel::Session(3), true));
+    fn reopen_closed_follows_only_the_closed_stack() {
+        assert!(!session_items_enabled(0, 3).0, "⌘⇧T never restores the session");
+        assert!(session_items_enabled(2, 0).0);
+        assert!(!session_items_enabled(0, 0).0);
     }
 
     #[test]
-    fn reopen_item_prefers_the_closed_stack_over_the_session() {
-        assert_eq!(reopen_item_state(1, 3), (ReopenLabel::LastClosed, true));
-        assert_eq!(reopen_item_state(2, 0), (ReopenLabel::LastClosed, true));
+    fn the_session_item_stays_on_after_a_close_until_the_session_is_restored() {
+        assert_eq!(session_items_enabled(0, 3), (false, true));
+        assert_eq!(session_items_enabled(1, 3), (true, true), "a ⌘W does not take the session away");
+        assert_eq!(session_items_enabled(1, 0), (true, false), "restored: nothing left to offer");
     }
 
     #[test]
-    fn reopen_item_is_disabled_with_nothing_to_reopen() {
-        assert_eq!(reopen_item_state(0, 0), (ReopenLabel::LastClosed, false));
+    fn the_session_item_names_the_windows_it_would_open() {
+        assert_eq!(restore_session_text_for("en", 3), "Reopen 3 Windows from Last Session");
+        assert_eq!(restore_session_text_for("en", 0), "Reopen Windows from Last Session");
+        assert_eq!(restore_session_text_for("ru", 2), "Открыть 2 окна прошлой сессии");
+        assert_eq!(restore_session_text_for("ru", 0), "Открыть окна прошлой сессии");
     }
 
     #[test]

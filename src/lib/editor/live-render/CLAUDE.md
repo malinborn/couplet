@@ -600,7 +600,7 @@ before a button sees them, so one row cannot print its keys two ways.
 
 Today `ai_comment` is the only native menu item with a UI affordance — the
 others with accelerators (`new`, `open`, `save`, `save_as`, `close`,
-`reopen_session`, `select_all`, `find`, `format_json`, `toggle_mode`, the three
+`reopen_closed`, `select_all`, `find`, `format_json`, `toggle_mode`, the three
 zoom items) are menu-only. They are mirrored anyway, so the next button that
 needs one already has it.
 
