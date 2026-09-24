@@ -1013,8 +1013,26 @@ describe('drawer operations', () => {
     vi.mocked(h.deps.rust.release).mockImplementation(async (tabId: string) => {
       if (tabId === 'c') throw new Error('ipc down');
     });
+    // Rust never let go of it: it still answers with the old id.
+    vi.mocked(h.deps.rust.open).mockResolvedValueOnce({ kind: 'this-window', tabId: 'c' });
 
     expect(await moveOut(h, ['b', 'c'])).toEqual(['/b.md']);
+    // Taken off the list before its release threw — and put back.
+    expect(h.ids()).toEqual(['a', 'c']);
+  });
+
+  it('ATabRustStillHoldsForThisWindowGetsNoWindow_ItComesBack', async () => {
+    // A release whose IPC failed is swallowed (logged) on the App side, so the
+    // controller sees a success; a window opened now would only focus this one.
+    const h = await started(files, three());
+    h.owners.set('/b.md', { kind: 'this-window', tabId: 'b' });
+    vi.mocked(h.deps.rust.open).mockResolvedValueOnce({ kind: 'this-window', tabId: 'b' });
+
+    const stranded = await h.controller.moveToNewWindows(['b', 'c']);
+
+    expect(stranded).toEqual([{ path: '/b.md', error: null }]);
+    expect(vi.mocked(h.deps.rust.openWindow).mock.calls.map(([p]) => p)).toEqual(['/c.md']);
+    expect(h.ids()).toEqual(['a', 'b']);
   });
 
   it('EachDetachedTabGetsItsWindowAfterItWasReleased', async () => {

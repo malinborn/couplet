@@ -30,6 +30,7 @@
   import TabDrawer from './lib/tabs/TabDrawer.svelte';
   import type { TabDrawerHandle } from './lib/tabs/TabDrawer.svelte';
   import type { GitInfo } from './lib/tabs/drawer-data';
+  import { tabNames } from './lib/tabs/tab-name';
   import { createToastStore } from './lib/toasts.svelte';
   import { shouldShowHint, nextCheckDelay } from './lib/ai-hint';
   import { previewCompartment, lineGlowCompartment } from './lib/editor/setup';
@@ -621,9 +622,10 @@
   }
 
   /**
-   * Native menu actions that open something in the page or put the caret in
-   * the editor. The drawer closes first: its focus handling keeps the
-   * keyboard while it is open and would fight them.
+   * Native menu actions that open something in the page, put the caret in
+   * the editor or change the document behind the drawer. The drawer closes
+   * first: its focus handling keeps the keyboard while it is open and would
+   * fight them.
    */
   const DRAWER_CLOSING_ACTIONS: ReadonlySet<string> = new Set([
     'find',
@@ -632,6 +634,8 @@
     'select_all',
     'open',
     'save_as',
+    'new_tab',
+    'format_json',
   ]);
 
   /** What the drawer reads its cards' text and project line from. */
@@ -648,9 +652,15 @@
    * gesture looks like it did nothing.
    */
   async function moveTabsToNewWindows(tabIds: string[]): Promise<void> {
-    for (const { path, error } of (await tabs.moveToNewWindows(tabIds)) ?? []) {
-      toasts.push({ kind: 'open-error', fileName: path.split('/').pop() ?? path, message: error });
-    }
+    const stranded = (await tabs.moveToNewWindows(tabIds)) ?? [];
+    if (stranded.length === 0) return;
+    // One toast for all of them: a toast replaces any other of its kind.
+    const errors = [...new Set(stranded.flatMap(({ error }) => (error ? [error] : [])))];
+    toasts.push({
+      kind: 'open-error',
+      fileName: tabNames(stranded.map(({ path }) => path)),
+      message: errors.join('; '),
+    });
   }
 
   // --- Restored caret / scroll ---

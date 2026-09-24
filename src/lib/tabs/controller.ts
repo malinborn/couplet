@@ -193,7 +193,8 @@ interface Detached {
 /** A tab "to new windows" left in this window: its window did not open. */
 export interface Stranded {
   path: string;
-  error: string;
+  /** Why no window opened; `null`: this window never let go of the file. */
+  error: string | null;
 }
 
 type Loadable =
@@ -707,6 +708,9 @@ export function createTabController(deps: TabControllerDeps) {
         if (await closeNow(id, 'release')) out.push(detached);
       } catch (err) {
         console.error('Failed to detach tab:', err);
+        // A background tab leaves the list before its release is sent; one
+        // that threw is still ours in Rust and would be in no window at all.
+        if (!findById(list, id)) await adoptNow(detached);
       }
     }
     return out;
@@ -842,8 +846,15 @@ export function createTabController(deps: TabControllerDeps) {
      */
     moveToNewWindows: (ids: readonly string[]) =>
       queue.run(async (): Promise<Stranded[]> => {
-        const stranded: (Detached & { error: string })[] = [];
+        const stranded: (Detached & { error: string | null })[] = [];
         for (const d of await detachNow(ids)) {
+          // A release that failed in IPC is logged, not thrown: Rust may still
+          // hold the file for this window, and a window opened for it would
+          // only focus this one.
+          if ((await deps.rust.owner(d.path)).kind === 'this-window') {
+            stranded.push({ ...d, error: null });
+            continue;
+          }
           try {
             await deps.rust.openWindow(d.path);
           } catch (err) {
