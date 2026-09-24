@@ -6,7 +6,7 @@
   import { isHumanEdit } from './lib/editor/human-edit';
   import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createTabsCompactStore, createTransientPolicyStore, createFileState, createRecentFilesStore, setProductName, setWindowNumber, getWindowNumber } from './lib/stores.svelte';
   import { getName } from '@tauri-apps/api/app';
-  import { readDocument, writeDocument, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, broadcastTheme, syncTabsCompactMenu, syncTransientMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type TabClaim, type WindowInit } from './lib/tauri/commands';
+  import { readDocument, writeDocument, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncDockIcon, syncEngineMenu, syncOcdAlignmentMenu, broadcastTheme, syncTabsCompactMenu, syncTransientMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type TabClaim, type WindowInit } from './lib/tauri/commands';
   import { concreteTheme, halfOf, type ThemeFamily } from './lib/theme-resolve';
   import type { ThemeControl } from './lib/editor/slash-theme';
   import {
@@ -114,6 +114,8 @@
   // Обе половины в одном файле — семья описана целиком в одном месте.
   import './lib/theme/blueprint.css';
   import './lib/theme/phosphor.css';
+  import './lib/theme/paper.css';
+  import './lib/theme/ink.css';
   import './styles/global.css';
   import './styles/editor.css';
   import './styles/tabs.css';
@@ -2189,6 +2191,12 @@
         case 'theme_family_phosphor':
           theme.setFamily('phosphor');
           break;
+        case 'theme_family_paper':
+          theme.setFamily('paper');
+          break;
+        case 'theme_family_ink':
+          theme.setFamily('ink');
+          break;
         case 'theme_half_light':
           theme.setHalf('light');
           break;
@@ -2428,6 +2436,13 @@
   // is the startup sync.
   $effect(() => {
     syncThemeMenu(theme.resolved, theme.followSystem);
+  });
+
+  // The Dock follows the committed theme, not a `/theme` preview: a window
+  // closed with the picker open never clears its preview. First run is the
+  // startup sync, like the menu's.
+  $effect(() => {
+    syncDockIcon(theme.committed);
   });
 
   // Startup sync for the Editor Engine submenu and the OCD checkbox,

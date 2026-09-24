@@ -154,15 +154,22 @@ var K = {
   'blueprint-light': { bg:'#f4f2e9', amp:'#123a7a', a:'#c0492b', solid:true, src:'--color-cursor' },
   'blueprint-dark':  { bg:'#0c2b52', amp:'#ffffff', a:'#ff7a59', solid:true, src:'--color-cursor' },
   'phosphor-light':  { bg:'#e9f0e4', amp:'#0f5c2e', a:'#9a5b00', solid:true, src:'--color-cursor' },
-  'phosphor-dark':   { bg:'#061008', amp:'#c9ffd8', a:'#ffcf6b', b:'#7fd8a0', src:'курсор = текст → --color-link → --color-italic', glow:[.55,.35], ampSh:'0 0 68px rgba(143,230,162,.55)' }
+  'phosphor-dark':   { bg:'#061008', amp:'#c9ffd8', a:'#ffcf6b', b:'#7fd8a0', src:'курсор = текст → --color-link → --color-italic', glow:[.55,.35], ampSh:'0 0 68px rgba(143,230,162,.55)' },
+  // Paper и Ink выросли из backlog-иконок, поэтому знак у них = --text-primary,
+  // как на тех иконках, а не --color-heading (у ink-dark он коралловый).
+  // t — чьё кольцо взять из T; m — средний stop каретки; glowA — цвет свечения.
+  'paper-light':     { bg:'#f3ede2', amp:'#1f1b2e', a:'#e8563f', solid:true, t:'backlog-paper', src:'--color-cursor' },
+  'paper-dark':      { bg:'#1d1a16', amp:'#f3ede2', a:'#e8563f', solid:true, t:'backlog-ink', src:'--color-cursor' },
+  'ink-light':       { bg:'#efedf4', amp:'#1f1b2e', a:'#ff8a6a', m:'#e8563f', b:'#c13e7b', t:'backlog-paper', src:'--color-caret-top → #e8563f → --color-caret-bottom', glow:[.45,0], glowA:'#e8563f' },
+  'ink-dark':        { bg:'#1f1b2e', amp:'#f3ede2', a:'#ff8a6a', m:'#e8563f', b:'#c13e7b', t:'backlog-ink', src:'--color-caret-top → #e8563f → --color-caret-bottom', glow:[.55,0], glowA:'#e8563f' }
 };
 // caret geometry in the 824 squircle, before the ×1.25 group scale
 var CARET = { 0:[134, 595], 1:[134, 570], 2:[134, 555], 3:[134, 535] };
 var MAIN = 2, SC = 1.25, CW = 114, DX = 12;  // DX: whole group shifted right so the glyph ink is centred (22|47 → 34|34)
 function main(size, k, v) {
   var d = K[k], g = CARET[v === undefined ? MAIN : v], w = CW / SC;
-  var cur = d.solid ? d.a : 'linear-gradient(180deg,' + d.a + ' 0%,' + d.b + ' 100%)';
-  var sh = (T[k] || T['default']).sq.match(/box-shadow:[^;]+;/)[0];
+  var cur = d.solid ? d.a : 'linear-gradient(180deg,' + d.a + ' 0%,' + (d.m ? d.m + ' 50%,' : '') + d.b + ' 100%)';
+  var sh = (T[d.t || k] || T['default']).sq.match(/box-shadow:[^;]+;/)[0];
   var el = document.createElement('span');
   el.className = 'ic'; el.style.width = el.style.height = size + 'px';
   el.innerHTML = '<span class="m" style="transform:scale(' + (size / 1024) + ')"><span class="sq" style="background:' + d.bg + '; ' + sh +
@@ -174,7 +181,7 @@ function main(size, k, v) {
 }
 function glowCss(d) {
   if (!d.glow) return '';
-  var sh = '0 0 84px ' + rgba(d.a, d.glow[0]);
+  var sh = '0 0 84px ' + rgba(d.glowA || d.a, d.glow[0]);
   if (d.glow[1]) sh += ', 0 0 168px ' + rgba(d.glowB || d.b, d.glow[1]);
   return 'box-shadow:' + sh + ';';
 }

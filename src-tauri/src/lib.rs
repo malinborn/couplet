@@ -13,6 +13,7 @@ mod closed;
 pub mod comment_pause;
 pub mod comments;
 mod commands;
+mod dock_icon;
 mod git_info;
 mod i18n;
 mod locale;
@@ -199,6 +200,7 @@ pub fn run() {
             onboarding::ai_nudge_dismiss,
             onboarding::ai_open_getting_started,
             commands::sync_theme_menu,
+            commands::sync_dock_icon,
             commands::sync_engine_menu,
             commands::sync_ocd_alignment_menu,
             commands::sync_tabs_compact_menu,

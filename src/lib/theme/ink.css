@@ -1,0 +1,118 @@
+/* «Ink» — кандидат из backlog-иконки couplet `backlog-ink`
+ * (фон #1F1B2E / курсор #FF8A6A → #E8563F → #C13E7B со свечением / знак #F3EDE2).
+ *
+ * Тёмная — иконка один в один: крем по туши, каретка — тот же градиент, что
+ * у курсора, со свечением; он же ведёт заголовки.
+ *
+ * Светлая — тушь по холодной светлой подложке (не бумага, чтобы не совпасть
+ * с «Paper»). Заголовки — тёмный конец градиента #C13E7B. Каретка начинается
+ * не со светлого конца, а со среднего коралла иконки #E8563F: #FF8A6A на этой
+ * подложке даёт 1.99:1 при нужных 3:1 для не-текста, #E8563F — 3.1:1.
+ */
+
+:root[data-theme='ink-light'] {
+  --bg-base: #efedf4;
+  --bg-surface: #e6e3ee;
+  --text-primary: #1f1b2e;
+  --text-subtle: #5a5470;
+  --text-muted: #9893a8;
+  --highlight: #dcd8e8;
+  --color-heading: #c13e7b;
+  --color-bold: #1f1b2e;
+  --color-italic: #6a3f6e;
+  --color-link: #c13e7b;
+  --color-code-bg: #e6e3ee;
+  --color-code-text: #1f1b2e;
+  --color-selection: #f2d3dc;
+  --color-border: #dad6e4;
+  --color-cursor: #e8563f;
+  --color-caret-top: #e8563f;
+  --color-caret-bottom: #c13e7b;
+  --color-line-highlight: #e9e6f0;
+  --color-strikethrough: #9893a8;
+  --color-task-done: #9893a8;
+  --color-task-done-line: #e8563f;
+  --color-blockquote-border: #c13e7b;
+  --color-hr: #dad6e4;
+  --color-list-marker: #8a84a0;
+  --color-checkbox: #e8563f;
+  --color-table-border: #dad6e4;
+  --color-table-even-bg: #ebe9f1;
+  --table-header-grad: linear-gradient(135deg, #f3dde0 0%, #ebe3ee 50%, #e4e0ee 100%);
+  --table-header-text: #1f1b2e;
+  --color-glow: 193, 62, 123;
+  --ai-edit-bg: rgba(193, 62, 123, 0.1);
+  --ai-edit-shimmer: rgba(193, 62, 123, 0.24);
+  --ai-ask-bg: rgba(31, 27, 46, 0.05);
+  --ai-ask-border: rgba(31, 27, 46, 0.22);
+  --ai-ask-chip-bg: #f6f5f9;
+  --ai-ask-chip-hover-bg: rgba(193, 62, 123, 0.12);
+  --ai-ask-accent: #1f1b2e;
+  --ai-ask-accent-text: #efedf4;
+  --bg-overlay: rgba(239, 237, 244, 0.75);
+  --border: #dad6e4;
+  --heading-tone-1: #c13e7b;
+  --heading-tone-2: #c4447a;
+  --heading-tone-3: #b84a78;
+  --heading-tone-4: #a85173;
+  --heading-tone-5: #93586e;
+  --heading-tone-6: #7e5c6a;
+  --heading-grad-1: linear-gradient(100deg, #e8563f 0%, #d64a5a 45%, #c13e7b 100%);
+  --heading-grad-2: linear-gradient(100deg, #e0604a 0%, #c4447a 100%);
+  --font-text: 'Inter', -apple-system, system-ui, sans-serif;
+  --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+}
+
+:root[data-theme='ink-dark'] {
+  --bg-base: #1f1b2e;
+  --bg-surface: #27223a;
+  --text-primary: #f3ede2;
+  --text-subtle: #b3a9a6;
+  --text-muted: #7c7282;
+  --highlight: #3a3250;
+  --color-heading: #ff8a6a;
+  --color-bold: #ffffff;
+  --color-italic: #f0b9a4;
+  --color-link: #ff8a6a;
+  --color-code-bg: #27223a;
+  --color-code-text: #f3ede2;
+  --color-selection: #4a2f45;
+  --color-border: #362f4a;
+  --color-cursor: #e8563f;
+  --color-caret-top: #ff8a6a;
+  --color-caret-bottom: #c13e7b;
+  --color-line-highlight: #241f35;
+  --color-strikethrough: #7c7282;
+  --color-task-done: #7c7282;
+  --color-task-done-line: #e8563f;
+  --color-blockquote-border: #e8563f;
+  --color-hr: #362f4a;
+  --color-list-marker: #9a8f98;
+  --color-checkbox: #ff8a6a;
+  --color-table-border: #362f4a;
+  --color-table-even-bg: #231e33;
+  --table-header-grad: linear-gradient(135deg, #3a2238 0%, #2c2340 45%, #262038 100%);
+  --table-header-text: #ff8a6a;
+  --color-glow: 232, 86, 63;
+  --ai-edit-bg: rgba(255, 138, 106, 0.16);
+  --ai-edit-shimmer: rgba(255, 138, 106, 0.38);
+  --ai-ask-bg: rgba(255, 138, 106, 0.08);
+  --ai-ask-border: rgba(255, 138, 106, 0.28);
+  --ai-ask-chip-bg: rgba(255, 255, 255, 0.04);
+  --ai-ask-chip-hover-bg: rgba(255, 138, 106, 0.16);
+  --ai-ask-accent: #ff8a6a;
+  --ai-ask-accent-text: #1f1b2e;
+  --bg-overlay: rgba(31, 27, 46, 0.75);
+  --border: #362f4a;
+  /* Градиент курсора с иконки ведёт h1–h2; последний stop = тон уровня. */
+  --heading-tone-1: #ff8a6a;
+  --heading-tone-2: #f68a70;
+  --heading-tone-3: #ec8c78;
+  --heading-tone-4: #df9082;
+  --heading-tone-5: #cf958d;
+  --heading-tone-6: #bd9896;
+  --heading-grad-1: linear-gradient(100deg, #c13e7b 0%, #e8563f 45%, #ff8a6a 100%);
+  --heading-grad-2: linear-gradient(100deg, #e0607a 0%, #f68a70 100%);
+  --font-text: 'Inter', -apple-system, system-ui, sans-serif;
+  --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+}

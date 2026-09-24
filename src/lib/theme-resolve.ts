@@ -10,7 +10,7 @@
  * «следовать системе», который перебивает только половину.
  */
 
-export type ThemeFamily = 'classic' | 'aurora' | 'blueprint' | 'phosphor';
+export type ThemeFamily = 'classic' | 'aurora' | 'blueprint' | 'phosphor' | 'paper' | 'ink';
 export type ThemeHalf = 'light' | 'dark';
 
 export const THEME_FAMILIES: readonly ThemeFamily[] = [
@@ -18,6 +18,8 @@ export const THEME_FAMILIES: readonly ThemeFamily[] = [
   'aurora',
   'blueprint',
   'phosphor',
+  'paper',
+  'ink',
 ];
 
 export type ConcreteTheme =
@@ -28,7 +30,11 @@ export type ConcreteTheme =
   | 'blueprint-light'
   | 'blueprint-dark'
   | 'phosphor-light'
-  | 'phosphor-dark';
+  | 'phosphor-dark'
+  | 'paper-light'
+  | 'paper-dark'
+  | 'ink-light'
+  | 'ink-dark';
 
 /**
  * Состояние выбора темы целиком. `followSystem` перебивает `half`, но не

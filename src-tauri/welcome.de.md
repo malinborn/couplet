@@ -21,7 +21,7 @@ Nichts läuft hinter deinem Rücken: **⌘Z** macht eine KI-Änderung genauso r�
 
 ## Mach es dir passend
 
-**Designs** — Menü **Design**. Vier Familien — Classic, Aurora, Blueprint, Phosphor —, jede mit einer hellen und einer dunklen Hälfte. Familie und Hälfte werden getrennt eingestellt: Änderst du die eine, bleibt die andere wie sie war. Aktiviere **Systemeinstellung folgen**, und die Hälfte wechselt automatisch mit deinem Mac — hell am Tag, dunkel in der Nacht —, ohne die Familie zu verlassen.
+**Designs** — Menü **Design**. Sechs Familien — Classic, Aurora, Blueprint, Phosphor, Paper, Ink —, jede mit einer hellen und einer dunklen Hälfte. Familie und Hälfte werden getrennt eingestellt: Änderst du die eine, bleibt die andere wie sie war. Aktiviere **Systemeinstellung folgen**, und die Hälfte wechselt automatisch mit deinem Mac — hell am Tag, dunkel in der Nacht —, ohne die Familie zu verlassen.
 
 **Editor-Engine** — **Ansicht → Editor-Engine**. *Live-Rendering* blendet die Markdown-Syntax vollständig aus; *Vorschau* gestaltet den Text, lässt die Markierungen aber stehen; *Roh* zeigt genau das, was im Quelltext steht. **⌘E** wechselt zwischen Quelltext und der gewählten Darstellung — nie von einer Darstellung zur anderen.
 

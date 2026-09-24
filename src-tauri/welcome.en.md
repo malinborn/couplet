@@ -21,7 +21,7 @@ Nothing happens behind your back: **⌘Z** undoes an AI edit exactly like your o
 
 ## Make it yours
 
-**Themes** — the **Theme** menu. Four families, each with a light and a dark half: Classic, Aurora, Blueprint, Phosphor. Family and half are separate choices, so changing one keeps the other. Tick **Follow System** and the half follows your Mac from day into night, staying in the family you picked.
+**Themes** — the **Theme** menu. Six families, each with a light and a dark half: Classic, Aurora, Blueprint, Phosphor, Paper, Ink. Family and half are separate choices, so changing one keeps the other. Tick **Follow System** and the half follows your Mac from day into night, staying in the family you picked.
 
 **Editor engine** — **View → Editor Engine**. *Live Render* hides markdown syntax entirely; *Preview* styles the text but leaves the markers in place; *Raw* is the source exactly as written. **⌘E** flips between the source and whichever renderer you chose — it never swaps one renderer for the other.
 
