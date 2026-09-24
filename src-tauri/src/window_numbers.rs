@@ -2,7 +2,7 @@
 //!
 //! A new window gets the lowest number in 1..=99 no live window holds, so the
 //! numbers stay small and a closed window's number is the next one handed out.
-//! A stale `mdmini -t N` may therefore reach a new window that took `N` — an
+//! A stale `couplet -t N` may therefore reach a new window that took `N` — an
 //! accepted trade (spec §3). A restored window keeps its number (`pick_restored`).
 //!
 //! Nothing is persisted: the choice depends only on the live windows. An older

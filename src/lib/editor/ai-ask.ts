@@ -3,7 +3,7 @@ import { Decoration, type DecorationSet, EditorView, WidgetType } from '@codemir
 import { t } from '../i18n';
 
 /**
- * One pending `mdmini ask` question. Rendered as a widget in the document —
+ * One pending `couplet ask` question. Rendered as a widget in the document —
  * never inserted into the document text, so it must never be autosaved. The
  * socket call behind an ask blocks until `onAnswer` fires (a button click) or
  * the widget is removed by a timeout/dismiss, at which point the caller

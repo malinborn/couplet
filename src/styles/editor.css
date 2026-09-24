@@ -1766,7 +1766,7 @@
   background: rgba(246, 193, 119, 0.1);
 }
 
-/* AI-driven edits (mdmini ai edit / show) */
+/* AI-driven edits (couplet ai edit / show) */
 .cm-ai-edit {
   background: var(--ai-edit-shimmer);
   border-radius: 2px;
@@ -1814,7 +1814,7 @@
   }
 }
 
-/* AI ask (mdmini ask) — a question card with option buttons, inserted as a
+/* AI ask (couplet ask) — a question card with option buttons, inserted as a
  * widget. Never part of the document text.
  *
  * `.cm-ai-ask-wrap` is the widget's root element — CM6 measures a block

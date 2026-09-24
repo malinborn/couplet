@@ -340,7 +340,7 @@ export function createZoomStore() {
  * другие. Значение приходит из `getName()`; до ответа стоит имя релиза, оно же
  * остаётся в браузере, где IPC нет.
  */
-let productName = $state('md-mini');
+let productName = $state('couplet');
 
 export function setProductName(name: string): void {
   if (name) productName = name;

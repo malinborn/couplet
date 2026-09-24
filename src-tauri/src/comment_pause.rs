@@ -1,7 +1,7 @@
 //! The pause that keeps an agent from being woken mid-sentence (#36).
 //!
 //! Autosave made every keystroke a wake-up: the box writes as you type, and
-//! the write set `status=open`, which is exactly what `mdmini watch` emits an
+//! the write set `status=open`, which is exactly what `couplet watch` emits an
 //! event for. So an agent arrived with half a question. The fix is a third
 //! status — `paused` — that `watch` skips, plus a deadline on the marker line
 //! that says when the pause runs out.
@@ -188,7 +188,7 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "mdmini-pause-test-{}-{}-{}",
+            "couplet-pause-test-{}-{}-{}",
             std::process::id(),
             comments::now_epoch(),
             COUNTER.fetch_add(1, Ordering::Relaxed)

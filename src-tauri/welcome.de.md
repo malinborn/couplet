@@ -1,12 +1,12 @@
-# Willkommen bei md-mini
+# Willkommen bei couplet
 
 Ein Markdown-Editor, der schon beim Tippen rendert — und den dein KI-Agent selbst bedienen kann.
 
 ## Hier anfangen: gib es deinem Agenten
 
-1. Öffne **KI → Bring deiner KI mdmini bei**.
+1. Öffne **KI → Bring deiner KI couplet bei**.
 2. Kopiere den Prompt aus diesem Dokument und gib ihn deinem Agenten.
-3. Das ist die ganze Einrichtung. Der Agent meldet md-mini als MCP-Server an, schreibt sich dafür eine eigene Skill und trägt sich selbst einen kurzen Hinweis in seine Konfiguration ein, wann er darauf zurückgreifen soll.
+3. Das ist die ganze Einrichtung. Der Agent meldet couplet als MCP-Server an, schreibt sich dafür eine eigene Skill und trägt sich selbst einen kurzen Hinweis in seine Konfiguration ein, wann er darauf zurückgreifen soll.
 
 Danach kann er:
 
@@ -31,4 +31,4 @@ Nichts läuft hinter deinem Rücken: **⌘Z** macht eine KI-Änderung genauso r�
 
 - Fenster, Cursorposition und ungespeicherte Entwürfe kommen nach einem Neustart zurück.
 - **⇧⌘M** kommentiert die Auswahl, **⌘=** und **⌘−** zoomen, **⌘E** zeigt den Quelltext.
-- `mdmini` funktioniert auch im Terminal — `mdmini help` listet alles auf, was es kann.
+- `couplet` funktioniert auch im Terminal — `couplet help` listet alles auf, was es kann.

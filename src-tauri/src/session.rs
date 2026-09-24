@@ -1333,7 +1333,7 @@ mod tests {
 
     #[test]
     fn the_prune_keeps_referenced_sidecars_of_both_prefixes() {
-        let dir = std::env::temp_dir().join(format!("mdmini-prune-{}", new_tab_id()));
+        let dir = std::env::temp_dir().join(format!("couplet-prune-{}", new_tab_id()));
         std::fs::create_dir_all(&dir).unwrap();
         for name in ["draft-a.md", "draft-b.md", "untitled-c.md", "untitled-d.md", "notes.md"] {
             std::fs::write(dir.join(name), "x").unwrap();

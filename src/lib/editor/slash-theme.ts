@@ -15,7 +15,7 @@ import {
 /**
  * Everything the editor needs from the app's theme store, without importing
  * it directly. `createExtensions()` is called by both `Editor.svelte` and
- * `site/demos/editor-demo.ts` (the md-mini.com landing's demo cards) — a
+ * `site/demos/editor-demo.ts` (the couplet.pro landing's demo cards) — a
  * direct import of the store would pull `localStorage`/`matchMedia` onto the
  * landing at module load time and let the demo editor repaint the whole page.
  *

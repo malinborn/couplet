@@ -193,7 +193,7 @@ pub async fn comment_threads(path: String) -> Result<Vec<crate::comments::Thread
 ///
 /// `append_reply` sets `answered`, which is right for an agent but wrong here:
 /// the user replying again means they are waiting once more, and `open` is
-/// exactly what `mdmini watch` emits an event for — so this is what wakes the
+/// exactly what `couplet watch` emits an event for — so this is what wakes the
 /// agent for a follow-up question.
 #[command]
 pub async fn comment_reply(path: String, id: String, text: String) -> Result<(), String> {

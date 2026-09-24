@@ -1,6 +1,6 @@
 //! Comment layer: reading and point-edits of `.mdmini_comments_<doc>.md`.
 //!
-//! The source of truth is the file, not md-mini. That's why there is no store
+//! The source of truth is the file, not couplet. That's why there is no store
 //! and no GC here: this module only knows how to parse the file and make a
 //! minimal change to it. Full rewrite is deliberately absent — both agents
 //! and humans edit the file by hand.
@@ -56,7 +56,7 @@ pub const PAUSE_SECS: u64 = 20;
 /// Does this thread want an agent right now?
 ///
 /// The rule that decides it lives in the file, not in the app's memory, and
-/// that is the whole point. md-mini writes `status=paused until=<epoch>` while
+/// that is the whole point. couplet writes `status=paused until=<epoch>` while
 /// the human types and flips it to `open` when the pause runs out — but it can
 /// be closed, or killed, in the five seconds before that happens. Then nothing
 /// would ever flip it and the agent would never come: a worse failure than the
@@ -92,7 +92,7 @@ pub fn awaiting(thread: &Thread, now: u64) -> bool {
 /// **This one match is the whole decision, and it is deliberately the only
 /// place that makes it.** Where the point of no return belongs is not settled:
 /// `open` is the moment the thread becomes *available* to an agent, which is
-/// the earliest defensible answer and the only one md-mini can observe on its
+/// the earliest defensible answer and the only one couplet can observe on its
 /// own. A later one — a thread claimed by the agent that is actually going to
 /// answer it — would need that agent to say so, and nothing in the file says
 /// it today. Moving the line means editing this arm, not unpicking a mechanism.
@@ -445,7 +445,7 @@ pub fn parse(text: &str) -> Vec<Thread> {
 
 /// Writes the comment sidecar, with the same hardening the document gets.
 ///
-/// Two parties edit this file — md-mini and the agent — so there must never be
+/// Two parties edit this file — couplet and the agent — so there must never be
 /// a partially-written state; that is what the `rename` inside
 /// [`crate::atomic_write::save`] buys. What #54 added is everything the old
 /// `fs::write` + `rename` dropped on the way: the sidecar's mode, owner, ACL
@@ -585,7 +585,7 @@ pub fn append_thread_ctx_at(
 ///
 /// Pausing has to happen in the same write that creates the thread. Creating
 /// it `open` and pausing it a moment later leaves a window — however short —
-/// in which `mdmini watch` sees an open thread and wakes an agent on a comment
+/// in which `couplet watch` sees an open thread and wakes an agent on a comment
 /// whose first word is all that has been typed. That window is exactly the bug
 /// this feature exists to close, so there must not be one.
 #[allow(clippy::too_many_arguments)]
@@ -701,7 +701,7 @@ pub fn append_reply_at(doc: &Path, id: &str, author: &str, text: &str, at: &str)
     write_sidecar(doc, &path, &format!("{}\n", out.join("\n")))
 }
 
-/// The author md-mini writes for the person using it. A trailing reply by
+/// The author couplet writes for the person using it. A trailing reply by
 /// this author is the one the comment box edits in place — see
 /// [`set_last_reply`].
 pub const SELF_AUTHOR: &str = "You";
@@ -730,7 +730,7 @@ fn thread_bounds(lines: &[&str], id: &str) -> Option<(usize, usize)> {
 /// nobody has answered yet, the last reply is still the author's own.
 ///
 /// An empty `text` is rejected rather than deleting the reply: removing the
-/// only reply would leave a thread that `mdmini question` reports as an empty
+/// only reply would leave a thread that `couplet question` reports as an empty
 /// question, and "delete this comment" already has a name — resolve.
 pub fn set_last_reply(doc: &Path, id: &str, author: &str, text: &str) -> Result<(), String> {
     set_last_reply_at(doc, id, author, text, &fmt_utc(now_epoch()))
@@ -1152,7 +1152,7 @@ Nginx там был сломан.
             .wrapping_mul(1_000_003)
             .wrapping_add(std::process::id() as u64)
             .wrapping_add(COUNTER.fetch_add(1, Ordering::Relaxed));
-        let dir = std::env::temp_dir().join(format!("mdmini-comments-test-{}", new_id(Path::new(name), seed)));
+        let dir = std::env::temp_dir().join(format!("couplet-comments-test-{}", new_id(Path::new(name), seed)));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join(name)
@@ -1677,7 +1677,7 @@ mod sidecar_write_tests {
     /// test` runs cannot share a directory.
     fn doc_with_a_thread(tag: &str) -> (PathBuf, PathBuf) {
         let dir = std::env::temp_dir().join(format!(
-            "mdmini-sidecar-{}-{}-{}",
+            "couplet-sidecar-{}-{}-{}",
             tag,
             std::process::id(),
             now_epoch()
@@ -1731,12 +1731,12 @@ mod sidecar_write_tests {
     #[test]
     fn the_sidecar_keeps_a_custom_xattr() {
         let (doc, sidecar) = doc_with_a_thread("xattr");
-        set_xattr(&sidecar, "com.mdmini.test", b"keepme");
+        set_xattr(&sidecar, "com.couplet.test", b"keepme");
 
         set_status(&doc, "c-aaaaaa", Status::Resolved).unwrap();
 
         assert_eq!(
-            get_xattr(&sidecar, "com.mdmini.test").as_deref(),
+            get_xattr(&sidecar, "com.couplet.test").as_deref(),
             Some(&b"keepme"[..]),
             "the xattr was lost by a status flip"
         );
@@ -1782,7 +1782,7 @@ mod sidecar_write_tests {
         // quotes it — which is exactly what the umask would have produced.
         for mode in [0o600, 0o640] {
             let dir = std::env::temp_dir().join(format!(
-                "mdmini-sidecar-new-{mode:o}-{}-{}",
+                "couplet-sidecar-new-{mode:o}-{}-{}",
                 std::process::id(),
                 now_epoch()
             ));
@@ -1863,7 +1863,7 @@ mod sidecar_write_tests {
         // A real regression the rename fixed. The old temp name
         // (`with_extension("tmp")`) was `.mdmini_comments_spec.tmp`, which still
         // begins with `.mdmini_comments_` — so `is_sidecar` said yes, and both
-        // `collect_open` and `mdmini watch` could act on a half-written file.
+        // `collect_open` and `couplet watch` could act on a half-written file.
         // `watch.rs` documents the opposite; this is what makes that true.
         let (doc, _) = doc_with_a_thread("temp-name");
         let dir = doc.parent().unwrap().to_path_buf();
@@ -1972,7 +1972,7 @@ mod sidecar_write_tests {
     fn a_real_sigkill_mid_sidecar_write_leaves_it_intact() {
         let (doc, sidecar) = doc_with_a_thread("sigkill");
         chmod(&sidecar, 0o600);
-        set_xattr(&sidecar, "com.mdmini.test", b"keepme");
+        set_xattr(&sidecar, "com.couplet.test", b"keepme");
         let before = std::fs::read(&sidecar).unwrap();
         let ino = std::fs::metadata(&sidecar).unwrap().ino();
         let dir = doc.parent().unwrap().to_path_buf();
@@ -2015,7 +2015,7 @@ mod sidecar_write_tests {
         assert_eq!(mode_of(&sidecar), 0o600, "the crash changed the mode");
         assert_eq!(std::fs::metadata(&sidecar).unwrap().ino(), ino);
         assert_eq!(
-            get_xattr(&sidecar, "com.mdmini.test").as_deref(),
+            get_xattr(&sidecar, "com.couplet.test").as_deref(),
             Some(&b"keepme"[..])
         );
 

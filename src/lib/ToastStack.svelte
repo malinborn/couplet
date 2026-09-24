@@ -34,7 +34,7 @@
     unavailable: 'toast.save_as_blocked.unavailable',
   } as const;
 
-  const BREW_CMD = 'brew update && brew upgrade --cask mdmini';
+  const BREW_CMD = 'brew update && brew upgrade --cask couplet';
 
   let copied = $state(false);
 

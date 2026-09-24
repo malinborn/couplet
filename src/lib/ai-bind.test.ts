@@ -16,10 +16,12 @@ describe('buildBindPrompt', () => {
     expect(prompt).not.toContain('<path>');
   });
 
-  it('substitutes the real path into every mdmini command', () => {
+  it('substitutes the real path into every couplet command', () => {
     const prompt = buildBindPrompt(path);
     for (const line of prompt.split('\n')) {
-      if (line.includes('mdmini ') && !line.includes('mdmini` is not')) {
+      // A command, not the product named in prose ("couplet works out…"):
+      // it opens a code span or follows a pipe.
+      if (/(`|\| )couplet [a-z]/.test(line)) {
         expect(line).toContain(path);
       }
     }
@@ -27,11 +29,11 @@ describe('buildBindPrompt', () => {
 
   it('covers the four verbs that make a document two-way', () => {
     const prompt = buildBindPrompt(path);
-    expect(prompt).toContain('mdmini show');
-    expect(prompt).toContain('mdmini edit');
-    expect(prompt).toContain('mdmini ask');
-    expect(prompt).toContain('mdmini question');
-    expect(prompt).toContain('mdmini answer');
+    expect(prompt).toContain('couplet show');
+    expect(prompt).toContain('couplet edit');
+    expect(prompt).toContain('couplet ask');
+    expect(prompt).toContain('couplet question');
+    expect(prompt).toContain('couplet answer');
   });
 
   it('warns that edit takes the whole document, not a diff', () => {

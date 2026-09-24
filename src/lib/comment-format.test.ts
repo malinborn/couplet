@@ -184,30 +184,30 @@ describe('anchorPosition — the cases that used to land on the wrong copy', () 
     expect(anchorPosition(DUPLICATE, quote, 1, firstContext).pos).toBe(first);
   });
 
-  /** A word that repeats dozens of times — `mdmini` in docs/ai-interface.md. */
+  /** A word that repeats dozens of times — `couplet` in docs/ai-interface.md. */
   const REPEATED = [
-    '# AI Interface — `mdmini show`',
+    '# AI Interface — `couplet show`',
     '',
-    'The `mdmini` CLI speaks to a running window.',
+    'The `couplet` CLI speaks to a running window.',
     '',
     '## Protocol',
     '',
-    'Every `mdmini` verb returns JSON on stdout.',
+    'Every `couplet` verb returns JSON on stdout.',
     '',
   ].join('\n');
 
   it('picks the occurrence whose surroundings match, not the first in the file', () => {
-    const third = REPEATED.lastIndexOf('`mdmini`') + 1;
+    const third = REPEATED.lastIndexOf('`couplet`') + 1;
     const context = anchorContextAt(REPEATED, third, third + 6);
-    expect(anchorPosition(REPEATED, 'mdmini', 7, context).pos).toBe(third);
+    expect(anchorPosition(REPEATED, 'couplet', 7, context).pos).toBe(third);
   });
 
   it('survives the neighbouring line being rewritten by the agent', () => {
-    const third = REPEATED.lastIndexOf('`mdmini`') + 1;
+    const third = REPEATED.lastIndexOf('`couplet`') + 1;
     const context = anchorContextAt(REPEATED, third, third + 6);
     const edited = REPEATED.replace('## Protocol', '## Протокол, переписанный агентом');
-    const moved = edited.lastIndexOf('`mdmini`') + 1;
-    expect(anchorPosition(edited, 'mdmini', 7, context).pos).toBe(moved);
+    const moved = edited.lastIndexOf('`couplet`') + 1;
+    expect(anchorPosition(edited, 'couplet', 7, context).pos).toBe(moved);
   });
 
   it('marks a thread detached rather than showing it confidently in the wrong place', () => {
@@ -324,7 +324,7 @@ describe('documentDir', () => {
 describe('buildWatchPrompt', () => {
   it('names the directory, not the file — watch is tree-scoped', () => {
     const prompt = buildWatchPrompt('/repo/docs/spec.md');
-    expect(prompt).toContain('mdmini watch /repo/docs');
+    expect(prompt).toContain('couplet watch /repo/docs');
   });
 
   it('spells out persistent: true, the flag whose absence fails silently', () => {
@@ -332,11 +332,11 @@ describe('buildWatchPrompt', () => {
   });
 
   it('offers a fallback for agents with no event stream', () => {
-    expect(buildWatchPrompt('/repo/spec.md')).toContain('mdmini question');
+    expect(buildWatchPrompt('/repo/spec.md')).toContain('couplet question');
   });
 
   it('says how to answer, not only how to listen', () => {
-    expect(buildWatchPrompt('/repo/spec.md')).toContain('mdmini answer');
+    expect(buildWatchPrompt('/repo/spec.md')).toContain('couplet answer');
   });
 });
 
@@ -346,7 +346,7 @@ describe('buildHandoffPrompt', () => {
     expect(prompt).toContain('/repo/.mdmini_comments_spec.md');
     expect(prompt).toContain('/repo/spec.md');
     expect(prompt).toContain('c-7f3a2c');
-    expect(prompt).toContain('mdmini answer');
+    expect(prompt).toContain('couplet answer');
   });
 });
 

@@ -444,7 +444,7 @@ function pushOut(hidden: RangeSet<HiddenMarkSpan>, pos: number): number {
 /**
  * `EditorState.transactionFilter` that normalizes any selection endpoint a
  * transaction explicitly places inside a hidden marker — the mechanism
- * `atomicRanges` does not cover. md-mini has several such programmatic
+ * `atomicRanges` does not cover. couplet has several such programmatic
  * paths today: `@codemirror/search` find/replace, session restore, `history()`
  * undo/redo, `table-selection.ts`'s snap-out, and slash-command/hover-menu
  * insertions. Without this, typing after one of those dispatches can

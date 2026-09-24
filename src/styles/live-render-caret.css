@@ -41,7 +41,7 @@
 
    ## Underline
 
-   #67 asked for a serif shape for underline. md-mini has no underline: no
+   #67 asked for a serif shape for underline. couplet has no underline: no
    hotkey, no toolbar button, no markdown syntax, and nothing that parses `<u>`.
    A rule for it would be unreachable CSS. The shape is given to **inline
    code** instead — a format that exists, that the user can be standing inside,

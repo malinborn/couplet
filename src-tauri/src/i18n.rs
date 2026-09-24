@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-/// The six languages md-mini ships. `zh` is Simplified.
+/// The six languages couplet ships. `zh` is Simplified.
 pub const SUPPORTED_LANGUAGES: [&str; 6] = ["en", "es", "de", "fr", "ru", "zh"];
 
 const EN_JSON: &str = include_str!("../../locales/en/native.json");

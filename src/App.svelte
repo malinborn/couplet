@@ -1186,7 +1186,7 @@
    *
    * The order is the point. Committing first would open the thread with the
    * text as of the last autosave — up to `COMMENT_AUTOSAVE_MS` behind what is
-   * on screen — and `mdmini watch` would wake an agent on a sentence that is
+   * on screen — and `couplet watch` would wake an agent on a sentence that is
    * already stale.
    */
   async function fireCommentCountdown(id: string): Promise<void> {
@@ -1238,7 +1238,7 @@
    *
    * Runs after every rebuild of the cards. Three cases, and the third is the
    * one that matters: a thread that is `paused` with a deadline already behind
-   * it was left that way by an md-mini that did not survive to commit it, and
+   * it was left that way by an couplet that did not survive to commit it, and
    * committing it here is how the app heals the file it just opened. The same
    * state also reaches agents on its own — `awaiting` in `comments.rs` reads an
    * expired pause as waiting — this only makes it prompt.
@@ -1602,7 +1602,7 @@
       // accept, and Cmd+Z is how they take it back.
       //
       // Highlighted like any other AI edit. Text arriving from an agent looks
-      // the same whether it came through `mdmini edit` or through a comment
+      // the same whether it came through `couplet edit` or through a comment
       // thread, so it gets the same wash and the same Escape to dismiss —
       // without it, a paragraph the user did not write appears in their
       // document with nothing marking it as not theirs.
@@ -1728,7 +1728,7 @@
     });
   }
 
-  // --- AI commands (`mdmini show`/`edit`/`ask`, routed opens, `close`) ---
+  // --- AI commands (`couplet show`/`edit`/`ask`, routed opens, `close`) ---
   //
   // Where a command lands, and what it does to a tab in the background, is
   // `lib/tabs/agent-commands.ts`. What stays here is the live view.
@@ -1985,7 +1985,7 @@
     if (canAutoSave(saveGate())) {
       performSave();
     }
-    // Leaving md-mini ends every running comment pause on the spot.
+    // Leaving couplet ends every running comment pause on the spot.
     //
     // Two reasons, and the second is the load-bearing one. Someone who switches
     // away from a comment they were writing has almost always switched to the

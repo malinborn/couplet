@@ -2,7 +2,7 @@
  * Clamps for a restored caret and scroll line.
  *
  * A session can outlive the file it points at: the document may have been edited
- * or truncated on disk while md-mini was closed, so stored offsets are only
+ * or truncated on disk while couplet was closed, so stored offsets are only
  * hints. CodeMirror's `doc.line()` is 1-based and throws on 0.
  */
 

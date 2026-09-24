@@ -170,7 +170,7 @@ export interface StartedComment {
  * typing it (#36).
  *
  * The pause is part of the creating write, not a second one after it: a thread
- * that exists as `open` for even a moment is a thread `mdmini watch` can wake
+ * that exists as `open` for even a moment is a thread `couplet watch` can wake
  * an agent on, with one word of a question in it.
  */
 export async function commentStart(
@@ -198,7 +198,7 @@ export async function commentStart(
  *
  * The status matters: an agent's reply means "answered", but the user replying
  * again means they are waiting once more — and `open` is exactly what
- * `mdmini watch` emits an event for, so the agent gets woken by it.
+ * `couplet watch` emits an event for, so the agent gets woken by it.
  */
 export async function commentReply(path: string, id: string, text: string): Promise<void> {
   return invoke('comment_reply', { path, id, text });

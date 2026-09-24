@@ -194,7 +194,7 @@ export function onCheckUpdatesRequested(handler: () => void): Promise<() => void
 }
 
 /**
- * One `mdmini ai show`/`edit`/`ask` request, routed by Rust to the window
+ * One `couplet ai show`/`edit`/`ask` request, routed by Rust to the window
  * that owns `path`. Mirrors the camelCase `AiCommandPayload` serialized by
  * `src-tauri/src/ai_socket.rs` — field names and optionality must match.
  * `question`/`options`/`multi`/`freeText`/`timeoutSecs` are only meaningful

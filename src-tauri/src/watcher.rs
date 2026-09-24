@@ -50,7 +50,7 @@ pub fn watch_file(
         let mut last_emit = Instant::now() - Duration::from_secs(10);
         // Separate debounce for the sidecar. A single shared one would swallow
         // the agent's reply whenever it lands within 500ms of our own document
-        // save — which is exactly the common sequence: `mdmini edit` the
+        // save — which is exactly the common sequence: `couplet edit` the
         // document, then immediately answer in the thread.
         let mut last_emit_sidecar = Instant::now() - Duration::from_secs(10);
 

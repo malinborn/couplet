@@ -49,7 +49,7 @@ export function openExternalUrl(url: string): Promise<void> {
 
 /**
  * Injected rather than imported: `createExtensions()` is called by both
- * `Editor.svelte` and `site/demos/editor-demo.ts` (the md-mini.com landing's
+ * `Editor.svelte` and `site/demos/editor-demo.ts` (the couplet.pro landing's
  * demo cards). A direct import of the app's theme store would pull
  * `localStorage`/`matchMedia` onto the landing at module load time and give
  * the demo editor the ability to repaint the whole page. Without

@@ -26,12 +26,12 @@ describe('t', () => {
 
   it('InterpolatesNamedPlaceholders', () => {
     installCatalog('en');
-    expect(t('toast.update.headline', { latest: '1.4.0' })).toBe('mdmini 1.4.0 available');
+    expect(t('toast.update.headline', { latest: '1.4.0' })).toBe('couplet 1.4.0 available');
   });
 
   it('LeavesAnUnmatchedPlaceholderTokenAlone', () => {
     installCatalog('en');
-    expect(t('toast.update.headline', {})).toBe('mdmini {latest} available');
+    expect(t('toast.update.headline', {})).toBe('couplet {latest} available');
   });
 
   it('MissingKey_FallsBackToTheKeyItself', () => {

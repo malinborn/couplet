@@ -25,7 +25,7 @@
   "toast.reload_error.headline": "无法重新加载 {fileName}",
   "toast.reload_error.instruction": "在文件可以重新读取之前，自动保存已暂停。要保留你的版本，请按",
 
-  "toast.update.headline": "mdmini {latest} 已发布",
+  "toast.update.headline": "couplet {latest} 已发布",
   "toast.update.current": "你当前是 v{current}",
   "toast.update.copy_title": "点击复制",
   "toast.update.copied": "已复制！",
@@ -39,10 +39,10 @@
   "toast.session.windows.other": "{count} 个来自上次会话的窗口",
   "toast.session.restore_action": "恢复",
 
-  "toast.ai_nudge.message": "<strong>你的 AI 可以操作 md-mini</strong> <span class=\"md-toast-dim\">——看看 <strong>AI</strong> 菜单</span>",
+  "toast.ai_nudge.message": "<strong>你的 AI 可以操作 couplet</strong> <span class=\"md-toast-dim\">——看看 <strong>AI</strong> 菜单</span>",
   "toast.ai_nudge.action": "快速上手",
 
-  "toast.themes_nudge.message": "<strong>md-mini 有主题</strong> <span class=\"md-toast-dim\">——在 <strong>主题</strong> 菜单里，共四种</span>",
+  "toast.themes_nudge.message": "<strong>couplet 有主题</strong> <span class=\"md-toast-dim\">——在 <strong>主题</strong> 菜单里，共六种</span>",
 
   "toast.json_offer.message": "<strong>这看起来像 JSON</strong> <span class=\"md-toast-dim\">——展开它？</span>",
   "toast.json_offer.action": "格式化",
@@ -54,7 +54,7 @@
   "toast.ai_watch_copied.saved": "<strong>Watch 命令已复制</strong> <span class=\"md-toast-dim\">——粘贴到你智能体的会话里</span>",
   "toast.ai_watch_copied.unsaved": "<strong>请先保存文件</strong> <span class=\"md-toast-dim\">——未保存的文档没有可监视的路径</span>",
 
-  "toast.ai_first_use.message": "<strong>刚才是你的 AI</strong> <span class=\"md-toast-dim\">——md-mini 已连接</span>",
+  "toast.ai_first_use.message": "<strong>刚才是你的 AI</strong> <span class=\"md-toast-dim\">——couplet 已连接</span>",
   "toast.ai_first_use.more": "更多内容在 <strong>AI</strong> 菜单 → 快速上手",
 
   "editor.ai_comment.status.open": "等待智能体",

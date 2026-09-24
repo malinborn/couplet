@@ -42,7 +42,7 @@ export function findCodeLanguage(basename: string, ext: string): LanguageDescrip
 }
 
 /**
- * Extensions md-mini opens as a **markdown-flavoured** buffer: live preview on,
+ * Extensions couplet opens as a **markdown-flavoured** buffer: live preview on,
  * the document rendered rather than syntax-highlighted.
  *
  * `''` is in the set because a path with no extension lands here. Note the
