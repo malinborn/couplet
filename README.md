@@ -1,16 +1,18 @@
-# mdmini
+# couplet
 
 A markdown editor for macOS where you and your AI agent work in the same open document. The agent opens a file, scrolls to a line, pushes an edit straight into the live buffer, or asks you a question inside the text — and you can comment back on any fragment and have it answered in place.
 
-mdmini contains no AI of its own and talks to no cloud. It exposes a local Unix socket and a stdio MCP server; the intelligence is whatever agent you already use — Claude Code, or anything that speaks MCP or can run a shell command. Nothing leaves your machine.
+couplet contains no AI of its own and talks to no cloud. It exposes a local Unix socket and a stdio MCP server; the intelligence is whatever agent you already use — Claude Code, or anything that speaks MCP or can run a shell command. Nothing leaves your machine.
+
+> couplet was called md-mini before. The `mdmini` command keeps working as an alias for `couplet`, and an existing `mdmini` MCP registration keeps working as is. Settings, session and recent files move over on the first launch.
 
 [![Release](https://img.shields.io/github/v/release/malinborn/couplet?color=blue)](https://github.com/malinborn/couplet/releases)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/malinborn/couplet)](https://github.com/malinborn/couplet/stargazers)
 
-**[Website](https://md-mini.com)** · **[Releases](https://github.com/malinborn/couplet/releases)** · **[AI interface reference](docs/ai-interface.md)**
+**[Website](https://couplet.pro)** · **[Releases](https://github.com/malinborn/couplet/releases)** · **[AI interface reference](docs/ai-interface.md)**
 
-![mdmini](docs/screenshot.png)
+![couplet](docs/screenshot.png)
 
 ## Install
 
@@ -30,16 +32,16 @@ brew update && brew upgrade --cask mdmini
 
 ### Known limitation: macOS asks for folder access again after an update
 
-Expected, and not something an update can avoid. mdmini is ad-hoc signed — no Apple Team ID — so macOS identifies it by a code hash that changes with every release. After `brew upgrade`, the permission you granted to Documents or Desktop belongs to what macOS considers a different app, and it asks once more.
+Expected, and not something an update can avoid. couplet is ad-hoc signed — no Apple Team ID — so macOS identifies it by a code hash that changes with every release. After `brew upgrade`, the permission you granted to Documents or Desktop belongs to what macOS considers a different app, and it asks once more.
 
-Fixing it properly means Developer ID signing and notarization, which costs $99/year. mdmini is free and open source, and that is not a bill it is going to carry. Granting access again after an upgrade is the whole of the workaround.
+Fixing it properly means Developer ID signing and notarization, which costs $99/year. couplet is free and open source, and that is not a bill it is going to carry. Granting access again after an upgrade is the whole of the workaround.
 
 ## Open files
 
 ```bash
-mdmini                    # empty editor
-mdmini README.md          # open a file
-mdmini file1.md file2.md  # one window per file
+couplet                    # empty editor
+couplet README.md          # open a file
+couplet file1.md file2.md  # one window per file
 ```
 
 You can also launch it from Spotlight or the Dock, and drop files onto the Dock icon.
@@ -49,52 +51,52 @@ You can also launch it from Spotlight or the Dock, and drop files onto the Dock 
 ### Over MCP
 
 ```bash
-claude mcp add --scope user mdmini -- mdmini mcp
+claude mcp add --scope user couplet -- couplet mcp
 ```
 
-`mdmini mcp` is a stdio [MCP](https://modelcontextprotocol.io) server exposing `show`, `edit` and `ask` as tools. For other MCP clients:
+`couplet mcp` is a stdio [MCP](https://modelcontextprotocol.io) server exposing `show`, `edit` and `ask` as tools. For other MCP clients:
 
 ```json
 {
   "mcpServers": {
-    "mdmini": {
-      "command": "mdmini",
+    "couplet": {
+      "command": "couplet",
       "args": ["mcp"]
     }
   }
 }
 ```
 
-Run `mdmini agent --mcp` to print a short usage-culture block worth pasting next to it.
+Run `couplet agent --mcp` to print a short usage-culture block worth pasting next to it.
 
 ### Over the CLI
 
 Every operation is also a plain shell verb, so an agent that can run commands needs no MCP support at all:
 
 ```bash
-mdmini show notes.md --line 42            # focus the window and pulse-highlight line 42
-mdmini show notes.md --find "## Deploy"   # same, by first text match
-cat new.md | mdmini edit notes.md --show  # push the complete new document into the live buffer
-mdmini ask notes.md --question "Ship it?" --option Yes --option No
+couplet show notes.md --line 42            # focus the window and pulse-highlight line 42
+couplet show notes.md --find "## Deploy"   # same, by first text match
+cat new.md | couplet edit notes.md --show  # push the complete new document into the live buffer
+couplet ask notes.md --question "Ship it?" --option Yes --option No
 ```
 
-`edit` takes the **whole** new document on stdin, never a diff: mdmini diffs it against what is on screen, applies only the changed spans and highlights them. Your scroll position survives, and the edit is a normal history step — `⌘Z` is how you reject it, `Esc` clears the highlight. Each verb prints one line of JSON and sets an exit code.
+`edit` takes the **whole** new document on stdin, never a diff: couplet diffs it against what is on screen, applies only the changed spans and highlights them. Your scroll position survives, and the edit is a normal history step — `⌘Z` is how you reject it, `Esc` clears the highlight. Each verb prints one line of JSON and sets an exit code.
 
-`mdmini agent` prints a paste-ready block for a project's `CLAUDE.md`, `AGENTS.md` or equivalent. `mdmini help` prints the full verb reference offline.
+`couplet agent` prints a paste-ready block for a project's `CLAUDE.md`, `AGENTS.md` or equivalent. `couplet help` prints the full verb reference offline.
 
 ### Comments: asking your agent back
 
-Select a fragment, press `⇧⌘M`, write a question. The thread lives in `.mdmini_comments_<file>.md` beside the document — plain markdown you can read, hand-edit and diff in git. mdmini only ever appends to it, and never touches the document itself, so a full-document `edit` from an agent cannot destroy a comment.
+Select a fragment, press `⇧⌘M`, write a question. The thread lives in `.mdmini_comments_<file>.md` beside the document (the file name keeps the old prefix for compatibility) — plain markdown you can read, hand-edit and diff in git. couplet only ever appends to it, and never touches the document itself, so a full-document `edit` from an agent cannot destroy a comment.
 
 ```bash
-mdmini question                                  # list open threads
-echo "because X" | mdmini answer notes.md --id c-7f3a2c
-mdmini watch                                     # one line per newly-open thread
+couplet question                                  # list open threads
+echo "because X" | couplet answer notes.md --id c-7f3a2c
+couplet watch                                     # one line per newly-open thread
 ```
 
 These three verbs read and write the sidecar directly, so they work with the app closed and from agents that have no MCP at all.
 
-With Claude Code, `AI → Connect Agent to Doc Questions` copies a prompt that arms `mdmini watch` as a Monitor: a new comment interrupts the session that already has your context, instead of spawning a fresh one that knows nothing. The reply arrives back in the thread; if it asks for a change rather than an answer, **insert into text** folds it into the document as a normal AI edit.
+With Claude Code, `AI → Connect Agent to Doc Questions` copies a prompt that arms `couplet watch` as a Monitor: a new comment interrupts the session that already has your context, instead of spawning a fresh one that knows nothing. The reply arrives back in the thread; if it asks for a change rather than an answer, **insert into text** folds it into the document as a normal AI edit.
 
 The comment box is always editable and saves as you type, so a half-written thought survives a crash, a reload, and the agent answering mid-sentence. The agent is not woken until you have been quiet for 20 seconds, with the countdown running inside the send button so you can cut it short. Threads re-anchor by the text around them, not by the first occurrence of the quote, so a card lands where it was written even after the document moves underneath it.
 
@@ -120,7 +122,7 @@ Everything the AI menu can do is described under `AI → Getting Started`. Full 
 
 **Code files** — `.py`, `.rs`, `.json`, `.yaml` and the rest open with native syntax highlighting instead of markdown rendering.
 
-**File watching** — external changes are reloaded automatically, keeping your scroll position and caret. Useful when an agent writes to the file directly rather than through `mdmini edit`.
+**File watching** — external changes are reloaded automatically, keeping your scroll position and caret. Useful when an agent writes to the file directly rather than through `couplet edit`.
 
 **Durable saving** — writes are atomic, and the file's mode, owner, group, ACLs and extended attributes are carried across the replacement. Editing through a symlink writes to what the link points at. A crash mid-write leaves the old file or the new one, never a truncated one; a write the filesystem refuses raises a toast instead of failing silently.
 
@@ -193,9 +195,9 @@ npm run dev        # frontend only — Vite on http://localhost:1420, open it in
 npm run tauri dev  # the full app, with file I/O, the native menu and the AI socket
 ```
 
-Most of mdmini is frontend: the editor, decorations and mermaid all run in a plain browser context, so `npm run dev` is enough for most work. If port 1420 is stuck from a previous session: `lsof -ti:1420 | xargs kill -9`.
+Most of couplet is frontend: the editor, decorations and mermaid all run in a plain browser context, so `npm run dev` is enough for most work. If port 1420 is stuck from a previous session: `lsof -ti:1420 | xargs kill -9`.
 
-`npm run dev:app` and `npm run build:dev` build under a separate identifier (`md-mini-dev`), with their own bundle id, socket and data directory — use them when you need the native shell but have a production mdmini installed and running.
+`npm run dev:app` and `npm run build:dev` build under a separate identifier (`couplet-dev`, bundle id `pro.couplet.dev`), with their own socket and data directory — use them when you need the native shell but have a production couplet installed and running.
 
 ### Checks
 
@@ -222,7 +224,7 @@ src-tauri/src/   Rust: IPC commands, native menu, windows, file watcher,
 src/lib/editor/  CodeMirror 6: keymaps, slash commands, folding,
                  preview/ decorations, live-render/ beta mode
 src/lib/tauri/   IPC wrappers and event listeners
-site/            the md-mini.com landing page
+site/            the couplet.pro landing page
 docs/            design specs, plans and the AI interface reference
 ```
 

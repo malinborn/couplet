@@ -289,7 +289,7 @@ and paints a `.cm-cursor` div instead (#45). And the theme's own rule compiles
 to two classes, so these need three (`.cm-cursor.cm-cursor-primary`) to win a
 tie that stylesheet order would otherwise decide.
 
-Underline has no producer in md-mini — no key, no button, no syntax — so #67's
+Underline has no producer in couplet — no key, no button, no syntax — so #67's
 serif shape went to inline code instead of becoming unreachable CSS.
 
 Two things follow that are easy to get wrong:
@@ -668,8 +668,8 @@ by re-introducing cursor-based reveal — that would undo the mode.
 
 ### Driving the real app
 
-`npm run dev:app` builds under a renamed identifier (`md-mini-dev`,
-`com.md-mini.dev`) with its own data directory, so it cannot disturb an
+`npm run dev:app` builds under a renamed identifier (`couplet-dev`,
+`pro.couplet.dev`) with its own data directory, so it cannot disturb an
 installed release. It exposes the MCP bridge on port 9223 in debug builds.
 Never use `npm run tauri dev` or `npm run tauri build` for this.
 
