@@ -12,6 +12,7 @@ pub mod atomic_write;
 pub mod comment_pause;
 pub mod comments;
 mod commands;
+mod dock_icon;
 mod i18n;
 mod locale;
 pub mod mcp_server;

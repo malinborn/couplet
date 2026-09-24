@@ -46,13 +46,18 @@ pub async fn file_exists(path: String) -> bool {
 /// preference. Called on startup and on every theme change — the only
 /// writer of these checkmarks (macOS toggles the clicked item natively;
 /// this call corrects it).
+///
+/// The Dock icon rides the same call: it follows the same resolved theme, and
+/// every path that changes it already ends here (see `dock_icon`).
 #[command]
 pub async fn sync_theme_menu(
+    app: AppHandle,
     state: tauri::State<'_, crate::menu::ThemeMenuItems>,
     resolved: String,
     follow_system: bool,
 ) -> Result<(), String> {
     state.sync(&resolved, follow_system);
+    crate::dock_icon::apply(&app, &resolved);
     Ok(())
 }
 
