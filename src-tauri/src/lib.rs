@@ -491,51 +491,13 @@ pub fn run() {
     app.run(|_app_handle, event| {
         match event {
             tauri::RunEvent::Opened { urls } => {
-                for url in &urls {
-                    if let Ok(path) = url.to_file_path() {
-                        if let Some(path_str) = path.to_str() {
-                            let file_path = resolve_path(path_str, None);
-                            // Projects are bound and the file's is found by
-                            // walking directories — both outside the registry
-                            // lock. The tracker's lock is released before it.
-                            routing::bind_missing_projects(_app_handle);
-                            let file_project = routing::project_of(&file_path);
-                            let order = _app_handle.state::<menu_route::FocusTracker>().order();
-                            let route = {
-                                let open_files = _app_handle.state::<window::OpenFiles>();
-                                let reg = open_files.0.lock().unwrap();
-                                window::route_opened_file(&reg, &file_path, &file_project, &order, |label| {
-                                    _app_handle.get_webview_window(label).is_some()
-                                })
-                            };
-                            match route {
-                                window::OpenedRoute::FocusExisting(label) => {
-                                    if let Some(win) = _app_handle.get_webview_window(&label) {
-                                        window::reveal(&win);
-                                        // The file may sit in a background tab
-                                        // there; that window activates it
-                                        // through its own open path.
-                                        let _ = win.emit_to(label.as_str(), "open-file", &file_path);
-                                    }
-                                }
-                                window::OpenedRoute::ProjectWindow(label) => {
-                                    // A human's open: the window comes
-                                    // forward, as a new one would.
-                                    if assign_file_to(_app_handle, &label, file_path) {
-                                        if let Some(win) = _app_handle.get_webview_window(&label) {
-                                            window::reveal(&win);
-                                        }
-                                    }
-                                }
-                                window::OpenedRoute::UseMain => {
-                                    assign_file_to_main(_app_handle, file_path);
-                                }
-                                window::OpenedRoute::NewWindow => {
-                                    window::open_file_window(_app_handle, Some(file_path));
-                                }
-                            }
-                        }
-                    }
+                let paths: Vec<String> = urls
+                    .iter()
+                    .filter_map(|url| url.to_file_path().ok())
+                    .filter_map(|path| path.to_str().map(str::to_string))
+                    .collect();
+                if !paths.is_empty() {
+                    open_os_files(_app_handle.clone(), paths);
                 }
             }
             tauri::RunEvent::Reopen { .. } => {
@@ -638,6 +600,72 @@ fn focused_window(app: &tauri::AppHandle) -> Option<String> {
         .collect();
     let last = app.state::<menu_route::FocusTracker>().last();
     menu_route::menu_target(last.as_deref(), &live)
+}
+
+/// Files the OS handed over (`RunEvent::Opened`: Finder, Open With, a drop on
+/// the Dock icon), routed by project (`window::route_opened_file`, Q4).
+///
+/// Off the main thread: normalizing a path, binding projects and finding the
+/// file's own walk directories, and on a slow or network volume that would
+/// freeze every window. Each file's open then runs on the main thread (window
+/// creation belongs there) and is waited for before the next file is routed,
+/// so a second file of the same new project finds the window the first one
+/// built. Locks as everywhere: the tracker's and the registry's one at a time,
+/// none held across the walk or the hop.
+fn open_os_files(app: tauri::AppHandle, paths: Vec<String>) {
+    tauri::async_runtime::spawn_blocking(move || {
+        for raw in paths {
+            let file_path = resolve_path(&raw, None);
+            routing::bind_missing_projects(&app);
+            let file_project = routing::project_of(&file_path);
+            let order = app.state::<menu_route::FocusTracker>().order();
+            let route = {
+                let open_files = app.state::<window::OpenFiles>();
+                let reg = open_files.0.lock().unwrap();
+                window::route_opened_file(&reg, &file_path, &file_project, &order, |label| {
+                    app.get_webview_window(label).is_some()
+                })
+            };
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let handle = app.clone();
+            let hopped = app.run_on_main_thread(move || {
+                open_routed(&handle, route, file_path);
+                let _ = done_tx.send(());
+            });
+            if hopped.is_err() {
+                return;
+            }
+            let _ = done_rx.recv();
+        }
+    });
+}
+
+/// Act on one `route_opened_file` decision. A human's open: the window it
+/// lands in comes forward.
+fn open_routed(app: &tauri::AppHandle, route: window::OpenedRoute, file_path: String) {
+    match route {
+        window::OpenedRoute::FocusExisting(label) => {
+            if let Some(win) = app.get_webview_window(&label) {
+                window::reveal(&win);
+                // The file may sit in a background tab there; that window
+                // activates it through its own open path.
+                let _ = win.emit_to(label.as_str(), "open-file", &file_path);
+            }
+        }
+        window::OpenedRoute::ProjectWindow(label) => {
+            if assign_file_to(app, &label, file_path) {
+                if let Some(win) = app.get_webview_window(&label) {
+                    window::reveal(&win);
+                }
+            }
+        }
+        window::OpenedRoute::UseMain => {
+            assign_file_to_main(app, file_path);
+        }
+        window::OpenedRoute::NewWindow => {
+            window::open_file_window(app, Some(file_path));
+        }
+    }
 }
 
 /// Give the `main` window a tab for `path`.

@@ -962,7 +962,9 @@ pub enum OpenedRoute {
 /// tabs-questions Q4: a Finder open goes by project, as an agent's open does
 /// (`routing::route` without a binding) — the file already open → its tab; a
 /// window of its project, the one focused last (`focus_order`, from
-/// `FocusTracker::order()`); an empty "main"; else a new window.
+/// `FocusTracker::order()`); "main" while it is as it started — no project,
+/// no file tab (`routing::main_untouched`: a main whose file was closed stays
+/// bound to that project and takes no other's); else a new window.
 ///
 /// The existing-window check must come first: "main" being empty says nothing
 /// about the file, and registering it to main while another window holds it
@@ -981,14 +983,11 @@ pub fn route_opened_file(
     if let Some(label) = crate::routing::project_window(reg, file_project, focus_order, &is_live) {
         return OpenedRoute::ProjectWindow(label);
     }
-    let main_shows_a_file = reg
-        .window("main")
-        .is_some_and(|w| w.tabs.iter().any(|t| t.path.is_some()));
     // A closed main would take the file into a payload nobody pulls.
-    if main_shows_a_file || !is_live("main") {
-        OpenedRoute::NewWindow
-    } else {
+    if is_live("main") && crate::routing::main_untouched(reg) {
         OpenedRoute::UseMain
+    } else {
+        OpenedRoute::NewWindow
     }
 }
 
@@ -1208,6 +1207,18 @@ mod tests {
             OpenedRoute::ProjectWindow("editor-2".to_string())
         );
         assert_eq!(opened(&reg, "/z/c.md", "/z", &[]), OpenedRoute::NewWindow, "no window of its project");
+    }
+
+    #[test]
+    fn route_opened_file_uses_main_only_while_it_is_as_it_started() {
+        // Registered, bound to /q, its file closed: as for agents, it is a
+        // window of /q like any other, not an empty main.
+        let mut reg = TabRegistry::new();
+        reg.set_number("main", Some(1));
+        assert_eq!(opened(&reg, "/p/a.md", "/p", &[]), OpenedRoute::UseMain, "numbered, nothing else");
+        reg.bind_project("main", "/q".to_string());
+        assert_eq!(opened(&reg, "/p/a.md", "/p", &[]), OpenedRoute::NewWindow);
+        assert_eq!(opened(&reg, "/q/b.md", "/q", &[]), OpenedRoute::ProjectWindow("main".to_string()));
     }
 
     #[test]

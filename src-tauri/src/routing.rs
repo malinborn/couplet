@@ -119,10 +119,15 @@ const MAIN: &str = "main";
 /// `UseMain`, plus the project: a main whose file was closed stays bound and
 /// is a window like any other.
 fn main_never_held_a_file(reg: &TabRegistry, is_live: impl Fn(&str) -> bool) -> bool {
-    is_live(MAIN)
-        && reg
-            .window(MAIN)
-            .is_some_and(|w| w.project.is_none() && w.tabs.iter().all(|t| t.path.is_none()))
+    is_live(MAIN) && reg.window(MAIN).is_some() && main_untouched(reg)
+}
+
+/// `main` has no project and no file tab — or no registry entry at all, which
+/// it has before `setup` numbers it. The rule both routes share; only
+/// `main_never_held_a_file` also needs the entry, to queue a command on.
+pub fn main_untouched(reg: &TabRegistry) -> bool {
+    reg.window(MAIN)
+        .is_none_or(|w| w.project.is_none() && w.tabs.iter().all(|t| t.path.is_none()))
 }
 
 /// `route` for the live app: projects bound first, the focus order from

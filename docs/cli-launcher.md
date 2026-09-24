@@ -46,7 +46,7 @@ Running app receives args → opens the files as tabs of one new window
 
 #### Finder
 
-A file opened from Finder (double-click, Open With, a drop on the Dock icon) arrives as `RunEvent::Opened` and is routed by project, like a routed open without `-t` (tabs-questions Q4): a file already open → its tab comes forward; a window of the file's project → a new tab there, in the one focused last; a `main` that shows no file takes it; else a new window. It is a human's open, so the window it lands in comes forward.
+A file opened from Finder (double-click, Open With, a drop on the Dock icon) arrives as `RunEvent::Opened` and is routed by project, like a routed open without `-t` (tabs-questions Q4): a file already open → its tab comes forward; a window of the file's project → a new tab there, in the one focused last; a `main` still as it started (no project, no file tab) takes it; else a new window. The routing runs off the main thread (it reads the disk to find the project), the open itself on it. It is a human's open, so the window it lands in comes forward.
 
 ### Why Other Approaches Failed
 
