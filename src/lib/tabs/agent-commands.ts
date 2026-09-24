@@ -80,6 +80,13 @@ export interface AgentCommandDeps {
    */
   isPending(id: number): Promise<boolean>;
   respond(id: number, response: AgentResponse): Promise<void>;
+  /**
+   * The command's file is held by another window now — its tab moved there
+   * (plan 05), or was claimed there meanwhile: Rust hands the request over
+   * (`ai_forward`). `false`: it would not; this window answers. Rejects when
+   * Rust cannot be asked.
+   */
+  forward(payload: AiCommandPayload): Promise<boolean>;
   /** `typing.ts`: the human is typing in this window. */
   typing(): boolean;
   /** The active tab shows an agent's live `ask`. */
@@ -176,6 +183,17 @@ export function createAgentCommands(deps: AgentCommandDeps) {
     inbox.park(tabId, item, deps.now());
   }
 
+  /** Forwarded, or else answered with `error` — never both, never neither. */
+  async function elsewhere(payload: AiCommandPayload, error: string): Promise<void> {
+    let forwarded = false;
+    try {
+      forwarded = await deps.forward(payload);
+    } catch (err) {
+      console.error('ai_forward failed:', err);
+    }
+    if (!forwarded) await respond(payload, { ok: false, error });
+  }
+
   /**
    * Unviewed unless in front of the human. A quick look only for a tab this
    * very command created — the controller's `opened`, or Rust's `fresh` for
@@ -255,7 +273,7 @@ export function createAgentCommands(deps: AgentCommandDeps) {
     let text: string | null = null;
     if (tabId === undefined) {
       const result = await deps.tabs.openBackgroundNow(payload.path);
-      if (result.kind === 'other-window') return respond(payload, { ok: false, error: AGENT_ERRORS.elsewhere });
+      if (result.kind === 'other-window') return elsewhere(payload, AGENT_ERRORS.elsewhere);
       if (result.kind === 'failed') return respond(payload, { ok: false, error: AGENT_ERRORS.unreadable });
       tabId = result.tabId;
       if (result.kind === 'opened') {
@@ -318,7 +336,7 @@ export function createAgentCommands(deps: AgentCommandDeps) {
    */
   async function closeFor(payload: AiCommandPayload): Promise<void> {
     const tab = deps.tabs.findByPath(payload.path);
-    if (!tab) return respond(payload, { ok: false, error: AGENT_ERRORS.notOpen });
+    if (!tab) return elsewhere(payload, AGENT_ERRORS.notOpen);
     if (tab.path === null) return respond(payload, { ok: false, error: AGENT_ERRORS.untitled });
     if (tab.id === deps.tabs.list.activeId && deps.typing()) {
       return respond(payload, { ok: false, error: AGENT_ERRORS.typing });
@@ -358,7 +376,7 @@ export function createAgentCommands(deps: AgentCommandDeps) {
       const switched = await activateFor(payload, tab?.id);
       if (switched.kind === 'shown') return landLive(payload, switched.tabId, switched.opened);
       if (switched.kind === 'failed') return respond(payload, { ok: false, error: AGENT_ERRORS.unreadable });
-      if (switched.kind === 'elsewhere') return respond(payload, { ok: false, error: AGENT_ERRORS.elsewhere });
+      if (switched.kind === 'elsewhere') return elsewhere(payload, AGENT_ERRORS.elsewhere);
     }
     return landBackground(payload, tab?.id);
   }
@@ -458,6 +476,28 @@ export function createAgentCommands(deps: AgentCommandDeps) {
       for (const [id, record] of placed) {
         if (record.tabId === tabId) placed.delete(id);
       }
+    },
+
+    /**
+     * `tabId` leaves for another window (plan 05): what waited for it goes
+     * with it, untouched — the controller stashed it first, so its live
+     * questions are in the inbox already. Nothing is answered: the agents
+     * wait on — the target window now.
+     */
+    carry(tabId: string): InboxItem[] {
+      for (const [id, record] of placed) {
+        if (record.tabId === tabId) placed.delete(id);
+      }
+      return inbox.take(tabId);
+    },
+
+    /**
+     * `tabId` arrived with what waited for it in its old window. Asks keep
+     * their deadline — one clock, `Date.now()`, in every window — and those
+     * already past it are dropped by `park`.
+     */
+    adopt(tabId: string, items: readonly InboxItem[]): void {
+      for (const item of items) park(tabId, item);
     },
   };
 }

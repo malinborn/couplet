@@ -1627,6 +1627,7 @@
       invoke<void>('ai_respond', { id, response }).catch((err: unknown) => {
         console.error('Failed to respond to AI command:', err);
       }),
+    forward: (payload) => invoke<boolean>('ai_forward', { payload }),
     typing: () => typingTracker.typing(),
     liveAsk: liveAskShown,
     revealWindow: () => invoke<void>('reveal_window').catch(logTabIpc('reveal_window')),

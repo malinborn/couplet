@@ -170,6 +170,9 @@ function makeWorld(tabIds: string[], activeId: string) {
   const pendingFails = new Set<number>();
   /** Requests whose widget throws while being placed. */
   const placeThrows = new Set<number>();
+  /** Requests Rust hands on to the window that holds their file now (`ai_forward`). */
+  const forwards = new Set<number>();
+  const forwardFails = new Set<number>();
 
   const agent = createAgentCommands({
     tabs,
@@ -181,6 +184,11 @@ function makeWorld(tabIds: string[], activeId: string) {
       pending.delete(id);
       responses.push([id, response]);
       log.push(`respond ${id}`);
+    },
+    forward: async (p) => {
+      log.push(`forward ${p.id}`);
+      if (forwardFails.has(p.id)) throw new Error('ipc down');
+      return forwards.has(p.id);
     },
     typing: () => clock.typing,
     liveAsk: () => clock.liveAsk,
@@ -225,6 +233,8 @@ function makeWorld(tabIds: string[], activeId: string) {
     pending,
     pendingFails,
     placeThrows,
+    forwards,
+    forwardFails,
     untitledText,
     list: () => list,
     /** A request an agent is waiting on. */
@@ -782,5 +792,57 @@ describe('close (spec §8)', () => {
     await w.send(payload({ id: 2, cmd: 'close', path: '/a.md' }));
     expect(w.response(2)).toEqual({ ok: true });
     expect(w.agent.leave('a')).toBe(false);
+  });
+});
+
+describe('a tab that moved to another window (plan 05)', () => {
+  it('ACommandForAFileAnotherWindowHoldsNowIsForwarded_NotAnswered', async () => {
+    const w = makeWorld(['a'], 'a');
+    w.tabs.openBackgroundNow = async () => ({ kind: 'other-window', label: 'editor-2' });
+    w.forwards.add(1);
+    await w.send(payload({ id: 1, cmd: 'ask', path: '/b.md' }));
+    expect(w.log).toContain('forward 1');
+    expect(w.response(1)).toBeUndefined();
+  });
+
+  it('WhenRustWillNotTakeIt_OrCannotBeAsked_TheAgentHearsWhy', async () => {
+    const w = makeWorld(['a'], 'a');
+    w.tabs.openBackgroundNow = async () => ({ kind: 'other-window', label: 'editor-2' });
+    w.forwardFails.add(2);
+    await w.send(payload({ id: 1, cmd: 'show', path: '/b.md', line: 1 }));
+    await w.send(payload({ id: 2, cmd: 'show', path: '/b.md', line: 1 }));
+    expect(w.response(1)).toEqual({ ok: false, error: AGENT_ERRORS.elsewhere });
+    expect(w.response(2)).toEqual({ ok: false, error: AGENT_ERRORS.elsewhere });
+  });
+
+  it('ACloseForATabThatLeftIsForwardedToo', async () => {
+    const w = makeWorld(['a'], 'a');
+    w.forwards.add(3);
+    await w.send(payload({ id: 3, cmd: 'close', path: '/gone.md' }));
+    expect(w.log).toContain('forward 3');
+    expect(w.response(3)).toBeUndefined();
+  });
+
+  it('CarryTakesWhatWaitsForTheTab_AndNothingIsLeftBehindOrAnswered', async () => {
+    const w = makeWorld(['a', 'b'], 'a');
+    await w.send(payload({ id: 4, cmd: 'ask', path: '/b.md' }));
+    const carried = w.agent.carry('b');
+    expect(carried).toEqual([{ kind: 'ask', payload: expect.objectContaining({ id: 4 }), deadline: 1_000 + 300_000 }]);
+    await w.click('b');
+    expect(w.count('placed 4')).toBe(0);
+    expect(w.response(4)).toBeUndefined();
+  });
+
+  it('AdoptedAsksAreShownWhenTheTabIsEntered_ExpiredOnesAreDropped', async () => {
+    const w = makeWorld(['a', 'b'], 'a');
+    w.pending.add(5);
+    w.pending.add(6);
+    w.agent.adopt('b', [
+      { kind: 'ask', payload: payload({ id: 5, cmd: 'ask', path: '/b.md' }), deadline: 2_000 },
+      { kind: 'ask', payload: payload({ id: 6, cmd: 'ask', path: '/b.md' }), deadline: 900 },
+    ]);
+    await w.click('b');
+    expect(w.count('placed 5')).toBe(1);
+    expect(w.count('placed 6')).toBe(0);
   });
 });
