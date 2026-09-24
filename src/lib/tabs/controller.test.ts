@@ -1710,9 +1710,60 @@ describe('moving tabs to another window (plan 05)', () => {
     const h = await started(files, three());
     const outcome = await h.controller.moveTabs(['c', 'a', 'b'], { kind: 'new-window' });
     expect(outcome).toEqual({ kind: 'moved', label: 'editor-9', number: 9, count: 3 });
+    await vi.waitFor(() => expect(h.deps.rust.closeWindow).toHaveBeenCalled());
     expect(h.calls.indexOf('move a,b,c → new')).toBeLessThan(h.calls.indexOf('closeWindow'));
     expect(h.live().doc.toString()).toBe('');
     expect(h.ids()).toEqual([]);
+  });
+
+  it('WhileTheWholeWindowMovesNothingCanBeTypedIntoWhatStandsInForIt', async () => {
+    const h = await started(files, three());
+    let readOnly: boolean | null = null;
+    vi.mocked(h.deps.rust.move).mockImplementationOnce(async () => {
+      readOnly = h.live().readOnly;
+      return { label: 'editor-9', number: 9 };
+    });
+    await h.controller.moveTabs(['a', 'b', 'c'], { kind: 'new-window' });
+    expect(readOnly).toBe(true);
+    expect(h.swaps[h.swaps.length - 1]?.opts.blur).toBe(true);
+  });
+
+  it('ACommandQueuedBehindAWholeWindowMoveRunsBeforeTheWindowCloses_AndIsForwardedNotRaised', async () => {
+    // Rust relabelled its request to the target: closing first would leave
+    // its agent waiting for nothing. Run here, it finds the file elsewhere
+    // and goes on to `ai_forward` (agent-commands) — without raising the holder (D5).
+    const h = await started(files, three());
+    h.owners.set('/a.md', { kind: 'other-window', label: 'editor-9' });
+    const moving = h.controller.moveTabs(['a', 'b', 'c'], { kind: 'new-window' });
+    let answer: OpenPathResult | null = null;
+    const command = h.controller.runExclusive(async () => {
+      answer = await h.controller.openPathNow('/a.md');
+      h.calls.push('agent ran');
+    });
+    await moving;
+    await command;
+    await vi.waitFor(() => expect(h.deps.rust.closeWindow).toHaveBeenCalled());
+    expect(answer).toEqual({ kind: 'elsewhere' });
+    expect(h.calls.indexOf('agent ran')).toBeLessThan(h.calls.indexOf('closeWindow'));
+    expect(h.deps.rust.focusElsewhere).not.toHaveBeenCalled();
+  });
+
+  it('AnEmptiedWindowAnAgentOpenedAFileInMeanwhileStays', async () => {
+    const h = await started({ ...files, '/new.md': 'NEW' }, three());
+    const moving = h.controller.moveTabs(['a', 'b', 'c'], { kind: 'new-window' });
+    const command = h.controller.runExclusive(() => h.controller.openPathNow('/new.md'));
+    await moving;
+    expect(await command).toMatchObject({ kind: 'opened' });
+    await h.controller.reorder([]);
+    expect(h.deps.rust.closeWindow).not.toHaveBeenCalled();
+    expect(h.live().doc.toString()).toBe('NEW');
+    expect(h.live().readOnly).toBe(false);
+  });
+
+  it('MovingTabsThisWindowNoLongerHasIsANoOp_NotAFailure', async () => {
+    const h = await started(files, three());
+    expect(await h.controller.moveTabs(['gone'], to2)).toEqual({ kind: 'refused' });
+    expect(h.deps.rust.move).not.toHaveBeenCalled();
   });
 
   it('AFailedMovePutsTheTabsBackWhereTheyStood', async () => {
@@ -1781,6 +1832,39 @@ describe('moving tabs to another window (plan 05)', () => {
     const outcome = await h.controller.moveToNewWindows(['b', 'c']);
     expect(outcome?.stranded).toEqual([{ path: '/c.md', error: 'no' }]);
     expect(h.ids()).toEqual(['a', 'c']);
+  });
+
+  it('MoveToNewWindowsLeavesARefusedTabToItsOwnToast', async () => {
+    const h = await started(files, three());
+    h.setSaveSucceeds(false);
+    h.type('unsaved');
+    const outcome = await h.controller.moveToNewWindows(['a', 'b']);
+    expect(outcome?.stranded, 'one toast: unsaved-blocked, not also tabs-stranded').toEqual([]);
+    expect(h.deps.reportUnsaved).toHaveBeenCalledTimes(1);
+    expect(outcome?.moved).toHaveLength(1);
+    expect(h.ids()).toEqual(['a', 'c']);
+  });
+});
+
+describe('an agent open of a file another window holds (plan 05, D5)', () => {
+  const files = { '/a.md': 'AAAA', '/b.md': 'BBBB' };
+
+  it('NeverRaisesTheHolder_AHumansOpenDoes', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    h.owners.set('/b.md', { kind: 'other-window', label: 'editor-2' });
+    const agent = await h.controller.runExclusive(() => h.controller.openPathNow('/b.md'));
+    expect(agent).toEqual({ kind: 'elsewhere' });
+    expect(h.deps.rust.focusElsewhere).not.toHaveBeenCalled();
+    await h.controller.openPath('/b.md');
+    expect(h.deps.rust.focusElsewhere).toHaveBeenCalledWith('/b.md');
+  });
+
+  it('NorWhenRustSaysSoOnlyAtTheClaim', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    vi.mocked(h.deps.rust.open).mockResolvedValueOnce({ kind: 'other-window', label: 'editor-2' });
+    const agent = await h.controller.runExclusive(() => h.controller.openPathNow('/b.md'));
+    expect(agent).toEqual({ kind: 'elsewhere' });
+    expect(h.deps.rust.focusElsewhere).not.toHaveBeenCalled();
   });
 });
 
@@ -1863,6 +1947,18 @@ describe('tabs arriving from another window (plan 05)', () => {
     await h.controller.init([{ ...fileTab('x', '/x.md'), transient: true, transientSeenAt: 5, inbox: [ask] }], 'x');
     expect(meta(h, 'x')).toMatchObject({ transient: true, transientSeenAt: 5 });
     expect(h.calls).toContain('adopt x 1');
+  });
+
+  it('AnAgentsQuestionOnScreenKeepsTheView_ArrivalsWaitInTheBackground', async () => {
+    const h = await started(files, three());
+    vi.mocked(h.deps.ai.hasLiveAsk).mockReturnValue(true);
+    await h.controller.arrive([{ ...fileTab('x', '/x.md'), inbox: [ask] }]);
+    expect(h.ids()).toEqual(['a', 'x', 'b', 'c']);
+    expect(h.active()).toBe('a');
+    expect(h.calls).not.toContain('swap');
+    expect(h.deps.ai.leave).not.toHaveBeenCalled();
+    expect(h.calls).toContain('adopt x 1');
+    expect(h.deps.settled).toHaveBeenCalled();
   });
 
   it('AnArrivalThisWindowAlreadyHasIsIgnored', async () => {

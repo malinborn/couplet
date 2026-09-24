@@ -1760,7 +1760,9 @@
     // before the move takes the lock: its init is then a blank Untitled, and
     // the tabs come this way (the blank tab gives way to them).
     const unlistenTabsArrive = onTabsArrive((arrived) => {
-      void tabSourcesReady.then(() => tabs.arrive(arrived));
+      void tabSourcesReady
+        .then(() => tabs.arrive(arrived))
+        .catch((err: unknown) => console.error('Failed to take in tabs moved here:', err));
     });
 
     // Pull what the backend stored for this window (its tabs, restored or

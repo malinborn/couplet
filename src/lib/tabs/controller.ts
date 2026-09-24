@@ -1,4 +1,4 @@
-import type { EditorState, StateEffect } from '@codemirror/state';
+import { EditorState, StateEffect } from '@codemirror/state';
 import { createSerialQueue } from '../serial-queue';
 import { decideLeave, decideOpenAction, type TabOwner } from '../switch-document';
 import { decideEnter } from './tab-cache';
@@ -255,11 +255,13 @@ interface Entry {
   restore: Position | null;
 }
 
-/** A tab «В новые окна» left in this window: its move was refused, or failed. */
+/**
+ * A tab «В новые окна» left in this window because its move failed. One the
+ * window refused to let go of is not one: its own toast already says why.
+ */
 export interface Stranded {
   path: string | null;
-  /** Why it failed; `null`: refused here — the active tab could not be left, and the toast says why. */
-  error: string | null;
+  error: string;
 }
 
 type Loadable =
@@ -622,7 +624,8 @@ export function createTabController(deps: TabControllerDeps) {
    * window already: never `tab_open`ed. They go right after the active tab, in
    * order; the first one is shown unless the active tab may not be left — then
    * they wait in the background, and no toast says so: the human is in the
-   * other window. A blank Untitled gives way, as it does for an agent's open —
+   * other window — and nor while an agent's question is on screen here. A
+   * blank Untitled gives way, as it does for an agent's open —
    * among them the one a window built for the move shows when it mounted
    * before `tab_move` took the lock (its tabs then come by event, not init).
    */
@@ -639,6 +642,11 @@ export function createTabController(deps: TabControllerDeps) {
     });
     publish(next);
     adoptInboxes(fresh);
+    // An agent's question on screen here is not swapped away from under it.
+    if (deps.ai.hasLiveAsk()) {
+      deps.settled();
+      return;
+    }
     const shown = await activateNow(fresh[0].tabId, { quiet: true });
     if (shown === 'ok' && blank !== null && blank !== fresh[0].tabId && findById(list, blank)) {
       await closeNow(blank, 'release');
@@ -695,7 +703,8 @@ export function createTabController(deps: TabControllerDeps) {
     // A tab dedup cannot see would let the same file open a second time.
     if (answer.kind === 'failed') return { kind: 'failed' };
     if (answer.kind === 'other-window') {
-      await deps.rust.focusElsewhere(path);
+      // An agent's open never raises the holder (D5): its command is forwarded there.
+      if (!quiet) await deps.rust.focusElsewhere(path);
       return { kind: 'elsewhere' };
     }
     if (answer.kind === 'this-window') {
@@ -785,7 +794,9 @@ export function createTabController(deps: TabControllerDeps) {
         if (!quiet) deps.reportUnsaved();
         return { kind: 'refused' };
       case 'focus-other-window':
-        await deps.rust.focusElsewhere(path);
+        // An agent's open never raises the holder (D5): its command is
+        // forwarded there (`ai_forward`), and the window stays where it is.
+        if (!quiet) await deps.rust.focusElsewhere(path);
         return { kind: 'elsewhere' };
       case 'activate-tab':
         return fromActivate(action.tabId, await activateNow(action.tabId, { position: position ?? undefined, quiet }));
@@ -949,7 +960,8 @@ export function createTabController(deps: TabControllerDeps) {
     const wanted = new Set(ids);
     // This window's order, not the caller's: a group lands as it stood here (D7).
     const moving = list.tabs.filter((t) => wanted.has(t.id)).map((t) => t.id);
-    if (moving.length === 0) return { kind: 'failed', error: 'no such tab' };
+    // Nothing of it is here any more: a no-op, not a failure to report.
+    if (moving.length === 0) return { kind: 'refused' };
     const activeMoves = list.activeId !== null && wanted.has(list.activeId);
     let next: Loadable | null = null;
     if (activeMoves) {
@@ -972,8 +984,14 @@ export function createTabController(deps: TabControllerDeps) {
       entry = build(next.tab, next.ready, null);
       show(next.tab, entry);
     } else if (activeMoves) {
-      // The window empties: nothing of the leaving tabs stays in the live view.
-      deps.editor.swap(deps.editor.createState('', null), { blur: true, scroll: 'top' });
+      // The window empties: nothing of the leaving tabs stays in the live view,
+      // and nothing can be typed into what stands in for them — it belongs to
+      // no tab, and would be lost with the window or when a refusal puts the
+      // tabs back.
+      const scratch = deps.editor
+        .createState('', null)
+        .update({ effects: StateEffect.appendConfig.of(EditorState.readOnly.of(true)) }).state;
+      deps.editor.swap(scratch, { blur: true, scroll: 'top' });
       deps.doc.setActive(null, false, null);
     }
     let done: MoveDone | null = null;
@@ -998,8 +1016,20 @@ export function createTabController(deps: TabControllerDeps) {
     for (const id of moving) cache.delete(id);
     if (next?.tab && entry) await settle(next.tab, entry.restore, false);
     else deps.settled();
-    // D6: an emptied window closes — after Rust holds its tabs elsewhere.
-    if (list.tabs.length === 0) await deps.rust.closeWindow();
+    // D6: an emptied window closes — after Rust holds its tabs elsewhere, and
+    // after whatever already waits in the queue: an agent command queued
+    // behind the move is for a tab that just left, and must still run here to
+    // be forwarded (`ai_forward`) — Rust relabelled its request to the target,
+    // so closing this window would not fail it; its agent would wait for
+    // nothing. Queued, never awaited: this slot is the one it would wait for.
+    // Checked again then: an agent's open may have landed meanwhile.
+    if (list.tabs.length === 0) {
+      void queue
+        .run(async () => {
+          if (list.tabs.length === 0) await deps.rust.closeWindow();
+        })
+        .catch((err: unknown) => console.error('Failed to close the emptied window:', err));
+    }
     return { kind: 'moved', label: done.label, number: done.number, count: leaving.length };
   }
 
@@ -1321,7 +1351,8 @@ export function createTabController(deps: TabControllerDeps) {
      * «В новые окна» (spec §6, D7): each selected tab, in this window's order,
      * into a window of its own — the one move every move is, never a release:
      * agents keep waiting, and stamps, caret and quick look go with the tab. A
-     * tab whose move was refused or failed stays here and is reported.
+     * tab whose move was refused or failed stays here; the failed ones are
+     * reported as stranded (a refusal has its own toast).
      */
     moveToNewWindows: (ids: readonly string[]) =>
       queue.run(async (): Promise<NewWindowsOutcome> => {
@@ -1330,7 +1361,8 @@ export function createTabController(deps: TabControllerDeps) {
         for (const tab of list.tabs.filter((t) => ids.includes(t.id))) {
           const outcome = await moveNow([tab.id], { kind: 'new-window' });
           if (outcome.kind === 'moved') moved.push({ label: outcome.label, number: outcome.number });
-          else stranded.push({ path: tab.path, error: outcome.kind === 'failed' ? outcome.error : null });
+          // A refusal already has its toast (`unsaved-blocked`, or the standing `save-error`).
+          else if (outcome.kind === 'failed') stranded.push({ path: tab.path, error: outcome.error });
         }
         return { moved, stranded };
       }),
