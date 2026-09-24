@@ -147,6 +147,7 @@ pub fn run() {
             window::open_file_window_cmd,
             window::register_open_file,
             window::focus_if_open,
+            window::release_open_file,
             recovery::save_recovery,
             recovery::delete_recovery,
             recovery::check_recovery,

@@ -324,8 +324,34 @@
    * file all go through this. See docs/investigations/2026-09-23-tabs-options.md
    * §1 for the bugs this consolidation fixes (undo leak, lost autosave, no
    * dedup, lost untitled text, orphaned `ask`).
+   *
+   * Serialized: a Cmd+O arriving while an `open-file` switch is still in its
+   * awaits would otherwise interleave with it — two handovers of the same
+   * document, and the first one's `finally` clearing `switchingDocument` while
+   * the second is still mid-switch.
    */
-  async function switchDocument(path: string): Promise<void> {
+  let switchQueue: Promise<void> = Promise.resolve();
+  function switchDocument(path: string): Promise<void> {
+    const run = switchQueue.then(() => switchDocumentNow(path));
+    switchQueue = run.catch(() => {});
+    return run;
+  }
+
+  /**
+   * Open `path` in a window of its own, leaving this one as it is.
+   *
+   * `RunEvent::Opened` may already have registered `path` to this window
+   * before the frontend refused to take it; left in place, that entry makes
+   * `open_file_window` dedup onto this very window and open nothing.
+   */
+  async function openInNewWindow(path: string): Promise<void> {
+    await invoke('release_open_file', { path }).catch(() => {});
+    await invoke('open_file_window_cmd', { path }).catch((err: unknown) => {
+      console.error('Failed to open new window:', err);
+    });
+  }
+
+  async function switchDocumentNow(path: string): Promise<void> {
     await autoSave.flush();
     // A keystroke that landed during that write is not covered by it; one
     // more flush picks it up. Not after a failure — that would only repeat
@@ -356,9 +382,7 @@
         reportSwitchBlockedByUnsaved();
         return;
       case 'open-new-window':
-        await invoke('open_file_window_cmd', { path }).catch((err: unknown) => {
-          console.error('Failed to open new window:', err);
-        });
+        await openInNewWindow(path);
         return;
       case 'switch-in-place':
         await loadDocumentInPlace(path);
@@ -441,14 +465,19 @@
       // be typed between the check and `loadDocument`.
       await autoSave.flush();
       if (fileState.isDirty) {
+        if (leavingPath) {
+          // The document stays, but its handover already ran: the agents
+          // behind its asks have been answered, so their widgets are stale,
+          // and its comment state was reset — rebuild the cards from the file.
+          editorHandle?.view?.dispatch({ effects: clearAiAsks.of(null) });
+          void reloadComments();
+        }
         if (fileState.filePath) {
           reportSwitchBlockedByUnsaved();
         } else {
           // Text typed into an Untitled buffer meanwhile — same rule as the
           // `open-new-window` decision: it stays, the file goes elsewhere.
-          await invoke('open_file_window_cmd', { path }).catch((err: unknown) => {
-            console.error('Failed to open new window:', err);
-          });
+          await openInNewWindow(path);
         }
         return;
       }

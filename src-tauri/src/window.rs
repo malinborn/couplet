@@ -337,6 +337,39 @@ pub fn label_to_focus(
         .cloned()
 }
 
+/// Remove `path` from `open_files` if — and only if — it maps to `label`.
+/// Returns whether an entry was removed. Another window's mapping is never
+/// touched: releasing is a window giving up a claim of its own.
+pub fn release_mapping(open_files: &mut HashMap<String, String>, path: &str, label: &str) -> bool {
+    if open_files.get(path).map(String::as_str) == Some(label) {
+        open_files.remove(path);
+        true
+    } else {
+        false
+    }
+}
+
+/// IPC command: give up the calling window's claim on `path`.
+///
+/// `RunEvent::Opened` reuses "main" whenever `OpenFiles` has no entry for it,
+/// and registers the file to it before the frontend has decided anything. A
+/// main window holding a dirty Untitled buffer has no entry either, so the
+/// frontend refuses the swap and asks for a new window instead — which
+/// `open_file_window` would then dedup against that very registration, focus
+/// main, and open nothing. The frontend calls this right before
+/// `open_file_window_cmd` so the path is free to get a window of its own.
+#[tauri::command]
+pub async fn release_open_file(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    path: String,
+) -> Result<(), String> {
+    let open_files = app.state::<OpenFiles>();
+    let mut map = open_files.0.lock().unwrap();
+    release_mapping(&mut map, &path, window.label());
+    Ok(())
+}
+
 /// Bring `win` to the front even if it is minimized — tao's macOS
 /// `set_focus` is a silent no-op on a minimized window.
 fn reveal(win: &tauri::WebviewWindow) {
@@ -402,5 +435,31 @@ mod tests {
     fn label_to_focus_is_none_when_the_path_is_not_open_anywhere() {
         let map = HashMap::new();
         assert_eq!(label_to_focus(&map, "/tmp/a.md", "main"), None);
+    }
+
+    #[test]
+    fn release_mapping_removes_the_calling_windows_own_mapping() {
+        let mut map = HashMap::new();
+        map.insert("/tmp/a.md".to_string(), "main".to_string());
+        map.insert("/tmp/b.md".to_string(), "editor-2".to_string());
+        assert!(release_mapping(&mut map, "/tmp/a.md", "main"));
+        assert!(!map.contains_key("/tmp/a.md"));
+        assert_eq!(map.get("/tmp/b.md"), Some(&"editor-2".to_string()));
+    }
+
+    #[test]
+    fn release_mapping_leaves_another_windows_mapping() {
+        let mut map = HashMap::new();
+        map.insert("/tmp/a.md".to_string(), "editor-2".to_string());
+        assert!(!release_mapping(&mut map, "/tmp/a.md", "main"));
+        assert_eq!(map.get("/tmp/a.md"), Some(&"editor-2".to_string()));
+    }
+
+    #[test]
+    fn release_mapping_is_a_noop_when_the_path_is_absent() {
+        let mut map = HashMap::new();
+        map.insert("/tmp/b.md".to_string(), "main".to_string());
+        assert!(!release_mapping(&mut map, "/tmp/a.md", "main"));
+        assert_eq!(map.len(), 1);
     }
 }
