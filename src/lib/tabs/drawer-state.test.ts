@@ -171,6 +171,29 @@ describe('drawerKeyAction', () => {
     expect(drawerKeyAction(key({ key: 'm', code: 'KeyM', metaKey: true }), '', true)).toEqual({ kind: 'none' });
   });
 
+  it('DeleteAndBackspaceCloseASelection_BackspaceOnlyWithAnEmptyQuery', () => {
+    const del = key({ key: 'Delete', code: 'Delete' });
+    const bs = key({ key: 'Backspace', code: 'Backspace' });
+    expect(drawerKeyAction(del, '', true, true)).toEqual({ kind: 'close-selected' });
+    expect(drawerKeyAction(del, 'rea', true, true)).toEqual({ kind: 'close-selected' });
+    expect(drawerKeyAction(bs, '', true, true)).toEqual({ kind: 'close-selected' });
+    expect(drawerKeyAction(bs, 'rea', true, true), 'the query still loses a character').toEqual({ kind: 'backspace' });
+    // Any modifiers: ⇧ is often still held from selecting; ⌘⌫ means nothing here.
+    expect(drawerKeyAction(key({ key: 'Delete', code: 'Delete', shiftKey: true }), '', true, true)).toEqual({ kind: 'close-selected' });
+    expect(drawerKeyAction(key({ key: 'Backspace', code: 'Backspace', metaKey: true }), '', true, true)).toEqual({
+      kind: 'close-selected',
+    });
+  });
+
+  it('WithoutASelectionDeleteAndBackspaceAreWhatTheyWere', () => {
+    const del = key({ key: 'Delete', code: 'Delete' });
+    const bs = key({ key: 'Backspace', code: 'Backspace' });
+    expect(drawerKeyAction(del, '', true)).toEqual({ kind: 'none' });
+    expect(drawerKeyAction(bs, '', true)).toEqual({ kind: 'none' });
+    expect(drawerKeyAction(bs, 'rea', true)).toEqual({ kind: 'backspace' });
+    expect(drawerKeyAction(del, '', true, false)).toEqual({ kind: 'none' });
+  });
+
   it('Escape', () => {
     expect(drawerKeyAction(key({ key: 'Escape', code: 'Escape' }), '', true)).toEqual({ kind: 'escape' });
   });

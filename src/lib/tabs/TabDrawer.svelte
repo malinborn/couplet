@@ -611,7 +611,7 @@
       if (e.key === 'Escape') endGesture?.();
       return;
     }
-    const action = drawerKeyAction(e, ds.query, mac);
+    const action = drawerKeyAction(e, ds.query, mac, selected.size > 0 && car === null && gesture === null);
     if (action.kind === 'none') return;
     // Enter on a button in the panel presses it, and with no card to open it
     // is not the drawer's either. Not the notch: a query's top result wins.
@@ -656,6 +656,9 @@
       }
       case 'carousel':
         if (!gesture) openMoveKeys();
+        break;
+      case 'close-selected':
+        closeSelected();
         break;
     }
   }
@@ -1131,7 +1134,9 @@
           <button type="button" onclick={moveSelected}
             >{t(selected.size === 1 ? 'tabs.selection.new_window' : 'tabs.selection.new_windows')}</button
           >
-          <button type="button" onclick={closeSelected}>{t('tabs.selection.close')}</button>
+          <button type="button" title="⌦ / ⌫" aria-keyshortcuts="Delete Backspace" onclick={closeSelected}
+            >{t('tabs.selection.close')}</button
+          >
           <button
             type="button"
             class="x"

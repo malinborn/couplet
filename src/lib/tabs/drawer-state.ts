@@ -161,6 +161,8 @@ export type DrawerKeyAction =
   | { kind: 'move'; delta: 1 | -1 }
   | { kind: 'enter' }
   | { kind: 'carousel' }
+  /** ⌦ or ⌫ with a ⇧-selection: «Закрыть выбранные». */
+  | { kind: 'close-selected' }
   | { kind: 'none' };
 
 /**
@@ -173,8 +175,17 @@ export type DrawerKeyAction =
  * Every action but `none` is the drawer's in any open drawer, hover-opened
  * included (tabs-questions Q5: strictly the spec) — Esc too.
  */
-export function drawerKeyAction(e: KeyLike, query: string, mac: boolean): DrawerKeyAction {
+/**
+ * `canCloseSelection`: a ⇧-selection exists and nothing else owns the keys
+ * (no drag, no carousel). Then ⌦ closes it, and so does ⌫ while the query is
+ * empty — with text, ⌫ edits the query. Matched on the code, any modifiers:
+ * ⇧ is often still held from selecting, and ⌘⌫ means nothing in the drawer.
+ */
+export function drawerKeyAction(e: KeyLike, query: string, mac: boolean, canCloseSelection = false): DrawerKeyAction {
   if (e.isComposing || e.keyCode === 229) return { kind: 'none' };
+  if (canCloseSelection && (e.code === 'Delete' || (e.code === 'Backspace' && !query))) {
+    return { kind: 'close-selected' };
+  }
   const modified = e.metaKey || e.ctrlKey || e.altKey || e.shiftKey;
   if (e.key === 'Escape') return modified ? { kind: 'none' } : { kind: 'escape' };
   const command = mac ? e.metaKey : e.ctrlKey;

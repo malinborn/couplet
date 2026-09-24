@@ -47,6 +47,7 @@ interface Harness {
   onmove: ReturnType<typeof vi.fn>;
   oncarousel: ReturnType<typeof vi.fn>;
   onrenumber: ReturnType<typeof vi.fn>;
+  onclose: ReturnType<typeof vi.fn>;
   destroy: () => void;
 }
 
@@ -87,6 +88,7 @@ function setup(list: TabListState = initialList()): Harness {
   const onmove = vi.fn();
   const oncarousel = vi.fn();
   const onrenumber = vi.fn(async (): Promise<RenumberResult> => 'set');
+  const onclose = vi.fn();
   const component = mount(TabDrawer, {
     target,
     props: {
@@ -101,7 +103,7 @@ function setup(list: TabListState = initialList()): Harness {
         gitInfo: (paths: string[]) => Promise.resolve(paths.map(() => null)),
       },
       onactivate,
-      onclose: () => {},
+      onclose,
       onreorder,
       onnewwindows: () => {},
       carouselSource: { windows: () => windows() },
@@ -134,6 +136,7 @@ function setup(list: TabListState = initialList()): Harness {
     onmove,
     oncarousel,
     onrenumber,
+    onclose,
     destroy: () => {
       unmount(component);
       target.remove();
@@ -1225,5 +1228,95 @@ describe('TabDrawer — ⌃1…⌃9 while it is open (spec §3)', () => {
     } finally {
       window.removeEventListener('keydown', handler, true);
     }
+  });
+});
+
+describe('TabDrawer — ⌦ / ⌫ close the ⇧-selection (spec §6)', () => {
+  async function selectBAndC(): Promise<void> {
+    h.handle().toggle();
+    await settle();
+    for (const id of ['b', 'c']) {
+      pointer(card(id), 'pointerdown', { button: 0, shiftKey: true, clientX: 100, clientY: 100 });
+      pointer(window, 'pointerup', { button: 0, clientX: 100, clientY: 100 });
+    }
+    await settle();
+    expect(el('.sel-bar').classList.contains('on')).toBe(true);
+  }
+
+  it('Delete closes the selection the way «Закрыть выбранные» does', async () => {
+    await selectBAndC();
+    const e = press('Delete', { code: 'Delete' });
+    await settle();
+    expect(e.defaultPrevented).toBe(true);
+    expect(h.onclose).toHaveBeenCalledWith(['b', 'c']);
+    expect(el('.sel-bar').classList.contains('on'), 'the selection is gone').toBe(false);
+    expect(h.editorKeys).toEqual([]);
+  });
+
+  it('Backspace closes it with an empty query, even with ⇧ still held', async () => {
+    await selectBAndC();
+    press('Backspace', { code: 'Backspace', shiftKey: true });
+    await settle();
+    expect(h.onclose).toHaveBeenCalledWith(['b', 'c']);
+  });
+
+  it('with a query, Backspace edits the query and Delete still closes', async () => {
+    await selectBAndC();
+    press('a', { code: 'KeyA' });
+    press('l', { code: 'KeyL' });
+    await settle();
+    expect(query()).toBe('al');
+    press('Backspace', { code: 'Backspace' });
+    await settle();
+    expect(query()).toBe('a');
+    expect(h.onclose).not.toHaveBeenCalled();
+    press('Delete', { code: 'Delete' });
+    await settle();
+    expect(h.onclose).toHaveBeenCalledTimes(1);
+  });
+
+  it('with no selection, neither key closes anything', async () => {
+    h.handle().toggle();
+    await settle();
+    press('Delete', { code: 'Delete' });
+    press('Backspace', { code: 'Backspace' });
+    await settle();
+    expect(h.onclose).not.toHaveBeenCalled();
+    expect(h.editorKeys).toEqual([]);
+  });
+
+  it('not while the notch number is being edited', async () => {
+    vi.useFakeTimers();
+    await selectBAndC();
+    el('.wid').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+    el('.wid').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 2 }));
+    el('.wid').dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, detail: 2 }));
+    await settle();
+    expect(document.activeElement?.classList.contains('notch-edit')).toBe(true);
+    press('Backspace', { code: 'Backspace' });
+    press('Delete', { code: 'Delete' });
+    await settle();
+    expect(h.onclose).not.toHaveBeenCalled();
+  });
+
+  it('not while the carousel is up', async () => {
+    h.windows.mockResolvedValue([
+      { label: 'editor-2', number: 7, project: 'p', branch: null, tabCount: 1, activePath: '/p/x.md', head: '' },
+    ]);
+    await selectBAndC();
+    press('g', { metaKey: true, ctrlKey: true });
+    await settle();
+    await settle();
+    expect(h.root().parentElement!.querySelector('[role="listbox"]'), 'the carousel is up').not.toBeNull();
+    press('Delete', { code: 'Delete' });
+    press('Backspace', { code: 'Backspace' });
+    await settle();
+    expect(h.onclose).not.toHaveBeenCalled();
+  });
+
+  it('the button says its keys', async () => {
+    await selectBAndC();
+    const button = [...el('.sel-bar').querySelectorAll('button')].find((b) => b.textContent?.includes('Close selected'));
+    expect(button?.getAttribute('aria-keyshortcuts')).toBe('Delete Backspace');
   });
 });
