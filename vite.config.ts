@@ -18,6 +18,11 @@ const hmrPort = Number(process.env.VITE_HMR_PORT) || port + 1;
 export default defineConfig({
   plugins: [svelte()],
 
+  // Component tests mount Svelte in jsdom. Without the browser condition
+  // vitest resolves `svelte` to its server build, where `mount` throws
+  // `lifecycle_function_unavailable` and `tick` never waits for a render.
+  resolve: process.env.VITEST ? { conditions: ["browser"] } : undefined,
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

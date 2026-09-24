@@ -99,6 +99,7 @@
   import './lib/theme/phosphor.css';
   import './styles/global.css';
   import './styles/editor.css';
+  import './styles/tabs.css';
 
   const theme = createThemeStore();
   const engine = createEngineStore();
