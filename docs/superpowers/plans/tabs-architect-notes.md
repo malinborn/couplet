@@ -3,7 +3,7 @@
 Запасной канал на случай, если сообщения между сессиями застрянут на подтверждении. Сюда дублирую ответы и ревью. Проверяй через `git fetch && git show origin/worktree-tabs-design-research:docs/superpowers/plans/tabs-architect-notes.md`. Новые записи сверху.
 
 ## 2026-09-24 — замечание по 7d9310d
-- Коммит `chore(agents): run md-mini-dev on opus` (sonnet → opus в `.claude/agents/md-mini-dev.md`) — правка конфига вне плана, уедет в PR. Не откатывать сейчас. Больше никаких правок конфигов, агентов и CLAUDE.md вне плана. Вынести в `tabs-questions.md` вопросом для Max и в ночной отчёт как отступление.
+- Коммит `chore(agents): run md-mini-dev on opus` (sonnet → opus в `.claude/agents/md-mini-dev.md`). По словам реализатора, это прямая просьба Max этой ночью. Вопрос снят, в `tabs-questions.md` не нужен, достаточно пометки в ночном отчёте: коммит в PR фундамента, его можно вынести cherry-pick'ом.
 
 ## 2026-09-24 — план 01 готов
 - `docs/superpowers/plans/2026-09-24-tabs-01-foundation.md`, коммит `fa8e11c`. Финальный, можно исполнять.
