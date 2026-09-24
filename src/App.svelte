@@ -62,6 +62,7 @@
   import { createTabController, type OpenAnswer } from './lib/tabs/controller';
   import { emptyTabList, type TabListState } from './lib/tabs/tab-model';
   import { leaveEffects } from './lib/tabs/tab-cache';
+  import { decideSaveAs } from './lib/tabs/save-as';
   import { createCommentWriter, adoptStartedDraft } from './lib/comment-writer';
   import {
     addAiComment,
@@ -297,30 +298,42 @@
       ? fileState.filePath.split('/').pop()
       : t('ui.untitled_filename');
     // The dialog holds back the human, not an agent: a tab switch can land
-    // while it is open, and the name picked belongs to the tab it was opened for.
+    // while it is open, and the name picked belongs to the tab it was opened
+    // for. The tab queue is not held meanwhile — agents keep working.
     const tabId = tabs.list.activeId;
     const path = await showSaveDialog(name);
     if (!path) return;
+    const fileName = path.split('/').pop() ?? path;
     await tabs.runExclusive(async () => {
+      if (tabId === null || !tabs.list.tabs.some((tab) => tab.id === tabId)) {
+        toasts.push({ kind: 'save-as-blocked', fileName, reason: 'tab-gone' });
+        return;
+      }
       if (tabs.list.activeId !== tabId) {
-        console.warn('Save As: the tab it was opened for is no longer active; nothing saved:', path);
+        // The human's choice wins over the agent's switch. A refusal has
+        // already said why (unsaved-blocked, save-error, open-error).
+        if ((await tabs.activateNow(tabId)) !== 'ok') return;
+      }
+      // Claimed before anything is written: the tab must own `path` first, or
+      // a file another tab holds ends up in two autosaving editors.
+      const claim = await invoke<TabClaim>('tab_claim', { tabId, path }).catch((err: unknown) => {
+        console.error('tab_claim failed:', err);
+        return null;
+      });
+      const step = decideSaveAs(claim);
+      if (step.kind === 'blocked') {
+        toasts.push({ kind: 'save-as-blocked', fileName, reason: step.reason });
+        if (step.focusOtherWindow) {
+          await invoke('focus_if_open', { path }).catch(logTabIpc('focus_if_open'));
+        }
         return;
       }
       fileState.filePath = path;
-      await performSave();
       tabs.renameActive(path);
-      // The tab now shows `path`: without a claim, dedup, the watcher and
-      // ⌘⇧T's closed-tab record would go on seeing the old document. Never over
-      // another tab's claim — that tab stays the one agents and dedup reach.
-      if (tabId !== null) {
-        const claim = await invoke<TabClaim>('tab_claim', { tabId, path }).catch((err: unknown) => {
-          console.error('tab_claim failed:', err);
-          return null;
-        });
-        if (claim && claim.kind !== 'claimed') {
-          console.warn(`Save As target is not registered to this tab (${claim.kind}):`, path);
-        }
-      }
+      await performSave();
+      // The claim pointed the watcher at `path` before the save created it,
+      // and a file that does not exist yet is not watched.
+      await invoke('tab_activate', { tabId }).catch(logTabIpc('tab_activate'));
       recentFiles.add(path);
     });
   }
@@ -416,19 +429,24 @@
       editorHandle?.setEnvMode(true);
     } else if (kind === 'markdown') {
       editorHandle?.setEnvMode(false);
-      editorHandle?.setCodeMode(null);
+      void editorHandle?.setCodeMode(null);
     } else {
       editorHandle?.setEnvMode(false);
-      editorHandle?.setCodeMode(ext, basename);
+      void editorHandle?.setCodeMode(ext, basename).then((applied) => {
+        // Only for the state that asked: a language that lands after a newer
+        // swap or mode is dropped, and so is this.
+        if (applied) applyPreviewConfig();
+      });
       // `setCodeMode` adds the class only once its language has loaded; a
       // tab coming back from the background would otherwise flash unstyled.
       if (findCodeLanguage(basename, ext)) {
         editorHandle?.view?.dom.classList.add('cm-code-file-mode');
       }
     }
-    // `setCodeMode`/`setEnvMode` reconfigure the preview compartment
-    // themselves, with no flavour facet and no live-render bundle; the
-    // engine's own configuration goes on top (see `applyPreviewConfig`).
+    // `setCodeMode(null)` and `setEnvMode(true)` reconfigure the preview
+    // compartment themselves, with no flavour facet and no live-render
+    // bundle; the engine's own configuration goes on top (see
+    // `applyPreviewConfig`).
     applyPreviewConfig();
     applyLineGlow();
     // The state's own path field: the `$effect` below only re-runs when
@@ -537,15 +555,23 @@
           logTabIpc('tab_owner')(err);
           return { kind: 'none' };
         }),
-      // Without Rust behind the page (`npm run dev` in a browser) a tab still
-      // needs an id; it just is not registered anywhere.
       open: (path) =>
-        invoke<OpenAnswer>('tab_open', { path }).catch(
-          (): OpenAnswer => ({
-            kind: 'created',
-            tabId: `local-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          })
-        ),
+        invoke<OpenAnswer>('tab_open', { path }).catch((err: unknown): OpenAnswer => {
+          // Without Rust behind the page (`npm run dev` in a browser) a tab
+          // still needs an id, and there is nothing to dedup against.
+          if (!('__TAURI_INTERNALS__' in window)) {
+            return { kind: 'created', tabId: `local-${Date.now()}-${Math.random().toString(36).slice(2)}` };
+          }
+          // With Rust, a tab it never registered is invisible to dedup and
+          // agents; none is shown.
+          console.error('tab_open failed:', err);
+          toasts.push({
+            kind: 'open-error',
+            fileName: path?.split('/').pop() ?? t('ui.untitled_filename'),
+            message: err instanceof Error ? err.message : String(err),
+          });
+          return { kind: 'failed' };
+        }),
       release: (tabId) => invoke<void>('tab_release', { tabId }).catch(logTabIpc('tab_release')),
       activate: (tabId) => invoke<void>('tab_activate', { tabId }).catch(logTabIpc('tab_activate')),
       close: (tabId, { cursor, topLine }) =>
@@ -1424,6 +1450,17 @@
       toasts.push({ kind: 'ai-first-use' });
     }
     await tabs.runExclusive(async () => {
+      // A command can wait here behind a switch that cancelled it (the tab
+      // it was for was left or closed) or past its own timeout. Its agent has
+      // been answered already; activating a tab or placing an ask for it now
+      // would act for nobody.
+      const stillWanted = await invoke<boolean>('ai_is_pending', { id: payload.id }).catch(
+        (err: unknown) => {
+          logTabIpc('ai_is_pending')(err);
+          return true;
+        }
+      );
+      if (!stillWanted) return;
       if (payload.path !== fileState.filePath) {
         const tab = tabs.findByPath(payload.path);
         if (!tab) {
@@ -1712,20 +1749,33 @@
       })
       .then(
         async (init) => {
-          setWindowNumber(init.number);
-          const initialized = tabs.init(init.tabs, init.activeTabId);
-          releaseTabSources();
+          // Released even if this throws: held, every file and agent command
+          // for this window would wait forever.
+          let initialized: Promise<void> | undefined;
+          try {
+            initialized = tabs.init(init.tabs, init.activeTabId);
+            setWindowNumber(init.number);
+          } finally {
+            releaseTabSources();
+          }
           await initialized;
         },
         async (err: unknown) => {
           // No Rust behind the page (`npm run dev` in a browser), or both
           // attempts failed: one local tab.
           console.error('get_window_init failed twice; this window has only a local tab:', err);
-          const initialized = tabs.init([], null);
-          releaseTabSources();
+          let initialized: Promise<void> | undefined;
+          try {
+            initialized = tabs.init([], null);
+          } finally {
+            releaseTabSources();
+          }
           await initialized;
         }
       )
+      .catch((err: unknown) => {
+        console.error('Window init failed:', err);
+      })
       // Register this window in the session right away, not 5s later — but only
       // once init has settled. Reported any earlier, a restored Untitled tab
       // still looks empty: Rust drops its `untitled` name, the ticker prunes the

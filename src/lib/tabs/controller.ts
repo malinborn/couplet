@@ -48,7 +48,9 @@ export interface TabReport {
 export type OpenAnswer =
   | { kind: 'created'; tabId: string }
   | { kind: 'this-window'; tabId: string }
-  | { kind: 'other-window'; label: string };
+  | { kind: 'other-window'; label: string }
+  /** Rust could not be asked; no tab was registered, so none may be shown. */
+  | { kind: 'failed' };
 
 export type ActivateResult = 'ok' | 'noop' | 'refused' | 'busy' | 'failed';
 
@@ -437,6 +439,8 @@ export function createTabController(deps: TabControllerDeps) {
       await deps.rust.release(answer.tabId);
       answer = await deps.rust.open(path);
     }
+    // A tab dedup cannot see would let the same file open a second time.
+    if (answer.kind === 'failed') return;
     if (answer.kind === 'other-window') {
       await deps.rust.focusElsewhere(path);
       return;

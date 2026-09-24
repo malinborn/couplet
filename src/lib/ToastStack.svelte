@@ -25,6 +25,12 @@
     onDismiss?.(entry);
   }
 
+  const SAVE_AS_BLOCKED_KEYS = {
+    held: 'toast.save_as_blocked.held',
+    'tab-gone': 'toast.save_as_blocked.tab_gone',
+    unavailable: 'toast.save_as_blocked.unavailable',
+  } as const;
+
   const BREW_CMD = 'brew update && brew upgrade --cask mdmini';
 
   let copied = $state(false);
@@ -109,6 +115,11 @@
             <strong>{t('toast.open_error.headline', { fileName: toast.payload.fileName })}</strong>
           </span>
           <span class="md-toast-highlight">{toast.payload.message}</span>
+        {:else if toast.payload.kind === 'save-as-blocked'}
+          <span class="md-toast-text">
+            <strong>{t('toast.save_as_blocked.headline', { fileName: toast.payload.fileName })}</strong>
+          </span>
+          <span class="md-toast-dim">{t(SAVE_AS_BLOCKED_KEYS[toast.payload.reason])}</span>
         {:else if toast.payload.kind === 'update'}
           <span class="md-toast-text">
             <strong>{t('toast.update.headline', { latest: toast.payload.latest })}</strong>

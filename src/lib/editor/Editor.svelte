@@ -7,8 +7,7 @@
   import { latestOnly } from './latest-only';
   import { languages } from '@codemirror/language-data';
   import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
-  import { findCodeLanguage, isShellConfig } from './file-language';
-  import { shellSecretsPlugin } from './preview/shell-secrets';
+  import { findCodeLanguage } from './file-language';
   import { Strikethrough, Table } from '@lezer/markdown';
   import { livePreviewPlugin } from './preview/plugin';
   import { envPreviewPlugin } from './preview/env';
@@ -45,7 +44,15 @@
      */
     swapState: (state: EditorState, opts?: SwapOptions) => void;
     updateContent: (newContent: string) => void;
-    setCodeMode: (ext: string | null, basename?: string) => void;
+    /**
+     * The language for `ext` (`null`: markdown). A code language loads
+     * asynchronously and touches only the language compartment and the
+     * code-file class — the preview compartment is the caller's
+     * (`applyPreviewConfig` in App.svelte). Resolves `true` once the language
+     * is on the state that asked for it, `false` when there is none or a newer
+     * mode or state superseded it.
+     */
+    setCodeMode: (ext: string | null, basename?: string) => Promise<boolean>;
     setEnvMode: (enabled: boolean) => void;
     /**
      * Tell the editor which file it is showing; `null` for untitled.
@@ -144,8 +151,8 @@
           annotations: Transaction.addToHistory.of(false),
         });
       },
-      setCodeMode(ext: string | null, basename?: string) {
-        if (!view) return;
+      setCodeMode(ext: string | null, basename?: string): Promise<boolean> {
+        if (!view) return Promise.resolve(false);
         if (!ext) {
           languageLoads.invalidate();
           // Back to markdown mode
@@ -162,25 +169,24 @@
             ],
           });
           view.dom.classList.remove('cm-code-file-mode');
-          return;
+          return Promise.resolve(true);
         }
         // Find language by basename (extensionless dotfiles) or extension
         const lang = findCodeLanguage(basename ?? '', ext);
-        if (lang) {
-          const isCurrent = languageLoads.begin();
-          lang.load().then(langSupport => {
-            if (!view || !isCurrent()) return;
-            view.dispatch({
-              effects: [
-                languageCompartment.reconfigure(langSupport),
-                previewCompartment.reconfigure(
-                  isShellConfig(basename ?? '') ? shellSecretsPlugin : []
-                ),
-              ],
-            });
+        if (!lang) return Promise.resolve(false);
+        const isCurrent = languageLoads.begin();
+        return lang.load().then(
+          (langSupport) => {
+            if (!view || !isCurrent()) return false;
+            view.dispatch({ effects: languageCompartment.reconfigure(langSupport) });
             view.dom.classList.add('cm-code-file-mode');
-          });
-        }
+            return true;
+          },
+          (err: unknown) => {
+            console.error('Failed to load language:', err);
+            return false;
+          }
+        );
       },
       setDocumentPath(path: string | null) {
         if (!view) return;

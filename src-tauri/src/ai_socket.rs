@@ -386,6 +386,12 @@ impl AiPending {
         self.map.lock().unwrap().remove(&id);
     }
 
+    /// Whether someone is still waiting on `id`: not answered, cancelled, or
+    /// given up on by its own timeout.
+    pub fn is_pending(&self, id: u64) -> bool {
+        self.map.lock().unwrap().contains_key(&id)
+    }
+
     /// Fail every entry matching `matches` with `error` and remove them.
     fn fail_where(&self, error: &str, matches: impl Fn(&PendingEntry) -> bool) {
         let mut map = self.map.lock().unwrap();
@@ -696,6 +702,15 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
 pub async fn ai_respond(app: AppHandle, id: u64, response: AiResponse) -> Result<(), String> {
     app.state::<AiPending>().respond(id, response);
     Ok(())
+}
+
+/// IPC command: whether the command `id` still has an agent waiting on it. A
+/// command can wait in the frontend's tab queue past its cancellation (the
+/// tab it was for was left or closed) or its timeout; applied then, it would
+/// act for an agent that was already told it failed.
+#[tauri::command]
+pub async fn ai_is_pending(app: AppHandle, id: u64) -> Result<bool, String> {
+    Ok(app.state::<AiPending>().is_pending(id))
 }
 
 /// IPC command: fail every `show`/`edit`/`ask` for `path` in the calling window — pending and queued — before the window stops showing it.
@@ -1746,6 +1761,24 @@ mod tests {
         assert_eq!(pending.len(), 0);
         // Unknown id is a no-op — must not panic or block.
         pending.respond(9999, AiResponse::error("ignored"));
+    }
+
+    #[test]
+    fn is_pending_until_answered_cancelled_or_given_up_on() {
+        let pending = AiPending::new();
+        let (answered, _rx1) = waiting(&pending, "editor-1", Some("/a.md"));
+        let (cancelled, _rx2) = waiting(&pending, "editor-1", Some("/b.md"));
+        let (timed_out, _rx3) = waiting(&pending, "editor-1", Some("/c.md"));
+        assert!(pending.is_pending(answered));
+        assert!(!pending.is_pending(9999), "an id nobody registered");
+
+        pending.respond(answered, AiResponse::ok());
+        pending.cancel_for_window_and_path("editor-1", "/b.md", "switched away from this document");
+        pending.cancel(timed_out);
+
+        assert!(!pending.is_pending(answered));
+        assert!(!pending.is_pending(cancelled));
+        assert!(!pending.is_pending(timed_out));
     }
 
     #[test]

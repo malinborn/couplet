@@ -54,6 +54,14 @@ export type ToastPayload =
    * for it did nothing visible at all.
    */
   | { kind: 'open-error'; fileName: string; message: string }
+  /**
+   * Save As wrote nothing: the name picked is a file another tab holds, the
+   * tab it was picked for is gone, or the tab could not be pointed at it.
+   * Nothing failed on disk and the text is still in its tab, so not an alarm —
+   * but a save dialog that closes and changes nothing reads as a save that
+   * happened.
+   */
+  | { kind: 'save-as-blocked'; fileName: string; reason: 'held' | 'tab-gone' | 'unavailable' }
   | { kind: 'update'; latest: string; current: string; highlight?: string }
   /**
    * Answers to a manual "Check for Updates…" click (#82) — the automatic
@@ -142,6 +150,7 @@ const ORDER: Record<ToastKind, number> = {
   // A direct answer to the key the user just pressed, like the two above.
   'unsaved-blocked': 4,
   'open-error': 4,
+  'save-as-blocked': 4,
   // Sorts below everything: it is the only toast that is still waiting on a
   // decision, so it belongs closest to the pointer that has to make it.
   'json-offer': 5,

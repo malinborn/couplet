@@ -11,6 +11,10 @@
   "toast.unsaved_blocked.headline": "{fileName} ist noch nicht auf der Festplatte",
   "toast.unsaved_blocked.message": "Die letzten Änderungen werden noch gespeichert – versuchen Sie es gleich noch einmal",
   "toast.open_error.headline": "{fileName} konnte nicht geöffnet werden",
+  "toast.save_as_blocked.headline": "Speichern unter {fileName} nicht möglich",
+  "toast.save_as_blocked.held": "Diese Datei ist in einem anderen Tab geöffnet – nichts wurde geschrieben",
+  "toast.save_as_blocked.tab_gone": "Der Tab, für den der Name gewählt wurde, ist geschlossen – nichts wurde geschrieben",
+  "toast.save_as_blocked.unavailable": "Dieser Tab konnte den Namen nicht übernehmen – nichts wurde geschrieben",
 
   "toast.update.headline": "mdmini {latest} verfügbar",
   "toast.update.current": "Sie haben v{current}",

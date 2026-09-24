@@ -615,6 +615,42 @@ describe('claims', () => {
     expect(h.ids()).toEqual(['a', 't1']);
     expect(h.live().doc.toString()).toBe('BBBB');
   });
+
+  it('ShowsNoTabRustDidNotRegister_OpeningAFile', async () => {
+    const h = await started({ '/a.md': 'AAAA', '/b.md': 'BBBB' }, [fileTab('a', '/a.md')]);
+    const stateA = h.live();
+    vi.mocked(h.deps.rust.open).mockResolvedValueOnce({ kind: 'failed' });
+
+    await h.controller.openPath('/b.md');
+
+    expect(h.ids()).toEqual(['a']);
+    expect(h.active()).toBe('a');
+    expect(h.live()).toBe(stateA);
+    expect(h.swaps).toHaveLength(0);
+    expect(h.deps.rust.release).not.toHaveBeenCalled();
+  });
+
+  it('ShowsNoTabRustDidNotRegister_NewTab', async () => {
+    const h = await started({ '/a.md': 'AAAA' }, [fileTab('a', '/a.md')]);
+    const stateA = h.live();
+    vi.mocked(h.deps.rust.open).mockResolvedValueOnce({ kind: 'failed' });
+
+    await h.controller.newTab();
+
+    expect(h.ids()).toEqual(['a']);
+    expect(h.live()).toBe(stateA);
+    expect(h.swaps).toHaveLength(0);
+  });
+
+  it('ShowsNoTabRustDidNotRegister_InitFallback', async () => {
+    const h = makeHarness({});
+    vi.mocked(h.deps.rust.open).mockResolvedValueOnce({ kind: 'failed' });
+
+    await h.controller.init([], null);
+
+    expect(h.ids()).toEqual([]);
+    expect(h.swaps).toHaveLength(0);
+  });
 });
 
 describe('flush', () => {

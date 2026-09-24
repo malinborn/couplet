@@ -176,6 +176,7 @@ pub fn run() {
             watcher::start_watching,
             ai_socket::ai_respond,
             ai_socket::ai_pull_pending,
+            ai_socket::ai_is_pending,
             ai_socket::cancel_ai_ask,
             onboarding::ai_nudge_pending,
             onboarding::ai_nudge_dismiss,
