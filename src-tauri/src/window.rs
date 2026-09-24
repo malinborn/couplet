@@ -250,13 +250,34 @@ pub fn set_watcher(app: &AppHandle, label: &str, path: Option<&str>) {
     });
     let watchers = app.state::<FileWatchers>();
     let mut map = watchers.0.lock().unwrap();
-    match watcher {
-        Some(w) => {
-            map.insert(label.to_string(), w);
+    match (watcher, path) {
+        (Some(w), Some(p)) => {
+            map.insert(label.to_string(), Watched::new(p.to_string(), w));
         }
-        None => {
+        _ => {
             map.remove(label);
         }
+    }
+}
+
+/// The file `label`'s watcher follows, if it has one. The registry's active
+/// tab is not the same thing: a heartbeat moves it without touching the
+/// watcher.
+pub fn watched_path(app: &AppHandle, label: &str) -> Option<String> {
+    let watchers = app.state::<FileWatchers>();
+    let map = watchers.0.lock().unwrap();
+    map.get(label).map(|w| w.path.clone())
+}
+
+/// One window's watcher and the file it watches.
+pub struct Watched {
+    pub path: String,
+    _watcher: RecommendedWatcher,
+}
+
+impl Watched {
+    pub fn new(path: String, watcher: RecommendedWatcher) -> Self {
+        Self { path, _watcher: watcher }
     }
 }
 
@@ -264,7 +285,7 @@ pub fn set_watcher(app: &AppHandle, label: &str, path: Option<&str>) {
 ///
 /// Lock order: `OpenFiles` → `PendingFiles` → `FileWatchers`; nothing is
 /// locked while this one is held.
-pub struct FileWatchers(pub Mutex<HashMap<String, RecommendedWatcher>>);
+pub struct FileWatchers(pub Mutex<HashMap<String, Watched>>);
 
 impl FileWatchers {
     pub fn new() -> Self {
@@ -880,9 +901,9 @@ pub fn open_restored_window(
                 .set_number(&label, number);
 
             if let Some(path) = active_path {
-                if let Ok(watcher) = crate::watcher::watch_file(app, label.clone(), path) {
+                if let Ok(watcher) = crate::watcher::watch_file(app, label.clone(), path.clone()) {
                     let watchers = app.state::<FileWatchers>();
-                    watchers.0.lock().unwrap().insert(label.clone(), watcher);
+                    watchers.0.lock().unwrap().insert(label.clone(), Watched::new(path, watcher));
                 }
             }
             Some(label)

@@ -230,6 +230,30 @@ impl TabRegistry {
         true
     }
 
+    /// Whether `move_tabs` would move `ids` out of `from` — to `to`, or to a
+    /// window not built yet (`None`) — changing nothing. `tab_move` asks
+    /// before it builds a window for the move, so a refused move neither
+    /// flashes a window nor uses up a number. The ids, each once, in order.
+    pub fn check_move<'a>(&self, from: &str, to: Option<&str>, ids: &'a [String]) -> Result<Vec<&'a String>, MoveRefused> {
+        if ids.is_empty() {
+            return Err(MoveRefused::Nothing);
+        }
+        if to == Some(from) {
+            return Err(MoveRefused::SameWindow);
+        }
+        let mut unique: Vec<&String> = Vec::with_capacity(ids.len());
+        for id in ids {
+            if !unique.contains(&id) {
+                unique.push(id);
+            }
+        }
+        let held = |id: &String| self.windows.get(from).is_some_and(|w| w.tabs.iter().any(|t| &t.id == id));
+        if let Some(stranger) = unique.iter().find(|id| !held(id)) {
+            return Err(MoveRefused::NotHere((*stranger).clone()));
+        }
+        Ok(unique)
+    }
+
     /// Move tabs `ids` from `from` to `to` (plan 05), in the order given,
     /// right after `to`'s active tab — at its end when it has none. All or
     /// nothing: refused, with nothing changed, when no id is given, the two
@@ -242,24 +266,10 @@ impl TabRegistry {
     /// if it moved, falls to its first remaining tab until its frontend says
     /// otherwise; `to` keeps its own, or takes the first moved one.
     pub fn move_tabs(&mut self, from: &str, to: &str, ids: &[String]) -> Result<Vec<RegTab>, MoveRefused> {
-        if ids.is_empty() {
-            return Err(MoveRefused::Nothing);
-        }
-        if from == to {
-            return Err(MoveRefused::SameWindow);
-        }
-        let mut unique: Vec<&String> = Vec::with_capacity(ids.len());
-        for id in ids {
-            if !unique.contains(&id) {
-                unique.push(id);
-            }
-        }
+        let unique = self.check_move(from, Some(to), ids)?;
         let Some(source) = self.windows.get_mut(from) else {
             return Err(MoveRefused::NotHere(ids[0].clone()));
         };
-        if let Some(stranger) = unique.iter().find(|id| !source.tabs.iter().any(|t| &t.id == **id)) {
-            return Err(MoveRefused::NotHere((*stranger).clone()));
-        }
         let mut moved = Vec::with_capacity(unique.len());
         for id in unique {
             if let Some(at) = source.tabs.iter().position(|t| &t.id == id) {
@@ -697,6 +707,21 @@ mod tests {
         let mut reg = reg_with(&[("main", "a", None), ("main", "b", None), ("editor-2", "x", None)]);
         assert_eq!(reg.move_tabs("main", "editor-2", &strings(&["a", "a"])).unwrap().len(), 1);
         assert_eq!(ids_of(&reg, "editor-2"), vec!["x", "a"]);
+    }
+
+    #[test]
+    fn check_move_answers_before_a_window_is_built_and_changes_nothing() {
+        let reg = reg_with(&[("main", "a", Some("/a.md")), ("main", "b", None), ("editor-2", "x", None)]);
+        assert_eq!(
+            reg.check_move("main", None, &strings(&["b", "a", "b"])).unwrap(),
+            vec!["b", "a"],
+            "each once, in the order given"
+        );
+        assert_eq!(reg.check_move("main", None, &strings(&["x"])), Err(MoveRefused::NotHere("x".to_string())));
+        assert_eq!(reg.check_move("main", None, &[]), Err(MoveRefused::Nothing));
+        assert_eq!(reg.check_move("main", Some("main"), &strings(&["a"])), Err(MoveRefused::SameWindow));
+        assert_eq!(reg.check_move("gone", None, &strings(&["a"])), Err(MoveRefused::NotHere("a".to_string())));
+        assert_eq!(ids_of(&reg, "main"), vec!["a", "b"]);
     }
 
     #[test]

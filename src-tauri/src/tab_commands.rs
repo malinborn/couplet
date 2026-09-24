@@ -354,9 +354,14 @@ pub struct Moved {
     pub arrival: Arrival,
     /// The session snapshots of the moved tabs, for `SessionState::move_tab`.
     pub snapshots: Vec<TabSnapshot>,
-    /// The source's active tab moved: its watcher stops until the source
-    /// shows its next tab (`tab_activate`).
-    pub source_active_moved: bool,
+}
+
+impl Moved {
+    /// Whether `path` left with the moved tabs — then a source watcher on it
+    /// stops, until the source shows its next tab (`tab_activate`).
+    pub fn took(&self, path: &str) -> bool {
+        self.snapshots.iter().any(|s| s.path.as_deref() == Some(path))
+    }
 }
 
 /// The move itself (D1), with the `OpenFiles` and `PendingFiles` locks held:
@@ -378,7 +383,6 @@ pub fn move_tabs_between(
         return Err(format!("window {to} is gone"));
     }
     let ids: Vec<String> = tabs.iter().map(|t| t.tab_id.clone()).collect();
-    let was_active = reg.window(from).and_then(|w| w.active.clone());
     let moved = reg.move_tabs(from, to, &ids).map_err(|e| e.to_string())?;
     for path in moved.iter().filter_map(|t| t.path.as_deref()) {
         agents.relabel(from, to, path);
@@ -413,14 +417,30 @@ pub fn move_tabs_between(
         entry.tabs.extend(arriving);
         Arrival::Pending
     };
-    let source_active_moved = was_active.is_some_and(|a| moved.iter().any(|t| t.id == a));
-    Ok(Moved { arrival, snapshots, source_active_moved })
+    Ok(Moved { arrival, snapshots })
+}
+
+/// Build a window for a move, in the background, on the main thread: there
+/// `keep_behind_key_window` runs at once, so the window is never drawn over
+/// the human's for a frame (as for an agent's open, `ai_socket::dispatch`).
+async fn build_move_window(app: &AppHandle) -> Result<String, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(window::build_window(&handle, window::Activation::Background));
+    })
+    .map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || rx.recv())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|_| "the window for the move was never built".to_string())?
 }
 
 /// Move `tabs` of the calling window to `target` (plan 05, D1). A window
 /// built for them is built before the registry lock (`build_window` takes it
-/// to number the window), in the background, and destroyed again when the
-/// move is refused. Never a close or a release (D13): the agents keep
+/// to number the window), in the background, once a first check under a
+/// short lock says the move can go ahead — and destroyed again when the move
+/// itself is refused. Never a close or a release (D13): the agents keep
 /// waiting — on the target now.
 #[tauri::command]
 pub async fn tab_move(
@@ -438,7 +458,15 @@ pub async fn tab_move(
     }
     let (to, built) = match target {
         MoveTarget::Window { label } => (label, false),
-        MoveTarget::NewWindow => (window::build_window(&app, window::Activation::Background)?, true),
+        MoveTarget::NewWindow => {
+            {
+                let ids: Vec<String> = tabs.iter().map(|t| t.tab_id.clone()).collect();
+                let open_files = app.state::<OpenFiles>();
+                let reg = open_files.0.lock().unwrap();
+                reg.check_move(&from, None, &ids).map_err(|e| e.to_string())?;
+            }
+            (build_move_window(&app).await?, true)
+        }
     };
     let outcome = {
         let open_files = app.state::<OpenFiles>();
@@ -449,12 +477,21 @@ pub async fn tab_move(
             let agents = app.state::<crate::ai_socket::AiPending>();
             move_tabs_between(&mut reg, &mut pending, &agents, &from, &to, tabs, live_windows(&app))
         };
-        if moved.as_ref().is_ok_and(|m| m.source_active_moved) {
-            window::set_watcher(&app, &from, None);
-        }
-        moved.map(|m| (m, reg.window(&to).and_then(|w| w.number)))
+        moved.map(|m| {
+            if window::watched_path(&app, &from).is_some_and(|p| m.took(&p)) {
+                window::set_watcher(&app, &from, None);
+            }
+            // Under the lock: an agent command routed to the target right
+            // after it drops must reach the target's queue after the tabs.
+            if let Arrival::Event(arriving) = &m.arrival {
+                if let Err(e) = app.emit_to(to.as_str(), "tabs-arrive", arriving) {
+                    eprintln!("tab_move: {to} did not get its tabs: {e}");
+                }
+            }
+            (m.snapshots, reg.window(&to).and_then(|w| w.number))
+        })
     };
-    let (moved, number) = match outcome {
+    let (snapshots, number) = match outcome {
         Ok(ok) => ok,
         Err(e) => {
             if built {
@@ -466,13 +503,8 @@ pub async fn tab_move(
         }
     };
     let session = app.state::<SessionState>();
-    for snapshot in moved.snapshots {
+    for snapshot in snapshots {
         session.move_tab(&from, &to, snapshot);
-    }
-    if let Arrival::Event(arriving) = moved.arrival {
-        if let Err(e) = app.emit_to(to.as_str(), "tabs-arrive", &arriving) {
-            eprintln!("tab_move: {to} did not get its tabs: {e}");
-        }
     }
     Ok(MoveDone { label: to, number })
 }
@@ -737,7 +769,7 @@ mod tests {
         let payload = pending.get("editor-5").expect("queued for its mount");
         assert_eq!(payload.active_tab_id.as_deref(), Some("a"));
         assert_eq!(payload.tabs.iter().map(|t| t.tab_id.as_str()).collect::<Vec<_>>(), vec!["a", "b"]);
-        assert!(out.source_active_moved, "a was main's active tab: its watcher must stop");
+        assert!(out.took("/a.md") && out.took("/b.md"), "a source watcher on either must stop");
     }
 
     #[test]
@@ -755,7 +787,8 @@ mod tests {
         reg.mark_mounted("editor-2");
         let out = move_tabs_between(&mut reg, &mut HashMap::new(), &AiPending::new(), "main", "editor-2", vec![moved("b")], |_| true)
             .unwrap();
-        assert!(!out.source_active_moved);
+        assert!(out.took("/b.md"));
+        assert!(!out.took("/a.md"), "a watcher on the file that stayed keeps watching");
     }
 
     #[test]
