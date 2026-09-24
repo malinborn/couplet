@@ -5,6 +5,7 @@
   import { languageCompartment, previewCompartment } from './setup';
   import { createDocumentState } from './state-factory';
   import { latestOnly } from './latest-only';
+  import type { ThemeControl } from './slash-theme';
   import { languages } from '@codemirror/language-data';
   import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
   import { findCodeLanguage } from './file-language';
@@ -12,6 +13,7 @@
   import { livePreviewPlugin } from './preview/plugin';
   import { envPreviewPlugin } from './preview/env';
   import { computeReplacement } from './content-diff';
+  import { normalizeLineEndings } from '../line-endings';
   import { aiHighlightPresenceNotifier, notifyHighlightPresenceChange } from './ai-highlight';
   import { jsonOfferField, jsonPasteNotifier } from './json-paste';
   import { jsonDocumentPath, setDocumentPath } from './json-fence';
@@ -70,6 +72,7 @@
     onAiHighlightVisibilityChange,
     onJsonOffer,
     onJsonOfferWithdrawn,
+    themeControl,
     handle = $bindable(),
   }: {
     /** `update` says who changed it — see `human-edit.ts`. */
@@ -79,6 +82,12 @@
     onJsonOffer?: () => void;
     /** The pending offer stopped being applicable — take the toast down. */
     onJsonOfferWithdrawn?: () => void;
+    /**
+     * Enables `/theme` in the slash menu. Omitted by `site/demos/editor-demo.ts`
+     * (the landing's demo cards), which is what keeps them from repainting the
+     * whole page — see `EditorDeps` in `./setup`.
+     */
+    themeControl?: ThemeControl;
     handle?: EditorHandle;
   } = $props();
 
@@ -113,7 +122,7 @@
         return view;
       },
       createState(doc: string, cursor: number | null) {
-        return createDocumentState(doc, cursor, extras);
+        return createDocumentState(doc, cursor, extras, { themeControl });
       },
       swapState(state: EditorState, opts?: SwapOptions) {
         if (!view) return;
@@ -138,7 +147,10 @@
       },
       updateContent(newContent: string) {
         if (!view) return;
-        const repl = computeReplacement(view.state.doc.toString(), newContent);
+        // The buffer is LF-only; diffing it against text that still carries
+        // `\r` would treat every line ending as changed. Callers pass text
+        // from `readDocument`, already normalized — this is the backstop.
+        const repl = computeReplacement(view.state.doc.toString(), normalizeLineEndings(newContent));
         if (!repl) return;
         // Single-span diff keeps CM6's automatic selection mapping intact and
         // preserves scroll position — unlike a whole-state swap.
@@ -213,7 +225,7 @@
 
   onMount(() => {
     view = new EditorView({
-      state: createDocumentState('', 0, extras),
+      state: createDocumentState('', 0, extras, { themeControl }),
       parent: editorContainer,
     });
 

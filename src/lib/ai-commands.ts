@@ -3,6 +3,7 @@ import { ChangeSet, Text, type EditorState, type StateEffect, type TransactionSp
 import { computeChangedLineRanges, computeReplacement, type LineRange, type Replacement } from './editor/content-diff';
 import { setAiHighlights, type AiHighlightRange } from './editor/ai-highlight';
 import type { AiCommandPayload } from './tauri/events';
+import { normalizeLineEndings } from './line-endings';
 
 /**
  * Resolve the document position an `ai show` command should scroll to.
@@ -21,7 +22,9 @@ export function resolveShowTarget(
     return state.doc.line(clamped).from;
   }
   if (target.find !== null) {
-    const idx = state.doc.toString().indexOf(target.find);
+    // The buffer is LF-only (see `line-endings.ts`); a multi-line `find` copied
+    // from a CRLF file on disk would otherwise never match.
+    const idx = state.doc.toString().indexOf(normalizeLineEndings(target.find));
     return idx === -1 ? null : idx;
   }
   return 0;
@@ -79,10 +82,11 @@ export interface AiEdit {
 
 /** `null` when `newContent` is what `state` already holds. */
 export function buildAiEdit(state: EditorState, rawContent: string): AiEdit | null {
-  // The document holds `\n` only: CM6 splits lines on `\r\n` and `\r` too.
-  // Measured on the raw text, every highlight after a CRLF drifts by one per
-  // line and the last one ends past the document (a RangeError in the field).
-  const newContent = rawContent.replace(/\r\n?/g, '\n');
+  // The document holds `\n` only (see `line-endings.ts`): CM6 splits lines on
+  // `\r\n` and `\r` too. Measured on the raw text, every highlight after a
+  // CRLF drifts by one per line and the last one ends past the document (a
+  // RangeError in the field).
+  const newContent = normalizeLineEndings(rawContent);
   const oldContent = state.doc.toString();
   const repl = computeReplacement(oldContent, newContent);
   if (!repl) return null;

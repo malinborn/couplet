@@ -320,6 +320,56 @@ describe('createThemeStore', () => {
     expect(store.followSystem).toBe(true);
     expect(store.resolved).toBe('aurora-dark');
   });
+
+  // `/theme` slash-command preview (slash-theme.ts): shows a theme without
+  // touching the saved preference at all.
+  describe('setPreview', () => {
+    it('OverridesResolved_WithoutPersistingOrChangingThePreference', () => {
+      installMatchMediaStub(false);
+      const store = createThemeStore();
+      store.setFamily('blueprint');
+
+      store.setPreview('phosphor-dark');
+
+      expect(store.resolved).toBe('phosphor-dark');
+      expect(store.family).toBe('blueprint');
+      expect(JSON.parse(localStorage.getItem('md-mini:theme')!)).toBe('blueprint-light');
+    });
+
+    it('Null_ClearsThePreview_ReturningToTheSavedPreference', () => {
+      installMatchMediaStub(false);
+      const store = createThemeStore();
+      store.setFamily('blueprint');
+
+      store.setPreview('phosphor-dark');
+      store.setPreview(null);
+
+      expect(store.resolved).toBe('blueprint-light');
+    });
+
+    it('SurvivesASystemFlipWhileThePreviewIsUp', () => {
+      // The rejected alternative — writing `data-theme` directly instead of
+      // going through the store — would have this overwritten back to the
+      // saved value the next time the `$effect` re-ran.
+      const setSystemDark = installMatchMediaStub(false);
+      const store = createThemeStore();
+      store.setPreview('phosphor-dark');
+
+      setSystemDark(true);
+
+      expect(store.resolved).toBe('phosphor-dark');
+    });
+  });
+
+  describe('systemDark', () => {
+    it('ReflectsTheRawOsPreference_IndependentOfFollowSystem', () => {
+      const setSystemDark = installMatchMediaStub(false);
+      const store = createThemeStore();
+      expect(store.systemDark).toBe(false);
+      setSystemDark(true);
+      expect(store.systemDark).toBe(true);
+    });
+  });
 });
 
 describe('createZoomStore', () => {

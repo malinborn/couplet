@@ -22,6 +22,9 @@
   "toast.window_number.taken": "Nummer #{number} ist vergeben",
   "toast.window_number.missing": "Kein Fenster #{number}",
 
+  "toast.reload_error.headline": "{fileName} konnte nicht neu geladen werden",
+  "toast.reload_error.instruction": "Automatisches Speichern ist pausiert, bis die Datei wieder lesbar ist. Um Ihre Fassung zu behalten, drücken",
+
   "toast.update.headline": "mdmini {latest} verfügbar",
   "toast.update.current": "Sie haben v{current}",
   "toast.update.copy_title": "Zum Kopieren klicken",
@@ -127,6 +130,13 @@
   "editor.block_templates.quote": "Zitat",
   "editor.block_templates.hr": "Trennlinie",
   "editor.block_templates.table_column": "Spalte {n}",
+
+  "editor.slash_theme.action_detail": "Themenfamilie wechseln",
+  "editor.slash_tone.action_detail": "Hell / Dunkel wechseln",
+  "editor.slash_tone.light": "Hell",
+  "editor.slash_tone.dark": "Dunkel",
+  "editor.slash_tone.follow_system": "Systemeinstellung folgen",
+  "editor.slash_picker.current": "aktuell",
 
   "editor.hover_menu.insert_block": "Block einfügen",
 

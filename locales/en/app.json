@@ -22,6 +22,9 @@
   "toast.window_number.taken": "Number #{number} is taken",
   "toast.window_number.missing": "No window #{number}",
 
+  "toast.reload_error.headline": "Could not reload {fileName}",
+  "toast.reload_error.instruction": "Autosave is paused until the file can be read again. To keep your version, press",
+
   "toast.update.headline": "mdmini {latest} available",
   "toast.update.current": "you have v{current}",
   "toast.update.copy_title": "Click to copy",
@@ -127,6 +130,13 @@
   "editor.block_templates.quote": "Blockquote",
   "editor.block_templates.hr": "Horizontal rule",
   "editor.block_templates.table_column": "Column {n}",
+
+  "editor.slash_theme.action_detail": "Switch the theme family",
+  "editor.slash_tone.action_detail": "Switch light / dark",
+  "editor.slash_tone.light": "Light",
+  "editor.slash_tone.dark": "Dark",
+  "editor.slash_tone.follow_system": "Follow System",
+  "editor.slash_picker.current": "current",
 
   "editor.hover_menu.insert_block": "Insert block",
 

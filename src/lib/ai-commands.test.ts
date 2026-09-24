@@ -16,6 +16,13 @@ function makeState(doc: string): EditorState {
 }
 
 describe('resolveShowTarget', () => {
+  it('matches a CRLF find against the LF buffer', () => {
+    // An agent that read a Windows file from disk sends `\r\n` in `find`; the
+    // buffer never holds one.
+    const state = makeState('alpha\nbeta\ngamma\n');
+    expect(resolveShowTarget(state, { line: null, find: 'beta\r\ngamma' })).toBe(6);
+  });
+
   it('resolves a 1-based line to the start of that line', () => {
     const state = makeState('line1\nline2\nline3\n');
     expect(resolveShowTarget(state, { line: 2, find: null })).toBe(state.doc.line(2).from);

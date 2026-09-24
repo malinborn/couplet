@@ -6,7 +6,9 @@
   import { isHumanEdit } from './lib/editor/human-edit';
   import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createTabsCompactStore, createTransientPolicyStore, createFileState, createRecentFilesStore, setProductName, setWindowNumber, getWindowNumber } from './lib/stores.svelte';
   import { getName } from '@tauri-apps/api/app';
-  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, syncTabsCompactMenu, syncTransientMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type TabClaim, type WindowInit } from './lib/tauri/commands';
+  import { readDocument, writeDocument, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, broadcastTheme, syncTabsCompactMenu, syncTransientMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type TabClaim, type WindowInit } from './lib/tauri/commands';
+  import { concreteTheme, halfOf, type ThemeFamily } from './lib/theme-resolve';
+  import type { ThemeControl } from './lib/editor/slash-theme';
   import {
     onMenuEvent,
     onOpenFile,
@@ -59,6 +61,8 @@
   import { resolveExternalChange } from './lib/external-change';
   import { createAutoSaveScheduler } from './lib/autosave';
   import { resolveShowTarget, buildAiEdit, aiEditTransaction } from './lib/ai-commands';
+  import { normalizeLineEndings, type LineEnding } from './lib/line-endings';
+  import { canAutoSave, lineEndingAfterExternalChange, reloadRetryDelay } from './lib/document-sync';
   import {
     setAiHighlights,
     pulseAiLine,
@@ -77,6 +81,7 @@
   import type { CarouselWindow, MoveTarget } from './lib/tabs/carousel';
   import { leaveEffects } from './lib/tabs/tab-cache';
   import { decideSaveAs } from './lib/tabs/save-as';
+  import { createTabLineEndings } from './lib/tabs/tab-line-endings';
   import { createCommentWriter, adoptStartedDraft } from './lib/comment-writer';
   import {
     addAiComment,
@@ -116,6 +121,54 @@
 
   const theme = createThemeStore();
   const engine = createEngineStore();
+
+  /**
+   * Bridges `/theme` and `/tone` (which cannot import the theme store
+   * directly — see `EditorDeps` in `lib/editor/setup.ts`) to it.
+   *
+   * Each commit mirrors what the matching native Theme-menu click already
+   * does in this file's `menu-event` handler below: write the choice,
+   * correct the native menu's checkmarks, and broadcast to every other
+   * window over the same `menu-event` path (`broadcast_theme` in
+   * commands.rs), so two windows never end up on different themes after a
+   * picker closes. `commitFamily` and `commitTone` each touch only the one
+   * thing their own picker owns — a family choice never changes the tone or
+   * "Follow System", and a tone choice never changes the family.
+   */
+  const themeControl: ThemeControl = {
+    get current() {
+      return theme.resolved;
+    },
+    get followSystem() {
+      return theme.followSystem;
+    },
+    previewFamily(family: ThemeFamily | null) {
+      if (family === null) {
+        theme.setPreview(null);
+      } else {
+        // Same tone that is already on screen — a family preview must never
+        // move the brightness (that split is the whole point of `/theme`
+        // vs. `/tone`), whether that tone came from an explicit choice or
+        // from "Follow System".
+        theme.setPreview(concreteTheme(family, halfOf(theme.resolved)));
+      }
+    },
+    commitFamily(family: ThemeFamily) {
+      theme.setPreview(null);
+      theme.setFamily(family);
+      syncThemeMenu(theme.resolved, theme.followSystem);
+      broadcastTheme({ family });
+    },
+    commitTone(tone: 'light' | 'dark' | 'system') {
+      if (tone === 'system') {
+        theme.setFollowSystem(true);
+      } else {
+        theme.setHalf(tone);
+      }
+      syncThemeMenu(theme.resolved, theme.followSystem);
+      broadcastTheme(tone === 'system' ? { followSystem: true } : { half: tone });
+    },
+  };
 
   const zoom = createZoomStore();
   const lineGlow = createLineGlowStore();
@@ -224,12 +277,61 @@
   // it always compares against the disk state the save actually produced.
   let currentSave: Promise<void> | null = null;
   // Bumped at the start of every `doSave`, so a reader can tell whether a save
-  // landed while it was mid-await (e.g. mid-`readFile`) even though by the
+  // landed while it was mid-await (e.g. mid-`readDocument`) even though by the
   // time it checks `currentSave` is already back to null.
   let saveGeneration = 0;
   // Coalesces external-change events that arrive while the conflict dialog is
   // already up (FSEvents can fire more than once for one write).
   let conflictDialogOpen = false;
+  // The last read of this window's file failed while the file still existed
+  // (a non-atomic writer caught mid-write, invalid UTF-8, permissions). Until a
+  // read succeeds, disk holds a version the window has never seen, so
+  // automatic saves are paused — see `canAutoSave`. The watcher's leading-edge
+  // debounce may drop the follow-up event, so the read is retried on a timer.
+  let diskUnreadable = false;
+  let reloadRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let reloadRetryAttempt = 0;
+
+  function saveGate() {
+    return {
+      isDirty: fileState.isDirty,
+      filePath: fileState.filePath,
+      conflictDialogOpen,
+      diskUnreadable,
+    };
+  }
+
+  /** The file could not be re-read: pause autosave, say so, try again later. */
+  function markDiskUnreadable(path: string, err: unknown): void {
+    diskUnreadable = true;
+    console.error('Reload failed:', err);
+    toasts.push({
+      kind: 'reload-error',
+      fileName: path.split('/').pop() ?? path,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    if (reloadRetryTimer !== null) clearTimeout(reloadRetryTimer);
+    reloadRetryTimer = setTimeout(() => {
+      reloadRetryTimer = null;
+      void handleExternalChange(path);
+    }, reloadRetryDelay(reloadRetryAttempt++));
+  }
+
+  /**
+   * Disk and window agree again — a read succeeded, a save landed, or the
+   * window moved on to another file. Returns whether autosave had been paused.
+   */
+  function endDiskUnreadable(): boolean {
+    const was = diskUnreadable;
+    diskUnreadable = false;
+    reloadRetryAttempt = 0;
+    if (reloadRetryTimer !== null) {
+      clearTimeout(reloadRetryTimer);
+      reloadRetryTimer = null;
+    }
+    toasts.dismissKind('reload-error');
+    return was;
+  }
 
   function handleChange(_doc: string, update: ViewUpdate) {
     fileState.isDirty = true;
@@ -242,10 +344,10 @@
   // `function` declarations are hoisted, so referencing it here is safe. ---
   const autoSave = createAutoSaveScheduler({
     delayMs: 300,
-    // Saving now would write the buffer over the disk state the open
-    // conflict dialog is asking the user about — the dialog's own "Yes"
-    // path needs that state to still be there when it re-reads the file.
-    shouldSave: () => !conflictDialogOpen && fileState.isDirty && Boolean(fileState.filePath),
+    // Not while the conflict dialog is up (its "Yes" re-reads the disk state
+    // it is asking about) and not while the file is unreadable (the unread
+    // version would be overwritten) — see `canAutoSave`.
+    shouldSave: () => canAutoSave(saveGate()),
     save: performSave,
   });
 
@@ -269,9 +371,13 @@
 
   async function doSave(path: string): Promise<void> {
     saveGeneration += 1;
+    // `content` stays LF: it is what the buffer holds, so it is also what the
+    // dirty check and the disk baseline below compare against. Only the bytes
+    // that reach the disk carry the file's own line ending.
     const content = editorHandle?.view?.state.doc.toString() ?? '';
+    const lineEnding = fileState.lineEnding;
     try {
-      await writeFile(path, content);
+      await writeDocument(path, content, lineEnding);
       // A window can switch to a different file (Cmd+O) while this write is
       // in flight; the bookkeeping below belongs to `path`, not to whatever
       // file the window holds by the time the write resolves.
@@ -291,6 +397,9 @@
         // A previous failure is over the moment a save lands.
         toasts.dismissKind('save-error');
         toasts.dismissKind('unsaved-blocked');
+        // So is an unreadable disk: it now holds exactly what we wrote. Only
+        // an explicit ⌘S gets here while it was paused.
+        endDiskUnreadable();
       }
       // Clean up recovery file on successful save
       await invoke('delete_recovery', { path }).catch(() => {});
@@ -368,6 +477,20 @@
     await openTab(path);
   }
 
+  /**
+   * Say that a document could not be opened. Until this, every such failure
+   * was a `console.error` — which meant an empty Untitled window and no hint
+   * that a file had been asked for at all.
+   */
+  function reportOpenError(path: string, err: unknown): void {
+    console.error('Open failed:', err);
+    toasts.push({
+      kind: 'open-error',
+      fileName: path.split('/').pop() ?? path,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   function handleNew(): void {
     invoke('open_file_window_cmd', { path: null }).catch((err: unknown) => {
       console.error('Failed to open new window:', err);
@@ -388,11 +511,13 @@
    *
    * With the conflict dialog up there is nothing to add — the dialog is the
    * reason, and it is on screen. A real write failure already has its own
-   * `save-error` toast with the OS's message. What is left is a save that has
-   * simply not landed yet.
+   * `save-error` toast with the OS's message, and a file that could not be
+   * re-read its `reload-error` one. What is left is a save that has simply not
+   * landed yet.
    */
   function reportSwitchBlockedByUnsaved(): void {
-    if (conflictDialogOpen || toasts.hasKind('save-error')) return;
+    // An unreadable disk has its own standing toast, which says ⌘S.
+    if (conflictDialogOpen || diskUnreadable || toasts.hasKind('save-error')) return;
     const path = fileState.filePath ?? '';
     toasts.push({ kind: 'unsaved-blocked', fileName: path.split('/').pop() ?? path });
   }
@@ -433,6 +558,13 @@
 
   /** Make `path` the active document for every singleton that follows the active tab. */
   function setActiveDocument(path: string | null, dirty: boolean, baseline: string | null): void {
+    fileState.lineEnding = lineEndings.handOver(
+      { path: fileState.filePath, lineEnding: fileState.lineEnding },
+      path
+    );
+    // An unreadable disk belonged to the document that is leaving; the one
+    // arriving was read to be shown, or is the same one read again.
+    endDiskUnreadable();
     fileState.filePath = path;
     fileState.isDirty = dirty;
     diskBaseline = baseline;
@@ -503,13 +635,18 @@
     try {
       return await read();
     } catch (err) {
-      toasts.push({
-        kind: 'open-error',
-        fileName: path.split('/').pop() ?? path,
-        message: err instanceof Error ? err.message : String(err),
-      });
+      reportOpenError(path, err);
       throw err;
     }
+  }
+
+  /** Line endings of the tabs that are not active — see `tab-line-endings.ts`. */
+  const lineEndings = createTabLineEndings();
+
+  async function readTabDocument(path: string): Promise<string> {
+    // No line break on disk says nothing about the file's convention, so keep
+    // the one already known (see `detectLineEnding`).
+    return lineEndings.record(path, await readDocument(path, lineEndings.of(path)));
   }
 
   /** The Rust half of a tab operation failed; the tab model itself goes on. */
@@ -545,7 +682,7 @@
     },
     autosave: {
       flush: () => autoSave.flush(),
-      holdsBack: () => conflictDialogOpen,
+      holdsBack: () => conflictDialogOpen || diskUnreadable,
     },
     saveErrorPending: () => toasts.hasKind('save-error'),
     reportUnsaved: reportSwitchBlockedByUnsaved,
@@ -573,8 +710,8 @@
     },
     disk: {
       exists: (path) => readingForTab(path, () => fileExists(path)),
-      read: (path) => readingForTab(path, () => readFile(path)),
-      write: (path, content) => writeFile(path, content),
+      read: (path) => readingForTab(path, () => readTabDocument(path)),
+      write: (path, content) => writeDocument(path, content, lineEndings.of(path)),
     },
     rust: {
       owner: (path) =>
@@ -661,7 +798,7 @@
   /** What the drawer reads its cards' text and project line from. */
   const drawerSource = {
     held: (tabId: string) => tabs.textOf(tabId),
-    read: (path: string) => readFile(path),
+    read: (path: string) => readDocument(path).then((doc) => doc.text),
     gitInfo: (paths: string[]) =>
       invoke<(GitInfo | null)[]>('tab_git_info', { paths }).catch(() => paths.map(() => null)),
   };
@@ -757,6 +894,24 @@
   // The watcher fires on every write to the path, our own autosave included —
   // there is no OS-level way to tell those apart from a real external edit.
   // `resolveExternalChange` tells them apart by content instead.
+  /**
+   * A watcher event for our file, and the file would not read.
+   *
+   * A file that is simply gone is not this case: that was never an error
+   * here, and the next save recreates it, as it always has. A file that is
+   * still there but unreadable is — its content is a version the window has
+   * not seen, so autosave pauses until a read succeeds.
+   */
+  async function handleReloadFailure(path: string, err: unknown): Promise<void> {
+    const exists = await fileExists(path).catch(() => true);
+    if (path !== fileState.filePath) return;
+    if (!exists) {
+      endDiskUnreadable();
+      return;
+    }
+    markDiskUnreadable(path, err);
+  }
+
   async function handleExternalChange(path: string): Promise<void> {
     if (path !== fileState.filePath) return;
 
@@ -766,6 +921,7 @@
     // a state caught mid-write. Retry the read until no save landed while it
     // was in flight.
     let disk: string;
+    let diskLineEnding: LineEnding;
     for (;;) {
       while (currentSave) await currentSave.catch(() => {});
       // Cmd+O (or another window event) may have switched this window to a
@@ -773,9 +929,11 @@
       if (path !== fileState.filePath) return;
       const generation = saveGeneration;
       try {
-        disk = await readFile(path);
+        // No line break on disk says nothing about the file's convention, so
+        // keep the one the document already has (see `detectLineEnding`).
+        ({ text: disk, lineEnding: diskLineEnding } = await readDocument(path, fileState.lineEnding));
       } catch (err) {
-        console.error('Failed to read externally changed file:', err);
+        if (path === fileState.filePath) await handleReloadFailure(path, err);
         return;
       }
       // A save that began during the read may have landed on either side of
@@ -783,7 +941,11 @@
       if (generation === saveGeneration) break;
     }
     if (path !== fileState.filePath) return;
+    const wasUnreadable = endDiskUnreadable();
 
+    // Every comparison below is between LF texts: `disk` is normalized by
+    // `readDocument`, and the buffer and baseline never held anything else.
+    // That is what keeps our own CRLF save from echoing back as a change.
     const decision = resolveExternalChange({
       disk,
       buffer: editorHandle?.view?.state.doc.toString() ?? '',
@@ -791,8 +953,19 @@
       dismissedDisk,
     });
 
+    fileState.lineEnding = lineEndingAfterExternalChange({
+      decision,
+      disk,
+      baseline: diskBaseline,
+      diskLineEnding,
+      current: fileState.lineEnding,
+    });
+
     switch (decision) {
       case 'ignore':
+        // Edits typed while autosave was paused are still only in the buffer,
+        // and the disk turned out to be the version they were made on top of.
+        if (wasUnreadable && fileState.isDirty) autoSave.schedule();
         return;
       case 'adopt':
         // Buffer already matches disk — nothing to reload, just resync.
@@ -822,14 +995,15 @@
           if (reload) {
             // Disk may have moved on again while the dialog was up.
             try {
-              const latest = await readFile(path);
+              const latest = await readDocument(path, fileState.lineEnding);
               if (path !== fileState.filePath) return;
-              editorHandle?.updateContent(latest);
-              diskBaseline = latest;
+              editorHandle?.updateContent(latest.text);
+              diskBaseline = latest.text;
+              fileState.lineEnding = latest.lineEnding;
               fileState.isDirty = false;
               dismissedDisk = null;
             } catch (err) {
-              console.error('Failed to reload externally changed file:', err);
+              if (path === fileState.filePath) await handleReloadFailure(path, err);
             }
           } else {
             // Suppress repeats for this exact disk state; a further external
@@ -1424,9 +1598,13 @@
       // thread, so it gets the same wash and the same Escape to dismiss —
       // without it, a paragraph the user did not write appears in their
       // document with nothing marking it as not theirs.
+      //
+      // The agent's text may carry `\r\n`; CM6 would normalize it on insert,
+      // and a highlight measured on the raw string would overrun the span.
+      const clean = normalizeLineEndings(text);
       view.dispatch({
-        changes: { from: at, insert: `\n${text}\n` },
-        effects: setAiHighlights.of([{ from: at + 1, to: at + 1 + text.length }]),
+        changes: { from: at, insert: `\n${clean}\n` },
+        effects: setAiHighlights.of([{ from: at + 1, to: at + 1 + clean.length }]),
       });
     },
   };
@@ -1794,9 +1972,9 @@
   // --- Save on blur ---
   function handleWindowBlur(): void {
     void tabs.windowFocusChanged(false);
-    // Same reason as the autosave-timer guard: writing now would overwrite
-    // the disk state the open conflict dialog is asking about.
-    if (fileState.isDirty && fileState.filePath && !conflictDialogOpen) {
+    // Same gate as the autosave timer: not over a disk state the conflict
+    // dialog is asking about, not over one we could not read.
+    if (canAutoSave(saveGate())) {
       performSave();
     }
     // Leaving md-mini ends every running comment pause on the spot.
@@ -2228,6 +2406,7 @@
       autoSave.cancel();
       if (recoveryInterval !== null) clearInterval(recoveryInterval);
       clearInterval(transientTimer);
+      if (reloadRetryTimer !== null) clearTimeout(reloadRetryTimer);
       clearAiHintTimer();
     };
   });
@@ -2387,6 +2566,7 @@
     onAiHighlightVisibilityChange={handleAiHighlightVisibilityChange}
     onJsonOffer={() => toasts.push({ kind: 'json-offer' })}
     onJsonOfferWithdrawn={() => toasts.dismissKind('json-offer')}
+    {themeControl}
   />
 </main>
 

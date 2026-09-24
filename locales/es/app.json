@@ -22,6 +22,9 @@
   "toast.window_number.taken": "El número #{number} está ocupado",
   "toast.window_number.missing": "No hay ventana #{number}",
 
+  "toast.reload_error.headline": "No se pudo recargar {fileName}",
+  "toast.reload_error.instruction": "El guardado automático está en pausa hasta que el archivo vuelva a poder leerse. Para conservar tu versión, pulsa",
+
   "toast.update.headline": "mdmini {latest} disponible",
   "toast.update.current": "tienes la v{current}",
   "toast.update.copy_title": "Haz clic para copiar",
@@ -127,6 +130,13 @@
   "editor.block_templates.quote": "Cita",
   "editor.block_templates.hr": "Línea horizontal",
   "editor.block_templates.table_column": "Columna {n}",
+
+  "editor.slash_theme.action_detail": "Cambiar la familia de tema",
+  "editor.slash_tone.action_detail": "Cambiar claro / oscuro",
+  "editor.slash_tone.light": "Claro",
+  "editor.slash_tone.dark": "Oscuro",
+  "editor.slash_tone.follow_system": "Seguir al sistema",
+  "editor.slash_picker.current": "actual",
 
   "editor.hover_menu.insert_block": "Insertar bloque",
 

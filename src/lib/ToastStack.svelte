@@ -71,7 +71,9 @@
         class="md-toast"
         class:md-toast-alarm={toast.payload.kind === 'save-error' ||
           toast.payload.kind === 'comment-error' ||
-          toast.payload.kind === 'language-error'}
+          toast.payload.kind === 'language-error' ||
+          toast.payload.kind === 'open-error' ||
+          toast.payload.kind === 'reload-error'}
       >
         {#if toast.payload.kind === 'save-error'}
           <!-- Names the file and quotes the OS, because the two questions this
@@ -114,6 +116,11 @@
           </span>
           <span class="md-toast-dim">{t('toast.unsaved_blocked.message')}</span>
         {:else if toast.payload.kind === 'open-error'}
+          <!-- Names the file and quotes the reason (Rust's "not valid text",
+               a permission error, an editor exception), because a blank
+               window with no explanation was exactly the bug this replaces.
+               No action: the file is untouched, and opening it again is the
+               retry. -->
           <span class="md-toast-text">
             <strong>{t('toast.open_error.headline', { fileName: toast.payload.fileName })}</strong>
           </span>
@@ -155,6 +162,16 @@
               number: toast.payload.number,
             })}</span
           >
+        {:else if toast.payload.kind === 'reload-error'}
+          <!-- Says what the app is doing about it, not only what failed:
+               autosave is paused so the unread disk version cannot be
+               overwritten, the read is retried, and ⌘S is how the user says
+               "my version wins". -->
+          <span class="md-toast-text">
+            <strong>{t('toast.reload_error.headline', { fileName: toast.payload.fileName })}</strong>
+          </span>
+          <span class="md-toast-highlight">{toast.payload.message}</span>
+          <span class="md-toast-dim">{t('toast.reload_error.instruction')} <kbd>⌘S</kbd></span>
         {:else if toast.payload.kind === 'update'}
           <span class="md-toast-text">
             <strong>{t('toast.update.headline', { latest: toast.payload.latest })}</strong>

@@ -5,6 +5,7 @@ import { EditorView } from '@codemirror/view';
 import { history, undo, undoDepth } from '@codemirror/commands';
 import { createDocumentState } from './state-factory';
 import { aiAskField } from './ai-ask';
+import { themePickerField } from './slash-theme';
 
 describe('createDocumentState', () => {
   it('StartsEveryDocumentWithAnEmptyHistory', () => {
@@ -22,6 +23,31 @@ describe('createDocumentState', () => {
     expect(createDocumentState('hello', 999, []).selection.main.head).toBe(5);
     expect(createDocumentState('hello', -3, []).selection.main.head).toBe(0);
     expect(createDocumentState('hello', 2, []).selection.main.head).toBe(2);
+  });
+
+  it('PlacesTheCaretOnTheDocumentCM6Builds_NotTheCrlfString', () => {
+    // A CRLF string is longer than its document by one character per line;
+    // an anchor at the string's length threw RangeError and the tab never opened.
+    const state = createDocumentState('a\r\nb\r\n', null, []);
+    expect(state.doc.toString()).toBe('a\nb\n');
+    expect(state.selection.main.head).toBe(4);
+    expect(createDocumentState('a\r\nb', 99, []).selection.main.head).toBe(3);
+  });
+
+  it('OffersTheThemePickersOnlyWhenGivenAThemeControl', () => {
+    // Every tab's state is built here, so a control dropped on this path
+    // would take `/theme` and `/tone` out of every tab but the first.
+    const control = {
+      current: 'light' as const,
+      followSystem: false,
+      previewFamily: () => {},
+      commitFamily: () => {},
+      commitTone: () => {},
+    };
+    const bare = createDocumentState('x', null, []);
+    const themed = createDocumentState('x', null, [], { themeControl: control });
+    expect(bare.field(themePickerField, false)).toBeUndefined();
+    expect(themed.field(themePickerField, false)).toBeNull();
   });
 
   it('CarriesTheFullEditorConfigurationPlusExtras', () => {

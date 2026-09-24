@@ -166,7 +166,10 @@ export interface TabControllerDeps {
   };
   autosave: {
     flush(): Promise<void>;
-    /** The conflict dialog holds saves back; retrying a flush is pointless. */
+    /**
+     * The conflict dialog, or a file that changed on disk and will not read,
+     * holds saves back; retrying a flush is pointless.
+     */
     holdsBack(): boolean;
   };
   saveErrorPending(): boolean;

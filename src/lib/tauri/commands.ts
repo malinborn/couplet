@@ -1,16 +1,30 @@
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import type { ConcreteTheme } from '../theme-resolve';
+import type { ConcreteTheme, ThemeFamily, ThemeHalf } from '../theme-resolve';
 import type { EditorEngine } from '../stores.svelte';
 import type { CommentThread } from '../comment-format';
 import type { InboxItem } from '../tabs/agent-inbox';
+import { applyLineEnding, fromDisk, type DiskDocument, type LineEnding } from '../line-endings';
 
-export async function readFile(path: string): Promise<string> {
-  return invoke<string>('read_file', { path });
+/**
+ * Read a document from disk, normalized to LF for the editor.
+ *
+ * The one read boundary for document text: the raw string from `read_file`
+ * never reaches the editor, because CM6 would normalize `\r\n` itself and
+ * every length computed from the raw string would then be wrong — see
+ * `line-endings.ts`. `fallback` is the ending to assume when the file has no
+ * line break at all.
+ */
+export async function readDocument(path: string, fallback: LineEnding = 'lf'): Promise<DiskDocument> {
+  return fromDisk(await invoke<string>('read_file', { path }), fallback);
 }
 
-export async function writeFile(path: string, content: string): Promise<void> {
-  return invoke('write_file', { path, content });
+/**
+ * Write editor (LF) text to disk in the file's own line ending — the mirror of
+ * `readDocument`, and the one write boundary for document text.
+ */
+export async function writeDocument(path: string, text: string, lineEnding: LineEnding): Promise<void> {
+  return invoke('write_file', { path, content: applyLineEnding(text, lineEnding) });
 }
 
 export async function fileExists(path: string): Promise<boolean> {
@@ -25,6 +39,26 @@ export async function fileExists(path: string): Promise<boolean> {
  */
 export function syncThemeMenu(resolved: ConcreteTheme, followSystem: boolean): void {
   invoke('sync_theme_menu', { resolved, followSystem }).catch(() => {});
+}
+
+/**
+ * Broadcasts a `/theme` commit to every window over the same `menu-event`
+ * path a native Theme-menu click already uses (`broadcast_theme` in
+ * commands.rs) — so `App.svelte`'s `menu-event` handler needs no changes at
+ * all to stay in sync. Harmless no-op outside Tauri (browser dev), like
+ * `syncThemeMenu`: the local theme is applied either way, which is what
+ * lets `/theme` be checked in `npm run dev`.
+ *
+ * A concrete theme needs both `family` and `half` — the native menu only
+ * ever changes one at a time, but a `/theme` commit changes both in one
+ * action. `followSystem` alone matches a "Follow System" click.
+ */
+export function broadcastTheme(payload: {
+  family?: ThemeFamily;
+  half?: ThemeHalf;
+  followSystem?: boolean;
+}): void {
+  invoke('broadcast_theme', payload).catch(() => {});
 }
 
 /** Sets the Editor Engine submenu checkmarks; harmless no-op outside Tauri. */

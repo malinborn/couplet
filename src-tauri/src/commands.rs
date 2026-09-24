@@ -1,7 +1,7 @@
 use crate::atomic_write::{self, NewFileMode};
 use std::fs;
 use std::path::Path;
-use tauri::command;
+use tauri::{command, AppHandle, Emitter};
 
 #[command]
 pub async fn read_file(path: String) -> Result<String, String> {
@@ -96,6 +96,72 @@ pub async fn sync_transient_menu(
     Ok(())
 }
 
+/// Broadcasts a `/theme` slash-command commit to every window, over the same
+/// `menu-event` path a native Theme-menu click already uses (`MenuRoute::Broadcast`
+/// in `lib.rs`). `App.svelte`'s `menu-event` switch is unchanged by this: it
+/// cannot tell this call apart from a real click on the Theme menu.
+///
+/// One `app.emit` per id, not one per window: a window's `emit` is itself a
+/// broadcast, so a loop over the windows would deliver each id N times to each
+/// of N windows (see the CLAUDE.md gotcha).
+///
+/// A concrete theme needs two ids — family and half — because the native
+/// menu only ever changes one of them per click, while a `/theme` commit
+/// changes both at once. `follow_system` alone reproduces the
+/// `theme_system:on` / `theme_system:off` ids `toggle_value` builds for a
+/// real "Follow System" click.
+#[command]
+pub async fn broadcast_theme(
+    app: AppHandle,
+    family: Option<String>,
+    half: Option<String>,
+    follow_system: Option<bool>,
+) -> Result<(), String> {
+    let ids = theme_event_ids(family, half, follow_system)?;
+    for id in &ids {
+        let _ = app.emit("menu-event", id);
+    }
+    Ok(())
+}
+
+/// The `menu-event` ids `broadcast_theme` emits, pulled out as a pure
+/// function so the validation and id-building are unit-testable without an
+/// `AppHandle` (which needs a running app to construct).
+fn theme_event_ids(
+    family: Option<String>,
+    half: Option<String>,
+    follow_system: Option<bool>,
+) -> Result<Vec<String>, String> {
+    const VALID_FAMILIES: [&str; 4] = ["classic", "aurora", "blueprint", "phosphor"];
+    const VALID_HALVES: [&str; 2] = ["light", "dark"];
+
+    if let Some(f) = &family {
+        if !VALID_FAMILIES.contains(&f.as_str()) {
+            return Err(format!("broadcast_theme: unknown family '{f}'"));
+        }
+    }
+    if let Some(h) = &half {
+        if !VALID_HALVES.contains(&h.as_str()) {
+            return Err(format!("broadcast_theme: unknown half '{h}'"));
+        }
+    }
+    if family.is_none() && half.is_none() && follow_system.is_none() {
+        return Err("broadcast_theme: nothing to broadcast".to_string());
+    }
+
+    let mut ids: Vec<String> = Vec::new();
+    if let Some(f) = family {
+        ids.push(format!("theme_family_{f}"));
+    }
+    if let Some(h) = half {
+        ids.push(format!("theme_half_{h}"));
+    }
+    if let Some(fs) = follow_system {
+        ids.push(format!("theme_system:{}", if fs { "on" } else { "off" }));
+    }
+    Ok(ids)
+}
+
 /// Comment threads of a document, read from its sidecar. A document with no
 /// sidecar yet returns an empty list rather than an error — that is the normal
 /// state for most files.
@@ -185,5 +251,36 @@ mod tests {
 
         assert_eq!(fs::read_to_string(&doc).unwrap(), "new\n");
         assert_eq!(mode_of(&doc), mode_of(&reference));
+    }
+
+    #[test]
+    fn theme_event_ids_concrete_theme_emits_both_family_and_half() {
+        // Unlike a native menu click, a `/theme` commit changes family and
+        // half in one action — this is what the native menu never has to do.
+        let ids = theme_event_ids(Some("aurora".into()), Some("dark".into()), None).unwrap();
+        assert_eq!(ids, vec!["theme_family_aurora", "theme_half_dark"]);
+    }
+
+    #[test]
+    fn theme_event_ids_follow_system_true_and_false() {
+        assert_eq!(
+            theme_event_ids(None, None, Some(true)).unwrap(),
+            vec!["theme_system:on"]
+        );
+        assert_eq!(
+            theme_event_ids(None, None, Some(false)).unwrap(),
+            vec!["theme_system:off"]
+        );
+    }
+
+    #[test]
+    fn theme_event_ids_rejects_unknown_family_or_half() {
+        assert!(theme_event_ids(Some("neon".into()), None, None).is_err());
+        assert!(theme_event_ids(None, Some("dim".into()), None).is_err());
+    }
+
+    #[test]
+    fn theme_event_ids_rejects_an_empty_call() {
+        assert!(theme_event_ids(None, None, None).is_err());
     }
 }

@@ -22,6 +22,9 @@
   "toast.window_number.taken": "编号 #{number} 已被占用",
   "toast.window_number.missing": "没有窗口 #{number}",
 
+  "toast.reload_error.headline": "无法重新加载 {fileName}",
+  "toast.reload_error.instruction": "在文件可以重新读取之前，自动保存已暂停。要保留你的版本，请按",
+
   "toast.update.headline": "mdmini {latest} 已发布",
   "toast.update.current": "你当前是 v{current}",
   "toast.update.copy_title": "点击复制",
@@ -127,6 +130,13 @@
   "editor.block_templates.quote": "引用",
   "editor.block_templates.hr": "分割线",
   "editor.block_templates.table_column": "列 {n}",
+
+  "editor.slash_theme.action_detail": "切换主题系列",
+  "editor.slash_tone.action_detail": "切换浅色 / 深色",
+  "editor.slash_tone.light": "浅色",
+  "editor.slash_tone.dark": "深色",
+  "editor.slash_tone.follow_system": "跟随系统",
+  "editor.slash_picker.current": "当前",
 
   "editor.hover_menu.insert_block": "插入块",
 

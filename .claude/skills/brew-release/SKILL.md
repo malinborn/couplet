@@ -11,7 +11,7 @@ End-to-end release of mdmini. There is **no CI** — the `.dmg` is built locally
 
 | Thing | Value |
 |-------|-------|
-| App repo | `malinborn/mdmini` (default branch `main`) |
+| App repo | `malinborn/couplet` (default branch `main`) |
 | Homebrew tap repo | `malinborn/homebrew-mdmini` (cask at `Casks/mdmini.rb`, branch `main`) |
 | Cask / CLI name | `mdmini` (app bundle is `md-mini.app`; dmg filename uses `md-mini`) |
 | dmg artifact | `md-mini_<version>_universal.dmg` |
@@ -101,7 +101,7 @@ shasum -a 256 "$BUNDLE/dmg/md-mini_<version>_universal.dmg"
 ```bash
 gh release create v<version> \
   "$BUNDLE/dmg/md-mini_<version>_universal.dmg" \
-  --repo malinborn/mdmini \
+  --repo malinborn/couplet \
   --title "v<version> — <summary>" \
   --notes-file <notes.md>
 ```
@@ -115,7 +115,7 @@ the only thing standing between a mismatched hash and a broken
 
 ```bash
 curl -sL -o /tmp/verify.dmg \
-  "https://github.com/malinborn/mdmini/releases/download/v<version>/md-mini_<version>_universal.dmg"
+  "https://github.com/malinborn/couplet/releases/download/v<version>/md-mini_<version>_universal.dmg"
 shasum -a 256 /tmp/verify.dmg   # must equal the sha256 from step 8
 ```
 

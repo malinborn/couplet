@@ -49,9 +49,15 @@ export type ToastPayload =
   | { kind: 'unsaved-blocked'; fileName: string }
   /**
    * A file could not be read to be shown in a tab — opened, switched to, or
-   * restored. The tab is not shown (an empty buffer on that path would be
-   * autosaved over the file), and without this the key or click that asked
-   * for it did nothing visible at all.
+   * restored: the read failed (not valid UTF-8, permissions) or the editor
+   * refused the text. The tab is not shown (an empty buffer on that path would
+   * be autosaved over the file), and without this the key or click that asked
+   * for it did nothing visible at all — a CRLF file used to open as an empty
+   * Untitled window with the reason reaching only `console.error`. Carries the
+   * file name and that message, same reasoning as `save-error`. Not withdrawn
+   * by the next successful open: a window restoring several tabs sets a failed
+   * one aside and shows the next, which would take the toast down before it
+   * was ever read.
    */
   | { kind: 'open-error'; fileName: string; message: string }
   /**
@@ -85,6 +91,20 @@ export type ToastPayload =
    * it answers a key the human just pressed.
    */
   | { kind: 'window-number'; reason: 'taken' | 'missing'; number: number }
+  /**
+   * The open file changed on disk and could not be re-read — typically a
+   * non-atomic writer caught mid-write, whose half-written multibyte character
+   * reads as invalid UTF-8.
+   *
+   * Its own kind rather than a flavour of `open-error`, because the two are
+   * about different files and different lifetimes: this one is about the
+   * document the window is showing, and it stands for exactly as long as
+   * autosave is paused (see `canAutoSave` in `document-sync.ts`). A failed
+   * open of some other file must not replace it, and a successful open of
+   * that other file says nothing about it. Withdrawn by the next successful
+   * read or save of the document.
+   */
+  | { kind: 'reload-error'; fileName: string; message: string }
   | { kind: 'update'; latest: string; current: string; highlight?: string }
   /**
    * Answers to a manual "Check for Updates…" click (#82) — the automatic
@@ -150,6 +170,12 @@ const ORDER: Record<ToastKind, number> = {
   // Same rank again, same reasoning: a read-only app data directory that
   // breaks a language change is exactly as urgent as a failed save.
   'language-error': 0,
+  // Same rank: it answers something the user just did, and an error that
+  // sorts below a "you have 3 windows to restore" notice reads as a notice.
+  // Unlike the three above it loses no work — the file on disk is untouched.
+  'open-error': 0,
+  // Same rank, and this one does guard work: autosave is paused while it is up.
+  'reload-error': 0,
   update: 1,
   // Direct responses to the same menu click that produces `update` above —
   // sorts right beside it rather than with the "just clicked" group below,
@@ -172,7 +198,6 @@ const ORDER: Record<ToastKind, number> = {
   'ai-bind-copied': 4,
   // A direct answer to the key the user just pressed, like the two above.
   'unsaved-blocked': 4,
-  'open-error': 4,
   'tabs-stranded': 4,
   'tabs-moved': 4,
   'save-as-blocked': 4,

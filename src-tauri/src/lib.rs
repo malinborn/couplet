@@ -203,6 +203,7 @@ pub fn run() {
             commands::sync_ocd_alignment_menu,
             commands::sync_tabs_compact_menu,
             commands::sync_transient_menu,
+            commands::broadcast_theme,
             i18n::resolved_language,
         ])
         .setup(|app| {
