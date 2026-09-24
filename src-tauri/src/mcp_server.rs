@@ -341,6 +341,9 @@ fn build_show_request(arguments: &Value) -> Result<AiRequest, String> {
         path: crate::resolve_path(path, None),
         line,
         find,
+        window_binding: None,
+        focus: None,
+        transient: false,
     })
 }
 
@@ -375,6 +378,7 @@ fn build_edit_request(arguments: &Value) -> Result<AiRequest, AiResponse> {
         path: crate::resolve_path(path, None),
         content: content.to_string(),
         show,
+        window_binding: None,
     })
 }
 
@@ -424,6 +428,7 @@ fn build_ask_request(arguments: &Value) -> Result<AiRequest, String> {
         timeout_secs,
         multi,
         free_text,
+        window_binding: None,
     })
 }
 

@@ -31,6 +31,16 @@ pub enum AiRequest {
         line: Option<usize>,
         #[serde(default)]
         find: Option<String>,
+        /// `#N` of the window to open it in (spec §5 step 1). Absent: routed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window_binding: Option<u32>,
+        /// Make the tab active and bring its window forward. Absent: `true` —
+        /// what every `show` did before tabs (spec §5).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        focus: Option<bool>,
+        /// A quick look (spec §7): the tab asks «Close / Keep» by itself.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        transient: bool,
     },
     Edit {
         #[allow(dead_code)] // protocol version, reserved for the future MCP wrapper
@@ -39,6 +49,9 @@ pub enum AiRequest {
         content: String,
         #[serde(default)]
         show: bool,
+        /// `#N` of the window to open it in (spec §5 step 1). Absent: routed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window_binding: Option<u32>,
     },
     Ask {
         #[allow(dead_code)] // protocol version, reserved for the future MCP wrapper
@@ -63,7 +76,33 @@ pub enum AiRequest {
         /// options-only behavior for callers who omit the field.
         #[serde(default)]
         free_text: bool,
+        /// `#N` of the window to open it in (spec §5 step 1). Absent: routed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window_binding: Option<u32>,
     },
+}
+
+impl AiRequest {
+    fn path(&self) -> &str {
+        match self {
+            AiRequest::Show { path, .. } | AiRequest::Edit { path, .. } | AiRequest::Ask { path, .. } => {
+                path
+            }
+        }
+    }
+
+    /// Whether the command may take the view. Only `show` does, by default;
+    /// `edit` and `ask` land where the file is without switching (spec §5).
+    fn focus(&self) -> bool {
+        match self {
+            AiRequest::Show { focus, .. } => focus.unwrap_or(true),
+            AiRequest::Edit { .. } | AiRequest::Ask { .. } => false,
+        }
+    }
+
+    fn transient(&self) -> bool {
+        matches!(self, AiRequest::Show { transient: true, .. })
+    }
 }
 
 /// Default `ask` timeout when the request omits `timeout_secs` — five minutes
@@ -146,6 +185,14 @@ pub struct AiResponse {
     /// `tool_result_response`, как это уже сделано для `answer`/`answers`/`custom`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub threads: Option<Vec<crate::comments::Located>>,
+    /// The `#N` of the window that handled the request (spec §5): an agent
+    /// passes it back as `window_binding`. Filled in by `ai_respond`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<u32>,
+    /// The tab is its window's active tab after the command. `false`: it
+    /// landed in the background (the tab shimmers until it is seen).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focused: Option<bool>,
 }
 
 impl AiResponse {
@@ -155,27 +202,11 @@ impl AiResponse {
     // CLI client (Task 5) to construct local responses with.
     #[allow(dead_code)]
     pub fn ok() -> Self {
-        Self {
-            ok: true,
-            error: None,
-            changed_lines: None,
-            answer: None,
-            answers: None,
-            custom: None,
-            threads: None,
-        }
+        Self { ok: true, ..Default::default() }
     }
 
     pub fn error(msg: impl Into<String>) -> Self {
-        Self {
-            ok: false,
-            error: Some(msg.into()),
-            changed_lines: None,
-            answer: None,
-            answers: None,
-            custom: None,
-            threads: None,
-        }
+        Self { ok: false, error: Some(msg.into()), ..Default::default() }
     }
 }
 
@@ -379,6 +410,27 @@ impl AiPending {
         }
     }
 
+    /// `respond` for an answer from a window's frontend: delivered only when
+    /// `label` is the window the request was delivered to. Another window
+    /// could otherwise answer — or dismiss — an agent's question it never
+    /// showed. A refused answer leaves the request waiting; an id nobody
+    /// waits on any more is a no-op, as for `respond`.
+    pub fn respond_from(&self, id: u64, label: &str, response: AiResponse) -> Result<(), String> {
+        let mut map = self.map.lock().unwrap();
+        match map.get(&id) {
+            None => Ok(()),
+            Some(entry) if entry.label != label => {
+                Err(format!("request {id} was not delivered to window {label}"))
+            }
+            Some(_) => {
+                if let Some(entry) = map.remove(&id) {
+                    let _ = entry.tx.send(response);
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// Remove a waiting request without delivering anything — used once the
     /// caller has already given up (the socket listener's own timeout), so a
     /// later `respond` for the same id finds nothing to deliver.
@@ -528,6 +580,14 @@ pub struct AiCommandPayload {
     /// lives. Rides the payload rather than being a separate event so a command
     /// pulled from `AiQueue` by a window that did not exist yet carries it too.
     pub first_use: bool,
+    /// The command may take the view (see `AiRequest::focus`). The frontend
+    /// still keeps it in the background while the human is typing (spec §5).
+    pub focus: bool,
+    /// `show(transient: true)` — spec §7.
+    pub transient: bool,
+    /// Rust opened this file's tab for this very command (a new window): a
+    /// quick look may mark only a tab it opened.
+    pub fresh: bool,
 }
 
 /// How an AI command reaches its window — see `queue_unless_mounted`.
@@ -590,6 +650,51 @@ fn deliver(app: &AppHandle, label: &str, payload: AiCommandPayload) {
 /// the new window's label in `OpenFiles` before giving up on a freshly opened file.
 const OPEN_WINDOW_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// The event payload for `req`, delivered as `ai-command`.
+fn payload_for(req: &AiRequest, id: u64, first_use: bool) -> AiCommandPayload {
+    let mut p = AiCommandPayload {
+        id,
+        first_use,
+        cmd: String::new(),
+        path: req.path().to_string(),
+        line: None,
+        find: None,
+        content: None,
+        show: false,
+        question: None,
+        options: Vec::new(),
+        timeout_secs: 0,
+        multi: false,
+        free_text: false,
+        focus: req.focus(),
+        transient: req.transient(),
+        fresh: false,
+    };
+    match req {
+        AiRequest::Show { line, find, .. } => {
+            p.cmd = "show".to_string();
+            p.line = *line;
+            p.find = find.clone();
+        }
+        AiRequest::Edit { content, show, .. } => {
+            p.cmd = "edit".to_string();
+            p.content = Some(content.clone());
+            p.show = *show;
+        }
+        AiRequest::Ask { question, options, line, find, timeout_secs, multi, free_text, .. } => {
+            p.cmd = "ask".to_string();
+            p.question = Some(question.clone());
+            p.options = options.clone();
+            p.line = *line;
+            p.find = find.clone();
+            p.timeout_secs = clamp_ask_timeout(*timeout_secs);
+            p.multi = *multi;
+            p.free_text = *free_text;
+        }
+    }
+    p
+}
+
 /// Route a parsed request to the window that owns the file, opening one first if
 /// it isn't open yet, and arrange for the response to come back on `tx`.
 /// Returns the id registered for this request in `AiPending` — `0` (never a
@@ -597,11 +702,7 @@ const OPEN_WINDOW_TIMEOUT: Duration = Duration::from_secs(2);
 /// directly on `tx` without ever registering, so the caller's later
 /// `AiPending::cancel(id)` on timeout is a harmless no-op.
 fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u64 {
-    let path = match &req {
-        AiRequest::Show { path, .. } => path.clone(),
-        AiRequest::Edit { path, .. } => path.clone(),
-        AiRequest::Ask { path, .. } => path.clone(),
-    };
+    let path = req.path().to_string();
 
     // `show` on a path that doesn't exist would otherwise fall through to
     // `open_file_window`, happily creating a new empty window for a file that
@@ -647,56 +748,7 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
     let first_use = crate::onboarding::mark_connected(
         app.config().version.as_deref().unwrap_or("0.0.0"),
     );
-    let payload = AiCommandPayload {
-        id,
-        first_use,
-        cmd: match &req {
-            AiRequest::Show { .. } => "show".to_string(),
-            AiRequest::Edit { .. } => "edit".to_string(),
-            AiRequest::Ask { .. } => "ask".to_string(),
-        },
-        path: path.clone(),
-        line: match &req {
-            AiRequest::Show { line, .. } => *line,
-            AiRequest::Edit { .. } => None,
-            AiRequest::Ask { line, .. } => *line,
-        },
-        find: match &req {
-            AiRequest::Show { find, .. } => find.clone(),
-            AiRequest::Edit { .. } => None,
-            AiRequest::Ask { find, .. } => find.clone(),
-        },
-        content: match &req {
-            AiRequest::Show { .. } => None,
-            AiRequest::Edit { content, .. } => Some(content.clone()),
-            AiRequest::Ask { .. } => None,
-        },
-        show: match &req {
-            AiRequest::Show { .. } => false,
-            AiRequest::Edit { show, .. } => *show,
-            AiRequest::Ask { .. } => false,
-        },
-        question: match &req {
-            AiRequest::Ask { question, .. } => Some(question.clone()),
-            _ => None,
-        },
-        options: match &req {
-            AiRequest::Ask { options, .. } => options.clone(),
-            _ => Vec::new(),
-        },
-        timeout_secs: match &req {
-            AiRequest::Ask { timeout_secs, .. } => clamp_ask_timeout(*timeout_secs),
-            _ => 0,
-        },
-        multi: match &req {
-            AiRequest::Ask { multi, .. } => *multi,
-            _ => false,
-        },
-        free_text: match &req {
-            AiRequest::Ask { free_text, .. } => *free_text,
-            _ => false,
-        },
-    };
+    let mut payload = payload_for(&req, id, first_use);
 
     let existing_label = {
         let open_files = app.state::<window::OpenFiles>();
@@ -716,6 +768,7 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
 
     // Not open yet. Window creation must happen on the main thread — this
     // listener runs on a background thread per connection.
+    payload.fresh = true;
     let handle = app.clone();
     let path_for_open = path.clone();
     if app
@@ -749,11 +802,24 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
 }
 
 /// IPC command: deliver the frontend's answer to an AI command back to the CLI
-/// connection waiting on it.
+/// connection waiting on it — only from the window it was delivered to — with
+/// that window's `#N` added (spec §5).
 #[tauri::command]
-pub async fn ai_respond(app: AppHandle, id: u64, response: AiResponse) -> Result<(), String> {
-    app.state::<AiPending>().respond(id, response);
-    Ok(())
+pub async fn ai_respond(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    id: u64,
+    mut response: AiResponse,
+) -> Result<(), String> {
+    let label = window.label().to_string();
+    // The registry guard drops at the end of this block, before `AiPending`
+    // is locked: the two are never held together.
+    if response.window.is_none() {
+        let open_files = app.state::<window::OpenFiles>();
+        let reg = open_files.0.lock().unwrap();
+        response.window = reg.window(&label).and_then(|w| w.number);
+    }
+    app.state::<AiPending>().respond_from(id, &label, response)
 }
 
 /// IPC command: whether the command `id` still has an agent waiting on it. A
@@ -1451,12 +1517,16 @@ pub fn run_ai_cli(args: Vec<String>) -> i32 {
             path: abs_path,
             line,
             find,
+            window_binding: None,
+            focus: None,
+            transient: false,
         },
         CliVerb::Edit { show, .. } => AiRequest::Edit {
             v: 1,
             path: abs_path,
             content: content.unwrap_or_default(),
             show,
+            window_binding: None,
         },
         CliVerb::Ask {
             question,
@@ -1476,6 +1546,7 @@ pub fn run_ai_cli(args: Vec<String>) -> i32 {
             timeout_secs,
             multi,
             free_text,
+            window_binding: None,
         },
         CliVerb::Help
         | CliVerb::Agent { .. }
@@ -1775,7 +1846,135 @@ mod tests {
             multi: false,
             free_text: false,
             first_use: false,
+            focus: false,
+            transient: false,
+            fresh: false,
         }
+    }
+
+    #[test]
+    fn a_show_without_the_tab_fields_keeps_todays_behaviour() {
+        let req = parse_request(r#"{"v":1,"cmd":"show","path":"/a.md","line":3,"find":null}"#).unwrap();
+        match &req {
+            AiRequest::Show { window_binding, focus, transient, .. } => {
+                assert_eq!(*window_binding, None);
+                assert_eq!(*focus, None);
+                assert!(!transient);
+            }
+            _ => panic!("expected Show"),
+        }
+        assert!(req.focus(), "an old show still takes the view");
+        assert!(!req.transient());
+    }
+
+    #[test]
+    fn edit_and_ask_without_the_tab_fields_parse_and_never_take_the_view() {
+        let edit = parse_request(r#"{"v":1,"cmd":"edit","path":"/a.md","content":"x"}"#).unwrap();
+        let ask = parse_request(
+            r#"{"v":1,"cmd":"ask","path":"/a.md","question":"Q?","options":["A","B"]}"#,
+        )
+        .unwrap();
+        for req in [&edit, &ask] {
+            assert!(!req.focus(), "edit and ask never switch tabs");
+            assert!(!req.transient());
+        }
+    }
+
+    #[test]
+    fn the_tab_fields_parse() {
+        let req = parse_request(
+            r#"{"v":1,"cmd":"show","path":"/a.md","window_binding":7,"focus":false,"transient":true}"#,
+        )
+        .unwrap();
+        match &req {
+            AiRequest::Show { window_binding, .. } => assert_eq!(*window_binding, Some(7)),
+            _ => panic!("expected Show"),
+        }
+        assert!(!req.focus());
+        assert!(req.transient());
+    }
+
+    #[test]
+    fn an_old_style_request_serializes_exactly_as_before() {
+        let req = AiRequest::Show {
+            v: 1,
+            path: "/a.md".to_string(),
+            line: Some(3),
+            find: None,
+            window_binding: None,
+            focus: None,
+            transient: false,
+        };
+        assert_eq!(
+            serde_json::to_string(&req).unwrap(),
+            r#"{"cmd":"show","v":1,"path":"/a.md","line":3,"find":null}"#
+        );
+    }
+
+    #[test]
+    fn a_response_without_window_or_focused_serializes_as_before() {
+        assert_eq!(serde_json::to_string(&AiResponse::ok()).unwrap(), r#"{"ok":true}"#);
+        let r = AiResponse { ok: true, window: Some(7), focused: Some(false), ..Default::default() };
+        assert_eq!(serde_json::to_string(&r).unwrap(), r#"{"ok":true,"window":7,"focused":false}"#);
+    }
+
+    #[test]
+    fn the_payload_carries_focus_and_transient_for_the_frontend() {
+        let show = parse_request(r#"{"v":1,"cmd":"show","path":"/a.md","transient":true}"#).unwrap();
+        let p = payload_for(&show, 9, false);
+        assert_eq!((p.id, p.cmd.as_str(), p.focus, p.transient, p.fresh), (9, "show", true, true, false));
+        let json = serde_json::to_string(&p).unwrap();
+        for key in [r#""focus":true"#, r#""transient":true"#, r#""fresh":false"#] {
+            assert!(json.contains(key), "{key} missing in {json}");
+        }
+        let ask = parse_request(
+            r#"{"v":1,"cmd":"ask","path":"/a.md","question":"Q?","options":["A","B"],"timeout_secs":5}"#,
+        )
+        .unwrap();
+        let p = payload_for(&ask, 1, false);
+        assert_eq!((p.cmd.as_str(), p.focus, p.timeout_secs), ("ask", false, 10), "timeout clamped");
+    }
+
+    #[test]
+    fn an_answer_is_taken_only_from_the_window_the_request_went_to() {
+        let pending = AiPending::new();
+        let (id, rx) = waiting(&pending, "editor-2", Some("/a.md"));
+        assert!(pending.respond_from(id, "editor-3", AiResponse::ok()).is_err());
+        assert!(pending.is_pending(id), "a refused answer leaves the request waiting");
+        assert!(rx.try_recv().is_err());
+        pending.respond_from(id, "editor-2", AiResponse::ok()).unwrap();
+        assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap().ok);
+        assert!(
+            pending.respond_from(id, "editor-2", AiResponse::ok()).is_ok(),
+            "an answer after the request is gone is a harmless no-op"
+        );
+    }
+
+    #[test]
+    fn an_ask_parked_in_a_background_tab_is_answered_by_its_window_later() {
+        // Nothing about a tab going to the background touches `AiPending`: the
+        // entry waits until its window answers, however many switches later.
+        let pending = AiPending::new();
+        let (id, rx) = waiting(&pending, "editor-2", Some("/b.md"));
+        pending.cancel_for_window_and_path("editor-2", "/a.md", "tab closed");
+        assert!(pending.is_pending(id), "another tab closing leaves it alone");
+        let answer = AiResponse { ok: true, answer: Some("Yes".to_string()), ..Default::default() };
+        pending.respond_from(id, "editor-2", answer).unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap().answer.as_deref(), Some("Yes"));
+    }
+
+    #[test]
+    fn a_parked_ask_fails_clearly_when_its_tab_or_its_window_closes() {
+        let pending = AiPending::new();
+        let (_, tab_rx) = waiting(&pending, "editor-2", Some("/b.md"));
+        let (_, window_rx) = waiting(&pending, "editor-3", Some("/c.md"));
+        pending.cancel_for_window_and_path("editor-2", "/b.md", "tab closed");
+        pending.cancel_for_window("editor-3");
+        assert_eq!(tab_rx.recv_timeout(Duration::from_secs(1)).unwrap().error.as_deref(), Some("tab closed"));
+        assert_eq!(
+            window_rx.recv_timeout(Duration::from_secs(1)).unwrap().error.as_deref(),
+            Some("window closed")
+        );
     }
 
     #[test]

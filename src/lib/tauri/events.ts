@@ -175,7 +175,7 @@ export function onCheckUpdatesRequested(handler: () => void): Promise<() => void
  */
 export interface AiCommandPayload {
   id: number;
-  cmd: 'show' | 'edit' | 'ask';
+  cmd: 'show' | 'edit' | 'ask' | 'open' | 'close';
   path: string;
   line: number | null;
   find: string | null;
@@ -194,6 +194,12 @@ export interface AiCommandPayload {
    * someone whose agent config arrived pre-made from a colleague.
    */
   firstUse: boolean;
+  /** The command may take the view (`show` by default). Never while the human types. */
+  focus: boolean;
+  /** `show(transient: true)` — a quick look (spec §7). */
+  transient: boolean;
+  /** Rust opened this tab for this very command (a new window). */
+  fresh: boolean;
 }
 
 /**

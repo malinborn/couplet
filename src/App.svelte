@@ -1477,6 +1477,10 @@
     answer?: string;
     answers?: string[];
     custom?: string;
+    /** `#N`, filled in by Rust. */
+    window?: number;
+    /** The tab is its window's active tab afterwards. */
+    focused?: boolean;
   }
 
   const AI_ACTIVATION_ERRORS: Record<'refused' | 'busy' | 'failed', string> = {
@@ -1561,6 +1565,12 @@
    * whichever dispatches second would clobber the first's change instead of
    * building on top of it. */
   async function handleAiCommandForActive(payload: AiCommandPayload): Promise<void> {
+    // Until the orchestrator (Task 12) handles them: a verb this function does
+    // not know must never fall through to the `edit` branch.
+    if (payload.cmd !== 'show' && payload.cmd !== 'ask' && payload.cmd !== 'edit') {
+      await respondToAi(payload.id, { ok: false, error: `unsupported command: ${payload.cmd}` });
+      return;
+    }
     if (payload.path !== fileState.filePath) {
       await respondToAi(payload.id, { ok: false, error: 'window does not own this file' });
       return;
