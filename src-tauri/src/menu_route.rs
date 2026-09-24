@@ -1,13 +1,11 @@
 //! Where a native menu action is delivered.
 //!
-//! The handler used to emit `menu-event` once per window in a loop. A
-//! window's `emit` is a broadcast to every target, and `onMenuEvent` listened
-//! globally — which also receives targeted emits — so with N windows every
-//! window handled every action N times. Idempotent preferences survived that;
-//! `toggle_mode` (a cycle) and anything acting on a document did not.
-//!
-//! Now each action is emitted exactly once: a preference to every window,
-//! a document action to the window the user was last in.
+//! Each action must be emitted exactly once: a preference to every window, a
+//! document action to the window the user was last in. A window-level `emit`
+//! is itself a broadcast to every target, and a global `listen` also matches
+//! targeted emits, so emitting per window — or listening globally — makes N
+//! windows handle every action N times. Idempotent preferences survive that;
+//! `toggle_mode` (a cycle) and anything acting on a document do not.
 
 use std::sync::Mutex;
 
@@ -66,8 +64,9 @@ impl Default for FocusTracker {
     }
 }
 
-/// The window a document action goes to: the last focused one while it lives,
-/// else the first in session order (`main`, then `editor-N` ascending) so the
+/// The window a document action goes to: the last focused one while it is in
+/// `live` (the caller passes only windows the user can see), else the first in
+/// session order (`main`, then `editor-N` ascending) so the
 /// fallback never depends on `HashMap` iteration order.
 pub fn menu_target(last_focused: Option<&str>, live: &[String]) -> Option<String> {
     if let Some(label) = last_focused {
@@ -141,6 +140,14 @@ mod tests {
     #[test]
     fn nothing_focused_yet_falls_back_too() {
         assert_eq!(menu_target(None, &labels(&["editor-2", "main"])), Some("main".to_string()));
+    }
+
+    #[test]
+    fn a_tracked_window_left_out_as_hidden_is_skipped_for_a_visible_one() {
+        assert_eq!(
+            menu_target(Some("main"), &labels(&["editor-5", "editor-3"])),
+            Some("editor-3".to_string())
+        );
     }
 
     #[test]

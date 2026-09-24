@@ -291,14 +291,14 @@ pub fn run() {
                 // actually restricts delivery to one window, the same primitive
                 // `ai_socket.rs` uses to route a command to the window that owns
                 // its file. The update-checker claim holder is the natural
-                // target since it already owns update work; fall back to any
-                // window if no claim has been made yet (e.g. the poll hasn't
-                // started).
+                // target since it already owns update work; fall back to the
+                // window a document action would go to if no claim has been
+                // made yet (e.g. the poll hasn't started).
                 if id == "check_updates" {
                     let target = _app
                         .state::<UpdateState>()
                         .checker_label()
-                        .or_else(|| _app.webview_windows().keys().next().cloned());
+                        .or_else(|| focused_window(_app));
                     if let Some(label) = target {
                         let _ = _app.emit_to(label.as_str(), "check-updates-requested", ());
                     }
@@ -328,9 +328,9 @@ pub fn run() {
                     return;
                 }
 
-                // Still closes the whole window until Task 13 of the tabs-02
-                // plan hands ⌘W to the frontend; the target is the tracked
-                // window, not `is_focused()`, which is unreliable here.
+                // Closes the whole window. The target is the tracked window,
+                // not `is_focused()`, which is unreliable while the menu bar
+                // is active.
                 if id == "close" {
                     if let Some(win) = focused_window(_app).and_then(|l| _app.get_webview_window(&l)) {
                         let _ = win.close();
@@ -601,8 +601,18 @@ fn save_session_on_exit(app: &tauri::AppHandle) {
 }
 
 /// The window a document-scoped menu action belongs to — see `menu_route`.
+///
+/// Only a window the user can see is a candidate. With every window minimized
+/// the app stays active with no key window, and the tracker still names the
+/// last one — ⌘W would close it and ⌘S would save a document nobody is looking
+/// at. No candidate means the action does nothing.
 fn focused_window(app: &tauri::AppHandle) -> Option<String> {
-    let live: Vec<String> = app.webview_windows().keys().cloned().collect();
+    let live: Vec<String> = app
+        .webview_windows()
+        .into_iter()
+        .filter(|(_, w)| w.is_visible().unwrap_or(true) && !w.is_minimized().unwrap_or(false))
+        .map(|(label, _)| label)
+        .collect();
     let last = app.state::<menu_route::FocusTracker>().last();
     menu_route::menu_target(last.as_deref(), &live)
 }
