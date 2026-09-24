@@ -814,12 +814,19 @@ pub async fn ai_respond(
     let label = window.label().to_string();
     // The registry guard drops at the end of this block, before `AiPending`
     // is locked: the two are never held together.
-    if response.window.is_none() {
+    {
         let open_files = app.state::<window::OpenFiles>();
         let reg = open_files.0.lock().unwrap();
-        response.window = reg.window(&label).and_then(|w| w.number);
+        stamp_window(&reg, &label, &mut response);
     }
     app.state::<AiPending>().respond_from(id, &label, response)
+}
+
+/// Set `response.window` to `label`'s `#N` from the registry — always, over
+/// whatever the frontend sent: the number an agent binds to next must be the
+/// one Rust knows. `None` for a window that has no number.
+fn stamp_window(reg: &crate::tabs::TabRegistry, label: &str, response: &mut AiResponse) {
+    response.window = reg.window(label).and_then(|w| w.number);
 }
 
 /// IPC command: whether the command `id` still has an agent waiting on it. A
@@ -1948,6 +1955,19 @@ mod tests {
             pending.respond_from(id, "editor-2", AiResponse::ok()).is_ok(),
             "an answer after the request is gone is a harmless no-op"
         );
+    }
+
+    #[test]
+    fn the_window_number_in_an_answer_always_comes_from_the_registry() {
+        let mut reg = crate::tabs::TabRegistry::new();
+        reg.set_number("editor-2", Some(4));
+        reg.set_number("editor-3", None);
+        let mut numbered = AiResponse { ok: true, window: Some(99), ..Default::default() };
+        stamp_window(&reg, "editor-2", &mut numbered);
+        assert_eq!(numbered.window, Some(4), "a frontend-supplied number is replaced");
+        let mut unnumbered = AiResponse { ok: true, window: Some(99), ..Default::default() };
+        stamp_window(&reg, "editor-3", &mut unnumbered);
+        assert_eq!(unnumbered.window, None, "a window without a number answers none");
     }
 
     #[test]

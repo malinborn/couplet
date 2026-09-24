@@ -1506,6 +1506,13 @@
     if (payload.firstUse) {
       toasts.push({ kind: 'ai-first-use' });
     }
+    // Until the orchestrator (Task 12) handles them: a verb this window does
+    // not know is refused before anything below activates or marks a tab, and
+    // must never fall through to `handleAiCommandForActive`'s `edit` branch.
+    if (payload.cmd !== 'show' && payload.cmd !== 'ask' && payload.cmd !== 'edit') {
+      await respondToAi(payload.id, { ok: false, error: `unsupported command: ${payload.cmd}` });
+      return;
+    }
     await tabs.runExclusive(async () => {
       // A command can wait here behind a switch that cancelled it (the tab
       // it was for was left or closed) or past its own timeout. Its agent has
@@ -1565,12 +1572,6 @@
    * whichever dispatches second would clobber the first's change instead of
    * building on top of it. */
   async function handleAiCommandForActive(payload: AiCommandPayload): Promise<void> {
-    // Until the orchestrator (Task 12) handles them: a verb this function does
-    // not know must never fall through to the `edit` branch.
-    if (payload.cmd !== 'show' && payload.cmd !== 'ask' && payload.cmd !== 'edit') {
-      await respondToAi(payload.id, { ok: false, error: `unsupported command: ${payload.cmd}` });
-      return;
-    }
     if (payload.path !== fileState.filePath) {
       await respondToAi(payload.id, { ok: false, error: 'window does not own this file' });
       return;
