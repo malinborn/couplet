@@ -91,6 +91,27 @@ export function removeTab(
   return { state: { tabs, activeId: nextActiveId }, nextActiveId };
 }
 
+/**
+ * Remove every tab of `ids` — a group moving to another window. When the
+ * active tab goes, the first remaining tab to its right becomes active, else
+ * the nearest to its left: `removeTab`'s rule for a block.
+ */
+export function removeTabs(
+  s: TabListState,
+  ids: readonly string[]
+): { state: TabListState; nextActiveId: string | null } {
+  const gone = new Set(ids);
+  const tabs = s.tabs.filter((t) => !gone.has(t.id));
+  if (s.activeId === null || !gone.has(s.activeId)) {
+    return { state: { tabs, activeId: s.activeId }, nextActiveId: s.activeId };
+  }
+  const at = s.tabs.findIndex((t) => t.id === s.activeId);
+  const right = s.tabs.slice(at + 1).find((t) => !gone.has(t.id));
+  const left = s.tabs.slice(0, Math.max(at, 0)).reverse().find((t) => !gone.has(t.id));
+  const nextActiveId = (right ?? left)?.id ?? null;
+  return { state: { tabs, activeId: nextActiveId }, nextActiveId };
+}
+
 export function setActive(s: TabListState, id: string): TabListState {
   return findById(s, id) ? { ...s, activeId: id } : s;
 }

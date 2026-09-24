@@ -5,6 +5,7 @@ import {
   insertAt,
   replaceTab,
   removeTab,
+  removeTabs,
   setActive,
   updateTab,
   tabByIndex,
@@ -165,5 +166,27 @@ describe('expiredTransients', () => {
       activeId: null,
     };
     expect(expiredTransients(s, 9_000, 4_000, null)).toEqual(['old']);
+  });
+});
+
+describe('removeTabs', () => {
+  it('AnActiveTabThatStaysStaysActive', () => {
+    const { state, nextActiveId } = removeTabs(list(['a', 'b', 'c'], 'a'), ['b']);
+    expect(state.tabs.map((t) => t.id)).toEqual(['a', 'c']);
+    expect(nextActiveId).toBe('a');
+  });
+
+  it('TheActiveOneGoing_TheFirstRemainingTabToItsRightTakesOver', () => {
+    const { state } = removeTabs(list(['a', 'b', 'c', 'd'], 'b'), ['b', 'c']);
+    expect(state.activeId).toBe('d');
+  });
+
+  it('…ElseTheNearestOneToItsLeft', () => {
+    const { state } = removeTabs(list(['a', 'b', 'c'], 'c'), ['b', 'c']);
+    expect(state).toEqual(list(['a'], 'a'));
+  });
+
+  it('EverythingGoing_NothingIsActive', () => {
+    expect(removeTabs(list(['a', 'b'], 'a'), ['b', 'a'])).toEqual({ state: list([], null), nextActiveId: null });
   });
 });
