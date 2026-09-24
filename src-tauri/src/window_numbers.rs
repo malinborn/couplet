@@ -74,17 +74,29 @@ impl WindowNumbers {
             .and_then(|p| fs::read_to_string(p).ok())
             .map(|d| parse_counter(&d))
             .unwrap_or(0);
+        Self::from_last(last)
+    }
+
+    pub fn from_last(last: u32) -> Self {
         Self {
             last: Mutex::new(last),
         }
     }
 
+    /// In memory only — called under the `OpenFiles` lock, so no disk I/O
+    /// here. `save` once that lock is released.
     pub fn allocate(&self, live: &HashSet<u32>) -> Option<u32> {
         let mut last = self.last.lock().unwrap();
         let n = next_number(*last, live)?;
         *last = n;
-        persist(n);
         Some(n)
+    }
+
+    /// Write the current counter. Under this lock, so two saves racing each
+    /// other cannot leave an older value on disk after a newer one.
+    pub fn save(&self) {
+        let last = self.last.lock().unwrap();
+        persist(*last);
     }
 }
 
@@ -139,6 +151,13 @@ mod tests {
         assert_eq!(pick_restored(Some(0), &live(&[])), None);
         assert_eq!(pick_restored(Some(100), &live(&[])), None);
         assert_eq!(pick_restored(None, &live(&[])), None);
+    }
+
+    #[test]
+    fn allocate_advances_the_counter_in_memory() {
+        let numbers = WindowNumbers::from_last(6);
+        assert_eq!(numbers.allocate(&live(&[7])), Some(8));
+        assert_eq!(numbers.allocate(&live(&[])), Some(9), "the counter moved past 8");
     }
 
     #[test]

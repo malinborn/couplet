@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 
@@ -102,14 +102,23 @@ pub fn window_init(
 /// IPC command: what this window shows on mount. Replaces `get_pending_file`.
 #[tauri::command]
 pub async fn get_window_init(
+    app: AppHandle,
     window: tauri::Window,
     pending: tauri::State<'_, PendingFiles>,
     open_files: tauri::State<'_, OpenFiles>,
 ) -> Result<WindowInit, String> {
     let label = window.label().to_string();
     let taken = pending.0.lock().map_err(|e| e.to_string())?.remove(&label);
-    let mut reg = open_files.0.lock().map_err(|e| e.to_string())?;
-    Ok(window_init(&mut reg, &label, taken, crate::session::new_tab_id))
+    let (init, moved) = {
+        let mut reg = open_files.0.lock().map_err(|e| e.to_string())?;
+        // A window created before `WindowNumbers` was managed missed its number.
+        let moved = number_if_missing(&mut reg, &label, allocate_from(&app));
+        (window_init(&mut reg, &label, taken, crate::session::new_tab_id), moved)
+    };
+    if moved {
+        save_window_counter(&app);
+    }
+    Ok(init)
 }
 
 /// Stores a pending payload per window label, pulled by the frontend on mount.
@@ -152,25 +161,68 @@ pub fn evict_dead(
 }
 
 /// Give `label` its window number: `preferred` (a restored window's own) when
-/// it is free, else the next one. Lock order: `OpenFiles` → `WindowNumbers`.
+/// it is free, else whatever `allocate` hands out. Returns whether `allocate`
+/// did — the counter moved and wants `save_window_counter` once the registry
+/// lock is released.
+pub fn number_window(
+    reg: &mut TabRegistry,
+    label: &str,
+    preferred: Option<u32>,
+    allocate: impl FnOnce(&HashSet<u32>) -> Option<u32>,
+) -> bool {
+    let live = reg.numbers_in_use();
+    if let Some(n) = crate::window_numbers::pick_restored(preferred, &live) {
+        reg.set_number(label, Some(n));
+        return false;
+    }
+    let number = allocate(&live);
+    reg.set_number(label, number);
+    number.is_some()
+}
+
+/// `number_window` for a window that has no number yet, and only then.
+pub fn number_if_missing(
+    reg: &mut TabRegistry,
+    label: &str,
+    allocate: impl FnOnce(&HashSet<u32>) -> Option<u32>,
+) -> bool {
+    if reg.window(label).is_some_and(|w| w.number.is_some()) {
+        return false;
+    }
+    number_window(reg, label, None, allocate)
+}
+
+/// The next number from the app's counter, in memory only. Lock order:
+/// `OpenFiles` → `WindowNumbers`, never the reverse.
 ///
 /// `try_state`: the single-instance callback can open a window from its own
 /// task before `setup` has managed `WindowNumbers`, and a panic there would
-/// end that listener for the rest of the run. Such a window goes unnumbered.
-fn assign_number(app: &AppHandle, reg: &mut TabRegistry, label: &str, preferred: Option<u32>) {
-    let live = reg.numbers_in_use();
-    let number = crate::window_numbers::pick_restored(preferred, &live).or_else(|| {
+/// end that listener for the rest of the run. Such a window stays unnumbered
+/// until its frontend mounts (`get_window_init`).
+fn allocate_from(app: &AppHandle) -> impl FnOnce(&HashSet<u32>) -> Option<u32> + '_ {
+    move |live| {
         app.try_state::<crate::window_numbers::WindowNumbers>()
-            .and_then(|numbers| numbers.allocate(&live))
-    });
-    reg.set_number(label, number);
+            .and_then(|numbers| numbers.allocate(live))
+    }
+}
+
+/// Write the counter to disk. Never under the `OpenFiles` lock.
+fn save_window_counter(app: &AppHandle) {
+    if let Some(numbers) = app.try_state::<crate::window_numbers::WindowNumbers>() {
+        numbers.save();
+    }
 }
 
 /// Number the `main` window — created by `tauri.conf.json`, not by us.
 pub fn number_main_window(app: &AppHandle) {
-    let open_files = app.state::<OpenFiles>();
-    let mut reg = open_files.0.lock().unwrap();
-    assign_number(app, &mut reg, "main", None);
+    let moved = {
+        let open_files = app.state::<OpenFiles>();
+        let mut reg = open_files.0.lock().unwrap();
+        number_window(&mut reg, "main", None, allocate_from(app))
+    };
+    if moved {
+        save_window_counter(app);
+    }
 }
 
 static WINDOW_COUNTER: AtomicU32 = AtomicU32::new(1);
@@ -228,10 +280,13 @@ pub fn open_file_window(app: &AppHandle, path: Option<String>) {
                 // type-checks on Apple Silicon and fails to compile for x86_64.
                 ns_app.activateIgnoringOtherApps_(cocoa::base::YES);
             }
-            {
+            let moved = {
                 let open_files = app.state::<OpenFiles>();
                 let mut reg = open_files.0.lock().unwrap();
-                assign_number(app, &mut reg, &label, None);
+                number_window(&mut reg, &label, None, allocate_from(app))
+            };
+            if moved {
+                save_window_counter(app);
             }
             // Track the file path in OpenFiles and store it in PendingFiles
             // so the frontend can pull it on mount via `get_window_init`.
@@ -473,10 +528,10 @@ pub fn open_restored_window(
             }
 
             // A claim made since the check above wins; that tab is dropped.
-            let (active_path, number) = {
+            let (active_path, number, moved) = {
                 let open_files = app.state::<OpenFiles>();
                 let mut reg = open_files.0.lock().unwrap();
-                assign_number(app, &mut reg, &label, snapshot.number);
+                let moved = number_window(&mut reg, &label, snapshot.number, allocate_from(app));
                 pending_tabs.retain(|t| {
                     let added = reg.add_tab(&label, &t.tab_id, t.path.clone());
                     if !added {
@@ -491,8 +546,11 @@ pub fn open_restored_window(
                     .iter()
                     .find(|t| Some(&t.tab_id) == active_tab_id.as_ref())
                     .and_then(|t| t.path.clone());
-                (active_path, reg.window(&label).and_then(|w| w.number))
+                (active_path, reg.window(&label).and_then(|w| w.number), moved)
             };
+            if moved {
+                save_window_counter(app);
+            }
             // The seeded entry carries the number it actually got, which may
             // differ from the snapshot's when that one was taken meanwhile.
             app.state::<crate::session::SessionState>()
@@ -767,6 +825,49 @@ mod tests {
         let mut reg = TabRegistry::new();
         reg.set_number("main", Some(7));
         assert_eq!(window_init(&mut reg, "main", None, || "u".to_string()).number, Some(7));
+    }
+
+    #[test]
+    fn a_free_restored_number_is_kept_without_touching_the_counter() {
+        let mut reg = TabRegistry::new();
+        let moved = number_window(&mut reg, "editor-2", Some(7), |_| panic!("must not allocate"));
+        assert!(!moved, "nothing to save");
+        assert_eq!(reg.window("editor-2").unwrap().number, Some(7));
+    }
+
+    #[test]
+    fn a_taken_restored_number_falls_back_to_the_counter_skipping_live_ones() {
+        let mut reg = TabRegistry::new();
+        reg.set_number("main", Some(7));
+        let moved = number_window(&mut reg, "editor-2", Some(7), |live| {
+            assert!(live.contains(&7));
+            Some(8)
+        });
+        assert!(moved, "the counter moved and wants saving");
+        assert_eq!(reg.window("editor-2").unwrap().number, Some(8));
+    }
+
+    #[test]
+    fn no_number_to_hand_out_means_nothing_to_save() {
+        let mut reg = TabRegistry::new();
+        assert!(!number_window(&mut reg, "editor-2", None, |_| None));
+        assert_eq!(reg.window("editor-2").unwrap().number, None);
+    }
+
+    #[test]
+    fn a_window_that_missed_its_number_gets_one_at_init() {
+        let mut reg = TabRegistry::new();
+        reg.add_tab("editor-2", "t", None);
+        assert!(number_if_missing(&mut reg, "editor-2", |_| Some(3)));
+        assert_eq!(window_init(&mut reg, "editor-2", None, || panic!("has a tab")).number, Some(3));
+    }
+
+    #[test]
+    fn a_numbered_window_is_never_renumbered_at_init() {
+        let mut reg = TabRegistry::new();
+        reg.set_number("main", Some(4));
+        assert!(!number_if_missing(&mut reg, "main", |_| panic!("must not allocate")));
+        assert_eq!(reg.window("main").unwrap().number, Some(4));
     }
 
     #[test]
