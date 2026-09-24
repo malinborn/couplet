@@ -194,6 +194,7 @@ pub fn run() {
             commands::sync_engine_menu,
             commands::sync_ocd_alignment_menu,
             commands::sync_tabs_compact_menu,
+            commands::sync_transient_menu,
             i18n::resolved_language,
         ])
         .setup(|app| {
@@ -251,13 +252,14 @@ pub fn run() {
                 }
             };
 
-            let (menu, theme_items, engine_items, view_toggles, session_menu_items) =
+            let (menu, theme_items, engine_items, view_toggles, session_menu_items, transient_items) =
                 menu::build_menu(app.handle(), pending_count, explicit_language.as_deref())?;
             app.set_menu(menu)?;
             app.manage(theme_items);
             app.manage(view_toggles);
             app.manage(engine_items);
             app.manage(session_menu_items);
+            app.manage(transient_items);
 
             let app_handle = app.handle().clone();
             app.on_menu_event(move |_app, event| {

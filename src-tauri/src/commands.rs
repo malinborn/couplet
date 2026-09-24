@@ -84,6 +84,18 @@ pub async fn sync_tabs_compact_menu(
     Ok(())
 }
 
+/// Sets File → quick looks' radio pair to the frontend's policy (`"keep"` |
+/// `"close"`). Called at start and after every click: macOS toggles the
+/// clicked item natively, and this corrects the pair.
+#[command]
+pub async fn sync_transient_menu(
+    state: tauri::State<'_, crate::menu::TransientMenuItems>,
+    policy: String,
+) -> Result<(), String> {
+    state.sync(&policy);
+    Ok(())
+}
+
 /// Comment threads of a document, read from its sidecar. A document with no
 /// sidecar yet returns an empty list rather than an error — that is the normal
 /// state for most files.

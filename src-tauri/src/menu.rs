@@ -77,6 +77,29 @@ pub struct EngineMenuItems {
     pub live_render: CheckMenuItem<Wry>,
 }
 
+/// File → "Unanswered quick looks after an hour" (spec §7): what becomes of
+/// a quick look the human saw and never answered. A radio pair whose value
+/// the frontend owns (`localStorage`) and reports with `sync_transient_menu`.
+pub struct TransientMenuItems {
+    pub keep: CheckMenuItem<Wry>,
+    pub close: CheckMenuItem<Wry>,
+}
+
+/// `(keep, close)` checkmarks for a policy; anything but `"close"` is the
+/// default, keep.
+pub fn transient_marks(policy: &str) -> (bool, bool) {
+    let close = policy == "close";
+    (!close, close)
+}
+
+impl TransientMenuItems {
+    pub fn sync(&self, policy: &str) {
+        let (keep, close) = transient_marks(policy);
+        let _ = self.keep.set_checked(keep);
+        let _ = self.close.set_checked(close);
+    }
+}
+
 /// Тумблеры меню View, состояние которых фронтенд синхронизирует при старте.
 ///
 /// Держатся отдельно от `EngineMenuItems` не для порядка: `lib.rs` читает
@@ -174,12 +197,24 @@ pub fn build_menu(
     EngineMenuItems,
     ViewToggleItems,
     SessionMenuItems,
+    TransientMenuItems,
 )> {
     let (reopen_label, reopen_enabled) = reopen_item_state(0, pending_session_count);
     let reopen_session_item = MenuItemBuilder::with_id("reopen_session", reopen_label.text())
         .accelerator("CmdOrCtrl+Shift+T")
         .enabled(reopen_enabled)
         .build(app)?;
+
+    let transient_keep =
+        CheckMenuItemBuilder::with_id("transient_ignored_keep", t("menu.file.transient_keep")).build(app)?;
+    let transient_close =
+        CheckMenuItemBuilder::with_id("transient_ignored_close", t("menu.file.transient_close")).build(app)?;
+    // Checked here for the default; the frontend's sync corrects it at start.
+    let _ = transient_keep.set_checked(true);
+    let transient_submenu = SubmenuBuilder::new(app, t("menu.file.transient_title"))
+        .item(&transient_keep)
+        .item(&transient_close)
+        .build()?;
 
     let file_menu = SubmenuBuilder::new(app, t("menu.file.title"))
         .item(
@@ -216,6 +251,7 @@ pub fn build_menu(
         )
         .separator()
         .item(&MenuItemBuilder::with_id("recent_files", t("menu.file.recent_files")).build(app)?)
+        .item(&transient_submenu)
         .separator()
         .item(&reopen_session_item)
         .build()?;
@@ -512,7 +548,8 @@ pub fn build_menu(
     let session_items = SessionMenuItems {
         reopen_session: reopen_session_item,
     };
-    Ok((menu, theme_items, engine_items, view_toggles, session_items))
+    let transient_items = TransientMenuItems { keep: transient_keep, close: transient_close };
+    Ok((menu, theme_items, engine_items, view_toggles, session_items, transient_items))
 }
 
 #[cfg(test)]
@@ -533,5 +570,12 @@ mod tests {
     #[test]
     fn reopen_item_is_disabled_with_nothing_to_reopen() {
         assert_eq!(reopen_item_state(0, 0), (ReopenLabel::LastClosed, false));
+    }
+
+    #[test]
+    fn the_quick_look_policy_marks_one_item() {
+        assert_eq!(transient_marks("keep"), (true, false));
+        assert_eq!(transient_marks("close"), (false, true));
+        assert_eq!(transient_marks("anything else"), (true, false), "unknown means the default");
     }
 }
