@@ -18,17 +18,17 @@ Minimalist live-preview markdown editor for macOS. Tauri 2 + Svelte 5 + CodeMirr
 | `npm run build:dev` | **Renamed dev .dmg** (`couplet-dev`). Safe to install alongside production. |
 | `npm run check:x86` | Compile for `x86_64-apple-darwin`. Fast guard that an Intel build still works — no bundle, no install. |
 | `npm run build:universal` | **Production universal .dmg** (Apple Silicon + Intel). Same owner-triggered rule as `tauri build`. |
-| `npm run tauri build` | **Production build (creates .dmg).** Replaces the user's installed md-mini if installed. **Explicit, owner-triggered only — do NOT run as part of routine dev/QA.** |
-| `npm run tauri dev` | Tauri dev with **production identifier**. Conflicts with running production md-mini (shares single-instance socket, app data, recovery files). **Avoid while the user is actively using md-mini — use `npm run dev` or `npm run dev:app` instead.** |
+| `npm run tauri build` | **Production build (creates .dmg).** Replaces the user's installed couplet if installed. **Explicit, owner-triggered only — do NOT run as part of routine dev/QA.** |
+| `npm run tauri dev` | Tauri dev with **production identifier**. Conflicts with running production couplet (shares single-instance socket, app data, recovery files), and refuses to start at all while an installed md-mini's data is still unmigrated (`migration.rs`, B3). **Use `npm run dev` or `npm run dev:app` instead.** |
 | `npm run build` | Frontend build only (no Tauri bundle) |
-| `npm run dev:site` | Dev server for the **md-mini.com landing** (Vite at http://localhost:1421). Never run alongside `npm run dev` — see the two-servers gotcha below. |
+| `npm run dev:site` | Dev server for the **couplet.pro landing** (Vite at http://localhost:1421). Never run alongside `npm run dev` — see the two-servers gotcha below. |
 | `npm run build:site` | Build the landing from `site/` into `docs/`. Run `rm -rf docs/assets` first; read `site/CLAUDE.md` before touching the landing. |
 
 ### Build / Test Policy While User Is Working
 
-- **Default for visual verification:** `npm run dev` (browser). Most md-mini features are frontend; the editor, CodeMirror, decorations, mermaid all run in the browser context.
+- **Default for visual verification:** `npm run dev` (browser). Most couplet features are frontend; the editor, CodeMirror, decorations, mermaid all run in the browser context.
 - **When Tauri features are needed:** `npm run dev:app`. Different identifier → different bundle ID → independent of the installed production app.
-- **NEVER run `npm run tauri dev` or `npm run tauri build` as part of routine development or QA.** Both share state with the installed production md-mini and can disrupt the user's active session. Production build is an **explicit owner-triggered action**, never an automated step.
+- **NEVER run `npm run tauri dev` or `npm run tauri build` as part of routine development or QA.** Both share state with the installed production app and can disrupt the user's active session. Production build is an **explicit owner-triggered action**, never an automated step.
 
 ## Architecture
 
@@ -93,7 +93,7 @@ src/                    # Frontend (Svelte + TypeScript)
       inline-continuation.ts # Typing at a span boundary continues its format
       selection-toolbar.ts   # Floating inline-format toolbar (floating-ui)
       inspector.ts / inspector-model.ts # Link URL + fenced-code language
-    ai-highlight.ts     # AI-edit/pulse highlight StateField (mdmini show/edit), Esc to clear
+    ai-highlight.ts     # AI-edit/pulse highlight StateField (couplet show/edit), Esc to clear
     human-edit.ts       # isHumanEdit: did the human change the document (not an agent's edit, not a reload) — a quick look's «Keep»
   lib/ai-commands.ts    # Pure helpers for AI commands (show target resolution, changed-line ranges)
   lib/tabs/             # Tabs, B-lite: only the active tab is a live state
@@ -136,7 +136,7 @@ src/                    # Frontend (Svelte + TypeScript)
 - `docs/superpowers/specs/2026-03-19-md-mini-design.md` — Full design specification
 - `docs/superpowers/plans/2026-03-20-md-mini-implementation.md` — Implementation plan (16 tasks)
 - `docs/cli-launcher.md` — How the CLI launcher works (two-path approach: `open` + single-instance IPC)
-- `docs/ai-interface.md` — `mdmini show`/`edit`: CLI syntax, JSON contract, command socket protocol, CLAUDE.md paragraph to paste into other projects
+- `docs/ai-interface.md` — `couplet show`/`edit`: CLI syntax, JSON contract, command socket protocol, CLAUDE.md paragraph to paste into other projects
 - `src-tauri/tauri.conf.json` — Tauri config (window defaults, CLI args, plugins)
 - `src-tauri/capabilities/default.json` — Tauri permissions
 - `src/lib/editor/setup.ts` — All CM6 extensions assembled here
@@ -150,7 +150,7 @@ src/                    # Frontend (Svelte + TypeScript)
 - `docs/superpowers/plans/2026-09-25-tabs-02-model.md` — Tab model plan: design decisions D1–D17
 - `docs/superpowers/plans/2026-09-25-tabs-04-ai-cli.md` — AI contract and CLI plan: decisions D1–D19 (routing, focus, typing, background ask/edit/show, quick looks) and its known gaps
 - `src/lib/theme/CLAUDE.md` — **Read before adding a theme or a colour.** The full token set every theme defines, the optional hooks, how a family is registered (CSS, `theme-resolve.ts`, menu, both app icons), and the `theme-tokens.test.ts` guard that fails on an undefined `var(--…)`
-- `site/CLAUDE.md` — **Read before touching the md-mini.com landing.** How it builds and deploys, why its demos are real editor instances, and the layout/field/theme traps found while building it
+- `site/CLAUDE.md` — **Read before touching the couplet.pro landing.** How it builds and deploys, why its demos are real editor instances, and the layout/field/theme traps found while building it
 
 ## Tech Stack
 
@@ -196,13 +196,15 @@ Lets an agent verify features in the actually-rendered app instead of jsdom. Two
 ### How to run
 
 ```sh
-npm run tauri dev -- --features mcp-bridge
+npm run dev:app -- --features mcp-bridge
 ```
 
-App first, agent second — without the feature there is nothing to connect to. Name the window so you can see at a glance which build you are driving:
+Under the dev config, never the production one: a debug build on the production identity (`couplet` / `pro.couplet.app`) refuses to start while an installed md-mini's data is still unmigrated (`migration.rs`, B3) — and should, because running it would create `couplet/` and make the real release skip that data.
+
+App first, agent second — without the feature there is nothing to connect to. Name the window so you can see at a glance which build you are driving (later `--config` values merge over earlier ones):
 
 ```sh
-npm run tauri dev -- --features mcp-bridge \
+npm run dev:app -- --features mcp-bridge \
   --config '{"app":{"windows":[{"title":"<feature> · local"}]}}'
 ```
 
@@ -232,12 +234,13 @@ The bridge is unauthenticated and grants arbitrary JS + IPC in a running instanc
 
 ### Second instance side by side
 
-The vite config pins `strictPort: true` on 1420, so a second dev app needs three things, not one:
+The vite config pins `strictPort: true` on its port, and the dev identity owns one single-instance socket, so a second dev app needs four things, not one:
 
 ```sh
 CARGO_TARGET_DIR=~/.cargo/<slug>-target npx vite --port 1421 --strictPort &
-CARGO_TARGET_DIR=~/.cargo/<slug>-target npm run tauri dev -- --features mcp-bridge \
-  --config '{"build":{"beforeDevCommand":"","devUrl":"http://localhost:1421"},
+CARGO_TARGET_DIR=~/.cargo/<slug>-target npm run dev:app -- --features mcp-bridge \
+  --config '{"productName":"couplet-<slug>","identifier":"pro.couplet.<slug>",
+             "build":{"beforeDevCommand":"","devUrl":"http://localhost:1421"},
              "app":{"windows":[{"title":"<feature> · local"}]}}'
 ```
 
@@ -349,13 +352,13 @@ CARGO_TARGET_DIR=~/.cargo/<slug>-target npm run tauri dev -- --features mcp-brid
 - **Leaving a tab parks its agent questions; nothing cancels them.** `stashActive` calls `ai.leave` before the strip, `settle` calls `ai.enter` after `tab_activate`, `closeNow`/`releaseAll` call `ai.forget`. `cancel_ai_ask` is gone. The Rust side's errors for a closed tab (`tab closed`), released tab (`tab released`) and closed window (`window closed`) are what an agent gets; the timeout counts from the request, and a question past its deadline is not shown on entry.
 - **An agent's edit of a background file tab is written to disk at once** (`applyToTabNow`), so "background file tabs are always clean" still holds. Its baseline becomes the written text, so returning reuses the cached state (undo, highlight).
 - **An agent's edit is told apart from a human's by its effect, not its origin.** Every agent text change carries `setAiHighlights` and is its own undo step (`aiEditTransaction`: `isolateHistory.of('full')`, or one ⌘Z takes a neighbouring keystroke with it); a reload from disk carries `addToHistory: false`. `isHumanEdit` (`editor/human-edit.ts`) is "neither" — any key, paste, format, checkbox, drop, undo — and that is what turns a quick look into «Оставить» (`tabs.humanEdited()`, synchronous and unqueued so an update listener can call it mid-command). A new kind of programmatic change must carry one of the two markers, or it will count as the human's.
-- **Quick-look expiry never closes the active tab of any window**, focused or not: md-mini usually sits unfocused beside the agent's terminal while the human reads it. Only background quick looks expire (clean by construction, closed the ⌘W way); an unseen one never does; the hour starts at the first view. **Persisted across a restart** (tabs-questions Q8): `transient`/`transientSeenAt` ride `tabs_sync` into `session-v2.json` like the drawer stamps (serde defaults, no version bump) and come back through `pending_tab_from_snapshot`, so the hour keeps counting from the first view before the restart — seeing it again after launch does not restart it. One that expired while the app was down is handled by the first expiry tick (≤ 1 min after launch) by the File-menu policy, background tabs only: an active restored quick look stays until it is left. ⌘⇧T still brings a closed quick look back as an ordinary tab.
+- **Quick-look expiry never closes the active tab of any window**, focused or not: couplet usually sits unfocused beside the agent's terminal while the human reads it. Only background quick looks expire (clean by construction, closed the ⌘W way); an unseen one never does; the hour starts at the first view. **Persisted across a restart** (tabs-questions Q8): `transient`/`transientSeenAt` ride `tabs_sync` into `session-v2.json` like the drawer stamps (serde defaults, no version bump) and come back through `pending_tab_from_snapshot`, so the hour keeps counting from the first view before the restart — seeing it again after launch does not restart it. One that expired while the app was down is handled by the first expiry tick (≤ 1 min after launch) by the File-menu policy, background tabs only: an active restored quick look stays until it is left. ⌘⇧T still brings a closed quick look back as an ordinary tab.
 - **`ai_respond` accepts an answer only from the window its request was delivered to** (`AiPending::respond_from`); it fills in `window` from the registry, over whatever the frontend sent.
 - **An agent `close` is registered in `AiPending` without a path** — `tab_close`'s `cancel_for_tab` would otherwise fail the very request that closed the tab — and a window's last tab answers before the window closes (`closeTabNow`'s `onLastTab`).
 - **Routing puts "the file is already open" above a live `window_binding`** (one file, one tab app-wide); a dead binding is an error even then. A window's project is bound once, lazily, from its first file (`routing::bind_missing_projects`, the directory walk outside the registry lock), and persisted in `session-v2.json`. Step 4 fills a `main` that is still as it started (no project, no file tab) before building a second window. A Finder open (`RunEvent::Opened` → `window::route_opened_file`) goes by project too (tabs-questions Q4): its own tab → a window of its project (`routing::project_window`, same rank) → a `main` still as it started (`routing::main_untouched`, the same rule as step 4) → a new window; being a human's open, the window comes forward. `open_os_files` does the routing on a blocking thread — path normalization and the project walk touch the disk — and each open on the main thread, waited for before the next file.
 - **One path spelling, at every entry — the registry boundary included.** `OpenFiles` is keyed by the exact string, so `/tmp/a.md` and `/private/tmp/a.md` would be two tabs autosaving one file. `path_norm::normalize_path` runs in `resolve_path` (CLI args, pending files, single-instance argv), at the command socket's door (`request_path`, which also refuses a relative path: `path must be absolute`), in the tab commands, window opens, session restore and ⌘⇧T. `normalize_str` asks the file system — never call it under the `OpenFiles` lock. Known gap: case is not folded, and APFS is case-insensitive, so `A.md`/`a.md` are still two spellings.
-- **`mdmini <file>` takes two paths.** Plain, from a human: the single-instance socket, one new window with the files as tabs (`open_files_window`). With `-t`/`-b`/`-f` or `CLAUDECODE` set: the command socket (`ai open`), routed, at most 50 files. `ls` and `close` never launch the app. `/usr/local/bin/mdmini` is a copy — after a CLI change, `scripts/install.sh` must be re-run, or the old copy opens a file called `ls`.
-- **A window created for a background command is built with `.focused(false)` and no `NSApp activate`** (`window::build_window`, `Activation::Background`); `reveal_window` is how a `focus: true` brings an existing window forward. An `ask` is the exception: a window built for it is `Foreground` unless someone types (`ai_socket::new_window_activation`, tabs-questions Q7), and `scripts/couplet` cold-starts an `ask` with plain `open`. `focused(false)` alone makes tao `orderFront` it — over the window the human types in — so `keep_behind_key_window` orders it just below md-mini's key window. It uses the `objc` runtime directly (`Class::get`, `Sel::register`, `send_message`), not `cocoa` + `msg_send!`: every `cocoa` item is deprecated and `objc` 0.2's `sel!` expands to a `cfg(feature = "cargo-clippy")` this crate does not declare, so each call would add a clippy warning. Its `BOOL` is compared with `YES`, never a `bool` literal (the x86_64 trap above).
+- **`couplet <file>` takes two paths.** Plain, from a human: the single-instance socket, one new window with the files as tabs (`open_files_window`). With `-t`/`-b`/`-f` or `CLAUDECODE` set: the command socket (`ai open`), routed, at most 50 files. `ls` and `close` never launch the app. `/usr/local/bin/couplet` is a copy — after a CLI change, `scripts/install.sh` must be re-run, or the old copy opens a file called `ls`.
+- **A window created for a background command is built with `.focused(false)` and no `NSApp activate`** (`window::build_window`, `Activation::Background`); `reveal_window` is how a `focus: true` brings an existing window forward. An `ask` is the exception: a window built for it is `Foreground` unless someone types (`ai_socket::new_window_activation`, tabs-questions Q7), and `scripts/couplet` cold-starts an `ask` with plain `open`. `focused(false)` alone makes tao `orderFront` it — over the window the human types in — so `keep_behind_key_window` orders it just below couplet's key window. It uses the `objc` runtime directly (`Class::get`, `Sel::register`, `send_message`), not `cocoa` + `msg_send!`: every `cocoa` item is deprecated and `objc` 0.2's `sel!` expands to a `cfg(feature = "cargo-clippy")` this crate does not declare, so each call would add a clippy warning. Its `BOOL` is compared with `YES`, never a `bool` literal (the x86_64 trap above).
 - **Focusing a dev window without OS tools:** from its own webview, `window.__TAURI_INTERNALS__.invoke('plugin:window|set_focus', { label })` (fire-then-read — the eval times out but the call lands). `core:window:allow-set-focus` is already granted. `manage_window` has no focus action, and System Events/keystrokes are off limits. The focus change also moves `menu_route`'s last-focused target, so a following AX menu press lands in that window.
 
 ## Workflow
