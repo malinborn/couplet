@@ -5,6 +5,7 @@ import {
   FLUSH_ATTEMPTS,
   TRANSIENT_IGNORED_AFTER_MS,
   type BackgroundOpen,
+  type DiskOptions,
   type InitTab,
   type MoveDone,
   type MovedTab,
@@ -17,6 +18,7 @@ import {
 import type { TabOwner } from '../switch-document';
 import type { InboxItem } from './agent-inbox';
 import type { MoveTarget } from './carousel';
+import { applyLineEnding, fromDisk, type LineEnding } from '../line-endings';
 
 const fileTab = (tabId: string, path: string): InitTab => ({
   tabId,
@@ -42,7 +44,12 @@ function makeHarness(initialFiles: Record<string, string>) {
   const calls: string[] = [];
   const swaps: { state: EditorState; opts: SwapOptions }[] = [];
   const hooks = { duringRead: () => {}, duringCommitPauses: () => {}, afterFlush: () => {} };
-  const doc = { path: null as string | null, dirty: false, baseline: null as string | null };
+  const doc = {
+    path: null as string | null,
+    dirty: false,
+    baseline: null as string | null,
+    lineEnding: 'lf' as LineEnding,
+  };
   let live = EditorState.create({ doc: '' });
   let saveSucceeds = true;
   const parkOnLeave = new Set<string>();
@@ -83,18 +90,21 @@ function makeHarness(initialFiles: Record<string, string>) {
       path: () => doc.path,
       dirty: () => doc.dirty,
       baseline: () => doc.baseline,
-      setActive: (path, dirty, baseline) => {
+      lineEnding: () => doc.lineEnding,
+      setActive: (path, dirty, baseline, lineEnding) => {
         calls.push(`setActive ${path}`);
         doc.path = path;
         doc.dirty = dirty;
         doc.baseline = baseline;
+        doc.lineEnding = lineEnding;
       },
     },
     autosave: {
       flush: vi.fn(async () => {
         calls.push('flush');
         if (saveSucceeds && doc.path !== null && doc.dirty) {
-          files.set(doc.path, live.doc.toString());
+          // As App's `doSave`: the buffer's LF text, in the document's own ending.
+          files.set(doc.path, applyLineEnding(live.doc.toString(), doc.lineEnding));
           doc.baseline = live.doc.toString();
           doc.dirty = false;
         }
@@ -135,16 +145,16 @@ function makeHarness(initialFiles: Record<string, string>) {
     },
     disk: {
       exists: async (path) => files.has(path),
-      read: vi.fn(async (path: string) => {
+      read: vi.fn(async (path: string, opts?: DiskOptions) => {
         hooks.duringRead();
         if (unreadable.has(path)) throw new Error('Cannot open: file is not valid text.');
-        const text = files.get(path);
-        if (text === undefined) throw new Error('ENOENT');
-        return text;
+        const raw = files.get(path);
+        if (raw === undefined) throw new Error('ENOENT');
+        return fromDisk(raw, opts?.fallback);
       }),
-      write: vi.fn(async (path: string, content: string) => {
+      write: vi.fn(async (path: string, content: string, lineEnding: LineEnding) => {
         if (writeFails) throw new Error('EACCES');
-        files.set(path, content);
+        files.set(path, applyLineEnding(content, lineEnding));
       }),
     },
     rust: {
@@ -2035,5 +2045,85 @@ describe('tabs arriving from another window (plan 05)', () => {
     await h.controller.arrive([fileTab('b', '/b.md')]);
     expect(h.ids()).toEqual(['a', 'b', 'c']);
     expect(h.deps.rust.activate).not.toHaveBeenCalled();
+  });
+});
+
+describe('line endings', () => {
+  const crlf = 'one\r\ntwo\r\n';
+  const exclusive = <T>(h: Harness, fn: () => Promise<T>) => h.controller.runExclusive(fn);
+  const prependX = (s: EditorState) => ({ state: s.update({ changes: { from: 0, insert: 'X' } }).state, result: null });
+
+  it('ACrlfTabSwitchedAwayFlushesAsCrlf', async () => {
+    // The wiring the CRLF port hangs on: read → Ready → Entry → setActive,
+    // then the flush on leave writes in the ending the tab carried.
+    const h = await started({ '/a.md': 'AAAA', '/win.md': crlf }, [fileTab('a', '/a.md')]);
+    await h.controller.openPath('/win.md');
+    expect(h.live().doc.toString()).toBe('one\ntwo\n');
+    expect(h.doc.lineEnding).toBe('crlf');
+    h.type('three');
+    await h.controller.activate('a');
+    expect(h.files.get('/win.md')).toBe('one\r\ntwo\r\nthree');
+    expect(h.doc.lineEnding).toBe('lf');
+  });
+
+  it('TheEndingTravelsWithTheTab_NotWithTheSpellingItWasOpenedUnder', async () => {
+    // Opened as `/tmp/x.md`, registered by Rust as `/private/tmp/x.md`: one
+    // file under two spellings. A table keyed by the caller's spelling found
+    // nothing for the registry's, and the first autosave wrote LF.
+    const h = await started({ '/a.md': 'AAAA', '/tmp/x.md': crlf, '/private/tmp/x.md': crlf }, [
+      fileTab('a', '/a.md'),
+    ]);
+    vi.mocked(h.deps.rust.open).mockResolvedValueOnce({ kind: 'created', tabId: 't9', path: '/private/tmp/x.md' });
+    await h.controller.openPath('/tmp/x.md');
+    expect(h.doc.path).toBe('/private/tmp/x.md');
+    expect(h.doc.lineEnding).toBe('crlf');
+    h.type('!');
+    await h.controller.activate('a');
+    expect(h.files.get('/private/tmp/x.md')).toBe('one\r\ntwo\r\n!');
+  });
+
+  it('ACachedCrlfTabComesBackCrlf', async () => {
+    const h = await started({ '/a.md': 'AAAA', '/win.md': crlf }, [fileTab('a', '/a.md')]);
+    await h.controller.openPath('/win.md');
+    await h.controller.activate('a');
+    await h.controller.activate('t1');
+    expect(h.swaps[h.swaps.length - 1]?.opts.blur).toBe(false);
+    expect(h.doc.lineEnding).toBe('crlf');
+  });
+
+  it('AnAgentsBackgroundEditOfACrlfFileWritesCrlf', async () => {
+    const h = await started({ '/a.md': 'AAAA', '/win.md': crlf }, [fileTab('a', '/a.md')]);
+    await exclusive(h, () => h.controller.openBackgroundNow('/win.md'));
+    const result = await exclusive(h, () => h.controller.applyToTabNow('t1', prependX));
+    expect(result?.kind).toBe('applied');
+    expect(h.files.get('/win.md')).toBe('Xone\r\ntwo\r\n');
+  });
+
+  it('AnEndingChangedWhileTheTabWasShownIsKeptWhenItIsLeft', async () => {
+    // The active tab followed an external conversion (`fileState.lineEnding`);
+    // the file then went away, so the agent's write has only the tab's own
+    // ending to go by — the one it had when it was left, not the one it was read with.
+    const h = await started({ '/a.md': 'AAAA', '/win.md': 'one\ntwo' }, [fileTab('a', '/a.md')]);
+    await h.controller.openPath('/win.md');
+    h.doc.lineEnding = 'crlf';
+    await h.controller.activate('a');
+    h.files.delete('/win.md');
+    await exclusive(h, () => h.controller.applyToTabNow('t1', prependX));
+    expect(h.files.get('/win.md')).toBe('Xone\r\ntwo');
+  });
+
+  it('AgentReadsAreQuiet_TheHumansAreNot', async () => {
+    // A failed read an agent caused must not raise a toast the human never asked for.
+    const h = await started({ '/a.md': 'AAAA', '/b.md': 'BBBB' }, [fileTab('a', '/a.md')]);
+    await exclusive(h, () => h.controller.openBackgroundNow('/b.md'));
+    await exclusive(h, () => h.controller.textForAgentNow('t1'));
+    await exclusive(h, () => h.controller.applyToTabNow('t1', prependX));
+    const agentReads = vi.mocked(h.deps.disk.read).mock.calls;
+    expect(agentReads.length).toBe(3);
+    for (const [, opts] of agentReads) expect(opts?.quiet).toBe(true);
+    vi.mocked(h.deps.disk.read).mockClear();
+    await h.controller.activate('t1');
+    expect(vi.mocked(h.deps.disk.read).mock.calls.length).toBeGreaterThan(0);
+    for (const [, opts] of vi.mocked(h.deps.disk.read).mock.calls) expect(opts?.quiet).toBeFalsy();
   });
 });

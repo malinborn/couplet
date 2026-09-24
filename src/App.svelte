@@ -74,14 +74,13 @@
   import { activeCellEditSession } from './lib/editor/cell-edit-session';
   import { closeSearchPanel } from '@codemirror/search';
   import { hideHoverMenu } from './lib/editor/hover-menu';
-  import { createTabController, type MoveDone, type OpenAnswer, type Stranded } from './lib/tabs/controller';
+  import { createTabController, type DiskOptions, type MoveDone, type OpenAnswer, type Stranded } from './lib/tabs/controller';
   import { AGENT_ERRORS, createAgentCommands, type AgentResponse, type AskResult } from './lib/tabs/agent-commands';
   import { createTypingTracker } from './lib/tabs/typing';
   import { emptyTabList, type TabListState } from './lib/tabs/tab-model';
   import type { CarouselWindow, MoveTarget } from './lib/tabs/carousel';
-  import { leaveEffects } from './lib/tabs/tab-cache';
+  import { stripLeavingState } from './lib/tabs/tab-cache';
   import { decideSaveAs } from './lib/tabs/save-as';
-  import { createTabLineEndings } from './lib/tabs/tab-line-endings';
   import { createCommentWriter, adoptStartedDraft } from './lib/comment-writer';
   import {
     addAiComment,
@@ -557,11 +556,15 @@
   }
 
   /** Make `path` the active document for every singleton that follows the active tab. */
-  function setActiveDocument(path: string | null, dirty: boolean, baseline: string | null): void {
-    fileState.lineEnding = lineEndings.handOver(
-      { path: fileState.filePath, lineEnding: fileState.lineEnding },
-      path
-    );
+  function setActiveDocument(
+    path: string | null,
+    dirty: boolean,
+    baseline: string | null,
+    lineEnding: LineEnding
+  ): void {
+    // Carried by the tab itself, never looked up by path: a file opened under
+    // another spelling than the registry's would find nothing and save as LF.
+    fileState.lineEnding = lineEnding;
     // An unreadable disk belonged to the document that is leaving; the one
     // arriving was read to be shown, or is the same one read again.
     endDiskUnreadable();
@@ -618,7 +621,7 @@
   function stripForBackground(): void {
     const view = editorHandle?.view;
     if (view) {
-      view.dispatch({ effects: leaveEffects() });
+      stripLeavingState(view, themeControl);
       closeSearchPanel(view);
     }
     hideHoverMenu();
@@ -640,13 +643,13 @@
     }
   }
 
-  /** Line endings of the tabs that are not active — see `tab-line-endings.ts`. */
-  const lineEndings = createTabLineEndings();
-
-  async function readTabDocument(path: string): Promise<string> {
-    // No line break on disk says nothing about the file's convention, so keep
-    // the one already known (see `detectLineEnding`).
-    return lineEndings.record(path, await readDocument(path, lineEndings.of(path)));
+  /**
+   * The controller's disk, with a toast for a read the human asked for. An
+   * agent's read (`quiet`) fails into the agent's answer instead: a red toast
+   * for something the human never did would stand there unexplained.
+   */
+  function diskCall<T>(path: string, opts: DiskOptions | undefined, call: () => Promise<T>): Promise<T> {
+    return opts?.quiet ? call() : readingForTab(path, call);
   }
 
   /** The Rust half of a tab operation failed; the tab model itself goes on. */
@@ -678,6 +681,7 @@
       path: () => fileState.filePath,
       dirty: () => fileState.isDirty,
       baseline: () => diskBaseline,
+      lineEnding: () => fileState.lineEnding,
       setActive: setActiveDocument,
     },
     autosave: {
@@ -709,9 +713,11 @@
       hasLiveAsk: () => liveAskShown(),
     },
     disk: {
-      exists: (path) => readingForTab(path, () => fileExists(path)),
-      read: (path) => readingForTab(path, () => readTabDocument(path)),
-      write: (path, content) => writeDocument(path, content, lineEndings.of(path)),
+      exists: (path, opts) => diskCall(path, opts, () => fileExists(path)),
+      // No line break on disk says nothing about the file's convention, so
+      // the tab's known ending is the fallback (see `detectLineEnding`).
+      read: (path, opts) => diskCall(path, opts, () => readDocument(path, opts?.fallback)),
+      write: (path, content, lineEnding) => writeDocument(path, content, lineEnding),
     },
     rust: {
       owner: (path) =>

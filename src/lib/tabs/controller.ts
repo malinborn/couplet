@@ -23,6 +23,7 @@ import {
 } from './tab-model';
 import type { InboxItem } from './agent-inbox';
 import type { MoveTarget } from './carousel';
+import type { DiskDocument, LineEnding } from '../line-endings';
 
 /** Flush attempts before a still-dirty file tab refuses to be left. */
 export const FLUSH_ATTEMPTS = 3;
@@ -162,7 +163,9 @@ export interface TabControllerDeps {
     path(): string | null;
     dirty(): boolean;
     baseline(): string | null;
-    setActive(path: string | null, dirty: boolean, baseline: string | null): void;
+    /** The line ending the active document is saved with (`fileState.lineEnding`). */
+    lineEnding(): LineEnding;
+    setActive(path: string | null, dirty: boolean, baseline: string | null, lineEnding: LineEnding): void;
   };
   autosave: {
     flush(): Promise<void>;
@@ -202,11 +205,18 @@ export interface TabControllerDeps {
     adopt(tabId: string, items: readonly InboxItem[]): void;
     hasLiveAsk(): boolean;
   };
+  /**
+   * The disk, as the document boundary sees it: text arrives LF with the
+   * file's own ending beside it, and is written back in that ending (see
+   * `line-endings.ts`). The ending travels with the tab — `Ready`, `Entry`,
+   * `TabCache` — never through a table keyed by path: a file opened under a
+   * spelling other than the registry's would miss it and be saved as LF.
+   */
   disk: {
-    exists(path: string): Promise<boolean>;
-    read(path: string): Promise<string>;
+    exists(path: string, opts?: DiskOptions): Promise<boolean>;
+    read(path: string, opts?: DiskOptions): Promise<DiskDocument>;
     /** Save a background tab's text — an agent's edit there. Rejects on failure. */
-    write(path: string, content: string): Promise<void>;
+    write(path: string, content: string, lineEnding: LineEnding): Promise<void>;
   };
   rust: {
     owner(path: string): Promise<TabOwner>;
@@ -234,6 +244,16 @@ export interface TabControllerDeps {
   windowFocused(): boolean;
 }
 
+export interface DiskOptions {
+  /** The ending to assume when the file has no line break at all. */
+  fallback?: LineEnding;
+  /**
+   * An agent's read of a tab the human did not ask for: its failure goes back
+   * in the agent's answer, and must not raise a toast the human never caused.
+   */
+  quiet?: boolean;
+}
+
 /** What a background tab keeps. `state` is null until the tab was first shown. */
 interface TabCache {
   state: EditorState | null;
@@ -246,11 +266,16 @@ interface TabCache {
   baseline: string | null;
   /** Where to put the caret when the tab is next shown — an agent's background `show`/`edit`. */
   enterAt: Position | null;
+  /** The file's line ending as last read, or as the tab had it when left. */
+  lineEnding: LineEnding;
 }
 
 type Ready =
-  | { kind: 'cached'; state: EditorState; baseline: string | null }
-  | { kind: 'fresh'; content: string; exists: boolean };
+  | { kind: 'cached'; state: EditorState; baseline: string | null; lineEnding: LineEnding }
+  | { kind: 'fresh'; content: string; exists: boolean; lineEnding: LineEnding };
+
+/** An empty tab: a new untitled one, or a file that does not exist yet (created LF). */
+const EMPTY: Ready = { kind: 'fresh', content: '', exists: false, lineEnding: 'lf' };
 
 /** A state ready to be swapped in, built before anything is handed over. */
 interface Entry {
@@ -258,6 +283,7 @@ interface Entry {
   swap: SwapOptions;
   dirty: boolean;
   baseline: string | null;
+  lineEnding: LineEnding;
   restore: Position | null;
 }
 
@@ -344,6 +370,7 @@ export function createTabController(deps: TabControllerDeps) {
       scroll: null,
       baseline: null,
       enterAt: null,
+      lineEnding: 'lf',
     };
   }
 
@@ -464,6 +491,9 @@ export function createTabController(deps: TabControllerDeps) {
     const scroll = deps.editor.scrollSnapshot();
     const dirty = deps.doc.dirty();
     const baseline = deps.doc.baseline();
+    // What it is now, not what it was read as: an external change or Save As
+    // may have moved it while the tab was shown.
+    const lineEnding = deps.doc.lineEnding();
     // Before the strip clears them: the agents' live questions wait for the tab.
     const parked = deps.ai.leave(tab.id);
     deps.editor.stripForBackground();
@@ -475,6 +505,7 @@ export function createTabController(deps: TabControllerDeps) {
       scroll,
       baseline,
       enterAt: null,
+      lineEnding,
     });
     if (tab.path !== null) deps.comments.forget(tab.path);
     publish(
@@ -490,25 +521,32 @@ export function createTabController(deps: TabControllerDeps) {
   /** Step 2: what entering `tab` will show. Nothing changes here. */
   async function prepare(tab: TabMeta): Promise<Ready | { kind: 'failed' }> {
     const cached = cache.get(tab.id);
+    const known = cached?.lineEnding ?? 'lf';
     if (tab.path === null) {
       return cached?.state
-        ? { kind: 'cached', state: cached.state, baseline: null }
-        : { kind: 'fresh', content: cached?.content ?? '', exists: false };
+        ? { kind: 'cached', state: cached.state, baseline: null, lineEnding: known }
+        : { kind: 'fresh', content: cached?.content ?? '', exists: false, lineEnding: known };
     }
     try {
       const exists = await deps.disk.exists(tab.path);
       // A file deleted while its tab was in the background keeps its buffer,
       // as the active tab does: an empty state on that path would drop the
       // last copy of the text. No baseline, so the next save recreates it.
-      if (!exists && cached?.state) return { kind: 'cached', state: cached.state, baseline: null };
-      const content = exists ? await deps.disk.read(tab.path) : '';
+      if (!exists && cached?.state) {
+        return { kind: 'cached', state: cached.state, baseline: null, lineEnding: known };
+      }
+      const disk = exists ? await deps.disk.read(tab.path, { fallback: known }) : null;
+      const content = disk?.text ?? '';
+      // The disk's ending either way: a clean tab follows a change that only
+      // touched the endings, as the active tab does.
+      const lineEnding = disk?.lineEnding ?? known;
       if (
         cached?.state &&
         decideEnter({ baseline: cached.baseline, disk: exists ? content : null }) === 'use-cache'
       ) {
-        return { kind: 'cached', state: cached.state, baseline: cached.baseline };
+        return { kind: 'cached', state: cached.state, baseline: cached.baseline, lineEnding };
       }
-      return { kind: 'fresh', content, exists };
+      return { kind: 'fresh', content, exists, lineEnding };
     } catch (err) {
       console.error('Failed to open file:', err);
       return { kind: 'failed' };
@@ -552,6 +590,7 @@ export function createTabController(deps: TabControllerDeps) {
         swap: { blur: false, scroll: !at && cached?.scroll ? cached.scroll : 'top' },
         dirty: tab.dirty,
         baseline: ready.baseline,
+        lineEnding: ready.lineEnding,
         restore: at,
       };
     }
@@ -561,6 +600,7 @@ export function createTabController(deps: TabControllerDeps) {
       swap: { blur: true, scroll: 'top' },
       dirty: tab.path === null && ready.content.length > 0,
       baseline: ready.exists ? ready.content : null,
+      lineEnding: ready.lineEnding,
       restore,
     };
   }
@@ -568,7 +608,7 @@ export function createTabController(deps: TabControllerDeps) {
   /** Step 4b: swap `tab` in. Synchronous; `tab` must already be in `list`. */
   function show(tab: TabMeta, entry: Entry): void {
     deps.editor.swap(entry.state, entry.swap);
-    deps.doc.setActive(tab.path, entry.dirty, entry.baseline);
+    deps.doc.setActive(tab.path, entry.dirty, entry.baseline, entry.lineEnding);
     deps.editor.applyDocumentConfig(tab.path);
     // The live view holds this tab now; its cache entry is rebuilt on leave.
     cache.delete(tab.id);
@@ -622,7 +662,7 @@ export function createTabController(deps: TabControllerDeps) {
     if (answer.kind !== 'created') return;
     const tab = newMeta(answer.tabId, null);
     publish(insertAfterActive(found.working, tab));
-    await enter(tab, { kind: 'fresh', content: '', exists: false }, null, false);
+    await enter(tab, EMPTY, null, false);
   }
 
   /**
@@ -690,11 +730,10 @@ export function createTabController(deps: TabControllerDeps) {
     replace: boolean,
     quiet: boolean
   ): Promise<OpenPathResult> {
-    let content = '';
-    let exists = false;
+    let ready: Ready = EMPTY;
     try {
-      exists = await deps.disk.exists(path);
-      content = exists ? await deps.disk.read(path) : '';
+      const disk = (await deps.disk.exists(path, { quiet })) ? await deps.disk.read(path, { quiet }) : null;
+      if (disk) ready = { kind: 'fresh', content: disk.text, exists: true, lineEnding: disk.lineEnding };
     } catch (err) {
       console.error('Failed to open file:', err);
       return { kind: 'failed' };
@@ -722,7 +761,7 @@ export function createTabController(deps: TabControllerDeps) {
       return { kind: 'failed' };
     }
     const tab = newMeta(answer.tabId, answer.path ?? path);
-    const shown = await showClaimed(tab, { kind: 'fresh', content, exists }, position, quiet, () => {
+    const shown = await showClaimed(tab, ready, position, quiet, () => {
       const previous = activeTab(list);
       // Re-checked here, after the last await: text typed into the blank tab
       // while the file was read makes it a tab worth keeping.
@@ -817,7 +856,7 @@ export function createTabController(deps: TabControllerDeps) {
     const answer = await deps.rust.open(null);
     if (answer.kind !== 'created') return;
     const tab = newMeta(answer.tabId, null);
-    const shown = await showClaimed(tab, { kind: 'fresh', content: '', exists: false }, null, false, () => {
+    const shown = await showClaimed(tab, EMPTY, null, false, () => {
       stashActive();
       publish(insertAfterActive(list, tab));
     });
@@ -998,7 +1037,7 @@ export function createTabController(deps: TabControllerDeps) {
         .createState('', null)
         .update({ effects: StateEffect.appendConfig.of(EditorState.readOnly.of(true)) }).state;
       deps.editor.swap(scratch, { blur: true, scroll: 'top' });
-      deps.doc.setActive(null, false, null);
+      deps.doc.setActive(null, false, null, 'lf');
     }
     let done: MoveDone | null = null;
     let error = '';
@@ -1044,13 +1083,14 @@ export function createTabController(deps: TabControllerDeps) {
     if (!requireExclusive('openBackgroundNow')) return { kind: 'failed' };
     const local = findByPath(list, path);
     if (local) return { kind: 'existing', tabId: local.id };
-    let text = '';
+    let disk: DiskDocument | null;
     try {
-      text = (await deps.disk.exists(path)) ? await deps.disk.read(path) : '';
+      disk = (await deps.disk.exists(path, { quiet: true })) ? await deps.disk.read(path, { quiet: true }) : null;
     } catch (err) {
       console.error('Failed to open file:', err);
       return { kind: 'failed' };
     }
+    const text = disk?.text ?? '';
     let answer = await deps.rust.open(path);
     if (answer.kind === 'this-window' && !findById(list, answer.tabId)) {
       // Left over from an operation that failed after claiming.
@@ -1072,6 +1112,7 @@ export function createTabController(deps: TabControllerDeps) {
       scroll: null,
       baseline: null,
       enterAt: null,
+      lineEnding: disk?.lineEnding ?? 'lf',
     });
     publish(insertAfterActive(list, { ...newMeta(answer.tabId, answer.path ?? path), unviewed: true }));
     deps.settled();
@@ -1094,6 +1135,7 @@ export function createTabController(deps: TabControllerDeps) {
       scroll: null,
       baseline: cached?.baseline ?? null,
       enterAt: position,
+      lineEnding: cached?.lineEnding ?? 'lf',
     });
     return true;
   }
@@ -1117,9 +1159,12 @@ export function createTabController(deps: TabControllerDeps) {
     }
     const cached = cache.get(tabId);
     let base: EditorState;
+    let lineEnding = cached?.lineEnding ?? 'lf';
     try {
-      const exists = await deps.disk.exists(tab.path);
-      const disk = exists ? await deps.disk.read(tab.path) : '';
+      const exists = await deps.disk.exists(tab.path, { quiet: true });
+      const read = exists ? await deps.disk.read(tab.path, { fallback: lineEnding, quiet: true }) : null;
+      const disk = read?.text ?? '';
+      if (read) lineEnding = read.lineEnding;
       // As `prepare`: a file deleted while in the background keeps its
       // buffer — an empty base would write over the last copy of the text.
       base =
@@ -1134,7 +1179,8 @@ export function createTabController(deps: TabControllerDeps) {
     if (!out) return { kind: 'unchanged' };
     const text = out.state.doc.toString();
     try {
-      await deps.disk.write(tab.path, text);
+      // The file's own ending: an agent's edit keeps a CRLF file CRLF.
+      await deps.disk.write(tab.path, text, lineEnding);
     } catch (err) {
       return { kind: 'failed', error: message(err) };
     }
@@ -1146,6 +1192,7 @@ export function createTabController(deps: TabControllerDeps) {
       scroll: cached?.scroll ?? null,
       baseline: text,
       enterAt: cached?.enterAt ?? null,
+      lineEnding,
     });
     return { kind: 'applied', result: out.result };
   }
@@ -1162,8 +1209,8 @@ export function createTabController(deps: TabControllerDeps) {
     const cached = cache.get(tabId);
     if (tab.path === null) return cached?.state?.doc.toString() ?? cached?.content ?? '';
     try {
-      if (!(await deps.disk.exists(tab.path))) return cached?.state?.doc.toString() ?? '';
-      return await deps.disk.read(tab.path);
+      if (!(await deps.disk.exists(tab.path, { quiet: true }))) return cached?.state?.doc.toString() ?? '';
+      return (await deps.disk.read(tab.path, { quiet: true })).text;
     } catch {
       return null;
     }

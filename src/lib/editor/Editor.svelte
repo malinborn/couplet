@@ -5,7 +5,7 @@
   import { languageCompartment, previewCompartment } from './setup';
   import { createDocumentState } from './state-factory';
   import { latestOnly } from './latest-only';
-  import type { ThemeControl } from './slash-theme';
+  import { themePickerField, type ThemeControl } from './slash-theme';
   import { languages } from '@codemirror/language-data';
   import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
   import { findCodeLanguage } from './file-language';
@@ -143,6 +143,10 @@
         if (previous.field(jsonOfferField, false) && !state.field(jsonOfferField, false)) {
           onJsonOfferWithdrawn?.();
         }
+        // And for a `/theme` preview: only the picker's listener ends it. The
+        // controller strips the state before it leaves (`stripLeavingState`);
+        // this covers a swap that did not go through it.
+        if (previous.field(themePickerField, false)) themeControl?.previewFamily(null);
         if (opts?.blur && state.doc.length > 0) view.contentDOM.blur();
       },
       updateContent(newContent: string) {
