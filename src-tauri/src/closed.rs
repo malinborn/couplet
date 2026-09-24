@@ -53,10 +53,11 @@ pub fn record_close(
         return false;
     };
     let snap = session.snapshot_for(label);
-    let (cursor, top_line) = match &snap {
-        Some(s) if s.path.as_deref() == Some(path) => (s.cursor, s.top_line),
-        _ => (0, 1),
-    };
+    let (cursor, top_line) = snap
+        .as_ref()
+        .and_then(|s| s.tabs.iter().find(|t| t.path.as_deref() == Some(path)))
+        .map(|t| (t.cursor, t.top_line))
+        .unwrap_or((0, 1));
     let (x, y, width, height) = snap
         .as_ref()
         .map(|s| (s.x, s.y, s.width, s.height))
@@ -233,13 +234,23 @@ mod tests {
         assert_eq!(stack[MAX_ENTRIES - 1].path, "/f5", "oldest fall off");
     }
 
-    use crate::session::SessionState;
+    use crate::session::{SessionState, TabSnapshot};
 
-    /// A session whose `editor-1` last heartbeat reported `/tmp/a.md`.
+    /// A session whose `editor-1` last heartbeat reported one tab at `path`.
     fn session_with_heartbeat(path: Option<&str>) -> SessionState {
         let session = SessionState::new();
         session.set_geometry("editor-1", 11, 22, 800, 600);
-        session.set_document("editor-1", path.map(str::to_string), 42, 9);
+        session.set_tabs(
+            "editor-1",
+            vec![TabSnapshot {
+                tab_id: "t1".to_string(),
+                path: path.map(str::to_string),
+                untitled: None,
+                cursor: 42,
+                top_line: 9,
+            }],
+            Some("t1".to_string()),
+        );
         session
     }
 

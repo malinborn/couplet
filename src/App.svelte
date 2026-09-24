@@ -4,7 +4,7 @@
   import type { EditorHandle } from './lib/editor/Editor.svelte';
   import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createFileState, createRecentFilesStore, setProductName } from './lib/stores.svelte';
   import { getName } from '@tauri-apps/api/app';
-  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type PendingOpen } from './lib/tauri/commands';
+  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type WindowInit } from './lib/tauri/commands';
   import {
     onMenuEvent,
     onOpenFile,
@@ -1614,15 +1614,25 @@
   // window as empty and cost it its sidecar. Set once, by the mount chain.
   let pendingSettled = false;
 
+  // This window's one tab until the tab controller arrives; Rust minted its
+  // id, and the heartbeat reports under it so its untitled sidecar keeps its name.
+  let activeTabId: string | null = null;
+
   function reportSession(): void {
-    if (!pendingSettled) return;
+    if (!pendingSettled || activeTabId === null) return;
     const view = editorHandle?.view;
     if (!view) return;
-    invoke('update_session_document', {
-      path: fileState.filePath,
-      cursor: view.state.selection.main.head,
-      topLine: topVisibleLine(),
-      content: fileState.filePath ? null : view.state.doc.toString(),
+    invoke('tabs_sync', {
+      tabs: [
+        {
+          tabId: activeTabId,
+          path: fileState.filePath,
+          cursor: view.state.selection.main.head,
+          topLine: topVisibleLine(),
+          content: fileState.filePath ? null : view.state.doc.toString(),
+        },
+      ],
+      active: activeTabId,
     }).catch(() => {
       // Session tracking is best-effort; never surface it to the user.
     });
@@ -1659,17 +1669,19 @@
 
     // Pull any file path stored by the backend for this window (CLI args or new-window open).
     // This avoids the race condition of the push-based emit approach.
-    invoke<PendingOpen | null>('get_pending_file').then(async (pending) => {
-      if (!pending) return;
-      if (pending.path) {
-        await switchDocument(pending.path);
-      } else if (pending.content !== null) {
-        // Restored Untitled window — no file on disk, just the buffer.
-        editorHandle?.loadDocument(pending.content);
+    invoke<WindowInit>('get_window_init').then(async (init) => {
+      const tab = init.tabs.find((t) => t.tabId === init.activeTabId) ?? init.tabs[0];
+      if (!tab) return;
+      activeTabId = tab.tabId;
+      if (tab.path) {
+        await switchDocument(tab.path);
+      } else if (tab.content !== null) {
+        // Restored untitled tab — no file on disk, just the buffer.
+        editorHandle?.loadDocument(tab.content);
         fileState.isDirty = true;
       }
-      if (pending.cursor > 0 || pending.topLine > 1) {
-        await applyRestorePosition(pending.cursor, pending.topLine);
+      if (tab.cursor > 0 || tab.topLine > 1) {
+        await applyRestorePosition(tab.cursor, tab.topLine);
       }
     })
     // Register this window in the session right away, not 5s later — but only

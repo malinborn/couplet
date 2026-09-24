@@ -7,7 +7,13 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-pub const SESSION_VERSION: u32 = 1;
+/// The format this build writes, to `session-v2.json`. The pre-tabs v1
+/// `session.json` is still read and migrated (`parse_session`), but never
+/// written: a rollback to an older build finds its own file as it left it.
+pub const SESSION_VERSION: u32 = 2;
+const LEGACY_VERSION: u32 = 1;
+const SESSION_FILE: &str = "session-v2.json";
+const LEGACY_SESSION_FILE: &str = "session.json";
 
 fn default_top_line() -> usize {
     1
@@ -28,70 +34,84 @@ pub fn new_tab_id() -> String {
     format!("{}-{}-{}", millis, std::process::id(), n)
 }
 
-/// One window as it was when the session was captured.
+/// One tab as it was when the session was captured.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TabSnapshot {
+    /// Stable across a restore; names the tab's untitled sidecar.
+    pub tab_id: String,
+    /// Absolute path of the open file, or `None` for an untitled tab.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// File name inside `session/` holding an untitled tab's text.
+    #[serde(default)]
+    pub untitled: Option<String>,
+    #[serde(default)]
+    pub cursor: usize,
+    #[serde(default = "default_top_line")]
+    pub top_line: usize,
+}
+
+impl TabSnapshot {
+    /// Line numbers are 1-based; a stored 0 would panic CodeMirror's `doc.line`.
+    fn normalized(&self) -> Self {
+        let mut out = self.clone();
+        if out.top_line == 0 {
+            out.top_line = 1;
+        }
+        out
+    }
+}
+
+/// One window: geometry, its tabs in the order it shows them, the active one.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowSnapshot {
-    /// Absolute path of the open file, or `None` for an Untitled window.
-    #[serde(default)]
-    pub path: Option<String>,
-    /// File name inside the `session/` directory holding an unsaved buffer.
-    #[serde(default)]
-    pub untitled: Option<String>,
     pub x: i32,
     pub y: i32,
     pub width: u32,
     pub height: u32,
     #[serde(default)]
-    pub cursor: usize,
-    #[serde(default = "default_top_line")]
-    pub top_line: usize,
-    /// Process-and-time-unique id for this window, stable across a restore.
-    /// A session.json written before this field existed has none — such an
-    /// entry gets a fresh id on load, which is harmless: `untitled` already
-    /// holds the sidecar's literal file name from that older run, so restore
-    /// still finds the right file regardless of this field's value.
-    #[serde(default = "new_tab_id")]
-    pub tab_id: String,
+    pub tabs: Vec<TabSnapshot>,
+    #[serde(default)]
+    pub active_tab: Option<String>,
 }
 
 impl WindowSnapshot {
     fn empty() -> Self {
         Self {
-            path: None,
-            untitled: None,
             x: 0,
             y: 0,
             width: 0,
             height: 0,
-            cursor: 0,
-            top_line: 1,
-            tab_id: new_tab_id(),
+            tabs: Vec::new(),
+            active_tab: None,
         }
     }
 
-    /// Builds a snapshot for Cmd+Shift+T's "reopen last closed" — a brand new
-    /// window, so it gets its own fresh `tab_id`.
+    /// A brand-new window holding one reopened file — Cmd+Shift+T when the
+    /// window it was closed from is gone. A fresh `tab_id`: it is a new tab.
     pub fn from_closed_entry(entry: crate::closed::ClosedEntry) -> Self {
+        let tab_id = new_tab_id();
         Self {
-            path: Some(entry.path),
-            untitled: None,
             x: entry.x,
             y: entry.y,
             width: entry.width,
             height: entry.height,
-            cursor: entry.cursor,
-            top_line: entry.top_line,
-            tab_id: new_tab_id(),
+            tabs: vec![TabSnapshot {
+                tab_id: tab_id.clone(),
+                path: Some(entry.path),
+                untitled: None,
+                cursor: entry.cursor,
+                top_line: entry.top_line,
+            }],
+            active_tab: Some(tab_id),
         }
     }
 
-    /// Line numbers are 1-based; a stored 0 would panic CodeMirror's `doc.line`.
     pub fn normalized(&self) -> Self {
         let mut out = self.clone();
-        if out.top_line == 0 {
-            out.top_line = 1;
-        }
+        out.tabs = out.tabs.iter().map(TabSnapshot::normalized).collect();
         out
     }
 }
@@ -114,17 +134,73 @@ impl Default for Session {
     }
 }
 
-/// Name of the sidecar file that stores an Untitled window's text — keyed by
-/// the window's `tab_id` rather than its label, which every launch reuses.
+/// A window as `session.json` v1 stored it: one document per window.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyWindow {
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    untitled: Option<String>,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    #[serde(default)]
+    cursor: usize,
+    #[serde(default = "default_top_line")]
+    top_line: usize,
+    /// Written since plan 01; an older file has none and gets a fresh one —
+    /// harmless, because `untitled` holds the sidecar's literal name.
+    #[serde(default = "new_tab_id")]
+    tab_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacySession {
+    saved_at: u64,
+    windows: Vec<LegacyWindow>,
+}
+
+/// v1 → v2: every old window becomes a window with one tab. The sidecar name
+/// is carried verbatim — `untitled-main.md` or `untitled-<tab_id>.md` from an
+/// older run is still the file holding that text.
+fn migrate_legacy(legacy: LegacySession) -> Session {
+    Session {
+        version: SESSION_VERSION,
+        saved_at: legacy.saved_at,
+        windows: legacy
+            .windows
+            .into_iter()
+            .map(|w| WindowSnapshot {
+                x: w.x,
+                y: w.y,
+                width: w.width,
+                height: w.height,
+                active_tab: Some(w.tab_id.clone()),
+                tabs: vec![TabSnapshot {
+                    tab_id: w.tab_id,
+                    path: w.path,
+                    untitled: w.untitled,
+                    cursor: w.cursor,
+                    top_line: w.top_line,
+                }],
+            })
+            .collect(),
+    }
+}
+
+/// Name of the sidecar file holding an untitled tab's text — keyed by the
+/// tab's id rather than a window label, which every launch reuses.
 pub fn untitled_file_name(tab_id: &str) -> String {
     format!("untitled-{}.md", tab_id)
 }
 
-/// Drop snapshots whose file no longer exists. Untitled snapshots are always kept
-/// — their content lives in our own directory, not at a user path.
+/// Drop tabs whose file no longer exists and untitled tabs that never earned a
+/// sidecar, then windows left with no tabs. A dropped active tab hands
+/// "active" to the window's first remaining tab.
 pub fn prune_missing(session: Session, exists: impl Fn(&str) -> bool) -> Session {
-    // Destructure rather than `..session` — moving `windows` out first would make
-    // struct-update syntax a partial-move error.
     let Session {
         version,
         saved_at,
@@ -132,9 +208,20 @@ pub fn prune_missing(session: Session, exists: impl Fn(&str) -> bool) -> Session
     } = session;
     let windows = windows
         .into_iter()
-        .filter(|w| match &w.path {
-            Some(p) => exists(p),
-            None => w.untitled.is_some(),
+        .filter_map(|mut w| {
+            w.tabs.retain(|t| match &t.path {
+                Some(p) => exists(p),
+                None => t.untitled.is_some(),
+            });
+            let first = w.tabs.first()?.tab_id.clone();
+            if !w
+                .active_tab
+                .as_ref()
+                .is_some_and(|a| w.tabs.iter().any(|t| &t.tab_id == a))
+            {
+                w.active_tab = Some(first);
+            }
+            Some(w)
         })
         .collect();
     Session {
@@ -212,13 +299,8 @@ impl SessionState {
         self.touch();
     }
 
-    pub fn set_document(
-        &self,
-        label: &str,
-        path: Option<String>,
-        cursor: usize,
-        top_line: usize,
-    ) {
+    /// Replace this window's tabs with what the frontend reports, in its order.
+    pub fn set_tabs(&self, label: &str, tabs: Vec<TabSnapshot>, active_tab: Option<String>) {
         if self.is_quitting() {
             return;
         }
@@ -226,25 +308,24 @@ impl SessionState {
         let entry = map
             .entry(label.to_string())
             .or_insert_with(WindowSnapshot::empty);
-        entry.path = path;
-        entry.cursor = cursor;
-        entry.top_line = top_line.max(1);
+        entry.tabs = tabs;
+        entry.active_tab = active_tab;
         drop(map);
         self.touch();
     }
 
-    /// Record that this window holds an unsaved buffer stored under `file_name`.
-    pub fn set_untitled(&self, label: &str, file_name: Option<String>) {
-        if self.is_quitting() {
-            return;
-        }
-        let mut map = self.entries.lock().unwrap();
-        let entry = map
-            .entry(label.to_string())
-            .or_insert_with(WindowSnapshot::empty);
-        entry.untitled = file_name;
-        drop(map);
-        self.touch();
+    /// The sidecar one untitled tab writes to: the name this window's entry
+    /// already records for it, else one derived from its id.
+    ///
+    /// Keeping a recorded name lets a tab restored from an older session —
+    /// sidecar `untitled-main.md` — go on writing to the file it was restored
+    /// from instead of orphaning it.
+    pub fn untitled_file_for(&self, label: &str, tab_id: &str) -> String {
+        let map = self.entries.lock().unwrap();
+        map.get(label)
+            .and_then(|w| w.tabs.iter().find(|t| t.tab_id == tab_id))
+            .and_then(|t| t.untitled.clone())
+            .unwrap_or_else(|| untitled_file_name(tab_id))
     }
 
     /// Forget a window. A no-op while quitting — see the module docs on why.
@@ -258,40 +339,8 @@ impl SessionState {
         self.touch();
     }
 
-    /// The persistent tab id for `label`, creating its entry (with a fresh
-    /// id) if this is the first time anything has been recorded for it.
-    ///
-    /// Creating the entry does not mark the session dirty: one with neither a
-    /// path nor an untitled name is dropped by `prune_missing` on read, so on
-    /// its own it is nothing worth writing.
-    #[cfg(test)]
-    pub fn tab_id_for(&self, label: &str) -> String {
-        let mut map = self.entries.lock().unwrap();
-        map.entry(label.to_string())
-            .or_insert_with(WindowSnapshot::empty)
-            .tab_id
-            .clone()
-    }
-
-    /// The sidecar this window's unsaved buffer goes to: the name its entry
-    /// already carries, else one derived from its `tab_id`.
-    ///
-    /// Keeping an existing name lets a window restored from an older session,
-    /// whose sidecar is still `untitled-<label>.md`, go on writing to the file
-    /// it was restored from instead of orphaning it.
-    pub fn untitled_file_for(&self, label: &str) -> String {
-        let mut map = self.entries.lock().unwrap();
-        let entry = map
-            .entry(label.to_string())
-            .or_insert_with(WindowSnapshot::empty);
-        entry
-            .untitled
-            .clone()
-            .unwrap_or_else(|| untitled_file_name(&entry.tab_id))
-    }
-
     /// Seed this window's session entry from a restored snapshot — so the
-    /// first heartbeat merges into it, keeping the same `tab_id`. No-op if an
+    /// first heartbeat merges into it, keeping every tab's id. No-op if an
     /// entry already exists.
     pub fn seed(&self, label: &str, snapshot: WindowSnapshot) {
         if self.is_quitting() {
@@ -348,8 +397,8 @@ impl SessionState {
         self.restoring.lock().unwrap().clear();
     }
 
-    /// Sidecar file names referenced by the live session, the restore still on
-    /// offer, or the restore being opened right now.
+    /// Sidecar file names referenced by any tab of the live session, the
+    /// restore still on offer, or the restore being opened right now.
     ///
     /// All of them matter. At startup the live session is deliberately empty — so
     /// that the first write of the new run supersedes the file — while `pending`
@@ -366,7 +415,8 @@ impl SessionState {
             .values()
             .chain(pending.iter())
             .chain(restoring.iter())
-            .filter_map(|w| w.untitled.clone())
+            .flat_map(|w| w.tabs.iter())
+            .filter_map(|t| t.untitled.clone())
             .collect()
     }
 }
@@ -377,13 +427,20 @@ impl Default for SessionState {
     }
 }
 
-/// Parse `session.json`. Returns `None` for anything unusable — a corrupt or
+#[derive(Deserialize)]
+struct VersionProbe {
+    version: u32,
+}
+
+/// Parse either format. `None` for anything unusable — a corrupt or
 /// newer-format file must never take the app down or be half-applied.
 pub fn parse_session(data: &str) -> Option<Session> {
-    let session: Session = serde_json::from_str(data).ok()?;
-    if session.version != SESSION_VERSION {
-        return None;
-    }
+    let probe: VersionProbe = serde_json::from_str(data).ok()?;
+    let session = match probe.version {
+        SESSION_VERSION => serde_json::from_str::<Session>(data).ok()?,
+        LEGACY_VERSION => migrate_legacy(serde_json::from_str::<LegacySession>(data).ok()?),
+        _ => return None,
+    };
     let Session {
         version,
         saved_at,
@@ -392,15 +449,24 @@ pub fn parse_session(data: &str) -> Option<Session> {
     Some(Session {
         version,
         saved_at,
-        windows: windows.iter().map(|w| w.normalized()).collect(),
+        windows: windows.iter().map(WindowSnapshot::normalized).collect(),
     })
 }
 
-fn session_file() -> Result<PathBuf, String> {
-    Ok(crate::paths::app_data_dir()?.join("session.json"))
+/// The previous run's session: `session-v2.json` when it parses, else the
+/// pre-tabs `session.json`, migrated. A v2 file that exists but does not
+/// parse falls back too — an older snapshot beats none.
+pub fn choose_session(current: Option<&str>, legacy: Option<&str>) -> Option<Session> {
+    current
+        .and_then(parse_session)
+        .or_else(|| legacy.and_then(parse_session))
 }
 
-/// `<app data dir>/session/` — holds Untitled buffers.
+fn data_file(name: &str) -> Result<PathBuf, String> {
+    Ok(crate::paths::app_data_dir()?.join(name))
+}
+
+/// `<app data dir>/session/` — holds untitled buffers.
 pub fn session_dir() -> Result<PathBuf, String> {
     let dir = crate::paths::app_data_dir()?.join("session");
     if !dir.exists() {
@@ -416,9 +482,10 @@ pub fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Atomic write, same tmp+rename shape as `recovery.rs` and `commands::write_file`.
+/// Atomic write, same tmp+rename shape as `recovery.rs`. Always v2, always
+/// `session-v2.json` — `session.json` is left alone for a rollback.
 pub fn write_session(session: &Session) -> Result<(), String> {
-    let path = session_file()?;
+    let path = data_file(SESSION_FILE)?;
     let tmp = path.with_extension("json.tmp");
     let data = serde_json::to_string_pretty(session)
         .map_err(|e| format!("Failed to serialize session: {}", e))?;
@@ -429,11 +496,13 @@ pub fn write_session(session: &Session) -> Result<(), String> {
     })
 }
 
-/// Read the session, dropping windows whose file has since disappeared.
+/// Read the session (v2, else v1 migrated), dropping tabs whose file has
+/// since disappeared.
 pub fn read_session() -> Option<Session> {
-    let path = session_file().ok()?;
-    let data = fs::read_to_string(path).ok()?;
-    let session = parse_session(&data)?;
+    let read = |name: &str| data_file(name).ok().and_then(|p| fs::read_to_string(p).ok());
+    let current = read(SESSION_FILE);
+    let legacy = read(LEGACY_SESSION_FILE);
+    let session = choose_session(current.as_deref(), legacy.as_deref())?;
     Some(prune_missing(session, |p| std::path::Path::new(p).exists()))
 }
 
@@ -453,7 +522,7 @@ pub fn write_untitled(file_name: &str, content: &str) -> Result<(), String> {
     })
 }
 
-/// Delete Untitled sidecars nothing refers to any more.
+/// Delete untitled sidecars nothing refers to any more.
 ///
 /// Take the names from `SessionState::referenced_untitled`, never from the live
 /// snapshot alone — see that method for why.
@@ -491,44 +560,84 @@ pub fn window_geometry(window: &tauri::Window) -> Option<(i32, i32, u32, u32)> {
     ))
 }
 
-/// Frontend heartbeat: where the caret and viewport are, and the text of an
-/// Untitled buffer. Called on the existing 5s recovery cadence.
+/// One tab as the frontend reports it on the heartbeat.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TabReport {
+    pub tab_id: String,
+    pub path: Option<String>,
+    pub cursor: usize,
+    pub top_line: usize,
+    /// An untitled tab's text; `None` for a file tab.
+    pub content: Option<String>,
+}
+
+/// Turn a heartbeat into snapshots, writing each untitled tab's text to its
+/// sidecar through `write`.
+///
+/// The `is_empty` guard keeps a blank untitled tab out of the next session:
+/// no sidecar, no `untitled` name, and `prune_missing` drops it on read. It is
+/// also the backstop for any report that beats a window's pending open — a
+/// tab about to load a file looks exactly like an empty untitled one, and must
+/// not come back as a blank tab instead.
+pub fn tab_snapshots(
+    state: &SessionState,
+    label: &str,
+    reports: Vec<TabReport>,
+    write: impl Fn(&str, &str) -> Result<(), String>,
+) -> Result<Vec<TabSnapshot>, String> {
+    reports
+        .into_iter()
+        .map(|r| {
+            let untitled = match (&r.path, &r.content) {
+                (None, Some(text)) if !text.is_empty() => {
+                    let name = state.untitled_file_for(label, &r.tab_id);
+                    write(&name, text)?;
+                    Some(name)
+                }
+                _ => None,
+            };
+            Ok(TabSnapshot {
+                tab_id: r.tab_id,
+                path: r.path,
+                untitled,
+                cursor: r.cursor,
+                top_line: r.top_line.max(1),
+            })
+        })
+        .collect()
+}
+
+/// Frontend heartbeat: every tab of the window, in order, with positions and
+/// untitled text, plus which one is active. Sent on the 5 s recovery cadence
+/// and right after every structural change (open, close, switch).
 #[tauri::command]
-pub async fn update_session_document(
+pub async fn tabs_sync(
+    app: tauri::AppHandle,
     window: tauri::Window,
     state: tauri::State<'_, SessionState>,
-    path: Option<String>,
-    cursor: usize,
-    top_line: usize,
-    content: Option<String>,
+    tabs: Vec<TabReport>,
+    active: Option<String>,
 ) -> Result<(), String> {
+    use tauri::Manager;
     let label = window.label().to_string();
-    state.set_document(&label, path.clone(), cursor, top_line);
+    {
+        // Released before any `SessionState` lock is taken.
+        let open_files = app.state::<crate::window::OpenFiles>();
+        let mut reg = open_files.0.lock().unwrap();
+        let reported: Vec<(String, Option<String>)> =
+            tabs.iter().map(|t| (t.tab_id.clone(), t.path.clone())).collect();
+        reg.sync(&label, &reported, active.as_deref());
+    }
+
+    let snapshots = tab_snapshots(&state, &label, tabs, write_untitled)?;
+    state.set_tabs(&label, snapshots, active);
 
     // Geometry also rides the heartbeat, because `Moved`/`Resized` never fire for
     // a window the user does not touch — leaving it recorded at 0x0 and restored
     // into the top-left corner under the menu bar.
     if let Some((x, y, width, height)) = window_geometry(&window) {
         state.set_geometry(&label, x, y, width, height);
-    }
-
-    match (path, content) {
-        // Untitled window with text — mirror it to a sidecar file.
-        //
-        // The `is_empty` guard keeps a blank window out of the next session: an
-        // empty Untitled buffer earns no sidecar and no `untitled` name, so its
-        // entry has neither and is pruned on read. It is also the backstop for
-        // any report that beats a window's pending open (the frontend holds its
-        // heartbeat until `get_pending_file` settles, but nothing here can rely
-        // on that): a window *about* to load a file looks exactly like an empty
-        // Untitled one, and must not come back as a blank window instead.
-        (None, Some(text)) if !text.is_empty() => {
-            let file_name = state.untitled_file_for(&label);
-            write_untitled(&file_name, &text)?;
-            state.set_untitled(&label, Some(file_name));
-        }
-        // Saved file, or an empty Untitled window — no sidecar needed.
-        _ => state.set_untitled(&label, None),
     }
     Ok(())
 }
@@ -569,53 +678,152 @@ pub async fn restore_session(app: tauri::AppHandle) -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
 
-    fn snap(path: Option<&str>) -> WindowSnapshot {
-        WindowSnapshot {
-            path: path.map(|p| p.to_string()),
+    fn tab(id: &str, path: Option<&str>) -> TabSnapshot {
+        TabSnapshot {
+            tab_id: id.to_string(),
+            path: path.map(str::to_string),
             untitled: None,
+            cursor: 5,
+            top_line: 3,
+        }
+    }
+
+    fn untitled_tab(id: &str, sidecar: &str) -> TabSnapshot {
+        TabSnapshot {
+            untitled: Some(sidecar.to_string()),
+            ..tab(id, None)
+        }
+    }
+
+    fn window(tabs: Vec<TabSnapshot>) -> WindowSnapshot {
+        WindowSnapshot {
             x: 10,
             y: 20,
             width: 900,
             height: 700,
-            cursor: 5,
-            top_line: 3,
-            tab_id: new_tab_id(),
+            active_tab: tabs.first().map(|t| t.tab_id.clone()),
+            tabs,
+        }
+    }
+
+    fn session(windows: Vec<WindowSnapshot>) -> Session {
+        Session {
+            version: SESSION_VERSION,
+            saved_at: 0,
+            windows,
         }
     }
 
     #[test]
     fn json_roundtrip_uses_camel_case() {
-        let session = Session {
-            version: SESSION_VERSION,
+        let s = Session {
             saved_at: 42,
-            windows: vec![snap(Some("/tmp/a.md"))],
+            ..session(vec![window(vec![tab("t1", Some("/tmp/a.md"))])])
         };
-        let json = serde_json::to_string(&session).unwrap();
-        assert!(json.contains("\"topLine\":3"), "got {}", json);
-        assert!(json.contains("\"savedAt\":42"), "got {}", json);
-
-        let back: Session = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.windows.len(), 1);
-        assert_eq!(back.windows[0].top_line, 3);
-        assert_eq!(back.windows[0].path.as_deref(), Some("/tmp/a.md"));
+        let json = serde_json::to_string(&s).unwrap();
+        for key in ["\"topLine\":3", "\"savedAt\":42", "\"tabId\":\"t1\"", "\"activeTab\":\"t1\""] {
+            assert!(json.contains(key), "{key} missing in {json}");
+        }
+        let back = parse_session(&json).expect("parses");
+        assert_eq!(back.windows[0].tabs[0].path.as_deref(), Some("/tmp/a.md"));
     }
 
     #[test]
-    fn missing_top_line_defaults_to_one() {
-        let json = r#"{"version":1,"savedAt":0,"windows":[
-            {"path":"/tmp/a.md","untitled":null,"x":0,"y":0,"width":900,"height":700}
+    fn a_missing_top_line_defaults_to_one_and_zero_is_normalized() {
+        let json = r#"{"version":2,"savedAt":0,"windows":[{"x":0,"y":0,"width":900,"height":700,
+            "tabs":[{"tabId":"a","path":"/tmp/a.md"},{"tabId":"b","path":"/tmp/b.md","topLine":0}]}]}"#;
+        let s = parse_session(json).unwrap();
+        assert_eq!(s.windows[0].tabs[0].top_line, 1);
+        assert_eq!(s.windows[0].tabs[0].cursor, 0);
+        assert_eq!(s.windows[0].tabs[1].top_line, 1);
+    }
+
+    #[test]
+    fn parse_session_migrates_a_v1_file_to_one_tab_per_window() {
+        let json = r#"{"version":1,"savedAt":7,"windows":[
+            {"path":"/tmp/a.md","untitled":null,"x":1,"y":2,"width":900,"height":700,"cursor":4,"topLine":5,"tabId":"11-22-0"},
+            {"path":null,"untitled":"untitled-main.md","x":0,"y":0,"width":900,"height":700}
         ]}"#;
-        let session: Session = serde_json::from_str(json).unwrap();
-        assert_eq!(session.windows[0].top_line, 1);
-        assert_eq!(session.windows[0].cursor, 0);
+        let s = parse_session(json).expect("v1 is still read");
+        assert_eq!(s.version, SESSION_VERSION);
+        assert_eq!(s.saved_at, 7);
+        assert_eq!(s.windows.len(), 2);
+
+        let first = &s.windows[0];
+        assert_eq!((first.x, first.y, first.width, first.height), (1, 2, 900, 700));
+        assert_eq!(first.tabs.len(), 1);
+        assert_eq!(first.tabs[0].tab_id, "11-22-0");
+        assert_eq!(first.tabs[0].path.as_deref(), Some("/tmp/a.md"));
+        assert_eq!((first.tabs[0].cursor, first.tabs[0].top_line), (4, 5));
+        assert_eq!(first.active_tab.as_deref(), Some("11-22-0"));
+
+        let second = &s.windows[1];
+        assert!(!second.tabs[0].tab_id.is_empty(), "an entry without tabId gets a fresh one");
+        assert_eq!(
+            second.tabs[0].untitled.as_deref(),
+            Some("untitled-main.md"),
+            "the sidecar name is carried verbatim"
+        );
+        assert_eq!(second.active_tab.as_deref(), Some(second.tabs[0].tab_id.as_str()));
     }
 
     #[test]
-    fn zero_top_line_is_normalized_to_one() {
-        let mut s = snap(Some("/tmp/a.md"));
-        s.top_line = 0;
-        assert_eq!(s.normalized().top_line, 1);
+    fn parse_session_rejects_future_versions_and_garbage() {
+        assert!(parse_session(r#"{"version":99,"savedAt":0,"windows":[]}"#).is_none());
+        assert!(parse_session("not json at all").is_none());
+        assert!(parse_session("").is_none());
+    }
+
+    #[test]
+    fn choose_session_prefers_v2() {
+        let v2 = serde_json::to_string(&session(vec![window(vec![tab("t2", Some("/v2.md"))])])).unwrap();
+        let v1 = r#"{"version":1,"savedAt":0,"windows":[{"path":"/v1.md","x":0,"y":0,"width":9,"height":9}]}"#;
+        let s = choose_session(Some(&v2), Some(v1)).unwrap();
+        assert_eq!(s.windows[0].tabs[0].path.as_deref(), Some("/v2.md"));
+    }
+
+    #[test]
+    fn choose_session_migrates_v1_when_there_is_no_v2_yet() {
+        let v1 = r#"{"version":1,"savedAt":0,"windows":[{"path":"/v1.md","x":0,"y":0,"width":9,"height":9}]}"#;
+        let s = choose_session(None, Some(v1)).unwrap();
+        assert_eq!(s.windows[0].tabs[0].path.as_deref(), Some("/v1.md"));
+    }
+
+    #[test]
+    fn choose_session_falls_back_to_v1_when_v2_is_corrupt() {
+        let v1 = r#"{"version":1,"savedAt":0,"windows":[{"path":"/v1.md","x":0,"y":0,"width":9,"height":9}]}"#;
+        let s = choose_session(Some("{truncated"), Some(v1)).unwrap();
+        assert_eq!(s.windows[0].tabs[0].path.as_deref(), Some("/v1.md"));
+        assert!(choose_session(None, None).is_none());
+    }
+
+    #[test]
+    fn prune_missing_drops_gone_files_but_keeps_untitled_tabs() {
+        let s = session(vec![window(vec![
+            tab("gone", Some("/tmp/gone.md")),
+            tab("here", Some("/tmp/here.md")),
+            untitled_tab("u", "untitled-u.md"),
+            tab("blank", None),
+        ])]);
+        let pruned = prune_missing(s, |p| p == "/tmp/here.md");
+        let ids: Vec<&str> = pruned.windows[0].tabs.iter().map(|t| t.tab_id.as_str()).collect();
+        assert_eq!(ids, vec!["here", "u"], "an untitled tab without a sidecar never earned a place");
+    }
+
+    #[test]
+    fn prune_missing_moves_active_to_the_first_surviving_tab() {
+        let mut w = window(vec![tab("gone", Some("/tmp/gone.md")), tab("here", Some("/tmp/here.md"))]);
+        w.active_tab = Some("gone".to_string());
+        let pruned = prune_missing(session(vec![w]), |p| p == "/tmp/here.md");
+        assert_eq!(pruned.windows[0].active_tab.as_deref(), Some("here"));
+    }
+
+    #[test]
+    fn prune_missing_drops_a_window_left_with_no_tabs() {
+        let pruned = prune_missing(session(vec![window(vec![tab("a", Some("/gone.md"))])]), |_| false);
+        assert!(pruned.windows.is_empty());
     }
 
     #[test]
@@ -645,37 +853,39 @@ mod tests {
     fn snapshot_orders_main_first_then_numerically() {
         let state = SessionState::new();
         for label in ["editor-10", "editor-2", "main"] {
-            state.set_geometry(label, 0, 0, 900, 700);
-            state.set_document(label, Some(format!("/tmp/{}.md", label)), 0, 1);
+            let path = format!("/tmp/{}.md", label);
+            state.set_tabs(label, vec![tab(label, Some(&path))], Some(label.to_string()));
         }
         let paths: Vec<String> = state
             .snapshot(0)
             .windows
             .into_iter()
-            .filter_map(|w| w.path)
+            .filter_map(|w| w.tabs[0].path.clone())
             .collect();
-        assert_eq!(
-            paths,
-            vec![
-                "/tmp/main.md".to_string(),
-                "/tmp/editor-2.md".to_string(),
-                "/tmp/editor-10.md".to_string()
-            ]
-        );
+        assert_eq!(paths, vec!["/tmp/main.md", "/tmp/editor-2.md", "/tmp/editor-10.md"]);
     }
 
     #[test]
-    fn prune_missing_drops_entry_with_neither_path_nor_untitled() {
-        // A window reports itself at mount, before `get_pending_file` resolves,
-        // so it briefly has no path and an empty buffer. That entry must not
-        // come back as a blank window.
-        let session = Session {
-            version: SESSION_VERSION,
-            saved_at: 0,
-            windows: vec![snap(None)],
-        };
-        let pruned = prune_missing(session, |_| true);
-        assert!(pruned.windows.is_empty());
+    fn set_tabs_keeps_geometry() {
+        let state = SessionState::new();
+        state.set_geometry("editor-1", 7, 8, 500, 600);
+        state.set_tabs("editor-1", vec![tab("t", Some("/tmp/a.md"))], Some("t".to_string()));
+        let w = &state.snapshot(0).windows[0];
+        assert_eq!((w.x, w.y, w.width, w.height), (7, 8, 500, 600));
+        assert_eq!(w.tabs[0].path.as_deref(), Some("/tmp/a.md"));
+    }
+
+    #[test]
+    fn referenced_untitled_covers_every_tab_of_live_windows() {
+        let state = SessionState::new();
+        state.set_tabs(
+            "editor-2",
+            vec![untitled_tab("a", "untitled-a.md"), untitled_tab("b", "untitled-b.md")],
+            Some("a".to_string()),
+        );
+        let referenced = state.referenced_untitled();
+        assert!(referenced.contains("untitled-a.md"));
+        assert!(referenced.contains("untitled-b.md"), "a background tab's draft is kept too");
     }
 
     #[test]
@@ -684,75 +894,18 @@ mod tests {
         // still holds the previous run, so pruning on the live set alone deleted
         // the very buffer the user was about to reopen.
         let state = SessionState::new();
-        let mut pending = snap(None);
-        pending.untitled = Some("untitled-main.md".to_string());
-        state.set_pending(vec![pending]);
+        state.set_pending(vec![window(vec![untitled_tab("m", "untitled-main.md")])]);
         assert!(state.snapshot(0).windows.is_empty(), "live session is empty");
-
-        let referenced = state.referenced_untitled();
-        assert!(referenced.contains("untitled-main.md"));
-    }
-
-    #[test]
-    fn referenced_untitled_covers_live_windows_too() {
-        let state = SessionState::new();
-        state.set_untitled("editor-2", Some("untitled-editor-2.md".to_string()));
-        let referenced = state.referenced_untitled();
-        assert!(referenced.contains("untitled-editor-2.md"));
-    }
-
-    #[test]
-    fn set_document_keeps_geometry() {
-        let state = SessionState::new();
-        state.set_geometry("editor-1", 7, 8, 500, 600);
-        state.set_document("editor-1", Some("/tmp/a.md".to_string()), 99, 12);
-        let w = &state.snapshot(0).windows[0];
-        assert_eq!((w.x, w.y, w.width, w.height), (7, 8, 500, 600));
-        assert_eq!((w.cursor, w.top_line), (99, 12));
-    }
-
-    #[test]
-    fn prune_missing_drops_gone_files_but_keeps_untitled() {
-        let mut untitled = snap(None);
-        untitled.untitled = Some("untitled-editor-3.md".to_string());
-        let session = Session {
-            version: SESSION_VERSION,
-            saved_at: 0,
-            windows: vec![snap(Some("/tmp/gone.md")), snap(Some("/tmp/here.md")), untitled],
-        };
-        let pruned = prune_missing(session, |p| p == "/tmp/here.md");
-        assert_eq!(pruned.windows.len(), 2);
-        assert_eq!(pruned.windows[0].path.as_deref(), Some("/tmp/here.md"));
-        assert!(pruned.windows[1].untitled.is_some());
-    }
-
-    #[test]
-    fn take_pending_empties_the_queue() {
-        let state = SessionState::new();
-        state.set_pending(vec![snap(Some("/tmp/a.md"))]);
-        assert_eq!(state.pending_count(), 1);
-        assert_eq!(state.take_pending().len(), 1);
-        assert_eq!(state.pending_count(), 0);
-        assert_eq!(state.take_pending().len(), 0);
-    }
-
-    #[test]
-    fn untitled_file_name_is_derived_from_tab_id() {
-        assert_eq!(untitled_file_name("17-42-3"), "untitled-17-42-3.md");
+        assert!(state.referenced_untitled().contains("untitled-main.md"));
     }
 
     #[test]
     fn restore_keeps_not_yet_opened_windows_drafts_referenced() {
-        // Regression: `take_pending` used to empty `pending` before the loop,
-        // and the first `seed` marks the session dirty — so the ticker's prune
-        // deleted the sidecars of every window the loop had not reached yet.
         let state = SessionState::new();
-        let mut first = snap(None);
-        first.untitled = Some("untitled-a.md".to_string());
-        let mut second = snap(None);
-        second.untitled = Some("untitled-b.md".to_string());
-        state.set_pending(vec![first, second]);
-
+        state.set_pending(vec![
+            window(vec![untitled_tab("a", "untitled-a.md")]),
+            window(vec![untitled_tab("b", "untitled-b.md")]),
+        ]);
         let snapshots = state.take_pending();
         state.seed("editor-1", snapshots[0].clone());
 
@@ -770,27 +923,35 @@ mod tests {
     }
 
     #[test]
-    fn a_second_take_pending_during_a_restore_gets_nothing() {
+    fn take_pending_empties_the_queue_once() {
         let state = SessionState::new();
-        state.set_pending(vec![snap(Some("/tmp/a.md"))]);
+        state.set_pending(vec![window(vec![tab("a", Some("/tmp/a.md"))])]);
+        assert_eq!(state.pending_count(), 1);
         assert_eq!(state.take_pending().len(), 1);
-        assert!(state.take_pending().is_empty());
         assert_eq!(state.pending_count(), 0);
+        assert!(state.take_pending().is_empty());
     }
 
     #[test]
     fn seed_is_a_noop_while_quitting() {
         let state = SessionState::new();
         state.mark_quitting();
-        state.seed("editor-5", snap(Some("/tmp/a.md")));
+        state.seed("editor-5", window(vec![tab("a", Some("/tmp/a.md"))]));
         assert!(state.snapshot_for("editor-5").is_none());
     }
 
     #[test]
-    fn seed_marks_the_session_dirty() {
+    fn seed_marks_the_session_dirty_and_never_overwrites() {
         let state = SessionState::new();
-        state.seed("editor-5", snap(Some("/tmp/a.md")));
+        state.seed("editor-5", window(vec![tab("first", Some("/tmp/a.md"))]));
         assert!(state.take_dirty());
+        state.seed("editor-5", window(vec![tab("second", Some("/tmp/b.md"))]));
+        assert_eq!(state.snapshot_for("editor-5").unwrap().tabs[0].tab_id, "first");
+    }
+
+    #[test]
+    fn untitled_file_name_is_derived_from_tab_id() {
+        assert_eq!(untitled_file_name("17-42-3"), "untitled-17-42-3.md");
     }
 
     #[test]
@@ -800,128 +961,57 @@ mod tests {
         assert_eq!(parts.len(), 3, "got {}", id);
         assert!(parts.iter().all(|p| p.parse::<u128>().is_ok()), "got {}", id);
         assert_eq!(parts[1], std::process::id().to_string());
-    }
-
-    #[test]
-    fn two_launches_reusing_the_same_window_label_get_different_tab_ids() {
-        // Regression: `untitled-main.md` used to be shared by every launch's
-        // "main" window, so starting to type in one before Reopen Session
-        // silently overwrote the previous run's unsaved buffer.
-        let launch_one = SessionState::new();
-        let launch_two = SessionState::new();
-
-        let id_one = launch_one.tab_id_for("main");
-        let id_two = launch_two.tab_id_for("main");
-
-        assert_ne!(id_one, id_two);
-        assert_ne!(
-            launch_one.untitled_file_for("main"),
-            launch_two.untitled_file_for("main")
-        );
-    }
-
-    #[test]
-    fn tab_id_for_is_stable_across_repeated_calls() {
-        let state = SessionState::new();
-        let first = state.tab_id_for("editor-2");
-        let second = state.tab_id_for("editor-2");
-        assert_eq!(first, second);
-    }
-
-    #[test]
-    fn tab_id_for_does_not_mark_the_session_dirty() {
-        let state = SessionState::new();
-        state.tab_id_for("editor-2");
-        assert!(!state.take_dirty());
-    }
-
-    #[test]
-    fn seed_preserves_the_restored_tab_id() {
-        let state = SessionState::new();
-        let mut snapshot = WindowSnapshot::empty();
-        snapshot.tab_id = "restored-id-123".to_string();
-        state.seed("editor-5", snapshot);
-
-        assert_eq!(state.tab_id_for("editor-5"), "restored-id-123");
-    }
-
-    #[test]
-    fn seed_does_not_overwrite_an_entry_that_already_exists() {
-        let state = SessionState::new();
-        let first_id = state.tab_id_for("editor-5");
-
-        let mut snapshot = WindowSnapshot::empty();
-        snapshot.tab_id = "should-be-ignored".to_string();
-        state.seed("editor-5", snapshot);
-
-        assert_eq!(state.tab_id_for("editor-5"), first_id);
-    }
-
-    #[test]
-    fn seeded_untitled_stays_referenced_after_the_pending_restore_is_taken() {
-        let state = SessionState::new();
-        let mut pending = snap(None);
-        pending.untitled = Some("untitled-main.md".to_string());
-        state.set_pending(vec![pending]);
-
-        let restored = state.take_pending().remove(0);
-        state.seed("editor-4", restored);
-
-        assert!(state.referenced_untitled().contains("untitled-main.md"));
+        assert_ne!(new_tab_id(), new_tab_id());
     }
 
     #[test]
     fn untitled_file_for_keeps_a_restored_legacy_name() {
-        // A session written before `tab_id` existed names its sidecar after
-        // the old window label. Writing a restored window's buffer anywhere
-        // else would orphan that file.
         let state = SessionState::new();
-        let mut restored = snap(None);
-        restored.untitled = Some("untitled-editor-3.md".to_string());
-        state.seed("editor-7", restored);
-
-        assert_eq!(state.untitled_file_for("editor-7"), "untitled-editor-3.md");
+        state.seed("editor-7", window(vec![untitled_tab("t", "untitled-editor-3.md")]));
+        assert_eq!(state.untitled_file_for("editor-7", "t"), "untitled-editor-3.md");
     }
 
     #[test]
-    fn untitled_file_for_a_fresh_window_is_named_by_its_tab_id() {
+    fn untitled_file_for_a_fresh_tab_is_named_by_its_id() {
         let state = SessionState::new();
-        let tab_id = state.tab_id_for("main");
+        assert_eq!(state.untitled_file_for("main", "9-9-9"), "untitled-9-9-9.md");
+    }
+
+    #[test]
+    fn tab_snapshots_write_each_untitled_tab_under_its_own_name() {
+        let state = SessionState::new();
+        state.seed("main", window(vec![untitled_tab("old", "untitled-main.md")]));
+        let written = RefCell::new(Vec::<(String, String)>::new());
+        let reports = vec![
+            TabReport { tab_id: "old".into(), path: None, cursor: 1, top_line: 0, content: Some("kept".into()) },
+            TabReport { tab_id: "new".into(), path: None, cursor: 0, top_line: 1, content: Some("fresh".into()) },
+            TabReport { tab_id: "blank".into(), path: None, cursor: 0, top_line: 1, content: Some(String::new()) },
+            TabReport { tab_id: "file".into(), path: Some("/tmp/a.md".into()), cursor: 9, top_line: 4, content: None },
+        ];
+        let snaps = tab_snapshots(&state, "main", reports, |name, text| {
+            written.borrow_mut().push((name.to_string(), text.to_string()));
+            Ok(())
+        })
+        .unwrap();
+
         assert_eq!(
-            state.untitled_file_for("main"),
-            format!("untitled-{}.md", tab_id)
+            written.into_inner(),
+            vec![
+                ("untitled-main.md".to_string(), "kept".to_string()),
+                ("untitled-new.md".to_string(), "fresh".to_string()),
+            ]
         );
+        let names: Vec<Option<&str>> = snaps.iter().map(|s| s.untitled.as_deref()).collect();
+        assert_eq!(names, vec![Some("untitled-main.md"), Some("untitled-new.md"), None, None]);
+        assert_eq!(snaps[0].top_line, 1, "a reported 0 is normalized");
+        assert_eq!((snaps[3].cursor, snaps[3].top_line), (9, 4));
     }
 
     #[test]
-    fn legacy_entry_without_tab_id_gets_a_fresh_one_on_load() {
-        let json = r#"{"version":1,"savedAt":0,"windows":[
-            {"path":null,"untitled":"untitled-main.md","x":0,"y":0,"width":900,"height":700}
-        ]}"#;
-        let session = parse_session(json).expect("should parse");
-        assert!(!session.windows[0].tab_id.is_empty());
-        assert_eq!(
-            session.windows[0].untitled.as_deref(),
-            Some("untitled-main.md")
-        );
-    }
-
-    #[test]
-    fn tab_id_survives_a_json_roundtrip() {
-        let mut s = snap(None);
-        s.tab_id = "123-45-6".to_string();
-        let json = serde_json::to_string(&s).unwrap();
-        assert!(json.contains(r#""tabId":"123-45-6""#), "got {}", json);
-        let back: WindowSnapshot = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.tab_id, "123-45-6");
-    }
-
-    #[test]
-    fn snapshot_for_returns_the_recorded_entry() {
+    fn tab_snapshots_fail_when_a_sidecar_cannot_be_written() {
         let state = SessionState::new();
-        state.set_document("editor-1", Some("/tmp/a.md".to_string()), 3, 2);
-        let snap = state.snapshot_for("editor-1").expect("entry exists");
-        assert_eq!(snap.path.as_deref(), Some("/tmp/a.md"));
+        let reports = vec![TabReport { tab_id: "u".into(), path: None, cursor: 0, top_line: 1, content: Some("text".into()) }];
+        assert!(tab_snapshots(&state, "main", reports, |_, _| Err("disk full".into())).is_err());
     }
 
     #[test]
@@ -936,52 +1026,82 @@ mod tests {
             height: 600,
         };
         let a = WindowSnapshot::from_closed_entry(entry.clone());
-        assert_eq!(a.path.as_deref(), Some("/tmp/a.md"));
-        assert_eq!(a.untitled, None);
         assert_eq!((a.x, a.y, a.width, a.height), (11, 22, 800, 600));
-        assert_eq!((a.cursor, a.top_line), (42, 9));
+        assert_eq!(a.tabs.len(), 1);
+        assert_eq!(a.tabs[0].path.as_deref(), Some("/tmp/a.md"));
+        assert_eq!((a.tabs[0].cursor, a.tabs[0].top_line), (42, 9));
+        assert_eq!(a.active_tab.as_deref(), Some(a.tabs[0].tab_id.as_str()));
         let b = WindowSnapshot::from_closed_entry(entry);
-        assert_ne!(a.tab_id, b.tab_id, "every reopened window is a new window");
+        assert_ne!(a.tabs[0].tab_id, b.tabs[0].tab_id, "every reopened tab is a new tab");
     }
 
     #[test]
-    fn snapshot_for_returns_none_for_an_unknown_label() {
+    fn a_second_take_pending_during_a_restore_gets_nothing() {
         let state = SessionState::new();
+        state.set_pending(vec![window(vec![tab("a", Some("/tmp/a.md"))])]);
+        assert_eq!(state.take_pending().len(), 1);
+        assert!(state.take_pending().is_empty());
+        assert_eq!(state.pending_count(), 0);
+    }
+
+    #[test]
+    fn seeded_untitled_stays_referenced_after_the_pending_restore_is_taken() {
+        let state = SessionState::new();
+        state.set_pending(vec![window(vec![untitled_tab("m", "untitled-main.md")])]);
+        let restored = state.take_pending().remove(0);
+        state.seed("editor-4", restored);
+        state.finish_restore();
+        assert!(state.referenced_untitled().contains("untitled-main.md"));
+    }
+
+    #[test]
+    fn snapshot_for_returns_the_recorded_entry_and_none_for_an_unknown_label() {
+        let state = SessionState::new();
+        state.set_tabs("editor-1", vec![tab("t", Some("/tmp/a.md"))], Some("t".to_string()));
+        let snap = state.snapshot_for("editor-1").expect("entry exists");
+        assert_eq!(snap.tabs[0].path.as_deref(), Some("/tmp/a.md"));
         assert!(state.snapshot_for("no-such-window").is_none());
     }
 
     #[test]
-    fn parse_session_accepts_current_version() {
-        let json = r#"{"version":1,"savedAt":7,"windows":[
-            {"path":"/tmp/a.md","untitled":null,"x":1,"y":2,"width":900,"height":700,
-             "cursor":4,"topLine":5}
+    fn a_migrated_v1_untitled_sidecar_is_referenced_until_its_window_is_restored() {
+        // The ticker prunes against `referenced_untitled` from its first tick;
+        // a v1 sidecar must survive until the restore has opened its window.
+        let v1 = r#"{"version":1,"savedAt":0,"windows":[
+            {"path":null,"untitled":"untitled-main.md","x":0,"y":0,"width":900,"height":700,"tabId":"1-2-3"}
         ]}"#;
-        let session = parse_session(json).expect("should parse");
-        assert_eq!(session.saved_at, 7);
-        assert_eq!(session.windows[0].cursor, 4);
-    }
+        let migrated = prune_missing(choose_session(None, Some(v1)).unwrap(), |_| true);
+        let state = SessionState::new();
+        state.set_pending(migrated.windows);
+        assert!(state.referenced_untitled().contains("untitled-main.md"));
 
-    #[test]
-    fn parse_session_rejects_future_version() {
-        let json = r#"{"version":99,"savedAt":0,"windows":[]}"#;
-        assert!(
-            parse_session(json).is_none(),
-            "a newer on-disk format must be ignored, not misread"
+        let snapshots = state.take_pending();
+        assert_eq!(snapshots[0].tabs[0].tab_id, "1-2-3", "the v1 tab id is carried");
+        assert!(state.referenced_untitled().contains("untitled-main.md"), "mid-restore");
+        state.seed("editor-1", snapshots[0].clone());
+        state.finish_restore();
+        assert!(state.referenced_untitled().contains("untitled-main.md"), "after restore");
+        assert_eq!(
+            state.untitled_file_for("editor-1", "1-2-3"),
+            "untitled-main.md",
+            "the restored tab goes on writing to the v1 sidecar"
         );
     }
 
     #[test]
-    fn parse_session_rejects_garbage() {
-        assert!(parse_session("not json at all").is_none());
-        assert!(parse_session("").is_none());
+    fn a_heartbeat_with_an_empty_untitled_buffer_drops_the_sidecar_name() {
+        let state = SessionState::new();
+        state.seed("main", window(vec![untitled_tab("u", "untitled-u.md")]));
+        let reports = vec![TabReport { tab_id: "u".into(), path: None, cursor: 0, top_line: 1, content: Some(String::new()) }];
+        let snaps = tab_snapshots(&state, "main", reports, |_, _| panic!("no sidecar for an empty buffer")).unwrap();
+        state.set_tabs("main", snaps, Some("u".to_string()));
+        assert!(!state.referenced_untitled().contains("untitled-u.md"));
+        assert!(prune_missing(state.snapshot(0), |_| true).windows.is_empty(), "a blank tab never comes back");
     }
 
     #[test]
-    fn parse_session_normalizes_entries() {
-        let json = r#"{"version":1,"savedAt":0,"windows":[
-            {"path":"/tmp/a.md","x":0,"y":0,"width":900,"height":700,"topLine":0}
-        ]}"#;
-        let session = parse_session(json).unwrap();
-        assert_eq!(session.windows[0].top_line, 1);
+    fn this_build_writes_only_the_v2_file() {
+        assert_eq!(SESSION_FILE, "session-v2.json");
+        assert_ne!(SESSION_FILE, LEGACY_SESSION_FILE);
     }
 }

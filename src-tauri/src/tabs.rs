@@ -8,7 +8,7 @@
 //! overwritten behind another window's back, and a scan over a few dozen tabs
 //! costs nothing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegTab {
@@ -21,6 +21,8 @@ pub struct RegTab {
 pub struct WindowTabs {
     /// In the order the window shows them.
     pub tabs: Vec<RegTab>,
+    /// The tab the window shows. `None` only for a window with no tabs.
+    pub active: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -85,11 +87,11 @@ impl TabRegistry {
         if self.windows.values().any(|w| w.tabs.iter().any(|t| t.id == tab_id)) {
             return false;
         }
-        self.windows
-            .entry(label.to_string())
-            .or_default()
-            .tabs
-            .push(RegTab { id: tab_id.to_string(), path });
+        let window = self.windows.entry(label.to_string()).or_default();
+        window.tabs.push(RegTab { id: tab_id.to_string(), path });
+        if window.active.is_none() {
+            window.active = Some(tab_id.to_string());
+        }
         true
     }
 
@@ -106,15 +108,63 @@ impl TabRegistry {
             return None;
         }
         let window = self.windows.entry(label.to_string()).or_default();
-        match window.tabs.first_mut() {
+        let id = match window.tabs.first_mut() {
             Some(tab) => {
                 tab.path = Some(path.to_string());
-                Some(tab.id.clone())
+                tab.id.clone()
             }
             None => {
                 let id = new_id();
                 window.tabs.push(RegTab { id: id.clone(), path: Some(path.to_string()) });
-                Some(id)
+                id
+            }
+        };
+        window.active = Some(id.clone());
+        Some(id)
+    }
+
+    /// `label`'s tabs, after giving a window that has none one untitled tab —
+    /// a mounted window always shows something.
+    pub fn ensure_tab(&mut self, label: &str, new_id: impl FnOnce() -> String) -> &WindowTabs {
+        let has_tabs = self.windows.get(label).is_some_and(|w| !w.tabs.is_empty());
+        if !has_tabs {
+            let id = new_id();
+            self.add_tab(label, &id, None);
+        }
+        self.windows.entry(label.to_string()).or_default()
+    }
+
+    /// Mirror the frontend's tab order and active tab.
+    ///
+    /// Never claims a path: paths change only through calls that check
+    /// ownership first. A reported untitled tab the registry does not know is
+    /// appended; a reported file tab it does not know is ignored. Tabs the
+    /// report does not mention keep their place after the reported ones — a
+    /// claim can be in flight while an older report is still on its way.
+    pub fn sync(&mut self, label: &str, reported: &[(String, Option<String>)], active: Option<&str>) {
+        let ids_elsewhere: HashSet<String> = self
+            .windows
+            .iter()
+            .filter(|(l, _)| l.as_str() != label)
+            .flat_map(|(_, w)| w.tabs.iter().map(|t| t.id.clone()))
+            .collect();
+        let window = self.windows.entry(label.to_string()).or_default();
+        let mut ordered: Vec<RegTab> = Vec::with_capacity(window.tabs.len());
+        for (id, path) in reported {
+            if let Some(i) = window.tabs.iter().position(|t| &t.id == id) {
+                ordered.push(window.tabs.remove(i));
+            } else if path.is_none()
+                && !ids_elsewhere.contains(id)
+                && !ordered.iter().any(|t| &t.id == id)
+            {
+                ordered.push(RegTab { id: id.clone(), path: None });
+            }
+        }
+        ordered.append(&mut window.tabs);
+        window.tabs = ordered;
+        if let Some(active) = active {
+            if window.tabs.iter().any(|t| t.id == active) {
+                window.active = Some(active.to_string());
             }
         }
     }
@@ -236,5 +286,83 @@ mod tests {
         assert!(!reg.contains_path("/a.md"));
         assert_eq!(reg.window("main").unwrap().tabs.len(), 1, "the tab stays, showing nothing");
         assert!(!reg.clear_path("main", "/a.md"), "idempotent");
+    }
+
+    #[test]
+    fn the_first_tab_of_a_window_becomes_active() {
+        let reg = reg_with(&[("main", "t1", Some("/a.md")), ("main", "t2", None)]);
+        assert_eq!(reg.window("main").unwrap().active.as_deref(), Some("t1"));
+    }
+
+    #[test]
+    fn set_single_path_makes_its_tab_active() {
+        let mut reg = TabRegistry::new();
+        let id = reg.set_single_path("main", "/a.md", || "fresh".to_string()).unwrap();
+        assert_eq!(reg.window("main").unwrap().active.as_deref(), Some(id.as_str()));
+    }
+
+    #[test]
+    fn ensure_tab_gives_a_window_without_tabs_one_untitled_tab() {
+        let mut reg = TabRegistry::new();
+        let window = reg.ensure_tab("main", || "u1".to_string());
+        assert_eq!(window.tabs, vec![RegTab { id: "u1".to_string(), path: None }]);
+        assert_eq!(window.active.as_deref(), Some("u1"));
+    }
+
+    #[test]
+    fn ensure_tab_leaves_a_window_that_has_tabs_alone() {
+        let mut reg = reg_with(&[("main", "t1", Some("/a.md"))]);
+        let window = reg.ensure_tab("main", || panic!("must not mint an id"));
+        assert_eq!(window.tabs.len(), 1);
+    }
+
+    #[test]
+    fn sync_reorders_to_the_reported_order_and_moves_active() {
+        let mut reg = reg_with(&[("main", "a", Some("/a.md")), ("main", "b", None), ("main", "c", Some("/c.md"))]);
+        reg.sync(
+            "main",
+            &[("c".into(), Some("/c.md".into())), ("a".into(), Some("/a.md".into())), ("b".into(), None)],
+            Some("c"),
+        );
+        let w = reg.window("main").unwrap();
+        let ids: Vec<&str> = w.tabs.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["c", "a", "b"]);
+        assert_eq!(w.active.as_deref(), Some("c"));
+    }
+
+    #[test]
+    fn sync_keeps_tabs_the_report_does_not_mention_after_the_reported_ones() {
+        // A claim for "new" is registered while an older report (without it)
+        // is still in flight — the report must not drop the claim.
+        let mut reg = reg_with(&[("main", "a", Some("/a.md")), ("main", "new", Some("/n.md"))]);
+        reg.sync("main", &[("a".into(), Some("/a.md".into()))], Some("a"));
+        let ids: Vec<&str> = reg.window("main").unwrap().tabs.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "new"]);
+        assert!(reg.contains_path("/n.md"));
+    }
+
+    #[test]
+    fn sync_appends_an_unknown_untitled_tab_but_never_claims_a_path() {
+        let mut reg = reg_with(&[("main", "a", Some("/a.md")), ("editor-2", "x", Some("/x.md"))]);
+        reg.sync(
+            "main",
+            &[
+                ("a".into(), Some("/a.md".into())),
+                ("u".into(), None),
+                ("sneaky".into(), Some("/x.md".into())),
+                ("x".into(), None),
+            ],
+            None,
+        );
+        let ids: Vec<&str> = reg.window("main").unwrap().tabs.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "u"], "an unknown file tab and another window's id are ignored");
+        assert_eq!(reg.label_of("/x.md").as_deref(), Some("editor-2"));
+    }
+
+    #[test]
+    fn sync_sets_active_only_to_a_tab_it_knows() {
+        let mut reg = reg_with(&[("main", "a", Some("/a.md"))]);
+        reg.sync("main", &[("a".into(), Some("/a.md".into()))], Some("ghost"));
+        assert_eq!(reg.window("main").unwrap().active.as_deref(), Some("a"));
     }
 }

@@ -142,7 +142,6 @@ pub fn run() {
             commands::read_file,
             commands::write_file,
             commands::file_exists,
-            commands::get_pending_file,
             commands::comment_threads,
             commands::comment_reply,
             commands::comment_resolve,
@@ -150,6 +149,7 @@ pub fn run() {
             comment_pause::comment_write_reply,
             comment_pause::comment_commit,
             comment_pause::commit_document_pauses,
+            window::get_window_init,
             window::open_file_window_cmd,
             window::register_open_file,
             window::focus_if_open,
@@ -161,7 +161,7 @@ pub fn run() {
             recovery::save_recovery,
             recovery::delete_recovery,
             recovery::check_recovery,
-            session::update_session_document,
+            session::tabs_sync,
             session::pending_session_count,
             session::restore_session,
             updater::claim_update_checker,
@@ -620,30 +620,37 @@ fn focused_window(app: &tauri::AppHandle) -> Option<String> {
 /// Returns `false` when another live window already holds the file: that
 /// window is brought forward instead and main is left untouched.
 fn assign_file_to_main(app: &tauri::AppHandle, path: String) -> bool {
-    let owner = {
+    let claim = {
         let open_files = app.state::<OpenFiles>();
         let mut reg = open_files.0.lock().unwrap();
         // A holder whose window is gone must not block main from taking the file.
         window::live_owner(app, &mut reg, &path);
         match reg.set_single_path("main", &path, session::new_tab_id) {
-            Some(_) => None,
-            None => reg.label_of(&path),
+            Some(tab_id) => Ok(tab_id),
+            None => Err(reg.label_of(&path)),
         }
     };
-    if let Some(owner) = owner {
-        eprintln!("assign_file_to_main: {path} is held by {owner}; focusing it instead of main");
-        if let Some(win) = app.get_webview_window(&owner) {
-            window::reveal(&win);
+    let tab_id = match claim {
+        Ok(tab_id) => tab_id,
+        Err(owner) => {
+            if let Some(owner) = owner {
+                eprintln!("assign_file_to_main: {path} is held by {owner}; focusing it instead of main");
+                if let Some(win) = app.get_webview_window(&owner) {
+                    window::reveal(&win);
+                }
+            }
+            return false;
         }
-        return false;
-    }
+    };
 
+    // The registry's id for main's tab, so the claim and the heartbeat name
+    // the same tab.
     let pending = app.state::<PendingFiles>();
     pending
         .0
         .lock()
         .unwrap()
-        .insert("main".to_string(), PendingOpen::from_path(path));
+        .insert("main".to_string(), PendingOpen::single_file(tab_id, path));
     true
 }
 

@@ -712,7 +712,7 @@ pub async fn cancel_ai_ask(
 
 /// IPC command: drain the AI commands queued for the calling window — commands
 /// that arrived for a file before its window existed. Called once on mount,
-/// like `get_pending_file`.
+/// like `get_window_init`.
 #[tauri::command]
 pub async fn ai_pull_pending(
     window: tauri::Window,

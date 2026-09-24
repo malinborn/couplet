@@ -60,12 +60,20 @@ export async function showSaveDialog(defaultName?: string): Promise<string | nul
   return result as string | null;
 }
 
-/** Matches `PendingOpen` in src-tauri/src/window.rs. */
-export interface PendingOpen {
+/** One tab a window opens with. Matches `PendingTab` in src-tauri/src/window.rs. */
+export interface PendingTab {
+  tabId: string;
   path: string | null;
+  /** Text of an untitled tab being restored. */
   content: string | null;
   cursor: number;
   topLine: number;
+}
+
+/** What a window loads on mount. Matches `WindowInit` in src-tauri/src/window.rs. */
+export interface WindowInit {
+  tabs: PendingTab[];
+  activeTabId: string | null;
 }
 
 /**
