@@ -181,11 +181,11 @@ pub fn run() {
             // with an installed release one.
             paths::init(app.config().product_name.as_deref().unwrap_or(paths::FALLBACK_PRODUCT_NAME));
 
-            // Managed here, not on the builder: `RecentFiles::new()` reads
+            // Managed here, not on the builder: `RecentFiles::load()` reads
             // `recent.json`, and before `paths::init` `app_data_dir()` answers the
             // release directory — a dev build would load the installed app's list.
             // No IPC reaches a command before `setup` returns.
-            app.manage(recent::RecentFiles::new());
+            app.manage(recent::RecentFiles::load());
 
             // Locale resolution: stored preference -> system locale -> "en".
             // Must run before `menu::build_menu` — the menu's labels come from

@@ -1922,7 +1922,7 @@
     });
 
     void recentFiles.init();
-    const unlistenRecentChanged = onRecentChanged((files) => recentFiles.setList(files));
+    const unlistenRecentChanged = onRecentChanged((snapshot) => recentFiles.setList(snapshot));
 
     return () => {
       if (stopUpdateChecker) stopUpdateChecker();

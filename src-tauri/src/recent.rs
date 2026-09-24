@@ -8,8 +8,10 @@
 
 use std::collections::HashSet;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
@@ -57,10 +59,27 @@ fn recent_file() -> Result<PathBuf, String> {
     Ok(crate::paths::app_data_dir()?.join("recent.json"))
 }
 
-fn read() -> Option<Vec<RecentFile>> {
-    let path = recent_file().ok()?;
-    let data = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&data).ok()
+/// A missing file is the normal first run; anything else is logged, because
+/// the next `add` overwrites whatever was there.
+fn read() -> Vec<RecentFile> {
+    let path = match recent_file() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Recent files: {}", e);
+            return Vec::new();
+        }
+    };
+    match fs::read_to_string(&path) {
+        Ok(data) => serde_json::from_str(&data).unwrap_or_else(|e| {
+            eprintln!("Recent files: cannot parse {}: {}", path.display(), e);
+            Vec::new()
+        }),
+        Err(e) if e.kind() == ErrorKind::NotFound => Vec::new(),
+        Err(e) => {
+            eprintln!("Recent files: cannot read {}: {}", path.display(), e);
+            Vec::new()
+        }
+    }
 }
 
 /// Same tmp+rename shape as `session.rs::write_session` — this file lives in
@@ -86,63 +105,119 @@ fn persist(list: &[RecentFile]) {
     }
 }
 
-/// The live list, shared by every window in this process.
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+/// What every window is handed: the list plus the version it was taken at.
 ///
-/// Must be constructed inside `setup`, after `paths::init`: `new()` reads
-/// `recent.json`, and before `init` `app_data_dir()` answers the release
-/// directory name, so a dev build would load the installed app's list.
-pub struct RecentFiles(Mutex<Vec<RecentFile>>);
+/// Commands run on a multithreaded runtime and emit after the lock is
+/// released, so two concurrent adds can broadcast out of order. `version` is
+/// bumped under the same lock as the change, which lets a window drop a
+/// snapshot older than one it already applied instead of rolling back to it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct RecentSnapshot {
+    pub version: u64,
+    pub files: Vec<RecentFile>,
+}
 
-impl RecentFiles {
-    pub fn new() -> Self {
-        Self(Mutex::new(read().unwrap_or_default()))
+/// The list and its version, with no disk access — `RecentFiles` adds that.
+#[derive(Default)]
+struct RecentState {
+    version: u64,
+    files: Vec<RecentFile>,
+}
+
+impl RecentState {
+    fn snapshot(&self) -> RecentSnapshot {
+        RecentSnapshot { version: self.version, files: self.files.clone() }
     }
 
-    pub fn list(&self) -> Vec<RecentFile> {
-        self.0.lock().unwrap().clone()
-    }
-
-    pub fn add(&self, path: String, timestamp: u64) -> Vec<RecentFile> {
-        let mut guard = self.0.lock().unwrap();
-        *guard = touch(std::mem::take(&mut *guard), &path, timestamp);
-        persist(&guard);
-        guard.clone()
-    }
-
-    /// One-time import from a window's `localStorage` copy; see `import_rule`.
-    pub fn import_if_empty(&self, entries: Vec<RecentFile>) -> Vec<RecentFile> {
-        let mut guard = self.0.lock().unwrap();
-        if let Some(imported) = import_rule(&guard, entries) {
-            *guard = imported;
-            persist(&guard);
+    /// `false`, with no version bump, for an empty path — same rule as
+    /// `import_rule`.
+    fn add(&mut self, path: &str, timestamp: u64) -> bool {
+        if path.is_empty() {
+            return false;
         }
-        guard.clone()
+        self.files = touch(std::mem::take(&mut self.files), path, timestamp);
+        self.version += 1;
+        true
+    }
+
+    fn import(&mut self, entries: Vec<RecentFile>) -> bool {
+        match import_rule(&self.files, entries) {
+            Some(imported) => {
+                self.files = imported;
+                self.version += 1;
+                true
+            }
+            None => false,
+        }
     }
 }
 
-impl Default for RecentFiles {
-    fn default() -> Self {
-        Self::new()
+/// The live list, shared by every window in this process.
+///
+/// Built only by `load()`, inside `setup` after `paths::init`: loading reads
+/// `recent.json`, and before `init` `app_data_dir()` answers the release
+/// directory name, so a dev build would load the installed app's list. There
+/// is deliberately no `Default`, so it cannot be `.manage`d on the builder.
+pub struct RecentFiles(Mutex<RecentState>);
+
+impl RecentFiles {
+    pub fn load() -> Self {
+        Self(Mutex::new(RecentState { version: 0, files: read() }))
+    }
+
+    pub fn snapshot(&self) -> RecentSnapshot {
+        self.0.lock().unwrap().snapshot()
+    }
+
+    /// `None` when nothing changed (an empty path).
+    pub fn add(&self, path: &str, timestamp: u64) -> Option<RecentSnapshot> {
+        let mut guard = self.0.lock().unwrap();
+        if !guard.add(path, timestamp) {
+            return None;
+        }
+        persist(&guard.files);
+        Some(guard.snapshot())
+    }
+
+    /// One-time import from a window's `localStorage` copy; see `import_rule`.
+    /// The flag says whether the list changed, i.e. whether to broadcast.
+    pub fn import_if_empty(&self, entries: Vec<RecentFile>) -> (RecentSnapshot, bool) {
+        let mut guard = self.0.lock().unwrap();
+        let changed = guard.import(entries);
+        if changed {
+            persist(&guard.files);
+        }
+        (guard.snapshot(), changed)
     }
 }
 
 #[tauri::command]
 pub async fn recent_files_list(
     state: tauri::State<'_, RecentFiles>,
-) -> Result<Vec<RecentFile>, String> {
-    Ok(state.list())
+) -> Result<RecentSnapshot, String> {
+    Ok(state.snapshot())
 }
 
+/// The timestamp is taken here rather than by the caller, so every window's
+/// entries share one clock.
 #[tauri::command]
 pub async fn recent_files_add(
     app: tauri::AppHandle,
     state: tauri::State<'_, RecentFiles>,
     path: String,
-    timestamp: u64,
 ) -> Result<(), String> {
     use tauri::Emitter;
-    let list = state.add(path, timestamp);
-    let _ = app.emit("recent-changed", &list);
+    let snapshot = state
+        .add(&path, now_millis())
+        .ok_or_else(|| "Recent files: refusing an empty path".to_string())?;
+    let _ = app.emit("recent-changed", &snapshot);
     Ok(())
 }
 
@@ -151,11 +226,13 @@ pub async fn recent_files_import(
     app: tauri::AppHandle,
     state: tauri::State<'_, RecentFiles>,
     entries: Vec<RecentFile>,
-) -> Result<Vec<RecentFile>, String> {
+) -> Result<RecentSnapshot, String> {
     use tauri::Emitter;
-    let list = state.import_if_empty(entries);
-    let _ = app.emit("recent-changed", &list);
-    Ok(list)
+    let (snapshot, changed) = state.import_if_empty(entries);
+    if changed {
+        let _ = app.emit("recent-changed", &snapshot);
+    }
+    Ok(snapshot)
 }
 
 #[cfg(test)]
@@ -221,5 +298,28 @@ mod tests {
     #[test]
     fn import_of_only_empty_paths_changes_nothing() {
         assert_eq!(import_rule(&[], vec![rf("", 1)]), None);
+    }
+
+    #[test]
+    fn versions_strictly_increase_across_changes() {
+        let mut state = RecentState::default();
+        let v0 = state.snapshot().version;
+        assert!(state.import(vec![rf("/old.md", 1)]));
+        let v1 = state.snapshot().version;
+        assert!(state.add("/a.md", 2));
+        let v2 = state.snapshot().version;
+        assert!(state.add("/a.md", 3));
+        let v3 = state.snapshot().version;
+        assert!(v0 < v1 && v1 < v2 && v2 < v3);
+    }
+
+    #[test]
+    fn a_no_op_leaves_list_and_version_alone() {
+        let mut state = RecentState::default();
+        assert!(state.add("/a.md", 1));
+        let before = state.snapshot();
+        assert!(!state.import(vec![rf("/stale.md", 0)]));
+        assert!(!state.add("", 2));
+        assert_eq!(state.snapshot(), before);
     }
 }

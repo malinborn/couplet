@@ -7,6 +7,7 @@ import {
   createRecentFilesStore,
   createZoomStore,
   type RecentFile,
+  type RecentSnapshot,
 } from './stores.svelte';
 
 vi.mock('@tauri-apps/api/core', () => ({
@@ -335,15 +336,45 @@ describe('createRecentFilesStore', () => {
   it('SetListReplacesLocalStateWholesale', () => {
     const store = createRecentFilesStore();
     store.add('/a.md');
-    store.setList([{ path: '/b.md', timestamp: 1 }]);
+    store.setList({ version: 1, files: [{ path: '/b.md', timestamp: 1 }] });
     expect(store.list).toEqual([{ path: '/b.md', timestamp: 1 }]);
   });
 
-  it('AddCallsRecentFilesAddIpc', () => {
+  // Two concurrent adds can broadcast out of order (Rust emits after the
+  // lock is released); the older snapshot must not roll the window back.
+  it('SetListIgnoresAnOlderVersionArrivingAfterANewerOne', () => {
+    const store = createRecentFilesStore();
+    store.setList({ version: 2, files: [{ path: '/newer.md', timestamp: 2 }] });
+    store.setList({ version: 1, files: [{ path: '/older.md', timestamp: 1 }] });
+    expect(store.list).toEqual([{ path: '/newer.md', timestamp: 2 }]);
+  });
+
+  it('AddCallsRecentFilesAddIpcWithoutATimestamp', () => {
     const store = createRecentFilesStore();
     store.add('/a.md');
-    const timestamp = store.list[0].timestamp;
-    expect(invokeMock).toHaveBeenCalledWith('recent_files_add', { path: '/a.md', timestamp });
+    expect(invokeMock).toHaveBeenCalledWith('recent_files_add', { path: '/a.md' });
+  });
+
+  it('AddIgnoresAnEmptyPath', () => {
+    const store = createRecentFilesStore();
+    store.add('');
+    expect(store.list).toEqual([]);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it('AddSwallowsAnIpcFailure', async () => {
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      invokeMock.mockImplementation(() => Promise.reject(new Error('no tauri')));
+      const store = createRecentFilesStore();
+      store.add('/a.md');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(store.list.map((f) => f.path)).toEqual(['/a.md']);
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
   });
 
   it('NoLongerWritesLocalStorage', () => {
@@ -356,7 +387,7 @@ describe('createRecentFilesStore', () => {
     const legacy: RecentFile[] = [{ path: '/old.md', timestamp: 1 }];
     const rust: RecentFile[] = [{ path: '/shared.md', timestamp: 9 }];
     localStorage.setItem('md-mini:recentFiles', JSON.stringify(legacy));
-    invokeMock.mockImplementation(() => Promise.resolve(rust));
+    invokeMock.mockImplementation(() => Promise.resolve({ version: 1, files: rust }));
     const store = createRecentFilesStore();
     expect(store.list).toEqual(legacy);
     await store.init();
@@ -369,7 +400,7 @@ describe('createRecentFilesStore', () => {
       'md-mini:recentFiles',
       JSON.stringify([{ path: '/ok.md', timestamp: 2 }, { path: 42 }, null, { path: '/neg.md', timestamp: -1 }])
     );
-    invokeMock.mockImplementation(() => Promise.resolve([]));
+    invokeMock.mockImplementation(() => Promise.resolve({ version: 0, files: [] }));
     await createRecentFilesStore().init();
     expect(invokeMock).toHaveBeenCalledWith('recent_files_import', {
       entries: [{ path: '/ok.md', timestamp: 2 }],
@@ -385,23 +416,41 @@ describe('createRecentFilesStore', () => {
     expect(store.list).toEqual(legacy);
   });
 
-  // An `add` or a `recent-changed` event that lands while the import is in
-  // flight is newer than the import's answer; Rust's own broadcast of that
-  // add is what brings this window up to date, not the stale reply.
-  it('InitDoesNotOverwriteAChangeMadeWhileImporting', async () => {
-    let resolveImport: (v: RecentFile[]) => void = () => {};
+  function deferImport(): { resolve: (s: RecentSnapshot) => void } {
+    const handle = { resolve: (_s: RecentSnapshot) => {} };
     invokeMock.mockImplementation((cmd) =>
       cmd === 'recent_files_import'
-        ? new Promise<RecentFile[]>((resolve) => {
-            resolveImport = resolve;
+        ? new Promise<RecentSnapshot>((resolve) => {
+            handle.resolve = resolve;
           })
         : Promise.resolve()
     );
+    return handle;
+  }
+
+  // A `recent-changed` event that lands while the import is in flight and is
+  // newer than the import's answer wins.
+  it('InitDoesNotOverwriteANewerBroadcastReceivedWhileImporting', async () => {
+    const pendingImport = deferImport();
     const store = createRecentFilesStore();
     const pending = store.init();
-    store.setList([{ path: '/fresh.md', timestamp: 5 }]);
-    resolveImport([{ path: '/stale.md', timestamp: 1 }]);
+    store.setList({ version: 5, files: [{ path: '/fresh.md', timestamp: 5 }] });
+    pendingImport.resolve({ version: 3, files: [{ path: '/stale.md', timestamp: 1 }] });
     await pending;
     expect(store.list).toEqual([{ path: '/fresh.md', timestamp: 5 }]);
+  });
+
+  // A local add during the import is not in the reply; that add's own
+  // broadcast is what brings this window up to date, not the stale reply.
+  it('InitDoesNotOverwriteALocalAddMadeWhileImporting', async () => {
+    const pendingImport = deferImport();
+    const store = createRecentFilesStore();
+    const pending = store.init();
+    store.add('/new.md');
+    pendingImport.resolve({ version: 1, files: [{ path: '/stale.md', timestamp: 1 }] });
+    await pending;
+    expect(store.list.map((f) => f.path)).toEqual(['/new.md']);
+    store.setList({ version: 1, files: [{ path: '/new.md', timestamp: 7 }] });
+    expect(store.list).toEqual([{ path: '/new.md', timestamp: 7 }]);
   });
 });

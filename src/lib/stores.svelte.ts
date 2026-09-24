@@ -339,9 +339,21 @@ function isRecentFile(value: unknown): value is RecentFile {
   );
 }
 
+/**
+ * The `md-mini:recentFiles` key is read, never written or removed: it is the
+ * one-time import source, and left intact it is also what a rollback to a
+ * pre-Rust build would still find.
+ */
 function loadLegacyRecentFiles(): RecentFile[] {
   const raw = loadSetting<unknown>('recentFiles', []);
   return Array.isArray(raw) ? raw.filter(isRecentFile) : [];
+}
+
+/** Rust's list plus the version it was taken at (`recent.rs::RecentSnapshot`).
+ * Broadcasts can arrive out of order; a lower version is always older. */
+export interface RecentSnapshot {
+  version: number;
+  files: RecentFile[];
 }
 
 export function createRecentFilesStore() {
@@ -350,36 +362,45 @@ export function createRecentFilesStore() {
   // with the Rust-backed list moments later, one-time-importing this copy
   // if Rust's own store is still empty.
   let files = $state<RecentFile[]>(loadLegacyRecentFiles());
-  // Bumped by every local change, so an `init()` answer that was computed
-  // before a newer `add`/`setList` cannot overwrite it.
-  let generation = 0;
+  // Highest Rust version applied so far; -1 until the first snapshot.
+  let version = -1;
+  // Counts local adds, so an `init()` reply computed before one of them does
+  // not erase it — the add's own broadcast is what brings the list up to date.
+  let localAdds = 0;
 
   return {
     get list() {
       return files;
     },
     add(path: string) {
-      const timestamp = Date.now();
-      files = [{ path, timestamp }, ...files.filter((f) => f.path !== path)].slice(0, 10);
-      generation++;
-      invoke('recent_files_add', { path, timestamp }).catch(() => {});
+      if (path === '') return;
+      // Optimistic insert; Rust stamps its own time and broadcasts the result.
+      files = [{ path, timestamp: Date.now() }, ...files.filter((f) => f.path !== path)].slice(0, 10);
+      localAdds++;
+      invoke('recent_files_add', { path }).catch(() => {});
     },
-    /** Replaces the local list wholesale — used when another window's `add`
-     * arrives via the `recent-changed` event, and by `init()`. */
-    setList(next: RecentFile[]) {
-      files = next;
-      generation++;
+    /** Applies a `recent-changed` broadcast, unless a snapshot at least as new
+     * was already applied — a late event must not roll the window back. */
+    setList(snapshot: RecentSnapshot) {
+      if (snapshot.version <= version) return;
+      version = snapshot.version;
+      files = snapshot.files;
     },
     /** Pulls the Rust-backed list, one-time-importing this window's
      * localStorage copy if Rust's own store is still empty. Call once, from
-     * `onMount`. */
+     * `onMount`. Outside Tauri the legacy copy simply stays. */
     async init(): Promise<void> {
       const legacy = files;
-      const started = generation;
-      const imported = await invoke<RecentFile[]>('recent_files_import', { entries: legacy }).catch(
-        () => legacy
-      );
-      if (generation === started) files = imported;
+      const addsBefore = localAdds;
+      let snapshot: RecentSnapshot;
+      try {
+        snapshot = await invoke<RecentSnapshot>('recent_files_import', { entries: legacy });
+      } catch {
+        return;
+      }
+      if (localAdds !== addsBefore || snapshot.version < version) return;
+      version = snapshot.version;
+      files = snapshot.files;
     },
   };
 }

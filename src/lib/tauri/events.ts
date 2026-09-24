@@ -1,6 +1,6 @@
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
-import type { RecentFile } from '../stores.svelte';
+import type { RecentSnapshot } from '../stores.svelte';
 
 export type MenuAction =
   | 'new'
@@ -63,8 +63,8 @@ export function onSessionRestored(handler: (count: number) => void): Promise<() 
 
 /** Emitted by Rust whenever any window adds to, or imports into, the shared
  * Recent Files list — every other window applies it via `setList`. */
-export function onRecentChanged(handler: (files: RecentFile[]) => void): Promise<() => void> {
-  return listen<RecentFile[]>('recent-changed', (event) => {
+export function onRecentChanged(handler: (snapshot: RecentSnapshot) => void): Promise<() => void> {
+  return listen<RecentSnapshot>('recent-changed', (event) => {
     handler(event.payload);
   });
 }
