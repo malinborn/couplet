@@ -413,10 +413,18 @@ pub(crate) fn try_open_file_window_with(
         }
     }
     let label = build_window(app, activation)?;
-    Ok(match path {
-        Some(file_path) => hand_over_file(app, &label, file_path),
-        None => Opened::Created(label),
-    })
+    let Some(file_path) = path else {
+        return Ok(Opened::Created(label));
+    };
+    let opened = hand_over_file(app, &label, file_path, activation);
+    if let Opened::Existing(_) = &opened {
+        // Built for this one file and did not get it: an empty window
+        // nobody asked for goes rather than stays.
+        if let Some(win) = app.get_webview_window(&label) {
+            let _ = win.destroy();
+        }
+    }
+    Ok(opened)
 }
 
 /// Create an empty editor window, cascaded, and give it its number.
@@ -448,6 +456,8 @@ pub(crate) fn build_window(app: &AppHandle, activation: Activation) -> Result<St
         // Bring app + window to foreground (macOS requires NSApp activate)
         let _ = window.set_focus();
         activate_app();
+    } else {
+        keep_behind_key_window(&window);
     }
     let moved = {
         let open_files = app.state::<OpenFiles>();
@@ -473,9 +483,76 @@ fn activate_app() {
     }
 }
 
+/// Order the unfocused window `win` just below md-mini's key window, so a
+/// background window never covers the one the human is typing in (spec §4):
+/// `focused(false)` alone orders it front, over that window. When md-mini is
+/// not the active app there is nothing to cover — `orderFront` of an inactive
+/// app's window stays behind the active app's — and nothing is done.
+///
+/// Through `run_on_main_thread`: AppKit is main-thread only, and on the main
+/// thread (where an agent's open builds its window) it runs at once, before
+/// the window is ever drawn in front.
+///
+/// Plain `objc` runtime calls rather than `cocoa` + `msg_send!`: every
+/// `cocoa` item is deprecated, and `objc` 0.2's `sel!` expands to a
+/// `cfg(feature = "cargo-clippy")` this crate does not declare — each call
+/// would add a warning.
+fn keep_behind_key_window(win: &tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        let win = win.clone();
+        let _ = win.clone().run_on_main_thread(move || {
+            let Ok(ns_window) = win.ns_window() else {
+                return;
+            };
+            // `NSWindowOrderingMode.below`.
+            const NS_WINDOW_BELOW: isize = -1;
+            unsafe {
+                use objc::runtime::{Class, Object, Sel, BOOL, YES};
+                use objc::Message;
+                let ns_window = ns_window as *mut Object;
+                let Some(app_class) = Class::get("NSApplication") else {
+                    return;
+                };
+                let ns_app: *mut Object = app_class
+                    .send_message(Sel::register("sharedApplication"), ())
+                    .unwrap_or(std::ptr::null_mut());
+                if ns_app.is_null() {
+                    return;
+                }
+                // Compared with `YES`, never with a `bool` literal: `BOOL`
+                // is `i8` on x86_64 (see `activate_app`).
+                let active: BOOL = (*ns_app)
+                    .send_message(Sel::register("isActive"), ())
+                    .unwrap_or(objc::runtime::NO);
+                if active != YES {
+                    return;
+                }
+                let key: *mut Object = (*ns_app)
+                    .send_message(Sel::register("keyWindow"), ())
+                    .unwrap_or(std::ptr::null_mut());
+                if key.is_null() || key == ns_window {
+                    return;
+                }
+                let Ok(key_number) = (*key).send_message::<(), isize>(Sel::register("windowNumber"), ()) else {
+                    return;
+                };
+                let order = Sel::register("orderWindow:relativeTo:");
+                let _: Result<(), _> = (*ns_window).send_message(order, (NS_WINDOW_BELOW, key_number));
+            }
+        });
+    }
+}
+
 /// Give the freshly built window `label` a tab for `file_path`, answering
-/// where the file ended up.
-pub(crate) fn hand_over_file(app: &AppHandle, label: &str, file_path: String) -> Opened {
+/// where the file ended up. `activation` is the open's: only a foreground one
+/// brings a holder that claimed the file meanwhile forward.
+pub(crate) fn hand_over_file(
+    app: &AppHandle,
+    label: &str,
+    file_path: String,
+    activation: Activation,
+) -> Opened {
     let tab = PendingTab {
         tab_id: crate::session::new_tab_id(),
         path: Some(file_path.clone()),
@@ -494,24 +571,33 @@ pub(crate) fn hand_over_file(app: &AppHandle, label: &str, file_path: String) ->
         }
         // Claimed since the check above. The file stays with its
         // holder — it must never be shown and autosaved in two
-        // windows — and this window opens with one untitled tab.
+        // windows — and this window does not get it.
         Handover::Held(owner) => {
-            eprintln!("open_file_window: {file_path} is held by {owner}; {label} opens empty");
-            if let Some(win) = app.get_webview_window(owner) {
-                reveal(&win);
-                let _ = win.emit_to(owner.as_str(), "open-file", &file_path);
-            }
+            eprintln!("open_file_window: {file_path} is held by {owner}; {label} does not get it");
         }
     }
-    opened_by(label, handover)
+    let (opened, reveal_holder) = after_handover(label, handover, activation);
+    if let Some(owner) = reveal_holder {
+        if let Some(win) = app.get_webview_window(&owner) {
+            reveal(&win);
+            let _ = win.emit_to(owner.as_str(), "open-file", &file_path);
+        }
+    }
+    opened
 }
 
-/// Where a file handed over to the new window `label` went: a tab of its
-/// own there, or the tab its holder already had.
-fn opened_by(label: &str, handover: Handover) -> Opened {
+/// Where a file handed over to the new window `label` went — a tab of its
+/// own there, or the tab its holder already had — and which holder to bring
+/// forward on it. Only a foreground open does: a background one must not
+/// raise a window or switch its tab, and its command reaches the holder by
+/// itself (`ai_socket::dispatch`).
+fn after_handover(label: &str, handover: Handover, activation: Activation) -> (Opened, Option<String>) {
     match handover {
-        Handover::Pending | Handover::Mounted => Opened::Created(label.to_string()),
-        Handover::Held(owner) => Opened::Existing(owner),
+        Handover::Pending | Handover::Mounted => (Opened::Created(label.to_string()), None),
+        Handover::Held(owner) => {
+            let reveal = (activation == Activation::Foreground).then(|| owner.clone());
+            (Opened::Existing(owner), reveal)
+        }
     }
 }
 
@@ -938,10 +1024,29 @@ mod tests {
         let mut reg = reg(&[("/a.md", "editor-2")]);
         let mut pending = HashMap::new();
         let held = queue_tab(&mut reg, &mut pending, "editor-5", file_tab("n1", "/a.md"), |_| true);
-        assert_eq!(opened_by("editor-5", held), Opened::Existing("editor-2".to_string()));
+        assert_eq!(
+            after_handover("editor-5", held, Activation::Foreground),
+            (Opened::Existing("editor-2".to_string()), Some("editor-2".to_string())),
+            "a foreground open brings the holder forward on the file"
+        );
         let queued = queue_tab(&mut reg, &mut pending, "editor-5", file_tab("n2", "/b.md"), |_| true);
-        assert_eq!(opened_by("editor-5", queued), Opened::Created("editor-5".to_string()));
-        assert_eq!(opened_by("editor-5", Handover::Mounted), Opened::Created("editor-5".to_string()));
+        assert_eq!(
+            after_handover("editor-5", queued, Activation::Foreground),
+            (Opened::Created("editor-5".to_string()), None)
+        );
+        assert_eq!(
+            after_handover("editor-5", Handover::Mounted, Activation::Background),
+            (Opened::Created("editor-5".to_string()), None)
+        );
+    }
+
+    #[test]
+    fn a_background_open_that_lost_the_file_leaves_its_holder_alone() {
+        assert_eq!(
+            after_handover("editor-5", Handover::Held("editor-2".to_string()), Activation::Background),
+            (Opened::Existing("editor-2".to_string()), None),
+            "no reveal and no open-file: the holder's active tab stays as the human left it"
+        );
     }
 
     #[test]
