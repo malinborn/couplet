@@ -20,6 +20,7 @@ mod migration;
 mod onboarding;
 mod paths;
 mod preferences;
+mod recent;
 mod recovery;
 mod session;
 mod updater;
@@ -149,6 +150,9 @@ pub fn run() {
             window::focus_if_open,
             window::release_open_file,
             window::is_open_elsewhere,
+            recent::recent_files_list,
+            recent::recent_files_add,
+            recent::recent_files_import,
             recovery::save_recovery,
             recovery::delete_recovery,
             recovery::check_recovery,
@@ -176,6 +180,12 @@ pub fn run() {
             // build owns. A dev build must never share `recovery/` or `session.json`
             // with an installed release one.
             paths::init(app.config().product_name.as_deref().unwrap_or(paths::FALLBACK_PRODUCT_NAME));
+
+            // Managed here, not on the builder: `RecentFiles::new()` reads
+            // `recent.json`, and before `paths::init` `app_data_dir()` answers the
+            // release directory — a dev build would load the installed app's list.
+            // No IPC reaches a command before `setup` returns.
+            app.manage(recent::RecentFiles::new());
 
             // Locale resolution: stored preference -> system locale -> "en".
             // Must run before `menu::build_menu` — the menu's labels come from

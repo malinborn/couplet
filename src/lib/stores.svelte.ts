@@ -9,6 +9,7 @@ import {
   type ThemeHalf,
   type ConcreteTheme,
 } from './theme-resolve';
+import { invoke } from '@tauri-apps/api/core';
 import { t } from './i18n';
 import { applyWindowZoom, clampZoom, stepZoom } from './window-zoom';
 
@@ -321,19 +322,64 @@ export interface RecentFile {
   timestamp: number;
 }
 
+/**
+ * A window's pre-Rust `localStorage` copy is whatever an older build wrote,
+ * so it is filtered to entries Rust's `Vec<RecentFile>` will deserialize —
+ * one bad entry would otherwise reject the whole import.
+ */
+function isRecentFile(value: unknown): value is RecentFile {
+  if (typeof value !== 'object' || value === null) return false;
+  const { path, timestamp } = value as Record<string, unknown>;
+  return (
+    typeof path === 'string' &&
+    path !== '' &&
+    typeof timestamp === 'number' &&
+    Number.isSafeInteger(timestamp) &&
+    timestamp >= 0
+  );
+}
+
+function loadLegacyRecentFiles(): RecentFile[] {
+  const raw = loadSetting<unknown>('recentFiles', []);
+  return Array.isArray(raw) ? raw.filter(isRecentFile) : [];
+}
+
 export function createRecentFilesStore() {
-  let files = $state<RecentFile[]>(loadSetting('recentFiles', []));
+  // Starts from the old localStorage copy so the panel is non-empty on the
+  // very first paint; `init()` (called once from `onMount`) replaces this
+  // with the Rust-backed list moments later, one-time-importing this copy
+  // if Rust's own store is still empty.
+  let files = $state<RecentFile[]>(loadLegacyRecentFiles());
+  // Bumped by every local change, so an `init()` answer that was computed
+  // before a newer `add`/`setList` cannot overwrite it.
+  let generation = 0;
 
   return {
     get list() {
       return files;
     },
     add(path: string) {
-      files = [
-        { path, timestamp: Date.now() },
-        ...files.filter((f) => f.path !== path),
-      ].slice(0, 10);
-      saveSetting('recentFiles', files);
+      const timestamp = Date.now();
+      files = [{ path, timestamp }, ...files.filter((f) => f.path !== path)].slice(0, 10);
+      generation++;
+      invoke('recent_files_add', { path, timestamp }).catch(() => {});
+    },
+    /** Replaces the local list wholesale — used when another window's `add`
+     * arrives via the `recent-changed` event, and by `init()`. */
+    setList(next: RecentFile[]) {
+      files = next;
+      generation++;
+    },
+    /** Pulls the Rust-backed list, one-time-importing this window's
+     * localStorage copy if Rust's own store is still empty. Call once, from
+     * `onMount`. */
+    async init(): Promise<void> {
+      const legacy = files;
+      const started = generation;
+      const imported = await invoke<RecentFile[]>('recent_files_import', { entries: legacy }).catch(
+        () => legacy
+      );
+      if (generation === started) files = imported;
     },
   };
 }

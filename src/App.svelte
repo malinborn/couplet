@@ -10,6 +10,7 @@
     onOpenFile,
     onFileChangedExternally,
     onSessionRestored,
+    onRecentChanged,
     onUpdateAvailable,
     onUpdateDismissed,
     onCheckUpdatesRequested,
@@ -1920,6 +1921,9 @@
       toasts.dismissKind('session');
     });
 
+    void recentFiles.init();
+    const unlistenRecentChanged = onRecentChanged((files) => recentFiles.setList(files));
+
     return () => {
       if (stopUpdateChecker) stopUpdateChecker();
       unlistenMenu.then((fn) => fn());
@@ -1929,6 +1933,7 @@
       unlistenComments.then((fn) => fn());
       unlistenDragDrop.then((fn) => fn());
       unlistenSessionRestored.then((fn) => fn());
+      unlistenRecentChanged.then((fn) => fn());
       unlistenUpdateAvailable.then((fn) => fn());
       unlistenCheckUpdatesRequested.then((fn) => fn());
       unlistenUpdateDismissed.then((fn) => fn());

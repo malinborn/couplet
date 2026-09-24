@@ -1,10 +1,17 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { invoke } from '@tauri-apps/api/core';
 import {
   createEngineStore,
   createThemeStore,
   createOcdAlignmentStore,
+  createRecentFilesStore,
   createZoomStore,
+  type RecentFile,
 } from './stores.svelte';
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(() => Promise.resolve()),
+}));
 
 /**
  * Node's built-in `localStorage` global only persists when the process is
@@ -299,5 +306,102 @@ describe('createZoomStore', () => {
   it('LoadsAnOutOfRangeSettingClamped', () => {
     localStorage.setItem('md-mini:zoomLevel', JSON.stringify(9));
     expect(createZoomStore().level).toBe(2);
+  });
+});
+
+describe('createRecentFilesStore', () => {
+  const invokeMock = vi.mocked(invoke);
+
+  beforeEach(() => {
+    localStorage.clear();
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(() => Promise.resolve());
+  });
+
+  it('AddsToTheFrontAndDedupsByPath', () => {
+    const store = createRecentFilesStore();
+    store.add('/a.md');
+    store.add('/b.md');
+    store.add('/a.md');
+    expect(store.list.map((f) => f.path)).toEqual(['/a.md', '/b.md']);
+  });
+
+  it('CapsAtTen', () => {
+    const store = createRecentFilesStore();
+    for (let i = 0; i < 12; i++) store.add(`/f${i}.md`);
+    expect(store.list).toHaveLength(10);
+  });
+
+  it('SetListReplacesLocalStateWholesale', () => {
+    const store = createRecentFilesStore();
+    store.add('/a.md');
+    store.setList([{ path: '/b.md', timestamp: 1 }]);
+    expect(store.list).toEqual([{ path: '/b.md', timestamp: 1 }]);
+  });
+
+  it('AddCallsRecentFilesAddIpc', () => {
+    const store = createRecentFilesStore();
+    store.add('/a.md');
+    const timestamp = store.list[0].timestamp;
+    expect(invokeMock).toHaveBeenCalledWith('recent_files_add', { path: '/a.md', timestamp });
+  });
+
+  it('NoLongerWritesLocalStorage', () => {
+    const store = createRecentFilesStore();
+    store.add('/a.md');
+    expect(localStorage.getItem('md-mini:recentFiles')).toBeNull();
+  });
+
+  it('InitImportsLegacyListAndAdoptsRustList', async () => {
+    const legacy: RecentFile[] = [{ path: '/old.md', timestamp: 1 }];
+    const rust: RecentFile[] = [{ path: '/shared.md', timestamp: 9 }];
+    localStorage.setItem('md-mini:recentFiles', JSON.stringify(legacy));
+    invokeMock.mockImplementation(() => Promise.resolve(rust));
+    const store = createRecentFilesStore();
+    expect(store.list).toEqual(legacy);
+    await store.init();
+    expect(invokeMock).toHaveBeenCalledWith('recent_files_import', { entries: legacy });
+    expect(store.list).toEqual(rust);
+  });
+
+  it('InitDropsMalformedLegacyEntriesBeforeImport', async () => {
+    localStorage.setItem(
+      'md-mini:recentFiles',
+      JSON.stringify([{ path: '/ok.md', timestamp: 2 }, { path: 42 }, null, { path: '/neg.md', timestamp: -1 }])
+    );
+    invokeMock.mockImplementation(() => Promise.resolve([]));
+    await createRecentFilesStore().init();
+    expect(invokeMock).toHaveBeenCalledWith('recent_files_import', {
+      entries: [{ path: '/ok.md', timestamp: 2 }],
+    });
+  });
+
+  it('InitKeepsLegacyListWhenIpcFails', async () => {
+    const legacy: RecentFile[] = [{ path: '/old.md', timestamp: 1 }];
+    localStorage.setItem('md-mini:recentFiles', JSON.stringify(legacy));
+    invokeMock.mockImplementation(() => Promise.reject(new Error('no tauri')));
+    const store = createRecentFilesStore();
+    await store.init();
+    expect(store.list).toEqual(legacy);
+  });
+
+  // An `add` or a `recent-changed` event that lands while the import is in
+  // flight is newer than the import's answer; Rust's own broadcast of that
+  // add is what brings this window up to date, not the stale reply.
+  it('InitDoesNotOverwriteAChangeMadeWhileImporting', async () => {
+    let resolveImport: (v: RecentFile[]) => void = () => {};
+    invokeMock.mockImplementation((cmd) =>
+      cmd === 'recent_files_import'
+        ? new Promise<RecentFile[]>((resolve) => {
+            resolveImport = resolve;
+          })
+        : Promise.resolve()
+    );
+    const store = createRecentFilesStore();
+    const pending = store.init();
+    store.setList([{ path: '/fresh.md', timestamp: 5 }]);
+    resolveImport([{ path: '/stale.md', timestamp: 1 }]);
+    await pending;
+    expect(store.list).toEqual([{ path: '/fresh.md', timestamp: 5 }]);
   });
 });
