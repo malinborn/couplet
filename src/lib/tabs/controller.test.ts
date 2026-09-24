@@ -1401,6 +1401,15 @@ describe('agent operations', () => {
     expect(h.ids()).toEqual(['t1']);
   });
 
+  it('SaysWhetherTheActiveTabIsABlankUntitled', async () => {
+    const blank = await started(files, [untitledTab('u')]);
+    expect(blank.controller.activeIsEmptyUntitled()).toBe(true);
+    blank.type('draft');
+    expect(blank.controller.activeIsEmptyUntitled()).toBe(false);
+    const file = await started(files, [fileTab('a', '/a.md')]);
+    expect(file.controller.activeIsEmptyUntitled()).toBe(false);
+  });
+
   it('OpenPathNowReportsARefusal_AndAnUnreadableFile', async () => {
     const h = await started({ ...files, '/bad.md': 'x' }, [fileTab('a', '/a.md')]);
     h.unreadable.add('/bad.md');

@@ -1093,6 +1093,8 @@ export function createTabController(deps: TabControllerDeps) {
       return closeNow(tabId, 'close', onLastTab, true);
     },
     findByPath: (path: string) => findByPath(list, path),
+    /** The active tab is an untitled one with no text — the tab an open replaces. */
+    activeIsEmptyUntitled: isEmptyUntitled,
     /** Save As gave the active tab a new path. */
     renameActive(path: string): void {
       if (list.activeId !== null) publish(updateTab(list, list.activeId, { path }));

@@ -58,6 +58,7 @@ export type AgentTabs = Pick<
   TabController,
   | 'list'
   | 'findByPath'
+  | 'activeIsEmptyUntitled'
   | 'runExclusive'
   | 'activateNow'
   | 'openPathNow'
@@ -348,7 +349,12 @@ export function createAgentCommands(deps: AgentCommandDeps) {
       liveAsk: deps.liveAsk(),
     });
     if (landing === 'live' && tab) return landLive(payload, tab.id, null);
-    if (landing === 'activate') {
+    // A window showing only a blank Untitled — the untouched `main` Rust
+    // fills with the command's file: the file takes that tab's place whatever
+    // the verb, or the human sees an empty window while an ask waits behind
+    // it. `openPathNow` replaces the blank tab and never raises the window.
+    const fill = tab === undefined && deps.tabs.activeIsEmptyUntitled() && !deps.typing();
+    if (landing === 'activate' || fill) {
       const switched = await activateFor(payload, tab?.id);
       if (switched.kind === 'shown') return landLive(payload, switched.tabId, switched.opened);
       if (switched.kind === 'failed') return respond(payload, { ok: false, error: AGENT_ERRORS.unreadable });

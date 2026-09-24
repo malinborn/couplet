@@ -38,6 +38,8 @@ function makeWorld(tabIds: string[], activeId: string) {
   const disk = new Map(tabIds.filter((id) => !id.startsWith('u')).map((id) => [`/${id}.md`, `${id}1\n${id}2\n${id}3`]));
   disk.set('/c.md', 'c1\nc2\nc3');
   let list: TabListState = { tabs: tabIds.map(meta), activeId };
+  /** What the human typed into an untitled tab; absent: blank. */
+  const untitledText = new Map<string, string>();
   const log: string[] = [];
   const responses: [number, AgentResponse][] = [];
   const pending = new Set<number>();
@@ -68,6 +70,10 @@ function makeWorld(tabIds: string[], activeId: string) {
       return list;
     },
     findByPath: (path) => list.tabs.find((t) => t.path === path),
+    activeIsEmptyUntitled: () => {
+      const active = list.tabs.find((t) => t.id === list.activeId);
+      return active !== undefined && active.path === null && (untitledText.get(active.id) ?? '') === '';
+    },
     runExclusive: <T>(fn: () => Promise<T>) =>
       queue.run(async () => {
         exclusive = true;
@@ -92,7 +98,7 @@ function makeWorld(tabIds: string[], activeId: string) {
       }
       const tab = meta(idOf(path));
       const active = list.tabs.find((t) => t.id === list.activeId);
-      if (active && active.path === null) {
+      if (active && tabs.activeIsEmptyUntitled()) {
         // The controller's replace-active: an empty untitled tab gives way.
         ref.agent!.forget(active.id);
         list = { tabs: list.tabs.map((t) => (t.id === active.id ? tab : t)), activeId: active.id };
@@ -219,6 +225,7 @@ function makeWorld(tabIds: string[], activeId: string) {
     pending,
     pendingFails,
     placeThrows,
+    untitledText,
     list: () => list,
     /** A request an agent is waiting on. */
     send: (p: AiCommandPayload) => {
@@ -649,6 +656,50 @@ describe('a background open that finds the active tab', () => {
     expect(w.response(1)).toEqual({ ok: true, focused: true });
     await w.send(payload({ id: 2, cmd: 'ask', path: '/A.md' }));
     expect(w.count('placed 2')).toBe(1);
+  });
+});
+
+describe('a window whose only tab is a blank Untitled (Rust fills an untouched main)', () => {
+  it('AQuestionTakesItsPlaceAndIsShownAtOnce', async () => {
+    const w = makeWorld(['u'], 'u');
+    await w.send(payload({ id: 1, cmd: 'ask', path: '/c.md' }));
+    expect(w.list()).toEqual({ tabs: [expect.objectContaining({ id: 'c' })], activeId: 'c' });
+    expect(w.count('placed 1')).toBe(1);
+    expect(w.log).not.toContain('openBackgroundNow /c.md');
+    expect(w.log).not.toContain('reveal');
+  });
+
+  it('AnEditIsAppliedLive', async () => {
+    const w = makeWorld(['u'], 'u');
+    await w.send(payload({ id: 1, cmd: 'edit', path: '/c.md', content: 'x' }));
+    expect(w.list().activeId).toBe('c');
+    expect(w.log).toContain('live edit /c.md');
+    expect(w.response(1)).toEqual({ ok: true, changed_lines: [[1, 1]], focused: true });
+  });
+
+  it('ABackgroundOpenBecomesItsOnlyTab_WithoutRaisingTheWindow', async () => {
+    const w = makeWorld(['u'], 'u');
+    await w.send(payload({ id: 1, cmd: 'open', path: '/c.md' }));
+    expect(w.list().tabs.map((t) => t.id)).toEqual(['c']);
+    expect(w.log).not.toContain('reveal');
+    expect(w.response(1)).toEqual({ ok: true, focused: true });
+  });
+
+  it('AnUntitledWithTextIsNotReplaced_TheCommandGoesToTheBackground', async () => {
+    const w = makeWorld(['u'], 'u');
+    w.untitledText.set('u', 'draft');
+    await w.send(payload({ id: 1, cmd: 'ask', path: '/c.md' }));
+    expect(w.log).toContain('openBackgroundNow /c.md');
+    expect(w.list().activeId).toBe('u');
+    expect(w.count('placed 1')).toBe(0);
+  });
+
+  it('NorWhileTheHumanTypes', async () => {
+    const w = makeWorld(['u'], 'u');
+    w.clock.typing = true;
+    await w.send(payload({ id: 1, cmd: 'edit', path: '/c.md', content: 'x' }));
+    expect(w.log).toContain('openBackgroundNow /c.md');
+    expect(w.list().activeId).toBe('u');
   });
 });
 
