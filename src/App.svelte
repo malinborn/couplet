@@ -674,6 +674,7 @@
   async function moveTabs(tabIds: string[], target: MoveTarget): Promise<void> {
     const paths = tabIds.map((id) => tabList.tabs.find((tab) => tab.id === id)?.path ?? null);
     const outcome = await tabs.moveTabs(tabIds, target);
+    if (outcome?.kind === 'moved') announceMoved([{ label: outcome.label, number: outcome.number }]);
     if (outcome?.kind === 'failed') reportStranded(paths.map((path) => ({ path, error: outcome.error })));
   }
 
@@ -690,10 +691,26 @@
     });
   }
 
+  /** How long «Перенесено в #N» stays (D5). */
+  const TABS_MOVED_TOAST_MS = 6000;
+
+  /**
+   * The human stays here (D5): say where the tabs went, with «Перейти». A
+   * newer move replaces the toast, and its timer then finds nothing to close.
+   */
+  function announceMoved(moved: readonly MoveDone[]): void {
+    if (moved.length === 0) return;
+    const id = toasts.push({ kind: 'tabs-moved', label: moved[0].label, numbers: moved.map((m) => m.number) });
+    setTimeout(() => toasts.dismiss(id), TABS_MOVED_TOAST_MS);
+  }
+
   /** «В новые окна» (spec §6): each tab through `tab_move`, into a window of its own. */
   async function moveTabsToNewWindows(tabIds: string[]): Promise<void> {
     const outcome = await tabs.moveToNewWindows(tabIds);
-    if (outcome) reportStranded(outcome.stranded);
+    if (outcome) {
+      announceMoved(outcome.moved);
+      reportStranded(outcome.stranded);
+    }
   }
 
   // --- Restored caret / scroll ---
@@ -2366,6 +2383,9 @@
 <ToastStack
   store={toasts}
   onFormatJson={() => formatJson(true)}
+  onRevealWindow={(label) => {
+    invoke('reveal_other_window', { label }).catch(logTabIpc('reveal_other_window'));
+  }}
   onDismiss={(entry) => {
     // Closing the update notice closes it everywhere, not just here.
     if (entry.payload.kind === 'update') {

@@ -14,10 +14,13 @@
      * which owns the editor handle — this component stays presentational.
      */
     onFormatJson,
+    /** «Перейти» on a `tabs-moved` toast: bring that window forward (`reveal_other_window`). */
+    onRevealWindow,
   }: {
     store: ToastStore;
     onDismiss?: (entry: ToastEntry) => void;
     onFormatJson?: () => void;
+    onRevealWindow?: (label: string) => void;
   } = $props();
 
   function dismiss(entry: ToastEntry): void {
@@ -127,6 +130,20 @@
           {#if toast.payload.message}
             <span class="md-toast-highlight">{toast.payload.message}</span>
           {/if}
+        {:else if toast.payload.kind === 'tabs-moved'}
+          {@const moved = toast.payload}
+          <span class="md-toast-text">
+            {t('toast.tabs_moved.headline', { windows: moved.numbers.map((n) => `#${n ?? '?'}`).join(', ') })}
+          </span>
+          <button
+            class="md-toast-cmd md-toast-action"
+            onclick={() => {
+              onRevealWindow?.(moved.label);
+              dismiss(toast);
+            }}
+          >
+            {t('toast.tabs_moved.go')}
+          </button>
         {:else if toast.payload.kind === 'save-as-blocked'}
           <span class="md-toast-text">
             <strong>{t('toast.save_as_blocked.headline', { fileName: toast.payload.fileName })}</strong>

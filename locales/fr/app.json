@@ -13,6 +13,8 @@
   "toast.open_error.headline": "Impossible d'ouvrir {fileName}",
   "toast.tabs_stranded.one": "{fileName} est resté dans cette fenêtre",
   "toast.tabs_stranded.other": "{fileName} sont restés dans cette fenêtre",
+  "toast.tabs_moved.headline": "Déplacé vers {windows}",
+  "toast.tabs_moved.go": "Y aller",
   "toast.save_as_blocked.headline": "Impossible d'enregistrer sous {fileName}",
   "toast.save_as_blocked.held": "Ce fichier est ouvert dans un autre onglet — rien n’a été écrit",
   "toast.save_as_blocked.tab_gone": "L’onglet pour lequel ce nom a été choisi est fermé — rien n’a été écrit",

@@ -13,6 +13,8 @@
   "toast.open_error.headline": "Не удалось открыть {fileName}",
   "toast.tabs_stranded.one": "{fileName} остался в этом окне",
   "toast.tabs_stranded.other": "{fileName} остались в этом окне",
+  "toast.tabs_moved.headline": "Перенесено в {windows}",
+  "toast.tabs_moved.go": "Перейти",
   "toast.save_as_blocked.headline": "Не удалось сохранить как {fileName}",
   "toast.save_as_blocked.held": "Этот файл открыт в другой вкладке — ничего не записано",
   "toast.save_as_blocked.tab_gone": "Вкладка, для которой выбрано имя, закрыта — ничего не записано",

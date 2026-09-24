@@ -63,6 +63,14 @@ export type ToastPayload =
    */
   | { kind: 'tabs-stranded'; fileNames: string; count: number; message: string | null }
   /**
+   * Tabs went to another window (plan 05) and the human stayed here: where
+   * they went, and «Перейти». The only toast that goes by itself (App
+   * dismisses it after a few seconds): it reports a success, and a standing
+   * one per move would pile up. `label` is the first window, `numbers` every
+   * window's `#N`.
+   */
+  | { kind: 'tabs-moved'; label: string; numbers: (number | null)[] }
+  /**
    * Save As wrote nothing: the name picked is a file another tab holds, the
    * tab it was picked for is gone, or the tab could not be pointed at it.
    * Nothing failed on disk and the text is still in its tab, so not an alarm —
@@ -159,6 +167,7 @@ const ORDER: Record<ToastKind, number> = {
   'unsaved-blocked': 4,
   'open-error': 4,
   'tabs-stranded': 4,
+  'tabs-moved': 4,
   'save-as-blocked': 4,
   // Sorts below everything: it is the only toast that is still waiting on a
   // decision, so it belongs closest to the pointer that has to make it.
