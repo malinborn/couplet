@@ -61,8 +61,18 @@ impl FileWatchers {
 /// The live window holding `path`, if any. A holder whose window is already
 /// gone is stale — its entry is dropped so the file can be claimed again.
 pub(crate) fn live_owner(app: &AppHandle, reg: &mut TabRegistry, path: &str) -> Option<String> {
+    evict_dead(reg, path, |label| app.get_webview_window(label).is_some())
+}
+
+/// `live_owner` without the app: `is_live` says whether a window label still
+/// exists.
+pub fn evict_dead(
+    reg: &mut TabRegistry,
+    path: &str,
+    is_live: impl Fn(&str) -> bool,
+) -> Option<String> {
     let label = reg.label_of(path)?;
-    if app.get_webview_window(&label).is_some() {
+    if is_live(&label) {
         return Some(label);
     }
     reg.remove_window(&label);
@@ -128,11 +138,14 @@ pub fn open_file_window(app: &AppHandle, path: Option<String>) {
             // so the frontend can pull it on mount via get_pending_file command.
             if let Some(ref file_path) = path {
                 let open_files = app.state::<OpenFiles>();
-                open_files
+                let added = open_files
                     .0
                     .lock()
                     .unwrap()
                     .add_tab(&label, &crate::session::new_tab_id(), Some(file_path.clone()));
+                if !added {
+                    eprintln!("open_file_window: {file_path} is already held by another tab; {label} is not registered for it");
+                }
 
                 let pending = app.state::<PendingFiles>();
                 let mut pending_map = pending.0.lock().unwrap();
@@ -231,6 +244,9 @@ pub async fn register_open_file(
             .is_some()
     };
     if !claimed {
+        // Still `Ok`: the frontend has no handling for a refused registration
+        // yet, and an error here would surface as a failed open.
+        eprintln!("register_open_file: {path} is held by another window; {label} was refused");
         return Ok(());
     }
 
@@ -335,11 +351,17 @@ pub fn open_restored_window(app: &AppHandle, snapshot: &crate::session::WindowSn
 
             if let Some(path) = &snapshot.path {
                 let open_files = app.state::<OpenFiles>();
-                open_files
+                let added = open_files
                     .0
                     .lock()
                     .unwrap()
                     .add_tab(&label, &snapshot.tab_id, Some(path.clone()));
+                if !added {
+                    eprintln!(
+                        "open_restored_window: {path} or tab id {} is already registered; {label} is not registered for it",
+                        snapshot.tab_id
+                    );
+                }
 
                 if let Ok(watcher) =
                     crate::watcher::watch_file(app, label.clone(), path.clone())
@@ -541,6 +563,29 @@ mod tests {
     fn route_opened_file_uses_an_empty_main() {
         let reg = reg(&[("/tmp/b.md", "editor-2")]);
         assert_eq!(route_opened_file(&reg, "/tmp/x.md", |_| true), OpenedRoute::UseMain);
+    }
+
+    #[test]
+    fn evict_dead_drops_a_holder_whose_window_is_gone() {
+        let mut reg = reg(&[("/tmp/a.md", "editor-2"), ("/tmp/b.md", "main")]);
+        assert_eq!(evict_dead(&mut reg, "/tmp/a.md", |label| label != "editor-2"), None);
+        assert!(!reg.contains_path("/tmp/a.md"), "the file can be claimed again");
+        assert!(reg.window("editor-2").is_none());
+        assert!(reg.contains_path("/tmp/b.md"), "live windows are untouched");
+    }
+
+    #[test]
+    fn evict_dead_keeps_a_live_holder() {
+        let mut reg = reg(&[("/tmp/a.md", "editor-2")]);
+        assert_eq!(evict_dead(&mut reg, "/tmp/a.md", |_| true), Some("editor-2".to_string()));
+        assert_eq!(reg.label_of("/tmp/a.md").as_deref(), Some("editor-2"));
+    }
+
+    #[test]
+    fn evict_dead_is_none_when_nobody_holds_the_path() {
+        let mut reg = reg(&[("/tmp/b.md", "main")]);
+        assert_eq!(evict_dead(&mut reg, "/tmp/a.md", |_| false), None);
+        assert!(reg.contains_path("/tmp/b.md"), "an unrelated dead-looking window is not evicted");
     }
 
     #[test]

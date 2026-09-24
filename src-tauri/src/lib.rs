@@ -481,7 +481,9 @@ pub fn run() {
                                     }
                                 }
                                 window::OpenedRoute::UseMain => {
-                                    assign_file_to_main(_app_handle, file_path.clone());
+                                    if !assign_file_to_main(_app_handle, file_path.clone()) {
+                                        continue;
+                                    }
                                     // Emit in case frontend is already loaded.
                                     // `emit_to`, not `emit`: a bare `emit` reaches
                                     // every window, and each would run its own
@@ -614,19 +616,35 @@ fn focused_window(app: &tauri::AppHandle) -> Option<String> {
 /// CLI paths used to, leaves the file the app launched with invisible to both, so
 /// opening it a second time or restoring a session that contains it silently
 /// produces a duplicate window.
-fn assign_file_to_main(app: &tauri::AppHandle, path: String) {
+///
+/// Returns `false` when another live window already holds the file: that
+/// window is brought forward instead and main is left untouched.
+fn assign_file_to_main(app: &tauri::AppHandle, path: String) -> bool {
+    let owner = {
+        let open_files = app.state::<OpenFiles>();
+        let mut reg = open_files.0.lock().unwrap();
+        // A holder whose window is gone must not block main from taking the file.
+        window::live_owner(app, &mut reg, &path);
+        match reg.set_single_path("main", &path, session::new_tab_id) {
+            Some(_) => None,
+            None => reg.label_of(&path),
+        }
+    };
+    if let Some(owner) = owner {
+        eprintln!("assign_file_to_main: {path} is held by {owner}; focusing it instead of main");
+        if let Some(win) = app.get_webview_window(&owner) {
+            window::reveal(&win);
+        }
+        return false;
+    }
+
     let pending = app.state::<PendingFiles>();
     pending
         .0
         .lock()
         .unwrap()
-        .insert("main".to_string(), PendingOpen::from_path(path.clone()));
-
-    let open_files = app.state::<OpenFiles>();
-    let mut reg = open_files.0.lock().unwrap();
-    // A holder whose window is gone must not block main from taking the file.
-    window::live_owner(app, &mut reg, &path);
-    reg.set_single_path("main", &path, session::new_tab_id);
+        .insert("main".to_string(), PendingOpen::from_path(path));
+    true
 }
 
 /// Resolve a potentially relative path to an absolute path.
