@@ -149,8 +149,17 @@ interface TabCache {
 }
 
 type Ready =
-  | { kind: 'cached'; state: EditorState }
+  | { kind: 'cached'; state: EditorState; baseline: string | null }
   | { kind: 'fresh'; content: string; exists: boolean };
+
+/** A state ready to be swapped in, built before anything is handed over. */
+interface Entry {
+  state: EditorState;
+  swap: SwapOptions;
+  dirty: boolean;
+  baseline: string | null;
+  restore: Position | null;
+}
 
 type Loadable =
   | { working: TabListState; failed: string[]; tab: TabMeta; ready: Ready }
@@ -219,7 +228,7 @@ export function createTabController(deps: TabControllerDeps) {
       await deps.comments.commitPauses(path);
       await deps.ai.cancel(path);
     }
-    await deps.autosave.flush();
+    await flushWithRetries();
     if (path !== null && deps.doc.dirty()) {
       deps.ai.clearAsks();
       void deps.comments.reload();
@@ -257,17 +266,21 @@ export function createTabController(deps: TabControllerDeps) {
     const cached = cache.get(tab.id);
     if (tab.path === null) {
       return cached?.state
-        ? { kind: 'cached', state: cached.state }
+        ? { kind: 'cached', state: cached.state, baseline: null }
         : { kind: 'fresh', content: cached?.content ?? '', exists: false };
     }
     try {
       const exists = await deps.disk.exists(tab.path);
+      // A file deleted while its tab was in the background keeps its buffer,
+      // as the active tab does: an empty state on that path would drop the
+      // last copy of the text. No baseline, so the next save recreates it.
+      if (!exists && cached?.state) return { kind: 'cached', state: cached.state, baseline: null };
       const content = exists ? await deps.disk.read(tab.path) : '';
       if (
         cached?.state &&
         decideEnter({ baseline: cached.baseline, disk: exists ? content : null }) === 'use-cache'
       ) {
-        return { kind: 'cached', state: cached.state };
+        return { kind: 'cached', state: cached.state, baseline: cached.baseline };
       }
       return { kind: 'fresh', content, exists };
     } catch (err) {
@@ -301,40 +314,57 @@ export function createTabController(deps: TabControllerDeps) {
     }
   }
 
-  /** Steps 4b and 5: show `tab`. Everything up to the swap is synchronous. */
+  /** What entering `tab` will swap in. Builds a state, changes nothing. */
+  function build(tab: TabMeta, ready: Ready, position: Position | null): Entry {
+    const cached = cache.get(tab.id);
+    if (ready.kind === 'cached') {
+      return {
+        state: ready.state,
+        swap: { blur: false, scroll: !position && cached?.scroll ? cached.scroll : 'top' },
+        dirty: tab.dirty,
+        baseline: ready.baseline,
+        restore: position,
+      };
+    }
+    const restore =
+      position ?? (cached ? { cursor: cached.cursor, topLine: cached.topLine } : null);
+    return {
+      state: deps.editor.createState(ready.content, restore ? restore.cursor : null),
+      swap: { blur: true, scroll: 'top' },
+      dirty: tab.path === null && ready.content.length > 0,
+      baseline: ready.exists ? ready.content : null,
+      restore,
+    };
+  }
+
+  /** Step 4b: swap `tab` in. Synchronous; `tab` must already be in `list`. */
+  function show(tab: TabMeta, entry: Entry): void {
+    deps.editor.swap(entry.state, entry.swap);
+    deps.doc.setActive(tab.path, entry.dirty, entry.baseline);
+    deps.editor.applyDocumentConfig(tab.path);
+    // The live view holds this tab now; its cache entry is rebuilt on leave.
+    cache.delete(tab.id);
+    publish(setActive(updateTab(list, tab.id, { dirty: deps.doc.dirty() }), tab.id));
+  }
+
+  /** Step 5: everything that follows the swap. */
+  async function settle(tab: TabMeta, restore: Position | null, opened: boolean): Promise<void> {
+    if (restore) await deps.editor.applyPosition(restore);
+    await deps.rust.activate(tab.id);
+    void deps.comments.reload();
+    deps.entered(tab.path, opened);
+    deps.settled();
+  }
+
   async function enter(
     tab: TabMeta,
     ready: Ready,
     position: Position | null,
     opened: boolean
   ): Promise<void> {
-    const cached = cache.get(tab.id);
-    let restore = position;
-    if (ready.kind === 'cached') {
-      const scroll = !position && cached?.scroll ? cached.scroll : 'top';
-      deps.editor.swap(ready.state, { blur: false, scroll });
-      deps.doc.setActive(tab.path, tab.dirty, cached?.baseline ?? null);
-    } else {
-      restore = position ?? (cached ? { cursor: cached.cursor, topLine: cached.topLine } : null);
-      deps.editor.swap(deps.editor.createState(ready.content, restore ? restore.cursor : null), {
-        blur: true,
-        scroll: 'top',
-      });
-      deps.doc.setActive(
-        tab.path,
-        tab.path === null && ready.content.length > 0,
-        ready.exists ? ready.content : null
-      );
-    }
-    deps.editor.applyDocumentConfig(tab.path);
-    // The live view holds this tab now; its cache entry is rebuilt on leave.
-    cache.delete(tab.id);
-    publish(setActive(updateTab(list, tab.id, { dirty: deps.doc.dirty() }), tab.id));
-    if (restore) await deps.editor.applyPosition(restore);
-    await deps.rust.activate(tab.id);
-    void deps.comments.reload();
-    deps.entered(tab.path, opened);
-    deps.settled();
+    const entry = build(tab, ready, position);
+    show(tab, entry);
+    await settle(tab, entry.restore, opened);
   }
 
   async function initNow(tabs: readonly InitTab[], activeTabId: string | null): Promise<void> {
@@ -400,40 +430,81 @@ export function createTabController(deps: TabControllerDeps) {
       console.error('Failed to open file:', err);
       return;
     }
-    const answer = await deps.rust.open(path);
+    let answer = await deps.rust.open(path);
+    if (answer.kind === 'this-window' && !findById(list, answer.tabId)) {
+      // A claim this window's list does not know is left over from an
+      // operation that failed after claiming; nothing here shows it.
+      await deps.rust.release(answer.tabId);
+      answer = await deps.rust.open(path);
+    }
     if (answer.kind === 'other-window') {
       await deps.rust.focusElsewhere(path);
       return;
     }
     if (answer.kind === 'this-window') {
-      await activateNow(answer.tabId, { position: position ?? undefined });
-      return;
-    }
-    if (!(await handOver())) {
-      await deps.rust.release(answer.tabId);
+      if (findById(list, answer.tabId)) {
+        await activateNow(answer.tabId, { position: position ?? undefined });
+      } else {
+        console.error('tab_open keeps answering with a tab this window does not have:', path);
+        await deps.rust.release(answer.tabId);
+      }
       return;
     }
     const tab: TabMeta = { id: answer.tabId, path, dirty: false };
-    const previous = activeTab(list);
-    // Re-checked here, after the last await: text typed into the blank tab
-    // while the file was read makes it a tab worth keeping.
-    if (replace && previous && isEmptyUntitled()) {
-      cache.delete(previous.id);
-      publish(replaceTab(list, previous.id, tab));
-      await enter(tab, { kind: 'fresh', content, exists }, position, true);
-      await deps.rust.release(previous.id);
-      return;
+    const shown = await showClaimed(tab, { kind: 'fresh', content, exists }, position, () => {
+      const previous = activeTab(list);
+      // Re-checked here, after the last await: text typed into the blank tab
+      // while the file was read makes it a tab worth keeping.
+      if (replace && previous && isEmptyUntitled()) {
+        deps.editor.stripForBackground();
+        cache.delete(previous.id);
+        publish(replaceTab(list, previous.id, tab));
+        return previous.id;
+      }
+      stashActive();
+      publish(insertAfterActive(list, tab));
+      return null;
+    });
+    if (!shown) return;
+    await settle(tab, shown.entry.restore, true);
+    if (shown.placed !== null) await deps.rust.release(shown.placed);
+  }
+
+  /**
+   * Hand the active document over and swap in `tab`, which Rust has just
+   * claimed for this window; `place` puts it into the list, synchronously.
+   * Until the swap the claim is ours to give back — on a refusal and on a
+   * throw alike — or Rust keeps reporting a tab that nothing shows.
+   */
+  async function showClaimed<T>(
+    tab: TabMeta,
+    ready: Ready,
+    position: Position | null,
+    place: () => T
+  ): Promise<{ entry: Entry; placed: T } | null> {
+    let shown = false;
+    try {
+      const entry = build(tab, ready, position);
+      if (!(await handOver())) return null;
+      const placed = place();
+      show(tab, entry);
+      shown = true;
+      return { entry, placed };
+    } finally {
+      if (!shown) await deps.rust.release(tab.id);
     }
-    stashActive();
-    publish(insertAfterActive(list, tab));
-    await enter(tab, { kind: 'fresh', content, exists }, position, true);
   }
 
   async function openNow(path: string, position: Position | null): Promise<void> {
     deps.editor.commitCellEdit();
     await flushWithRetries();
     const local = findByPath(list, path);
-    const owner: TabOwner = local ? { kind: 'this-window', tabId: local.id } : await deps.rust.owner(path);
+    let owner: TabOwner = local ? { kind: 'this-window', tabId: local.id } : await deps.rust.owner(path);
+    if (owner.kind === 'this-window' && !findById(list, owner.tabId)) {
+      // Left over from an operation that failed after claiming.
+      await deps.rust.release(owner.tabId);
+      owner = { kind: 'none' };
+    }
     const action = decideOpenAction({
       targetPath: path,
       activeTabId: list.activeId,
@@ -470,14 +541,12 @@ export function createTabController(deps: TabControllerDeps) {
     if (!(await mayLeave())) return;
     const answer = await deps.rust.open(null);
     if (answer.kind !== 'created') return;
-    if (!(await handOver())) {
-      await deps.rust.release(answer.tabId);
-      return;
-    }
-    stashActive();
     const tab: TabMeta = { id: answer.tabId, path: null, dirty: false };
-    publish(insertAfterActive(list, tab));
-    await enter(tab, { kind: 'fresh', content: '', exists: false }, null, true);
+    const shown = await showClaimed(tab, { kind: 'fresh', content: '', exists: false }, null, () => {
+      stashActive();
+      publish(insertAfterActive(list, tab));
+    });
+    if (shown) await settle(tab, shown.entry.restore, true);
   }
 
   async function closeNow(tabId: string): Promise<void> {
@@ -517,7 +586,7 @@ export function createTabController(deps: TabControllerDeps) {
     };
 
     const next = await prepareLoadable(removeTab(list, tabId).state);
-    await deps.autosave.flush();
+    await flushWithRetries();
     if (path !== null && deps.doc.dirty()) {
       // Typed into during the awaits: the tab stays, its cards come back.
       void deps.comments.reload();
@@ -525,13 +594,15 @@ export function createTabController(deps: TabControllerDeps) {
       return;
     }
 
+    // From the dirty check above to the swap, nothing awaits.
     if (path !== null) deps.comments.forget(path);
     deps.editor.stripForBackground();
     cache.delete(tabId);
-    await releaseAll(next.failed);
+    for (const id of next.failed) cache.delete(id);
     publish(next.working);
     if (next.tab === null) {
       await deps.rust.close(tabId, position);
+      await releaseAll(next.failed);
       deps.settled();
       await deps.rust.closeWindow();
       return;
@@ -540,6 +611,7 @@ export function createTabController(deps: TabControllerDeps) {
     // After the swap: its Rust side fails the closed document's agents and
     // records it for ⌘⇧T; the watcher has already moved on.
     await deps.rust.close(tabId, position);
+    await releaseAll(next.failed);
   }
 
   function report(live: { cursor: number; topLine: number; content: string }): {

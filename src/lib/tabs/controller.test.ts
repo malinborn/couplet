@@ -33,7 +33,7 @@ function makeHarness(initialFiles: Record<string, string>) {
   const owners = new Map<string, TabOwner>();
   const calls: string[] = [];
   const swaps: { state: EditorState; opts: SwapOptions }[] = [];
-  const hooks = { duringRead: () => {}, duringCommitPauses: () => {} };
+  const hooks = { duringRead: () => {}, duringCommitPauses: () => {}, afterFlush: () => {} };
   const doc = { path: null as string | null, dirty: false, baseline: null as string | null };
   let live = EditorState.create({ doc: '' });
   let saveSucceeds = true;
@@ -85,8 +85,9 @@ function makeHarness(initialFiles: Record<string, string>) {
           doc.baseline = live.doc.toString();
           doc.dirty = false;
         }
+        hooks.afterFlush();
       }),
-      holdsBack: () => false,
+      holdsBack: vi.fn(() => false),
     },
     saveErrorPending: vi.fn(() => false),
     reportUnsaved: vi.fn(),
@@ -278,6 +279,9 @@ describe('openPath', () => {
     expect(h.ids()).toEqual(['t1']);
     expect(h.deps.rust.release).toHaveBeenCalledWith('u');
     expect(h.live().doc.toString()).toBe('AAAA');
+    // The blank tab's window overlays close like on any other leave.
+    expect(h.calls).toContain('strip');
+    expect(h.calls.indexOf('strip')).toBeLessThan(h.calls.indexOf('swap'));
   });
 
   it('KeepsAnUntitledTabTypedIntoWhileTheFileWasRead', async () => {
@@ -528,5 +532,208 @@ describe('report', () => {
       { tabId: 'u', path: null, cursor: 0, topLine: 1, content: 'one two' },
       { tabId: 'a', path: '/a.md', cursor: 3, topLine: 2, content: null },
     ]);
+  });
+});
+
+describe('files that went away', () => {
+  it('KeepsTheCachedTextOfATabWhoseFileWasDeleted', async () => {
+    // Same rule as for the active tab: a deleted file keeps its buffer. A
+    // fresh empty state on that path would drop the last copy of the text.
+    const h = await started({ '/a.md': 'AAAA', '/b.md': 'BBBB' }, [fileTab('a', '/a.md')]);
+    const stateA = h.live();
+    await h.controller.openPath('/b.md');
+    h.files.delete('/a.md');
+
+    expect(await h.controller.activate('a')).toBe('ok');
+
+    expect(h.live()).toBe(stateA);
+    expect(h.doc.path).toBe('/a.md');
+    expect(h.doc.baseline).toBeNull();
+  });
+
+  it('ReturningToATabWhoseFileCannotBeReadFails_AndKeepsItsCache', async () => {
+    const h = await started({ '/a.md': 'AAAA', '/b.md': 'BBBB' }, [fileTab('a', '/a.md')]);
+    const stateA = h.live();
+    await h.controller.openPath('/b.md');
+    h.unreadable.add('/a.md');
+
+    expect(await h.controller.activate('a')).toBe('failed');
+    expect(h.active()).toBe('t1');
+    expect(h.ids()).toEqual(['a', 't1']);
+    expect(h.live().doc.toString()).toBe('BBBB');
+
+    h.unreadable.delete('/a.md');
+    expect(await h.controller.activate('a')).toBe('ok');
+    expect(h.live()).toBe(stateA);
+  });
+});
+
+describe('claims', () => {
+  it('ReleasesTheClaimWhenTheHandoverThrows_OpeningAFile', async () => {
+    const h = await started({ '/a.md': 'AAAA', '/b.md': 'BBBB' }, [fileTab('a', '/a.md')]);
+    const stateA = h.live();
+    vi.mocked(h.deps.comments.commitPauses).mockRejectedValueOnce(new Error('ipc'));
+
+    await h.controller.openPath('/b.md');
+
+    expect(h.deps.rust.release).toHaveBeenCalledWith('t1');
+    expect(h.ids()).toEqual(['a']);
+    expect(h.live()).toBe(stateA);
+  });
+
+  it('ReleasesTheClaimWhenTheHandoverThrows_NewTab', async () => {
+    const h = await started({ '/a.md': 'AAAA' }, [fileTab('a', '/a.md')]);
+    const stateA = h.live();
+    vi.mocked(h.deps.comments.commitPauses).mockRejectedValueOnce(new Error('ipc'));
+
+    await h.controller.newTab();
+
+    expect(h.deps.rust.release).toHaveBeenCalledWith('t1');
+    expect(h.ids()).toEqual(['a']);
+    expect(h.live()).toBe(stateA);
+  });
+
+  it('ReleasesAStaleClaimTheOwnerQueryReportsForThisWindow', async () => {
+    const h = await started({ '/a.md': 'AAAA', '/b.md': 'BBBB' }, [fileTab('a', '/a.md')]);
+    h.owners.set('/b.md', { kind: 'this-window', tabId: 'ghost' });
+
+    await h.controller.openPath('/b.md');
+
+    expect(h.deps.rust.release).toHaveBeenCalledWith('ghost');
+    expect(h.ids()).toEqual(['a', 't1']);
+    expect(h.live().doc.toString()).toBe('BBBB');
+  });
+
+  it('ReleasesAStaleClaimTabOpenAnswersAndOpensAgain', async () => {
+    const h = await started({ '/a.md': 'AAAA', '/b.md': 'BBBB' }, [fileTab('a', '/a.md')]);
+    vi.mocked(h.deps.rust.open).mockResolvedValueOnce({ kind: 'this-window', tabId: 'ghost' });
+
+    await h.controller.openPath('/b.md');
+
+    expect(h.deps.rust.release).toHaveBeenCalledWith('ghost');
+    expect(h.deps.rust.open).toHaveBeenCalledTimes(2);
+    expect(h.ids()).toEqual(['a', 't1']);
+    expect(h.live().doc.toString()).toBe('BBBB');
+  });
+});
+
+describe('flush', () => {
+  it('ATypedKeyDuringTheHandoverFlushIsPickedUpByARetry', async () => {
+    const h = await started({ '/a.md': 'AAAA', '/b.md': 'BBBB' }, [fileTab('a', '/a.md')]);
+    let armed = false;
+    h.hooks.duringCommitPauses = () => {
+      armed = true;
+    };
+    h.hooks.afterFlush = () => {
+      if (!armed) return;
+      armed = false;
+      h.type('y');
+    };
+
+    await h.controller.openPath('/b.md');
+
+    expect(h.deps.reportUnsaved).not.toHaveBeenCalled();
+    expect(h.live().doc.toString()).toBe('BBBB');
+    expect(h.files.get('/a.md')).toBe('AAAAy');
+  });
+
+  it('DoesNotRetryAFlushTheConflictDialogHoldsBack', async () => {
+    const h = await started({ '/a.md': 'AAAA', '/b.md': 'BBBB' }, [fileTab('a', '/a.md')]);
+    vi.mocked(h.deps.autosave.holdsBack).mockReturnValue(true);
+    h.setSaveSucceeds(false);
+    h.type('x');
+
+    await h.controller.openPath('/b.md');
+
+    expect(h.deps.autosave.flush).toHaveBeenCalledTimes(1);
+    expect(h.deps.reportUnsaved).toHaveBeenCalledTimes(1);
+    expect(h.ids()).toEqual(['a']);
+  });
+
+  it('AnAgentIsRefusedWhenTheActiveSaveDidNotLand', async () => {
+    const h = await started({ '/a.md': 'AAAA', '/b.md': 'BBBB' }, [fileTab('a', '/a.md')]);
+    await h.controller.openPath('/b.md');
+    h.setSaveSucceeds(false);
+    h.type('x');
+
+    const result = await h.controller.runExclusive(() =>
+      h.controller.activateNow('a', { byAgent: true })
+    );
+
+    expect(result).toBe('refused');
+    expect(h.active()).toBe('t1');
+  });
+});
+
+describe('close, continued', () => {
+  it('KeepsTheTabWhenItIsTypedIntoDuringTheCloseAwaits', async () => {
+    const h = await started({ '/a.md': 'AAAA', '/b.md': 'BBBB' }, [fileTab('a', '/a.md')]);
+    await h.controller.openPath('/b.md');
+    await h.controller.activate('a');
+    vi.clearAllMocks();
+    h.hooks.duringCommitPauses = () => {
+      h.setSaveSucceeds(false);
+      h.type('late');
+    };
+
+    await h.controller.closeActive();
+
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+    expect(h.deps.reportUnsaved).toHaveBeenCalled();
+    expect(h.deps.comments.reload).toHaveBeenCalled();
+    expect(h.ids()).toEqual(['a', 't1']);
+    expect(h.active()).toBe('a');
+    expect(h.live().doc.toString()).toBe('AAAAlate');
+  });
+
+  it('StopsClosingWhenCommentsCannotBeSaved', async () => {
+    const h = await started({ '/a.md': 'AAAA' }, [fileTab('a', '/a.md')]);
+    vi.mocked(h.deps.comments.flush).mockResolvedValue(false);
+
+    await h.controller.closeActive();
+
+    expect(h.deps.comments.commitPauses).not.toHaveBeenCalled();
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+    expect(h.deps.rust.closeWindow).not.toHaveBeenCalled();
+    expect(h.ids()).toEqual(['a']);
+  });
+
+  it('ClosingABackgroundUntitledTabDropsItsText', async () => {
+    const h = await started({ '/a.md': 'AAAA' }, [untitledTab('u', 'draft'), fileTab('a', '/a.md')], 'a');
+
+    await h.controller.closeTab('u');
+
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', { cursor: 0, topLine: 1 });
+    const { tabs } = h.controller.report({ cursor: 0, topLine: 1, content: 'AAAA' });
+    expect(tabs.map((t) => t.tabId)).toEqual(['a']);
+  });
+
+  it('ReleasesUnreadableNeighboursOnlyAfterTheSwap', async () => {
+    // Nothing may await between the last dirty check and the swap.
+    const h = await started({ '/a.md': 'A', '/b.md': 'B', '/c.md': 'C' }, [
+      fileTab('a', '/a.md'),
+      fileTab('b', '/b.md'),
+      fileTab('c', '/c.md'),
+    ]);
+    h.unreadable.add('/b.md');
+
+    await h.controller.closeActive();
+
+    expect(h.ids()).toEqual(['c']);
+    expect(h.live().doc.toString()).toBe('C');
+    expect(h.calls.indexOf('swap')).toBeGreaterThanOrEqual(0);
+    expect(h.calls.indexOf('swap')).toBeLessThan(h.calls.indexOf('release b'));
+  });
+
+  it('CallsMadeInOneTickSeeTheListTheEarlierOneLeft', async () => {
+    const h = await started({ '/a.md': 'AAAA', '/b.md': 'BBBB' }, [fileTab('a', '/a.md')]);
+
+    const opening = h.controller.openPath('/b.md');
+    const closing = h.controller.closeActive();
+    await Promise.all([opening, closing]);
+
+    expect(h.deps.rust.close).toHaveBeenCalledWith('t1', expect.anything());
+    expect(h.ids()).toEqual(['a']);
+    expect(h.active()).toBe('a');
   });
 });
