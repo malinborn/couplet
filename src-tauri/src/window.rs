@@ -337,6 +337,25 @@ pub fn label_to_focus(
         .cloned()
 }
 
+/// IPC command: whether `path` is open in a window other than the caller —
+/// the query half of `focus_if_open`, with no side effect.
+///
+/// `switchDocument` needs the answer before it decides anything, and focusing
+/// is only one of the outcomes: with a save error standing the window must
+/// stay put, so the focus waits for `focus_if_open` in the branch that wants
+/// it.
+#[tauri::command]
+pub async fn is_open_elsewhere(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    path: String,
+) -> Result<bool, String> {
+    let open_files = app.state::<OpenFiles>();
+    let map = open_files.0.lock().unwrap();
+    Ok(label_to_focus(&map, &path, window.label())
+        .is_some_and(|other| app.get_webview_window(&other).is_some()))
+}
+
 /// Remove `path` from `open_files` if — and only if — it maps to `label`.
 /// Returns whether an entry was removed. Another window's mapping is never
 /// touched: releasing is a window giving up a claim of its own.

@@ -36,6 +36,15 @@ export interface CellEditSession {
    * point at characters that are not in the file.
    */
   commitAndMap(from: number, to: number): { from: number; to: number };
+  /**
+   * Commit the overlay into the document now and close it — what Cmd+Enter
+   * does.
+   *
+   * For callers about to replace the document underneath it: left open, the
+   * overlay's blur-triggered commit fires 50ms later and writes the cell's
+   * text at the old document's offsets into whatever document loaded since.
+   */
+  commit(): void;
 }
 
 /** Events that can move a selection inside a textarea, across engines. */

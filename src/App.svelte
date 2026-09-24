@@ -54,7 +54,8 @@
   } from './lib/editor/ai-highlight';
   import { addAiAsk, removeAiAsk, clearAiAsks } from './lib/editor/ai-ask';
   import { decideSwitchAction } from './lib/switch-document';
-  import { activeCellEditSession, endCellEditSession } from './lib/editor/cell-edit-session';
+  import { activeCellEditSession } from './lib/editor/cell-edit-session';
+  import { createSerialQueue } from './lib/serial-queue';
   import { hideHoverMenu } from './lib/editor/hover-menu';
   import { closeSearchPanel } from '@codemirror/search';
   import {
@@ -328,14 +329,16 @@
    * Serialized: a Cmd+O arriving while an `open-file` switch is still in its
    * awaits would otherwise interleave with it — two handovers of the same
    * document, and the first one's `finally` clearing `switchingDocument` while
-   * the second is still mid-switch.
+   * the second is still mid-switch. The queue's promise never rejects, so the
+   * `void` call sites cannot produce an unhandled rejection.
    */
-  let switchQueue: Promise<void> = Promise.resolve();
-  function switchDocument(path: string): Promise<void> {
-    const run = switchQueue.then(() => switchDocumentNow(path));
-    switchQueue = run.catch(() => {});
-    return run;
+  const switchQueue = createSerialQueue();
+  async function switchDocument(path: string): Promise<void> {
+    await switchQueue.run(() => switchDocumentNow(path));
   }
+
+  /** Flush attempts before a still-dirty file-backed buffer blocks a switch. */
+  const SWITCH_FLUSH_ATTEMPTS = 3;
 
   /**
    * Open `path` in a window of its own, leaving this one as it is.
@@ -352,13 +355,31 @@
   }
 
   async function switchDocumentNow(path: string): Promise<void> {
-    await autoSave.flush();
-    // A keystroke that landed during that write is not covered by it; one
-    // more flush picks it up. Not after a failure — that would only repeat
-    // the write the standing toast already reports.
-    if (fileState.isDirty && !toasts.hasKind('save-error')) await autoSave.flush();
+    // First, before any flush: an open cell overlay holds text the document
+    // does not have yet, and left open its blur commit would land 50ms later
+    // at this document's offsets inside whichever document loads next.
+    activeCellEditSession()?.commit();
 
-    const alreadyOpenElsewhere = await invoke<boolean>('focus_if_open', { path }).catch(
+    await autoSave.flush();
+    // A keystroke that landed during a write is not covered by it; another
+    // flush picks it up. Bounded, and never after a failure or while the
+    // conflict dialog holds saves back — those would only repeat a write that
+    // cannot happen, and the refusal below reports them.
+    for (
+      let attempt = 1;
+      attempt < SWITCH_FLUSH_ATTEMPTS &&
+      fileState.filePath &&
+      fileState.isDirty &&
+      !conflictDialogOpen &&
+      !toasts.hasKind('save-error');
+      attempt++
+    ) {
+      await autoSave.flush();
+    }
+
+    // A query only: focusing another window is one possible outcome, and with
+    // a save error standing it is exactly the one that must not happen.
+    const alreadyOpenElsewhere = await invoke<boolean>('is_open_elsewhere', { path }).catch(
       () => false
     );
 
@@ -372,7 +393,9 @@
 
     switch (decision.kind) {
       case 'noop-already-showing':
+        return;
       case 'focus-other-window':
+        await invoke('focus_if_open', { path }).catch(() => {});
         return;
       case 'refuse-save-error':
         // The standing `save-error` toast already explains why; nothing to
@@ -491,8 +514,6 @@
         view.dispatch({ effects: [clearAiAsks.of(null), clearAiHighlights.of(null)] });
         closeSearchPanel(view);
       }
-      const activeEdit = activeCellEditSession();
-      if (activeEdit) endCellEditSession(activeEdit.textarea);
       hideHoverMenu();
       showRecentFiles = false;
 
@@ -544,6 +565,11 @@
       applyPreviewConfig();
     } catch (err) {
       console.error('Failed to open file:', err);
+      // `RunEvent::Opened` may have registered `path` to this window already;
+      // a window that never came to show it must not keep the claim.
+      if (fileState.filePath !== path) {
+        invoke('release_open_file', { path }).catch(() => {});
+      }
     } finally {
       switchingDocument = false;
     }
@@ -1052,6 +1078,9 @@
       return;
     }
     const threads = await commentThreads(path).catch(() => []);
+    // The window may have switched documents while the read was in flight;
+    // these threads' anchors would then be searched for in the wrong text.
+    if (fileState.filePath !== path) return;
     const doc = view.state.doc.toString();
     // Whoever is in a box right now goes back into it afterwards. Without
     // this, an agent answering — or the user's own autosave flipping the
