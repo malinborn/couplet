@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   CLOSED,
+  actionAllowed,
   captureTyping,
   clearSelection,
   close,
@@ -74,6 +75,12 @@ describe('query', () => {
   it('IsIgnoredWhileClosed', () => {
     expect(setQuery(CLOSED, 'x')).toBe(CLOSED);
   });
+
+  it('AQueryHandsTheKeyboardToTheDrawer_PinnedImpliesTyping', () => {
+    const s = setQuery(open(CLOSED, 'hover', false), 'x');
+    expect(s).toMatchObject({ mode: 'pinned', typing: true });
+    expect(setQuery(open(CLOSED, 'hover', false), '').typing).toBe(false);
+  });
 });
 
 describe('escape', () => {
@@ -95,7 +102,13 @@ describe('keyboard cursor', () => {
   it('StartsFromTheActiveTab', () => {
     expect(moveKb(open(CLOSED, 'pinned'), 1, visible, 'b').kb).toBe('c');
     expect(moveKb(open(CLOSED, 'pinned'), -1, visible, 'b').kb).toBe('a');
-    expect(moveKb(open(CLOSED, 'pinned'), 1, visible, null).kb).toBe('b');
+  });
+
+  it('WithoutACursorOrAVisibleActiveTab_StartsAtTheEnd_TheArrowPointsFrom', () => {
+    expect(moveKb(open(CLOSED, 'pinned'), 1, visible, null).kb).toBe('a');
+    expect(moveKb(open(CLOSED, 'pinned'), -1, visible, null).kb).toBe('d');
+    expect(moveKb(open(CLOSED, 'pinned'), 1, visible, 'gone').kb).toBe('a');
+    expect(moveKb(open(CLOSED, 'pinned'), -1, visible, 'gone').kb).toBe('d');
   });
 
   it('StopsAtTheEnds', () => {
@@ -135,9 +148,54 @@ describe('selection and shift', () => {
   });
 });
 
+describe('actionAllowed', () => {
+  const sort = { kind: 'sort', sort: 'ai' } as const;
+  const type = { kind: 'type', char: 'a' } as const;
+  const esc = { kind: 'escape' } as const;
+
+  it('SortKeysWorkInAnOpenDrawerBeforeItTookTheKeyboard', () => {
+    const s = open(CLOSED, 'hover', false);
+    expect(actionAllowed(s, sort)).toBe(true);
+    expect(actionAllowed(s, type)).toBe(false);
+    expect(actionAllowed(s, esc)).toBe(false);
+  });
+
+  it('EverythingOnceTheDrawerHasTheKeyboard', () => {
+    const s = open(CLOSED, 'pinned');
+    expect(actionAllowed(s, sort)).toBe(true);
+    expect(actionAllowed(s, type)).toBe(true);
+    expect(actionAllowed(s, esc)).toBe(true);
+  });
+
+  it('NothingWhileClosed', () => {
+    expect(actionAllowed(CLOSED, sort)).toBe(false);
+    expect(actionAllowed(CLOSED, type)).toBe(false);
+  });
+});
+
 describe('drawerKeyAction', () => {
   it('Escape', () => {
     expect(drawerKeyAction(key({ key: 'Escape', code: 'Escape' }), '', true)).toEqual({ kind: 'escape' });
+  });
+
+  it('EscapeOnlyWithoutModifiers', () => {
+    expect(drawerKeyAction(key({ key: 'Escape', code: 'Escape', metaKey: true }), '', true)).toEqual({ kind: 'none' });
+    expect(drawerKeyAction(key({ key: 'Escape', code: 'Escape', ctrlKey: true }), '', true)).toEqual({ kind: 'none' });
+    expect(drawerKeyAction(key({ key: 'Escape', code: 'Escape', altKey: true }), '', true)).toEqual({ kind: 'none' });
+    expect(drawerKeyAction(key({ key: 'Escape', code: 'Escape', shiftKey: true }), '', true)).toEqual({ kind: 'none' });
+  });
+
+  it('IgnoresKeysDuringImeComposition', () => {
+    expect(drawerKeyAction(key({ key: 'a', code: 'KeyA', isComposing: true }), '', true)).toEqual({ kind: 'none' });
+    expect(drawerKeyAction(key({ key: 'Process', code: 'KeyA', keyCode: 229 }), '', true)).toEqual({ kind: 'none' });
+    expect(drawerKeyAction(key({ key: 'Enter', code: 'Enter', isComposing: true }), 'a', true)).toEqual({ kind: 'none' });
+    expect(drawerKeyAction(key({ key: 'Escape', code: 'Escape', keyCode: 229 }), 'a', true)).toEqual({ kind: 'none' });
+  });
+
+  it('OptionLettersAreText_OnAMac', () => {
+    expect(drawerKeyAction(key({ key: 'ą', code: 'KeyA', altKey: true }), '', true)).toEqual({ kind: 'type', char: 'ą' });
+    expect(drawerKeyAction(key({ key: '≈', code: 'KeyX', altKey: true }), '', true)).toEqual({ kind: 'type', char: '≈' });
+    expect(drawerKeyAction(key({ key: 'ą', code: 'KeyA', altKey: true, metaKey: true }), '', true)).toEqual({ kind: 'none' });
   });
 
   it('SortsOnTheCommandKeyByPhysicalKey', () => {
@@ -151,7 +209,7 @@ describe('drawerKeyAction', () => {
     expect(drawerKeyAction(key({ key: 'u', code: 'KeyU', ctrlKey: true }), '', true)).toEqual({ kind: 'none' });
     expect(drawerKeyAction(key({ key: 'L', code: 'KeyL', metaKey: true, shiftKey: true }), '', true)).toEqual({ kind: 'none' });
     expect(drawerKeyAction(key({ key: 'j', code: 'KeyJ', metaKey: true }), '', true)).toEqual({ kind: 'none' });
-    expect(drawerKeyAction(key({ key: '≈', code: 'KeyX', altKey: true }), '', true)).toEqual({ kind: 'none' });
+    expect(drawerKeyAction(key({ key: 'Dead', code: 'KeyE', altKey: true }), '', true)).toEqual({ kind: 'none' });
   });
 
   it('TypesPrintableCharacters_InAnyLayout', () => {

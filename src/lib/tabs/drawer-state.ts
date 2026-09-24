@@ -65,10 +65,13 @@ export function keysCaptured(s: DrawerState): boolean {
   return s.open && s.typing;
 }
 
-/** Typing commits to the drawer: a hover-opened one stops closing on leave. */
+/**
+ * Typing commits to the drawer: a hover-opened one stops closing on leave,
+ * and keeps the keyboard (pinned ⇒ typing).
+ */
 export function setQuery(s: DrawerState, query: string): DrawerState {
   if (!s.open) return s;
-  return { ...s, query, kb: null, mode: query ? 'pinned' : s.mode };
+  return { ...s, query, kb: null, mode: query ? 'pinned' : s.mode, typing: s.typing || !!query };
 }
 
 /** First Esc clears the query, the next the selection, the last closes. */
@@ -90,7 +93,10 @@ export function kbTarget(s: DrawerState, visible: readonly string[]): string | n
 
 export const enterTarget = kbTarget;
 
-/** Arrow keys: from the current target, or from the active tab when there is none. */
+/**
+ * Arrow keys: from the current target, else from the active tab; with
+ * neither, ↓ lands on the first card and ↑ on the last.
+ */
 export function moveKb(
   s: DrawerState,
   delta: 1 | -1,
@@ -99,7 +105,8 @@ export function moveKb(
 ): DrawerState {
   if (!s.open || visible.length === 0) return s;
   const current = kbTarget(s, visible);
-  const from = current !== null ? visible.indexOf(current) : Math.max(0, activeId === null ? 0 : visible.indexOf(activeId));
+  const from = visible.indexOf(current ?? activeId ?? '');
+  if (from === -1) return { ...s, kb: delta === 1 ? visible[0] : visible[visible.length - 1] };
   const to = Math.min(visible.length - 1, Math.max(0, from + delta));
   return { ...s, kb: visible[to] };
 }
@@ -136,6 +143,9 @@ export interface KeyLike {
   ctrlKey: boolean;
   altKey: boolean;
   shiftKey: boolean;
+  isComposing?: boolean;
+  /** 229 marks a key the IME consumed, even where `isComposing` is not yet set. */
+  keyCode?: number;
 }
 
 export type DrawerKeyAction =
@@ -151,16 +161,22 @@ export type DrawerKeyAction =
  * What a key does while the drawer is open (spec §6). `none` lets the event
  * through untouched. Sorts match `code`, so ⌘L is ⌘L in a Cyrillic layout; the
  * command key is ⌘ on a Mac and Ctrl elsewhere. ⌘J is not here: it is a
- * native menu item and never reaches the webview.
+ * native menu item and never reaches the webview. ⌥+letter is text (on a Mac
+ * it types ą, @, [), so it searches like any other character.
+ *
+ * The caller computes the action first and then asks `actionAllowed` whether
+ * the drawer may take it; only an allowed action stops the event.
  */
 export function drawerKeyAction(e: KeyLike, query: string, mac: boolean): DrawerKeyAction {
-  if (e.key === 'Escape') return { kind: 'escape' };
+  if (e.isComposing || e.keyCode === 229) return { kind: 'none' };
+  const modified = e.metaKey || e.ctrlKey || e.altKey || e.shiftKey;
+  if (e.key === 'Escape') return modified ? { kind: 'none' } : { kind: 'escape' };
   const command = mac ? e.metaKey : e.ctrlKey;
   if (command && !e.shiftKey && !e.altKey) {
     const sort = sortKindForCode(e.code);
     return sort ? { kind: 'sort', sort } : { kind: 'none' };
   }
-  if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+  if (e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
     if (e.key === ' ' && !query) return { kind: 'none' };
     return { kind: 'type', char: e.key };
   }
@@ -169,4 +185,14 @@ export function drawerKeyAction(e: KeyLike, query: string, mac: boolean): Drawer
   if (e.key === 'ArrowUp') return { kind: 'move', delta: -1 };
   if (e.key === 'Enter') return { kind: 'enter' };
   return { kind: 'none' };
+}
+
+/**
+ * Whether the drawer may take `a`. Sort keys work in any open drawer: the Q5
+ * rule only keeps printable typing (and, for now, Esc) with the editor until
+ * the drawer has the keyboard, and letting ⌘U through would run CodeMirror's
+ * `undoSelection` behind an open drawer.
+ */
+export function actionAllowed(s: DrawerState, a: DrawerKeyAction): boolean {
+  return s.open && (s.typing || a.kind === 'sort');
 }
