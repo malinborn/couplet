@@ -62,6 +62,18 @@ impl TabRegistry {
         self.windows.values().filter_map(|w| w.number).collect()
     }
 
+    /// The window showing `#number`.
+    pub fn label_with_number(&self, number: u32) -> Option<String> {
+        self.windows
+            .iter()
+            .find(|(_, w)| w.number == Some(number))
+            .map(|(label, _)| label.clone())
+    }
+
+    pub fn all_windows(&self) -> impl Iterator<Item = (&String, &WindowTabs)> {
+        self.windows.iter()
+    }
+
     pub fn set_number(&mut self, label: &str, number: Option<u32>) {
         self.windows.entry(label.to_string()).or_default().number = number;
     }

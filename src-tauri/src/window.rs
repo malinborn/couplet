@@ -369,17 +369,58 @@ pub fn open_file_window(app: &AppHandle, path: Option<String>) {
 /// for a caller that has already let go of the file and must take it back
 /// (the drawer's "to new windows").
 pub fn try_open_file_window(app: &AppHandle, path: Option<String>) -> Result<(), String> {
+    try_open_file_window_with(app, path, Activation::Foreground).map(|_| ())
+}
+
+/// Whether a window an open creates takes the screen. `Background`: shown
+/// without key focus and without activating the app (spec §4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Activation {
+    Foreground,
+    Background,
+}
+
+/// Where an open put its file.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Opened {
+    /// This window was built for the open, and the file is its tab (or is
+    /// about to be: a window that mounted first claims it itself).
+    Created(String),
+    /// The file's tab is in this window, which already held it: nothing was
+    /// built for it — or a window was, and opened empty, because the file was
+    /// claimed while it was being built.
+    Existing(String),
+}
+
+/// `try_open_file_window` with the new window's `activation`, answering where
+/// the file went. A file a live window already holds stays there, and that
+/// window comes forward only for `Foreground`.
+pub(crate) fn try_open_file_window_with(
+    app: &AppHandle,
+    path: Option<String>,
+    activation: Activation,
+) -> Result<Opened, String> {
     if let Some(ref file_path) = path {
         let open_files = app.state::<OpenFiles>();
         let mut reg = open_files.0.lock().unwrap();
         if let Some(label) = live_owner(app, &mut reg, file_path) {
-            if let Some(window) = app.get_webview_window(&label) {
-                let _ = window.set_focus();
+            if activation == Activation::Foreground {
+                if let Some(window) = app.get_webview_window(&label) {
+                    let _ = window.set_focus();
+                }
             }
-            return Ok(());
+            return Ok(Opened::Existing(label));
         }
     }
+    let label = build_window(app, activation)?;
+    Ok(match path {
+        Some(file_path) => hand_over_file(app, &label, file_path),
+        None => Opened::Created(label),
+    })
+}
 
+/// Create an empty editor window, cascaded, and give it its number.
+pub(crate) fn build_window(app: &AppHandle, activation: Activation) -> Result<String, String> {
     let count = WINDOW_COUNTER.fetch_add(1, Ordering::SeqCst);
     let label = format!("editor-{}", count);
     let offset = (count as f64) * CASCADE_OFFSET;
@@ -390,71 +431,96 @@ pub fn try_open_file_window(app: &AppHandle, path: Option<String>) -> Result<(),
         .clone()
         .unwrap_or_else(|| "md-mini".to_string());
     let window_title = format!("Untitled — {}", product_name);
+    let foreground = activation == Activation::Foreground;
 
-    let builder = WebviewWindowBuilder::new(
-        app,
-        &label,
-        WebviewUrl::App("index.html".into()),
-    )
-    .title(&window_title)
-    .inner_size(DEFAULT_WIDTH, DEFAULT_HEIGHT)
-    .min_inner_size(400.0, 300.0)
-    .position(100.0 + offset, 100.0 + offset)
-    .background_color(tauri::utils::config::Color(25, 23, 36, 255));
-
-    match builder.build() {
-        Ok(window) => {
-            // Bring app + window to foreground (macOS requires NSApp activate)
-            let _ = window.set_focus();
-            #[cfg(target_os = "macos")]
-            unsafe {
-                use cocoa::appkit::{NSApplication, NSApplicationActivationPolicy};
-                let ns_app = cocoa::appkit::NSApp();
-                // `cocoa::base::YES`, never a `true` literal: Objective-C's BOOL
-                // is `bool` on aarch64 but `i8` everywhere else, so a literal
-                // type-checks on Apple Silicon and fails to compile for x86_64.
-                ns_app.activateIgnoringOtherApps_(cocoa::base::YES);
-            }
-            let moved = {
-                let open_files = app.state::<OpenFiles>();
-                let mut reg = open_files.0.lock().unwrap();
-                number_window(&mut reg, &label, None, allocate_from(app))
-            };
-            if moved {
-                save_window_counter(app);
-            }
-            if let Some(file_path) = path {
-                let tab = PendingTab {
-                    tab_id: crate::session::new_tab_id(),
-                    path: Some(file_path.clone()),
-                    content: None,
-                    cursor: 0,
-                    top_line: 1,
-                    ..Default::default()
-                };
-                match hand_over_tab(app, &label, tab) {
-                    Handover::Pending => set_watcher(app, &label, Some(&file_path)),
-                    // Mounted before the tab could be queued: its listeners
-                    // exist, and it opens and claims the tab itself.
-                    Handover::Mounted => {
-                        let _ = app.emit_to(label.as_str(), "open-file", &file_path);
-                    }
-                    // Claimed since the check above. The file stays with its
-                    // holder — it must never be shown and autosaved in two
-                    // windows — and this window opens with one untitled tab.
-                    Handover::Held(owner) => {
-                        eprintln!("open_file_window: {file_path} is held by {owner}; {label} opens empty");
-                        if let Some(win) = app.get_webview_window(&owner) {
-                            reveal(&win);
-                            let _ = win.emit_to(owner.as_str(), "open-file", &file_path);
-                        }
-                    }
-                }
-            }
-            Ok(())
-        }
-        Err(e) => Err(e.to_string()),
+    let window = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
+        .title(&window_title)
+        .inner_size(DEFAULT_WIDTH, DEFAULT_HEIGHT)
+        .min_inner_size(400.0, 300.0)
+        .position(100.0 + offset, 100.0 + offset)
+        .background_color(tauri::utils::config::Color(25, 23, 36, 255))
+        // `false` sets the window and its webview unfocused: tao then orders
+        // the window front (`orderFront`) instead of making it key.
+        .focused(foreground)
+        .build()
+        .map_err(|e| e.to_string())?;
+    if foreground {
+        // Bring app + window to foreground (macOS requires NSApp activate)
+        let _ = window.set_focus();
+        activate_app();
     }
+    let moved = {
+        let open_files = app.state::<OpenFiles>();
+        let mut reg = open_files.0.lock().unwrap();
+        number_window(&mut reg, &label, None, allocate_from(app))
+    };
+    if moved {
+        save_window_counter(app);
+    }
+    Ok(label)
+}
+
+/// Make the app the active one — a window's focus alone does not on macOS.
+fn activate_app() {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        use cocoa::appkit::{NSApplication, NSApplicationActivationPolicy};
+        let ns_app = cocoa::appkit::NSApp();
+        // `cocoa::base::YES`, never a `true` literal: Objective-C's BOOL
+        // is `bool` on aarch64 but `i8` everywhere else, so a literal
+        // type-checks on Apple Silicon and fails to compile for x86_64.
+        ns_app.activateIgnoringOtherApps_(cocoa::base::YES);
+    }
+}
+
+/// Give the freshly built window `label` a tab for `file_path`, answering
+/// where the file ended up.
+pub(crate) fn hand_over_file(app: &AppHandle, label: &str, file_path: String) -> Opened {
+    let tab = PendingTab {
+        tab_id: crate::session::new_tab_id(),
+        path: Some(file_path.clone()),
+        content: None,
+        cursor: 0,
+        top_line: 1,
+        ..Default::default()
+    };
+    let handover = hand_over_tab(app, label, tab);
+    match &handover {
+        Handover::Pending => set_watcher(app, label, Some(&file_path)),
+        // Mounted before the tab could be queued: its listeners
+        // exist, and it opens and claims the tab itself.
+        Handover::Mounted => {
+            let _ = app.emit_to(label, "open-file", &file_path);
+        }
+        // Claimed since the check above. The file stays with its
+        // holder — it must never be shown and autosaved in two
+        // windows — and this window opens with one untitled tab.
+        Handover::Held(owner) => {
+            eprintln!("open_file_window: {file_path} is held by {owner}; {label} opens empty");
+            if let Some(win) = app.get_webview_window(owner) {
+                reveal(&win);
+                let _ = win.emit_to(owner.as_str(), "open-file", &file_path);
+            }
+        }
+    }
+    opened_by(label, handover)
+}
+
+/// Where a file handed over to the new window `label` went: a tab of its
+/// own there, or the tab its holder already had.
+fn opened_by(label: &str, handover: Handover) -> Opened {
+    match handover {
+        Handover::Pending | Handover::Mounted => Opened::Created(label.to_string()),
+        Handover::Held(owner) => Opened::Existing(owner),
+    }
+}
+
+/// IPC: bring the calling window forward — an agent's `show` with `focus`
+/// (spec §5). Unminimizes it, gives it key focus and activates the app.
+#[tauri::command]
+pub async fn reveal_window(window: tauri::WebviewWindow) -> Result<(), String> {
+    reveal(&window);
+    window.run_on_main_thread(activate_app).map_err(|e| e.to_string())
 }
 
 /// Removes a file path from the open files tracking when a window is closed.
@@ -865,6 +931,17 @@ mod tests {
         let init = window_init(&mut reg, "editor-5", pending.remove("editor-5"), || "u1".to_string());
         assert_eq!(init.tabs.len(), 1);
         assert_eq!(init.tabs[0].path, None, "the new window opens one untitled tab");
+    }
+
+    #[test]
+    fn an_open_reports_the_holders_tab_when_the_file_was_claimed_meanwhile() {
+        let mut reg = reg(&[("/a.md", "editor-2")]);
+        let mut pending = HashMap::new();
+        let held = queue_tab(&mut reg, &mut pending, "editor-5", file_tab("n1", "/a.md"), |_| true);
+        assert_eq!(opened_by("editor-5", held), Opened::Existing("editor-2".to_string()));
+        let queued = queue_tab(&mut reg, &mut pending, "editor-5", file_tab("n2", "/b.md"), |_| true);
+        assert_eq!(opened_by("editor-5", queued), Opened::Created("editor-5".to_string()));
+        assert_eq!(opened_by("editor-5", Handover::Mounted), Opened::Created("editor-5".to_string()));
     }
 
     #[test]

@@ -167,6 +167,7 @@ pub fn run() {
             git_info::tab_git_info,
             window::open_file_window_cmd,
             window::focus_if_open,
+            window::reveal_window,
             recent::recent_files_list,
             recent::recent_files_add,
             recent::recent_files_import,

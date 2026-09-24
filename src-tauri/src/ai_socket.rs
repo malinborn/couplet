@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -102,6 +102,14 @@ impl AiRequest {
 
     fn transient(&self) -> bool {
         matches!(self, AiRequest::Show { transient: true, .. })
+    }
+
+    fn window_binding(&self) -> Option<u32> {
+        match self {
+            AiRequest::Show { window_binding, .. }
+            | AiRequest::Edit { window_binding, .. }
+            | AiRequest::Ask { window_binding, .. } => *window_binding,
+        }
     }
 }
 
@@ -208,6 +216,28 @@ impl AiResponse {
     pub fn error(msg: impl Into<String>) -> Self {
         Self { ok: false, error: Some(msg.into()), ..Default::default() }
     }
+}
+
+/// One tab in the window listing.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ListedTab {
+    /// `None`: an untitled tab.
+    pub path: Option<String>,
+    pub active: bool,
+}
+
+/// One window as `mdmini ls --json` and MCP `windows` report it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WindowListing {
+    /// `#N`; `None` only when all 99 numbers were taken.
+    pub window: Option<u32>,
+    /// The project's directory name; `None` for a window that never held a file.
+    pub project: Option<String>,
+    /// The project's root, absolute — what routing compares.
+    pub project_path: Option<String>,
+    /// The window the human was in last.
+    pub last_focused: bool,
+    pub tabs: Vec<ListedTab>,
 }
 
 /// Command socket path for a product name: release `/tmp/md_mini_cmd.sock`, dev
@@ -646,8 +676,8 @@ fn deliver(app: &AppHandle, label: &str, payload: AiCommandPayload) {
     app.state::<AiPending>().respond(id, AiResponse::error(error));
 }
 
-/// How long to wait for `open_file_window` (run on the main thread) to register
-/// the new window's label in `OpenFiles` before giving up on a freshly opened file.
+/// How long to wait for the open (run on the main thread) to report which
+/// window took the file before giving up on a freshly opened file.
 const OPEN_WINDOW_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The event payload for `req`, delivered as `ai-command`.
@@ -695,8 +725,8 @@ fn payload_for(req: &AiRequest, id: u64, first_use: bool) -> AiCommandPayload {
     p
 }
 
-/// Route a parsed request to the window that owns the file, opening one first if
-/// it isn't open yet, and arrange for the response to come back on `tx`.
+/// Route a parsed request to its window (spec §5 — see `routing::route`),
+/// opening one first if needed, and arrange for the response to come back on `tx`.
 /// Returns the id registered for this request in `AiPending` — `0` (never a
 /// real id, since `AiPending::next` starts at 1) if the request was answered
 /// directly on `tx` without ever registering, so the caller's later
@@ -737,6 +767,18 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
         }
     }
 
+    // Where it goes (spec §5), decided before anything is allocated: a dead
+    // window number is answered here and must not burn the first-use toast.
+    let target = match crate::routing::route_now(app, &path, req.window_binding()) {
+        crate::routing::Route::DeadNumber(number) => {
+            let listing = crate::routing::windows_now(app);
+            let _ = tx.send(AiResponse::error(crate::routing::dead_number_error(number, &listing)));
+            return 0;
+        }
+        crate::routing::Route::Existing(label) => Some(label),
+        crate::routing::Route::NewWindow => None,
+    };
+
     // The id is handed to the frontend in the payload before we know which
     // window will own the response — `AiPending::register` (which needs that
     // window's label) happens later, at each point below where the label
@@ -750,54 +792,58 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
     );
     let mut payload = payload_for(&req, id, first_use);
 
-    let existing_label = {
-        let open_files = app.state::<window::OpenFiles>();
-        let reg = open_files.0.lock().unwrap();
-        reg.label_of(&path)
-    };
-
-    if let Some(label) = existing_label {
-        if app.get_webview_window(&label).is_some() {
-            app.state::<AiPending>().register(id, label.clone(), Some(path.clone()), tx);
-            deliver(app, &label, payload);
-            return id;
-        }
-        // Label was in OpenFiles but the window is already gone (closed between
-        // the lookup above and here) — fall through and open a fresh one.
+    if let Some(label) = target {
+        app.state::<AiPending>().register(id, label.clone(), Some(path), tx);
+        deliver(app, &label, payload);
+        return id;
     }
 
-    // Not open yet. Window creation must happen on the main thread — this
-    // listener runs on a background thread per connection.
-    payload.fresh = true;
+    // Step 4: a window of its own, in the background unless the command may
+    // take the view (spec §4). Window creation must happen on the main
+    // thread — this listener runs on a background thread per connection —
+    // and its outcome comes back on `opened_rx`: the file may have been
+    // opened elsewhere since `route_now`, and then this command's tab is the
+    // one the human already had.
+    let activation = if payload.focus { window::Activation::Foreground } else { window::Activation::Background };
+    let (opened_tx, opened_rx) = mpsc::channel();
     let handle = app.clone();
     let path_for_open = path.clone();
     if app
-        .run_on_main_thread(move || window::open_file_window(&handle, Some(path_for_open)))
+        .run_on_main_thread(move || {
+            let _ = opened_tx.send(window::try_open_file_window_with(&handle, Some(path_for_open), activation));
+        })
         .is_err()
     {
         let _ = tx.send(AiResponse::error("failed to open window for file"));
         return id;
     }
-
-    // `open_file_window` registers the new label in `OpenFiles` synchronously,
-    // but on the main thread — poll briefly from here rather than racing it.
-    let deadline = Instant::now() + OPEN_WINDOW_TIMEOUT;
-    loop {
-        let label = {
-            let open_files = app.state::<window::OpenFiles>();
-            let reg = open_files.0.lock().unwrap();
-            reg.label_of(&path)
-        };
-        if let Some(label) = label {
-            app.state::<AiPending>().register(id, label.clone(), Some(path.clone()), tx);
-            deliver(app, &label, payload);
-            return id;
-        }
-        if Instant::now() >= deadline {
+    let label = match opened_rx.recv_timeout(OPEN_WINDOW_TIMEOUT) {
+        Ok(Ok(opened)) => land_on(opened, &mut payload),
+        Ok(Err(e)) => {
+            eprintln!("ai: failed to open a window for {path}: {e}");
             let _ = tx.send(AiResponse::error("failed to open window for file"));
             return id;
         }
-        std::thread::sleep(Duration::from_millis(20));
+        Err(_) => {
+            let _ = tx.send(AiResponse::error("failed to open window for file"));
+            return id;
+        }
+    };
+    app.state::<AiPending>().register(id, label.clone(), Some(path), tx);
+    deliver(app, &label, payload);
+    id
+}
+
+/// The window `opened` put the file in. `fresh` only for a tab created for
+/// this very command: a quick look must never mark a tab the human already
+/// had (spec §7).
+fn land_on(opened: window::Opened, payload: &mut AiCommandPayload) -> String {
+    match opened {
+        window::Opened::Created(label) => {
+            payload.fresh = true;
+            label
+        }
+        window::Opened::Existing(label) => label,
     }
 }
 
@@ -1940,6 +1986,16 @@ mod tests {
         .unwrap();
         let p = payload_for(&ask, 1, false);
         assert_eq!((p.cmd.as_str(), p.focus, p.timeout_secs), ("ask", false, 10), "timeout clamped");
+    }
+
+    #[test]
+    fn only_a_tab_opened_for_the_command_is_fresh() {
+        let show = parse_request(r#"{"v":1,"cmd":"show","path":"/a.md","transient":true}"#).unwrap();
+        let mut p = payload_for(&show, 1, false);
+        assert_eq!(land_on(window::Opened::Existing("main".to_string()), &mut p), "main");
+        assert!(!p.fresh, "the file was open already: the human's tab never becomes a quick look");
+        assert_eq!(land_on(window::Opened::Created("editor-4".to_string()), &mut p), "editor-4");
+        assert!(p.fresh);
     }
 
     #[test]

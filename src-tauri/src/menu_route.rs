@@ -29,32 +29,38 @@ pub fn menu_route(id: &str) -> MenuRoute {
     }
 }
 
-/// The window that most recently gained focus.
+/// The windows in the order they last gained focus, most recent first.
 ///
 /// `WebviewWindow::is_focused()` queried from the menu handler is not
 /// reliable: while the menu bar is being used, the OS may report no window as
 /// focused. The last `WindowEvent::Focused(true)` is — clicking the menu bar
-/// or pressing an accelerator does not move key-window status.
-pub struct FocusTracker(Mutex<Option<String>>);
+/// or pressing an accelerator does not move key-window status. The whole
+/// order is what agent routing breaks ties with (spec §5 step 3).
+pub struct FocusTracker(Mutex<Vec<String>>);
 
 impl FocusTracker {
     pub fn new() -> Self {
-        Self(Mutex::new(None))
+        Self(Mutex::new(Vec::new()))
     }
 
     pub fn focused(&self, label: &str) {
-        *self.0.lock().unwrap() = Some(label.to_string());
+        let mut order = self.0.lock().unwrap();
+        order.retain(|l| l != label);
+        order.insert(0, label.to_string());
     }
 
-    /// A destroyed window stops being the target; any other window is left alone.
+    /// A destroyed window leaves the order; the window focused before it
+    /// becomes the last one.
     pub fn forget(&self, label: &str) {
-        let mut last = self.0.lock().unwrap();
-        if last.as_deref() == Some(label) {
-            *last = None;
-        }
+        self.0.lock().unwrap().retain(|l| l != label);
     }
 
     pub fn last(&self) -> Option<String> {
+        self.0.lock().unwrap().first().cloned()
+    }
+
+    /// Most recently focused first.
+    pub fn order(&self) -> Vec<String> {
         self.0.lock().unwrap().clone()
     }
 }
@@ -169,5 +175,17 @@ mod tests {
         assert_eq!(tracker.last().as_deref(), Some("editor-2"), "forgetting another window changes nothing");
         tracker.forget("editor-2");
         assert_eq!(tracker.last(), None);
+    }
+
+    #[test]
+    fn tracker_orders_windows_most_recently_focused_first() {
+        let tracker = FocusTracker::new();
+        tracker.focused("main");
+        tracker.focused("editor-2");
+        tracker.focused("editor-3");
+        tracker.focused("main");
+        assert_eq!(tracker.order(), vec!["main", "editor-3", "editor-2"]);
+        tracker.forget("main");
+        assert_eq!(tracker.last().as_deref(), Some("editor-3"), "the previous window takes over");
     }
 }
