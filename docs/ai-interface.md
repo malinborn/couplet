@@ -428,6 +428,8 @@ Windows hold tabs, and one file is open in at most one tab in the whole app. Unt
 
 Commands arriving while a window is switching tabs wait for the switch instead of failing (they run in the window's tab queue). A command that waited there and was answered meanwhile — its tab was left or closed, or it timed out — is dropped without acting.
 
+A command that lands on a tab while its window does not have focus marks that tab **unviewed**: its drawer card and the window's notch shimmer, with a "✦ from AI" label, until the human has the tab in front of them in a focused window. Nothing about the command's answer changes.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
