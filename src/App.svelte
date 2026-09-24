@@ -58,7 +58,6 @@
   import { activeCellEditSession } from './lib/editor/cell-edit-session';
   import { createSerialQueue } from './lib/serial-queue';
   import { createCommentWriter, adoptStartedDraft } from './lib/comment-writer';
-  import { hideHoverMenu } from './lib/editor/hover-menu';
   import {
     addAiComment,
     aiCommentField,
@@ -520,7 +519,6 @@
 
       // A fresh state carries nothing of the old document — no undo history,
       // asks, highlights or search panel — so none of it needs clearing.
-      hideHoverMenu();
       showRecentFiles = false;
       const handle = editorHandle;
       if (handle) {
