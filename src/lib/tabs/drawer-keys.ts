@@ -25,6 +25,14 @@ export const DRAWER_SORT_KEYS: readonly DrawerSortKey[] = [
   { sort: 'ai', code: 'KeyU', accelerator: 'CmdOrCtrl+U' },
 ];
 
+/**
+ * «В окно…» (plan 05, D10): the carousel for the selection, else the card the
+ * arrows are on, else the active tab. A drawer key like the sorts, for the
+ * same reason — while the drawer is closed ⌘M is nobody's, and a native item
+ * would fire whether the drawer is open or not.
+ */
+export const DRAWER_MOVE_KEY = { code: 'KeyM', accelerator: 'CmdOrCtrl+M' } as const;
+
 export function sortKindForCode(code: string): SortKind | undefined {
   return DRAWER_SORT_KEYS.find((key) => key.code === code)?.sort;
 }

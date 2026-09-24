@@ -626,6 +626,8 @@
         if (id) activate(id);
         break;
       }
+      case 'carousel':
+        break;
     }
   }
 

@@ -1,4 +1,4 @@
-import { sortKindForCode } from './drawer-keys';
+import { DRAWER_MOVE_KEY, sortKindForCode } from './drawer-keys';
 import type { SortKind } from './drawer-sort';
 
 /** Spec §6: the drawer opens ~200 ms after the pointer rests on the notch. */
@@ -191,6 +191,7 @@ export type DrawerKeyAction =
   | { kind: 'backspace' }
   | { kind: 'move'; delta: 1 | -1 }
   | { kind: 'enter' }
+  | { kind: 'carousel' }
   | { kind: 'none' };
 
 /**
@@ -209,6 +210,7 @@ export function drawerKeyAction(e: KeyLike, query: string, mac: boolean): Drawer
   if (e.key === 'Escape') return modified ? { kind: 'none' } : { kind: 'escape' };
   const command = mac ? e.metaKey : e.ctrlKey;
   if (command && !e.shiftKey && !e.altKey) {
+    if (e.code === DRAWER_MOVE_KEY.code) return { kind: 'carousel' };
     const sort = sortKindForCode(e.code);
     return sort ? { kind: 'sort', sort } : { kind: 'none' };
   }

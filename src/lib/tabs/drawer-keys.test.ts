@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { DRAWER_SORT_KEYS, sortKindForCode } from './drawer-keys';
+import { DRAWER_MOVE_KEY, DRAWER_SORT_KEYS, sortKindForCode } from './drawer-keys';
 import { NATIVE_MENU_ACCELERATORS, nativeAccelerator } from '../editor/native-menu-accelerators';
 
 const MENU_RS = fileURLToPath(new URL('../../../src-tauri/src/menu.rs', import.meta.url));
+const LIB_RS = fileURLToPath(new URL('../../../src-tauri/src/lib.rs', import.meta.url));
 
 describe('drawer sort keys', () => {
   it('NeverCollideWithANativeMenuAccelerator', () => {
@@ -40,5 +41,23 @@ describe('drawer sort keys', () => {
 
   it('TheDrawerItselfOpensFromTheNativeMenu', () => {
     expect(nativeAccelerator('toggle_drawer')).toBe('CmdOrCtrl+J');
+  });
+
+  it('TheMoveKeyIsNobodysEither', () => {
+    // ⌘M is «В окно…» only while the drawer is open (plan 05, D10).
+    const native = new Set(NATIVE_MENU_ACCELERATORS.map((a) => a.accelerator));
+    expect(native.has(DRAWER_MOVE_KEY.accelerator)).toBe(false);
+    const claimed = [...readFileSync(MENU_RS, 'utf8').matchAll(/\.accelerator\(\s*"([^"]+)"\s*\)/g)].map((m) => m[1]);
+    expect(claimed).not.toContain(DRAWER_MOVE_KEY.accelerator);
+    expect(DRAWER_MOVE_KEY.accelerator).toBe(`CmdOrCtrl+${DRAWER_MOVE_KEY.code.slice(3)}`);
+  });
+
+  it('MenuRsHasNoPredefinedMinimize', () => {
+    // A predefined Minimize item carries ⌘M without an `.accelerator("…")`
+    // string and would take the key before the webview sees it — whether it
+    // comes from the submenu builder, `PredefinedMenuItem`, or Tauri's default
+    // menu (its Window submenu has one).
+    expect(readFileSync(MENU_RS, 'utf8')).not.toMatch(/\.minimize(?:_with_text)?\s*\(|PredefinedMenuItem::minimize/);
+    for (const file of [MENU_RS, LIB_RS]) expect(readFileSync(file, 'utf8')).not.toMatch(/Menu::default\s*\(/);
   });
 });

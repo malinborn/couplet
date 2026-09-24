@@ -191,6 +191,14 @@ describe('actionAllowed', () => {
 });
 
 describe('drawerKeyAction', () => {
+  it('CmdMOpensTheCarousel', () => {
+    expect(drawerKeyAction(key({ key: 'm', code: 'KeyM', metaKey: true }), '', true)).toEqual({ kind: 'carousel' });
+    expect(drawerKeyAction(key({ key: 'm', code: 'KeyM', ctrlKey: true }), '', false)).toEqual({ kind: 'carousel' });
+    // ⇧⌘M is the native AI-comment item and never reaches the webview.
+    expect(drawerKeyAction(key({ key: 'M', code: 'KeyM', metaKey: true, shiftKey: true }), '', true)).toEqual({ kind: 'none' });
+    expect(drawerKeyAction(key({ key: 'm', code: 'KeyM' }), '', true)).toEqual({ kind: 'type', char: 'm' });
+  });
+
   it('Escape', () => {
     expect(drawerKeyAction(key({ key: 'Escape', code: 'Escape' }), '', true)).toEqual({ kind: 'escape' });
   });
