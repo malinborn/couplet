@@ -57,6 +57,7 @@
   import { decideSwitchAction } from './lib/switch-document';
   import { activeCellEditSession } from './lib/editor/cell-edit-session';
   import { createSerialQueue } from './lib/serial-queue';
+  import { createCommentWriter } from './lib/comment-writer';
   import { hideHoverMenu } from './lib/editor/hover-menu';
   import { closeSearchPanel } from '@codemirror/search';
   import {
@@ -986,7 +987,7 @@
    * with this thread — the pause commit — can follow a draft to the real id
    * the file just gave it. `null` when nothing was written.
    */
-  async function writeComment(id: string): Promise<string | null> {
+  async function writeCommentNow(id: string): Promise<string | null> {
     const entry = commentPending.get(id);
     if (!entry) return null;
     if (entry.timer !== null) {
@@ -1012,6 +1013,7 @@
           draft.context
         );
         const realId = started.id;
+        commentWriter.redirect(id, realId);
         // The countdown was started under the draft's id by the keystroke that
         // created this thread; move it, with the deadline the file actually
         // recorded rather than the one this side guessed.
@@ -1060,6 +1062,13 @@
       reportCommentError(entry.path, err);
       return null;
     }
+  }
+
+  const commentWriter = createCommentWriter(writeCommentNow);
+
+  /** Every caller goes through the queue — see `comment-writer.ts`. */
+  function writeComment(id: string): Promise<string | null> {
+    return commentWriter.write(id);
   }
 
   /** Drop everything pending for a thread — used when it is resolved, so a
