@@ -58,9 +58,11 @@ export function createThemeStore() {
   // back to the saved value, and the preview would silently vanish.
   let previewOverride = $state<ConcreteTheme | null>(null);
 
-  const resolved = $derived<ConcreteTheme>(
-    previewOverride ?? resolveTheme({ theme, followSystem }, systemDark)
-  );
+  // Без предпросмотра: то, что человек выбрал и что переживёт закрытие окна.
+  // Иконка в Dock следует за ним, а не за `resolved` — окно, закрытое с
+  // открытым `/theme`, предпросмотр уже не снимет.
+  const committed = $derived<ConcreteTheme>(resolveTheme({ theme, followSystem }, systemDark));
+  const resolved = $derived<ConcreteTheme>(previewOverride ?? committed);
   const isDark = $derived(isDarkTheme(resolved));
 
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
@@ -117,6 +119,10 @@ export function createThemeStore() {
     },
     get resolved() {
       return resolved;
+    },
+    /** `resolved` без предпросмотра `/theme` — см. `committed` выше. */
+    get committed() {
+      return committed;
     },
     get isDark() {
       return isDark;

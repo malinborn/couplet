@@ -308,6 +308,23 @@ describe('createThemeStore', () => {
       expect(store.resolved).toBe('blueprint-light');
     });
 
+    // The Dock icon reads `committed`: a window closed mid-preview never
+    // clears the preview, and the Dock must not keep a theme nobody saved.
+    it('Committed_IgnoresThePreview_ButFollowsTheSystem', () => {
+      const setSystemDark = installMatchMediaStub(false);
+      const store = createThemeStore();
+      store.setFamily('paper');
+
+      store.setPreview('ink-dark');
+
+      expect(store.resolved).toBe('ink-dark');
+      expect(store.committed).toBe('paper-light');
+      setSystemDark(true);
+      expect(store.committed).toBe('paper-dark');
+      store.setPreview(null);
+      expect(store.resolved).toBe(store.committed);
+    });
+
     it('SurvivesASystemFlipWhileThePreviewIsUp', () => {
       // The rejected alternative — writing `data-theme` directly instead of
       // going through the store — would have this overwritten back to the

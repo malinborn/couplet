@@ -4,7 +4,7 @@
   import type { EditorHandle } from './lib/editor/Editor.svelte';
   import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createFileState, createRecentFilesStore, setProductName } from './lib/stores.svelte';
   import { getName } from '@tauri-apps/api/app';
-  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, broadcastTheme, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type PendingOpen } from './lib/tauri/commands';
+  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncDockIcon, syncEngineMenu, syncOcdAlignmentMenu, broadcastTheme, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type PendingOpen } from './lib/tauri/commands';
   import { concreteTheme, halfOf, type ThemeFamily } from './lib/theme-resolve';
   import type { ThemeControl } from './lib/editor/slash-theme';
   import {
@@ -1801,6 +1801,13 @@
   // is the startup sync.
   $effect(() => {
     syncThemeMenu(theme.resolved, theme.followSystem);
+  });
+
+  // The Dock follows the committed theme, not a `/theme` preview: a window
+  // closed with the picker open never clears its preview. First run is the
+  // startup sync, like the menu's.
+  $effect(() => {
+    syncDockIcon(theme.committed);
   });
 
   // Startup sync for the Editor Engine submenu and the OCD checkbox,

@@ -5,11 +5,11 @@
 //! приложение подписано ad-hoc, и запись в бандл сломала бы подпись. У Tauri
 //! API для этого нет, поэтому вызов идёт в AppKit напрямую.
 //!
-//! Вход — уже разрешённая тема, та же, что уходит в `sync_theme_menu`: с
-//! галочкой «система» половину выбирает ОС, и иконка должна быть той, что на
-//! экране. Поэтому отдельной команды нет — меню и Dock обновляются одним
-//! вызовом, и все пути, которыми тема меняется (явный выбор, смена семьи,
-//! переключение ОС, старт), приходят сюда сами.
+//! Вход — разрешённая *закреплённая* тема (`sync_dock_icon`): с галочкой
+//! «система» половину выбирает ОС, и иконка должна быть той, что на экране,
+//! но предпросмотр `/theme` сюда не попадает. Меню Theme следует и за ним, а
+//! Dock — нет: окно, закрытое с открытым пикером, предпросмотр уже не
+//! снимет, и Dock остался бы на теме, которой нет ни в одном окне.
 
 use std::sync::Mutex;
 
@@ -61,50 +61,58 @@ fn png_for(variant: &str) -> Option<&'static [u8]> {
         .map(|(_, png)| *png)
 }
 
-/// Вариант, который последним ушёл в AppKit. Каждое окно синхронизирует меню
+/// Вариант, который сейчас стоит в Dock. Каждое окно синхронизирует иконку
 /// само, и без этой отметки N окон декодировали бы одну и ту же картинку N раз
 /// на каждую смену темы.
+///
+/// Читается и пишется только на главном потоке, рядом с самим вызовом AppKit:
+/// команды асинхронные, и два вызова могут встать в очередь не в том порядке,
+/// в каком их отметили бы на пуле, — тогда отметка разошлась бы с экраном и
+/// дедупликация сделала бы расхождение вечным. Пишется только после успешной
+/// установки, чтобы неудачный декод не запомнился как выполненный.
 static APPLIED: Mutex<Option<&'static str>> = Mutex::new(None);
 
 /// Ставит в Dock иконку, соответствующую теме, если она ещё не стоит.
-pub fn apply(app: &AppHandle, resolved: &str) {
-    let variant = variant_for(resolved);
-    {
+pub fn apply(app: &AppHandle, theme: &str) {
+    let variant = variant_for(theme);
+    #[cfg(debug_assertions)]
+    let theme = theme.to_string();
+    // AppKit — только с главного потока, а команды Tauri приходят с пула.
+    let queued = app.run_on_main_thread(move || {
         let mut applied = APPLIED.lock().unwrap_or_else(|e| e.into_inner());
         if *applied == Some(variant) {
             return;
         }
-        // Отметка ставится до постановки в очередь, а не после отрисовки:
-        // главный поток выполняет задачи по порядку, так что последней на
-        // экране окажется последняя поставленная — ровно та, что записана.
-        *applied = Some(variant);
-    }
-    #[cfg(debug_assertions)]
-    eprintln!("dock icon: {resolved} -> {variant}");
-
-    let png = png_for(variant);
-    // AppKit — только с главного потока, а команды Tauri приходят с пула.
-    if let Err(e) = app.run_on_main_thread(move || set_dock_image(png)) {
+        if set_dock_image(png_for(variant)) {
+            *applied = Some(variant);
+            #[cfg(debug_assertions)]
+            eprintln!("dock icon: {theme} -> {variant}");
+        }
+    });
+    if let Err(e) = queued {
         eprintln!("dock icon: {e}");
-        *APPLIED.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 }
 
 // `cocoa` целиком помечен deprecated в пользу `objc2`: двадцать с лишним
 // предупреждений об одном и том же, а не о нашем коде.
+/// `false` — картинку не удалось собрать, и в Dock ничего не поменялось.
 #[cfg(target_os = "macos")]
 #[allow(deprecated)]
-fn set_dock_image(png: Option<&'static [u8]>) {
+fn set_dock_image(png: Option<&'static [u8]>) -> bool {
     use cocoa::appkit::{NSApp, NSApplication, NSImage};
     use cocoa::base::{id, nil, NO};
-    use cocoa::foundation::{NSAutoreleasePool, NSData};
+    use cocoa::foundation::{NSAutoreleasePool, NSData, NSUInteger};
 
     unsafe {
         let pool = NSAutoreleasePool::new(nil);
         let ns_app = NSApp();
-        match png {
+        let ok = match png {
             // `nil` возвращает иконку бандла.
-            None => ns_app.setApplicationIconImage_(nil),
+            None => {
+                ns_app.setApplicationIconImage_(nil);
+                true
+            }
             Some(png) => {
                 // Без копии: байты `'static`, и отдавать их AppKit на
                 // освобождение нельзя — `freeWhenDone` строго `NO`
@@ -112,31 +120,35 @@ fn set_dock_image(png: Option<&'static [u8]>) {
                 let data: id = NSData::dataWithBytesNoCopy_length_freeWhenDone_(
                     nil,
                     png.as_ptr() as *const std::ffi::c_void,
-                    png.len() as u64,
+                    png.len() as NSUInteger,
                     NO,
                 );
                 let image: id = NSImage::initWithData_(NSImage::alloc(nil), data);
                 if image.is_null() {
                     eprintln!("dock icon: NSImage rejected the embedded PNG");
+                    false
                 } else {
                     // Свойство держит свою ссылку; наша, от `alloc`, уходит в
                     // пул и освобождается на `drain` ниже.
                     ns_app.setApplicationIconImage_(NSAutoreleasePool::autorelease(image));
+                    true
                 }
             }
-        }
+        };
         pool.drain();
+        ok
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn set_dock_image(_png: Option<&'static [u8]>) {}
+fn set_dock_image(_png: Option<&'static [u8]>) -> bool {
+    true
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const SHIPPED_FAMILIES: [&str; 6] = ["classic", "aurora", "blueprint", "phosphor", "paper", "ink"];
+    use crate::commands::VALID_FAMILIES;
 
     fn theme_id(family: &str, half: &str) -> String {
         if family == "classic" {
@@ -154,7 +166,7 @@ mod tests {
 
     #[test]
     fn every_shipped_theme_has_its_own_variant() {
-        for family in SHIPPED_FAMILIES {
+        for family in VALID_FAMILIES {
             for half in ["light", "dark"] {
                 let theme = theme_id(family, half);
                 assert_eq!(

@@ -46,18 +46,23 @@ pub async fn file_exists(path: String) -> bool {
 /// preference. Called on startup and on every theme change — the only
 /// writer of these checkmarks (macOS toggles the clicked item natively;
 /// this call corrects it).
-///
-/// The Dock icon rides the same call: it follows the same resolved theme, and
-/// every path that changes it already ends here (see `dock_icon`).
 #[command]
 pub async fn sync_theme_menu(
-    app: AppHandle,
     state: tauri::State<'_, crate::menu::ThemeMenuItems>,
     resolved: String,
     follow_system: bool,
 ) -> Result<(), String> {
     state.sync(&resolved, follow_system);
-    crate::dock_icon::apply(&app, &resolved);
+    Ok(())
+}
+
+/// Sets the Dock icon for the committed theme (see `dock_icon`). Separate from
+/// `sync_theme_menu` on purpose: the menu follows a `/theme` preview, the Dock
+/// must not — a window closed with the picker open never clears its preview,
+/// and the Dock would keep a theme no window shows.
+#[command]
+pub async fn sync_dock_icon(app: AppHandle, theme: String) -> Result<(), String> {
+    crate::dock_icon::apply(&app, &theme);
     Ok(())
 }
 
@@ -116,6 +121,10 @@ pub async fn broadcast_theme(
     Ok(())
 }
 
+/// Theme families this build ships — the one Rust list; `dock_icon`'s tests
+/// read it too, so a family added here without a Dock variant fails a test.
+pub(crate) const VALID_FAMILIES: [&str; 6] = ["classic", "aurora", "blueprint", "phosphor", "paper", "ink"];
+
 /// The `menu-event` ids `broadcast_theme` emits, pulled out as a pure
 /// function so the validation and id-building are unit-testable without an
 /// `AppHandle` (which needs a running app to construct).
@@ -124,7 +133,6 @@ fn theme_event_ids(
     half: Option<String>,
     follow_system: Option<bool>,
 ) -> Result<Vec<String>, String> {
-    const VALID_FAMILIES: [&str; 6] = ["classic", "aurora", "blueprint", "phosphor", "paper", "ink"];
     const VALID_HALVES: [&str; 2] = ["light", "dark"];
 
     if let Some(f) = &family {
@@ -267,7 +275,7 @@ mod tests {
 
     #[test]
     fn theme_event_ids_accepts_every_shipped_family() {
-        for family in ["classic", "aurora", "blueprint", "phosphor", "paper", "ink"] {
+        for family in VALID_FAMILIES {
             let ids = theme_event_ids(Some(family.into()), None, None).unwrap();
             assert_eq!(ids, vec![format!("theme_family_{family}")]);
         }
