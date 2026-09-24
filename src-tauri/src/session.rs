@@ -146,6 +146,9 @@ fn label_order(label: &str) -> (u8, u32) {
 pub struct SessionState {
     entries: Mutex<HashMap<String, WindowSnapshot>>,
     pending: Mutex<Vec<WindowSnapshot>>,
+    /// The restore being opened right now: taken out of `pending`, but not
+    /// every window has been seeded into `entries` yet. See `take_pending`.
+    restoring: Mutex<Vec<WindowSnapshot>>,
     quitting: AtomicBool,
     dirty: AtomicBool,
 }
@@ -155,6 +158,7 @@ impl SessionState {
         Self {
             entries: Mutex::new(HashMap::new()),
             pending: Mutex::new(Vec::new()),
+            restoring: Mutex::new(Vec::new()),
             quitting: AtomicBool::new(false),
             dirty: AtomicBool::new(false),
         }
@@ -244,7 +248,7 @@ impl SessionState {
     /// Creating the entry does not mark the session dirty: one with neither a
     /// path nor an untitled name is dropped by `prune_missing` on read, so on
     /// its own it is nothing worth writing.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub fn tab_id_for(&self, label: &str) -> String {
         let mut map = self.entries.lock().unwrap();
         map.entry(label.to_string())
@@ -284,6 +288,7 @@ impl SessionState {
     }
 
     /// A copy of this window's current entry, if it has one.
+    // No production caller until "reopen closed window" (tabs plan, Task 7).
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn snapshot_for(&self, label: &str) -> Option<WindowSnapshot> {
         self.entries.lock().unwrap().get(label).cloned()
@@ -308,33 +313,47 @@ impl SessionState {
         self.pending.lock().unwrap().len()
     }
 
+    /// Hand out the pending restore, once — a second call gets nothing.
+    ///
+    /// The windows stay referenced (as `restoring`) until `finish_restore`:
+    /// the first `seed` marks the session dirty, and the ticker's prune would
+    /// otherwise delete the sidecars of every window the loop has not reached
+    /// yet, which then restore as nothing at all.
     pub fn take_pending(&self) -> Vec<WindowSnapshot> {
-        std::mem::take(&mut *self.pending.lock().unwrap())
+        // `pending` stays locked until the move is complete, so
+        // `referenced_untitled` (which locks it first) never sees both lists
+        // empty mid-move.
+        let mut pending = self.pending.lock().unwrap();
+        let taken = std::mem::take(&mut *pending);
+        self.restoring.lock().unwrap().extend(taken.iter().cloned());
+        taken
     }
 
-    /// Sidecar file names referenced by either the live session or the restore
-    /// still on offer.
+    /// The restore loop is done: every window it opened now has its own entry.
+    pub fn finish_restore(&self) {
+        self.restoring.lock().unwrap().clear();
+    }
+
+    /// Sidecar file names referenced by the live session, the restore still on
+    /// offer, or the restore being opened right now.
     ///
-    /// Both halves matter. At startup the live session is deliberately empty — so
+    /// All of them matter. At startup the live session is deliberately empty — so
     /// that the first write of the new run supersedes the file — while `pending`
     /// still holds the previous run's windows. Collecting only the live half makes
     /// the ticker delete exactly the unsaved buffers the user is about to reopen.
     pub fn referenced_untitled(&self) -> HashSet<String> {
-        let mut names: HashSet<String> = self
-            .entries
-            .lock()
-            .unwrap()
+        // All three locks at once, in the one order used everywhere
+        // (entries → pending → restoring): read one at a time, a window could be
+        // seeded and its restore finished between the reads, and be in neither.
+        let entries = self.entries.lock().unwrap();
+        let pending = self.pending.lock().unwrap();
+        let restoring = self.restoring.lock().unwrap();
+        entries
             .values()
+            .chain(pending.iter())
+            .chain(restoring.iter())
             .filter_map(|w| w.untitled.clone())
-            .collect();
-        names.extend(
-            self.pending
-                .lock()
-                .unwrap()
-                .iter()
-                .filter_map(|w| w.untitled.clone()),
-        );
-        names
+            .collect()
     }
 }
 
@@ -482,13 +501,13 @@ pub async fn update_session_document(
     match (path, content) {
         // Untitled window with text — mirror it to a sidecar file.
         //
-        // The `is_empty` guard matters more than it looks: the frontend reports
-        // once at mount, before `get_pending_file` has resolved, so a window that
-        // is *about* to load a file briefly looks like an empty Untitled one.
-        // Without the guard that transient state earns a sidecar and an
-        // `untitled` name, which survives `prune_missing` and comes back as a
-        // blank window instead of the file. With it, the entry has neither a path
-        // nor an untitled name and is pruned on read.
+        // The `is_empty` guard keeps a blank window out of the next session: an
+        // empty Untitled buffer earns no sidecar and no `untitled` name, so its
+        // entry has neither and is pruned on read. It is also the backstop for
+        // any report that beats a window's pending open (the frontend holds its
+        // heartbeat until `get_pending_file` settles, but nothing here can rely
+        // on that): a window *about* to load a file looks exactly like an empty
+        // Untitled one, and must not come back as a blank window instead.
         (None, Some(text)) if !text.is_empty() => {
             let file_name = state.untitled_file_for(&label);
             write_untitled(&file_name, &text)?;
@@ -505,11 +524,13 @@ pub async fn update_session_document(
 pub fn restore_pending(app: &tauri::AppHandle) -> usize {
     use tauri::{Emitter, Manager};
 
-    let snapshots = app.state::<SessionState>().take_pending();
+    let state = app.state::<SessionState>();
+    let snapshots = state.take_pending();
     let count = snapshots.len();
     for snapshot in &snapshots {
         crate::window::open_restored_window(app, snapshot);
     }
+    state.finish_restore();
     if count > 0 {
         // Let open windows drop the "restore available" toast.
         let _ = app.emit("session-restored", count);
@@ -706,6 +727,67 @@ mod tests {
     }
 
     #[test]
+    fn restore_keeps_not_yet_opened_windows_drafts_referenced() {
+        // Regression: `take_pending` used to empty `pending` before the loop,
+        // and the first `seed` marks the session dirty — so the ticker's prune
+        // deleted the sidecars of every window the loop had not reached yet.
+        let state = SessionState::new();
+        let mut first = snap(None);
+        first.untitled = Some("untitled-a.md".to_string());
+        let mut second = snap(None);
+        second.untitled = Some("untitled-b.md".to_string());
+        state.set_pending(vec![first, second]);
+
+        let snapshots = state.take_pending();
+        state.seed("editor-1", snapshots[0].clone());
+
+        let mid_restore = state.referenced_untitled();
+        assert!(mid_restore.contains("untitled-a.md"));
+        assert!(
+            mid_restore.contains("untitled-b.md"),
+            "a window the restore has not opened yet must keep its draft"
+        );
+
+        state.finish_restore();
+        let after = state.referenced_untitled();
+        assert!(after.contains("untitled-a.md"), "held by the seeded entry");
+        assert!(!after.contains("untitled-b.md"), "never opened, now free");
+    }
+
+    #[test]
+    fn a_second_take_pending_during_a_restore_gets_nothing() {
+        let state = SessionState::new();
+        state.set_pending(vec![snap(Some("/tmp/a.md"))]);
+        assert_eq!(state.take_pending().len(), 1);
+        assert!(state.take_pending().is_empty());
+        assert_eq!(state.pending_count(), 0);
+    }
+
+    #[test]
+    fn seed_is_a_noop_while_quitting() {
+        let state = SessionState::new();
+        state.mark_quitting();
+        state.seed("editor-5", snap(Some("/tmp/a.md")));
+        assert!(state.snapshot_for("editor-5").is_none());
+    }
+
+    #[test]
+    fn seed_marks_the_session_dirty() {
+        let state = SessionState::new();
+        state.seed("editor-5", snap(Some("/tmp/a.md")));
+        assert!(state.take_dirty());
+    }
+
+    #[test]
+    fn tab_id_is_millis_pid_counter_and_so_file_name_safe() {
+        let id = new_tab_id();
+        let parts: Vec<&str> = id.split('-').collect();
+        assert_eq!(parts.len(), 3, "got {}", id);
+        assert!(parts.iter().all(|p| p.parse::<u128>().is_ok()), "got {}", id);
+        assert_eq!(parts[1], std::process::id().to_string());
+    }
+
+    #[test]
     fn two_launches_reusing_the_same_window_label_get_different_tab_ids() {
         // Regression: `untitled-main.md` used to be shared by every launch's
         // "main" window, so starting to type in one before Reopen Session
@@ -720,17 +802,6 @@ mod tests {
         assert_ne!(
             launch_one.untitled_file_for("main"),
             launch_two.untitled_file_for("main")
-        );
-    }
-
-    #[test]
-    fn tab_id_is_file_name_safe() {
-        let id = new_tab_id();
-        assert!(!id.is_empty());
-        assert!(
-            id.chars().all(|c| c.is_ascii_digit() || c == '-'),
-            "got {}",
-            id
         );
     }
 

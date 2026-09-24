@@ -1585,7 +1585,13 @@
     return view.state.doc.lineAt(pos).number;
   }
 
+  // Until the mount-time pending open settles, this window's buffer is not
+  // yet what it will be: a report now would describe a restored Untitled
+  // window as empty and cost it its sidecar. Set once, by the mount chain.
+  let pendingSettled = false;
+
   function reportSession(): void {
+    if (!pendingSettled) return;
     const view = editorHandle?.view;
     if (!view) return;
     invoke('update_session_document', {
@@ -1647,8 +1653,13 @@
     // Untitled window still looks empty: Rust drops its `untitled` name, the
     // ticker prunes the restored sidecar within a second, and a quit before
     // the next heartbeat loses that draft for good. `finally`, so a failed
-    // pending open still registers the window.
-    .finally(reportSession)
+    // pending open still registers the window. The recovery interval's
+    // heartbeat is held back until here too (`pendingSettled`), for a pending
+    // open slower than its first 5 s tick.
+    .finally(() => {
+      pendingSettled = true;
+      reportSession();
+    })
     .then(async () => {
       // Commands queued for this file before its window existed (e.g. an
       // `ai edit` of a file that wasn't open yet triggered this window's

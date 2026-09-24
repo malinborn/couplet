@@ -254,10 +254,10 @@ pub fn open_restored_window(app: &AppHandle, snapshot: &crate::session::WindowSn
     let label = format!("editor-{}", count);
 
     // Seed the session entry with the restored tab_id before this window's
-    // frontend ever sends its first heartbeat — otherwise `tab_id_for` would
-    // mint a brand new one on that first call (the restored untitled sidecar
-    // would then be written under a new name while the old one goes
-    // unreferenced and gets pruned).
+    // frontend ever sends its first heartbeat — otherwise `untitled_file_for`
+    // would find no entry and mint a brand new id on that first call (the
+    // restored untitled sidecar would then be written under a new name while
+    // the old one goes unreferenced and gets pruned).
     app.state::<crate::session::SessionState>()
         .seed(&label, snapshot.clone());
 
