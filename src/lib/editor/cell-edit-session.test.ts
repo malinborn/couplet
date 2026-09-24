@@ -65,7 +65,7 @@ describe('minimalEdit', () => {
 });
 
 /**
- * The published session is what `switchDocument` reaches the overlay through
+ * The published session is what a tab switch (`lib/tabs/controller.ts`) reaches the overlay through
  * before it replaces the document, so the registry must hand back the very
  * `commit` the overlay registered. The overlay's own commit is DOM (see above).
  */

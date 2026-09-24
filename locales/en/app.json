@@ -10,6 +10,7 @@
   "toast.language_error.headline": "Could not change the language",
   "toast.unsaved_blocked.headline": "{fileName} is not on disk yet",
   "toast.unsaved_blocked.message": "The latest edits are still being saved — try again in a moment",
+  "toast.open_error.headline": "Could not open {fileName}",
 
   "toast.update.headline": "mdmini {latest} available",
   "toast.update.current": "you have v{current}",

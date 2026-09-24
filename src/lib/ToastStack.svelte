@@ -104,6 +104,11 @@
             <strong>{t('toast.unsaved_blocked.headline', { fileName: toast.payload.fileName })}</strong>
           </span>
           <span class="md-toast-dim">{t('toast.unsaved_blocked.message')}</span>
+        {:else if toast.payload.kind === 'open-error'}
+          <span class="md-toast-text">
+            <strong>{t('toast.open_error.headline', { fileName: toast.payload.fileName })}</strong>
+          </span>
+          <span class="md-toast-highlight">{toast.payload.message}</span>
         {:else if toast.payload.kind === 'update'}
           <span class="md-toast-text">
             <strong>{t('toast.update.headline', { latest: toast.payload.latest })}</strong>

@@ -78,6 +78,14 @@ export interface WindowInit {
   activeTabId: string | null;
 }
 
+/** What `tab_claim` answers (Save As). Matches `TabClaim` in src-tauri/src/tab_commands.rs. */
+export type TabClaim =
+  | { kind: 'claimed' }
+  | { kind: 'this-window'; tabId: string }
+  | { kind: 'other-window'; label: string }
+  /** The tab id is another window's: nothing was claimed. */
+  | { kind: 'refused' };
+
 /**
  * Comment threads of a document, read from its `.mdmini_comments_<doc>.md`
  * sidecar. An absent sidecar is an empty list, not an error — most documents

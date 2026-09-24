@@ -4,10 +4,11 @@
   import type { EditorHandle } from './lib/editor/Editor.svelte';
   import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createFileState, createRecentFilesStore, setProductName, setWindowNumber } from './lib/stores.svelte';
   import { getName } from '@tauri-apps/api/app';
-  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type WindowInit } from './lib/tauri/commands';
+  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type TabClaim, type WindowInit } from './lib/tauri/commands';
   import {
     onMenuEvent,
     onOpenFile,
+    onReopenTab,
     onFileChangedExternally,
     onSessionRestored,
     onRecentChanged,
@@ -37,7 +38,7 @@
   import { liveRenderExtensions } from './lib/editor/live-render';
   import { envPreviewPlugin } from './lib/editor/preview/env';
   import { shellSecretsPlugin } from './lib/editor/preview/shell-secrets';
-  import { MARKDOWN_EXTENSIONS, isShellConfig } from './lib/editor/file-language';
+  import { findCodeLanguage, previewKindFor } from './lib/editor/file-language';
   import { reinitializeTheme } from './lib/editor/preview/mermaid';
   import { computeReplacement, computeChangedLineRanges } from './lib/editor/content-diff';
   import { resolveExternalChange } from './lib/external-change';
@@ -53,10 +54,14 @@
     clearAiHighlights,
     aiHighlightRanges,
   } from './lib/editor/ai-highlight';
-  import { addAiAsk, removeAiAsk, clearAiAsks } from './lib/editor/ai-ask';
-  import { decideSwitchAction } from './lib/switch-document';
+  import { activeAskIds, addAiAsk, removeAiAsk, clearAiAsks } from './lib/editor/ai-ask';
+  import type { TabOwner } from './lib/switch-document';
   import { activeCellEditSession } from './lib/editor/cell-edit-session';
-  import { createSerialQueue } from './lib/serial-queue';
+  import { closeSearchPanel } from '@codemirror/search';
+  import { hideHoverMenu } from './lib/editor/hover-menu';
+  import { createTabController, type OpenAnswer } from './lib/tabs/controller';
+  import { emptyTabList, type TabListState } from './lib/tabs/tab-model';
+  import { leaveEffects } from './lib/tabs/tab-cache';
   import { createCommentWriter, adoptStartedDraft } from './lib/comment-writer';
   import {
     addAiComment,
@@ -105,6 +110,9 @@
 
   let showRecentFiles = $state(false);
   let activePreview: 'markdown' | 'env' | 'code' | 'shell' = $state('markdown');
+  // This window's tabs, for the tab list. The controller owns the truth;
+  // this is its last published copy.
+  let tabList = $state<TabListState>(emptyTabList());
 
   let editorHandle: EditorHandle | undefined = $state(undefined);
 
@@ -199,11 +207,6 @@
   // Coalesces external-change events that arrive while the conflict dialog is
   // already up (FSEvents can fire more than once for one write).
   let conflictDialogOpen = false;
-  // True while `loadDocumentInPlace` hands the old document over and loads the
-  // new one. An agent command for the old path arriving in that window would
-  // pass the ownership check (the path has not changed yet) and then wait on
-  // a widget that is about to be cleared — see `handleAiCommand`.
-  let switchingDocument = false;
 
   function handleChange(doc: string) {
     fileState.isDirty = true;
@@ -293,29 +296,39 @@
     const name = fileState.filePath
       ? fileState.filePath.split('/').pop()
       : t('ui.untitled_filename');
+    // The dialog holds back the human, not an agent: a tab switch can land
+    // while it is open, and the name picked belongs to the tab it was opened for.
+    const tabId = tabs.list.activeId;
     const path = await showSaveDialog(name);
     if (!path) return;
-    fileState.filePath = path;
-    await performSave();
-    // The window now shows `path`: without this `OpenFiles` still maps it to
-    // the old file (or to nothing, from Untitled), so dedup, the watcher and
-    // Cmd+Shift+T's closed-window record all go on seeing the old document.
-    // Never over another window's entry, though: `register_open_file` would
-    // overwrite it, leaving that window unwatched and its AI commands routed
-    // here.
-    const openElsewhere = await invoke<boolean>('is_open_elsewhere', { path }).catch(() => false);
-    if (openElsewhere) {
-      console.warn('Save As target is open in another window; not registering it here:', path);
-    } else {
-      invoke('register_open_file', { path }).catch(() => {});
-    }
-    recentFiles.add(path);
+    await tabs.runExclusive(async () => {
+      if (tabs.list.activeId !== tabId) {
+        console.warn('Save As: the tab it was opened for is no longer active; nothing saved:', path);
+        return;
+      }
+      fileState.filePath = path;
+      await performSave();
+      tabs.renameActive(path);
+      // The tab now shows `path`: without a claim, dedup, the watcher and
+      // ⌘⇧T's closed-tab record would go on seeing the old document. Never over
+      // another tab's claim — that tab stays the one agents and dedup reach.
+      if (tabId !== null) {
+        const claim = await invoke<TabClaim>('tab_claim', { tabId, path }).catch((err: unknown) => {
+          console.error('tab_claim failed:', err);
+          return null;
+        });
+        if (claim && claim.kind !== 'claimed') {
+          console.warn(`Save As target is not registered to this tab (${claim.kind}):`, path);
+        }
+      }
+      recentFiles.add(path);
+    });
   }
 
   async function handleOpen(): Promise<void> {
     const path = await showOpenDialog();
     if (!path) return;
-    await switchDocument(path);
+    await openTab(path);
   }
 
   function handleNew(): void {
@@ -330,100 +343,6 @@
     import('@codemirror/search').then(({ openSearchPanel }) => {
       openSearchPanel(view);
     });
-  }
-
-  /**
-   * The one path that replaces the document a window shows — Cmd+O, Recent
-   * Files, an externally-opened file routed to this window, and a dropped
-   * file all go through this. See docs/investigations/2026-09-23-tabs-options.md
-   * §1 for the bugs this consolidation fixes (undo leak, lost autosave, no
-   * dedup, lost untitled text, orphaned `ask`).
-   *
-   * Serialized: a Cmd+O arriving while an `open-file` switch is still in its
-   * awaits would otherwise interleave with it — two handovers of the same
-   * document, and the first one's `finally` clearing `switchingDocument` while
-   * the second is still mid-switch. The queue's promise never rejects, so the
-   * `void` call sites cannot produce an unhandled rejection.
-   */
-  const switchQueue = createSerialQueue();
-  async function switchDocument(path: string): Promise<void> {
-    await switchQueue.run(() => switchDocumentNow(path));
-  }
-
-  /** Flush attempts before a still-dirty file-backed buffer blocks a switch. */
-  const SWITCH_FLUSH_ATTEMPTS = 3;
-
-  /**
-   * Open `path` in a window of its own, leaving this one as it is.
-   *
-   * `RunEvent::Opened` may already have registered `path` to this window
-   * before the frontend refused to take it; left in place, that entry makes
-   * `open_file_window` dedup onto this very window and open nothing.
-   */
-  async function openInNewWindow(path: string): Promise<void> {
-    await invoke('release_open_file', { path }).catch(() => {});
-    await invoke('open_file_window_cmd', { path }).catch((err: unknown) => {
-      console.error('Failed to open new window:', err);
-    });
-  }
-
-  async function switchDocumentNow(path: string): Promise<void> {
-    // First, before any flush: an open cell overlay holds text the document
-    // does not have yet, and left open its blur commit would land 50ms later
-    // at this document's offsets inside whichever document loads next.
-    activeCellEditSession()?.commit();
-
-    await autoSave.flush();
-    // A keystroke that landed during a write is not covered by it; another
-    // flush picks it up. Bounded, and never after a failure or while the
-    // conflict dialog holds saves back — those would only repeat a write that
-    // cannot happen, and the refusal below reports them.
-    for (
-      let attempt = 1;
-      attempt < SWITCH_FLUSH_ATTEMPTS &&
-      fileState.filePath &&
-      fileState.isDirty &&
-      !conflictDialogOpen &&
-      !toasts.hasKind('save-error');
-      attempt++
-    ) {
-      await autoSave.flush();
-    }
-
-    // A query only: focusing another window is one possible outcome, and with
-    // a save error standing it is exactly the one that must not happen.
-    const alreadyOpenElsewhere = await invoke<boolean>('is_open_elsewhere', { path }).catch(
-      () => false
-    );
-
-    const decision = decideSwitchAction({
-      targetPath: path,
-      currentPath: fileState.filePath,
-      currentIsDirty: fileState.isDirty,
-      saveErrorPending: toasts.hasKind('save-error'),
-      alreadyOpenElsewhere,
-    });
-
-    switch (decision.kind) {
-      case 'noop-already-showing':
-        return;
-      case 'focus-other-window':
-        await invoke('focus_if_open', { path }).catch(() => {});
-        return;
-      case 'refuse-save-error':
-        // The standing `save-error` toast already explains why; nothing to
-        // add, and nothing here may touch the document that failed to save.
-        return;
-      case 'refuse-unsaved':
-        reportSwitchBlockedByUnsaved();
-        return;
-      case 'open-new-window':
-        await openInNewWindow(path);
-        return;
-      case 'switch-in-place':
-        await loadDocumentInPlace(path);
-        return;
-    }
   }
 
   /**
@@ -475,110 +394,195 @@
     commentFocus = null;
   }
 
-  async function loadDocumentInPlace(path: string): Promise<void> {
-    switchingDocument = true;
-    try {
-      const exists = await fileExists(path);
-      const content = exists ? await readFile(path) : '';
+  /** Make `path` the active document for every singleton that follows the active tab. */
+  function setActiveDocument(path: string | null, dirty: boolean, baseline: string | null): void {
+    fileState.filePath = path;
+    fileState.isDirty = dirty;
+    diskBaseline = baseline;
+    dismissedDisk = null;
+    activePreview = previewKindFor(path);
+  }
 
-      const leavingPath = fileState.filePath;
-      if (leavingPath) {
-        // Comment text first: a pause committed before its text is written
-        // would hand an agent the text as of the last autosave.
-        if (!(await flushCommentsFor(leavingPath))) return;
-        // Queued, so it lands after any write still waiting — a countdown's
-        // fire, say — rather than between that write's read and its rename.
-        await commentWriter.enqueue(() =>
-          invoke('commit_document_pauses', { path: leavingPath }).catch(() => {})
-        );
-        await invoke('cancel_ai_ask', { path: leavingPath }).catch(() => {});
-        forgetCommentsFor(leavingPath);
+  /**
+   * Re-apply this window's configuration for `path` to the state just swapped
+   * in — cached ones included, whose compartments hold whatever they held when
+   * they were left.
+   */
+  function applyDocumentConfig(path: string | null): void {
+    const kind = previewKindFor(path);
+    const basename = path?.split('/').pop()?.toLowerCase() ?? '';
+    const ext = path?.split('.').pop()?.toLowerCase() ?? '';
+    if (kind === 'env') {
+      editorHandle?.setEnvMode(true);
+    } else if (kind === 'markdown') {
+      editorHandle?.setEnvMode(false);
+      editorHandle?.setCodeMode(null);
+    } else {
+      editorHandle?.setEnvMode(false);
+      editorHandle?.setCodeMode(ext, basename);
+      // `setCodeMode` adds the class only once its language has loaded; a
+      // tab coming back from the background would otherwise flash unstyled.
+      if (findCodeLanguage(basename, ext)) {
+        editorHandle?.view?.dom.classList.add('cm-code-file-mode');
       }
-
-      // Re-check right before the swap: the user may have typed during the
-      // awaits above. This is the last await before the swap, so nothing can
-      // be typed between the check and the swap.
-      await autoSave.flush();
-      if (fileState.isDirty) {
-        if (leavingPath) {
-          // The document stays, but its handover already ran: the agents
-          // behind its asks have been answered, so their widgets are stale,
-          // and its comment state was reset — rebuild the cards from the file.
-          editorHandle?.view?.dispatch({ effects: clearAiAsks.of(null) });
-          void reloadComments();
-        }
-        if (fileState.filePath) {
-          reportSwitchBlockedByUnsaved();
-        } else {
-          // Text typed into an Untitled buffer meanwhile — same rule as the
-          // `open-new-window` decision: it stays, the file goes elsewhere.
-          await openInNewWindow(path);
-        }
-        return;
-      }
-
-      // A fresh state carries nothing of the old document — no undo history,
-      // asks, highlights or search panel — so none of it needs clearing.
-      showRecentFiles = false;
-      const handle = editorHandle;
-      if (handle) {
-        handle.swapState(handle.createState(content, null), { blur: true });
-        // The fresh state's path field starts at null, and the `$effect` that
-        // keeps it current only re-runs when `fileState.filePath` changes.
-        handle.setDocumentPath(path);
-      }
-      diskBaseline = exists ? content : null;
-      dismissedDisk = null;
-      fileState.filePath = path;
-      // Register this window as the owner of `path` in the Rust-side
-      // `OpenFiles` map and (re)start its watcher. Without this the file is
-      // invisible to every dedup/routing check that consults `OpenFiles` (AI
-      // commands, `focus_if_open`), and never gets watched for external
-      // changes either.
-      invoke('register_open_file', { path }).catch(() => {});
-      fileState.isDirty = false;
-      recentFiles.add(path);
-
-      void reloadComments();
-
-      // Detect file type and switch editor mode
-      const basename = path.split('/').pop()?.toLowerCase() ?? '';
-      const ext = path.split('.').pop()?.toLowerCase() ?? '';
-      const isEnvFile = basename.startsWith('.env') || ext === 'env';
-
-      if (isEnvFile) {
-        editorHandle?.setEnvMode(true);
-        activePreview = 'env';
-      } else if (!MARKDOWN_EXTENSIONS.has(ext)) {
-        editorHandle?.setEnvMode(false);
-        editorHandle?.setCodeMode(ext, basename);
-        activePreview = isShellConfig(basename) ? 'shell' : 'code';
-      } else {
-        editorHandle?.setEnvMode(false);
-        editorHandle?.setCodeMode(null);
-        activePreview = 'markdown';
-      }
-
-      // `setCodeMode`/`setEnvMode` above reconfigure the preview compartment
-      // themselves, and the markdown branch installs a bare livePreviewPlugin
-      // — no flavour facet, no live-render bundle. Re-assert the engine's own
-      // configuration on top, or a freshly opened window sits in a half-built
-      // state: in live-render that meant no atomic markers, no hidden markers
-      // and no selection toolbar until the engine was toggled by hand.
-      // `activePreview` was just assigned, so this cannot rely on the $effect
-      // firing first.
-      applyPreviewConfig();
-      applyLineGlow();
-    } catch (err) {
-      console.error('Failed to open file:', err);
-      // `RunEvent::Opened` may have registered `path` to this window already;
-      // a window that never came to show it must not keep the claim.
-      if (fileState.filePath !== path) {
-        invoke('release_open_file', { path }).catch(() => {});
-      }
-    } finally {
-      switchingDocument = false;
     }
+    // `setCodeMode`/`setEnvMode` reconfigure the preview compartment
+    // themselves, with no flavour facet and no live-render bundle; the
+    // engine's own configuration goes on top (see `applyPreviewConfig`).
+    applyPreviewConfig();
+    applyLineGlow();
+    // The state's own path field: the `$effect` below only re-runs when
+    // `fileState.filePath` changes, and two untitled tabs share `null`.
+    editorHandle?.setDocumentPath(path);
+  }
+
+  /**
+   * Clean the live state for the background, and close what belongs to the
+   * window rather than the tab: the search panel, the gutter menu (a module
+   * singleton holding the view), the JSON offer's toast, the Recent panel.
+   */
+  function stripForBackground(): void {
+    const view = editorHandle?.view;
+    if (view) {
+      view.dispatch({ effects: leaveEffects() });
+      closeSearchPanel(view);
+    }
+    hideHoverMenu();
+    toasts.dismissKind('json-offer');
+    showRecentFiles = false;
+  }
+
+  /**
+   * A file that cannot be read is not shown — an empty buffer on its path
+   * would be autosaved over it — so the read's failure is the only thing the
+   * human would otherwise never see.
+   */
+  async function readingForTab<T>(path: string, read: () => Promise<T>): Promise<T> {
+    try {
+      return await read();
+    } catch (err) {
+      toasts.push({
+        kind: 'open-error',
+        fileName: path.split('/').pop() ?? path,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
+  }
+
+  /** The Rust half of a tab operation failed; the tab model itself goes on. */
+  function logTabIpc(command: string): (err: unknown) => void {
+    return (err) => console.error(`${command} failed:`, err);
+  }
+
+  /**
+   * The one path that changes what this window shows — see
+   * `lib/tabs/controller.ts`. Its dependencies are the singletons that follow
+   * the active tab.
+   */
+  const tabs = createTabController({
+    editor: {
+      current: () => editorHandle?.view?.state ?? null,
+      createState: (doc, cursor) => {
+        if (!editorHandle) throw new Error('editor not mounted');
+        return editorHandle.createState(doc, cursor);
+      },
+      swap: (state, opts) => editorHandle?.swapState(state, opts),
+      applyDocumentConfig,
+      stripForBackground,
+      scrollSnapshot: () => editorHandle?.view?.scrollSnapshot() ?? null,
+      applyPosition: ({ cursor, topLine }) => applyRestorePosition(cursor, topLine),
+      topLine: topVisibleLine,
+      commitCellEdit: () => activeCellEditSession()?.commit(),
+    },
+    doc: {
+      path: () => fileState.filePath,
+      dirty: () => fileState.isDirty,
+      baseline: () => diskBaseline,
+      setActive: setActiveDocument,
+    },
+    autosave: {
+      flush: () => autoSave.flush(),
+      holdsBack: () => conflictDialogOpen,
+    },
+    saveErrorPending: () => toasts.hasKind('save-error'),
+    reportUnsaved: reportSwitchBlockedByUnsaved,
+    comments: {
+      flush: flushCommentsFor,
+      // Queued, so it lands after any write still waiting — a countdown's
+      // fire, say — rather than between that write's read and its rename.
+      commitPauses: async (path) => {
+        await commentWriter.enqueue(() =>
+          invoke('commit_document_pauses', { path }).catch(logTabIpc('commit_document_pauses'))
+        );
+      },
+      forget: forgetCommentsFor,
+      reload: reloadComments,
+    },
+    ai: {
+      cancel: (path) => invoke<void>('cancel_ai_ask', { path }).catch(logTabIpc('cancel_ai_ask')),
+      hasLiveAsk: () => {
+        const view = editorHandle?.view;
+        return view ? activeAskIds(view.state).length > 0 : false;
+      },
+      clearAsks: () => editorHandle?.view?.dispatch({ effects: clearAiAsks.of(null) }),
+    },
+    disk: {
+      exists: (path) => readingForTab(path, () => fileExists(path)),
+      read: (path) => readingForTab(path, () => readFile(path)),
+    },
+    rust: {
+      owner: (path) =>
+        invoke<TabOwner>('tab_owner', { path }).catch((err: unknown): TabOwner => {
+          logTabIpc('tab_owner')(err);
+          return { kind: 'none' };
+        }),
+      // Without Rust behind the page (`npm run dev` in a browser) a tab still
+      // needs an id; it just is not registered anywhere.
+      open: (path) =>
+        invoke<OpenAnswer>('tab_open', { path }).catch(
+          (): OpenAnswer => ({
+            kind: 'created',
+            tabId: `local-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          })
+        ),
+      release: (tabId) => invoke<void>('tab_release', { tabId }).catch(logTabIpc('tab_release')),
+      activate: (tabId) => invoke<void>('tab_activate', { tabId }).catch(logTabIpc('tab_activate')),
+      close: (tabId, { cursor, topLine }) =>
+        invoke<void>('tab_close', { tabId, cursor, topLine }).catch(logTabIpc('tab_close')),
+      focusElsewhere: async (path) => {
+        await invoke('focus_if_open', { path }).catch(logTabIpc('focus_if_open'));
+      },
+      closeWindow: () =>
+        import('@tauri-apps/api/window')
+          .then(({ getCurrentWindow }) => getCurrentWindow().close())
+          .catch(logTabIpc('window close')),
+    },
+    entered: (path, opened) => {
+      if (path === null) return;
+      if (opened) recentFiles.add(path);
+      // A write that landed between the read that loaded this tab and its
+      // watcher starting fired no event this window saw; one more read now
+      // catches it (and is a no-op when nothing changed).
+      void handleExternalChange(path);
+    },
+    changed: (list) => {
+      tabList = list;
+    },
+    settled: () => reportTabs(),
+  });
+
+  // Rust counts this window as mounted from `get_window_init` on and delivers
+  // files as events from then on; one that lands before `tabs.init` is queued
+  // would run on an empty tab list, and init would then publish over it. Every
+  // tab-delivering source waits for this, in arrival order.
+  let releaseTabSources: () => void = () => {};
+  const tabSourcesReady = new Promise<void>((resolve) => {
+    releaseTabSources = resolve;
+  });
+
+  function openTab(path: string, position?: { cursor: number; topLine: number }): Promise<void> {
+    return tabSourcesReady.then(() => tabs.openPath(path, position));
   }
 
   // --- Restored caret / scroll ---
@@ -1029,10 +1033,13 @@
         // from the box they are writing in.
         commentFocus = { id: realId, at: caret?.id === id ? caret.at : text.length };
         // The sidecar has only just come into existence, so the watcher armed
-        // when this document was opened isn't watching it yet. Re-registering
-        // the file rebuilds the watcher over both paths — otherwise the very
+        // when this tab was activated isn't watching it yet. Activating the
+        // tab again rebuilds the watcher over both paths — otherwise the very
         // first agent reply would arrive with nothing listening for it.
-        await invoke('register_open_file', { path: entry.path }).catch(() => {});
+        const activeTabId = tabs.list.activeId;
+        if (activeTabId !== null && fileState.filePath === entry.path) {
+          await invoke('tab_activate', { tabId: activeTabId }).catch(logTabIpc('tab_activate'));
+        }
         await reloadComments();
         markCommentSaved(realId);
         return realId;
@@ -1393,6 +1400,46 @@
     custom?: string;
   }
 
+  const AI_ACTIVATION_ERRORS: Record<'refused' | 'busy' | 'failed', string> = {
+    refused: 'the current tab has unsaved changes',
+    busy: "the window is showing another agent's question",
+    failed: 'could not open the tab',
+  };
+
+  /**
+   * Route an agent's command to the tab that holds its file.
+   *
+   * A background tab is activated first, as if the user had clicked it —
+   * interim behaviour until plan 04's routing contract (`docs/ai-interface.md`,
+   * "Tabs"). It runs in the tab queue, so a command arriving mid-switch waits
+   * for the switch instead of failing, and it never takes the view away from
+   * another agent's live question.
+   */
+  async function handleAiCommand(payload: AiCommandPayload): Promise<void> {
+    // Before any of the command's own outcomes: an agent has reached this
+    // install for the first time, and this is the one moment the user is
+    // certain to be looking. Raised even if the command below then fails —
+    // something visibly happened either way, and the point is to explain what.
+    if (payload.firstUse) {
+      toasts.push({ kind: 'ai-first-use' });
+    }
+    await tabs.runExclusive(async () => {
+      if (payload.path !== fileState.filePath) {
+        const tab = tabs.findByPath(payload.path);
+        if (!tab) {
+          await respondToAi(payload.id, { ok: false, error: 'window does not own this file' });
+          return;
+        }
+        const result = await tabs.activateNow(tab.id, { byAgent: true });
+        if (result === 'refused' || result === 'busy' || result === 'failed') {
+          await respondToAi(payload.id, { ok: false, error: AI_ACTIVATION_ERRORS[result] });
+          return;
+        }
+      }
+      await handleAiCommandForActive(payload);
+    });
+  }
+
   async function respondToAi(id: number, response: AiResponse): Promise<void> {
     await invoke('ai_respond', { id, response }).catch((err: unknown) => {
       console.error('Failed to respond to AI command:', err);
@@ -1418,21 +1465,7 @@
    * otherwise both read the same pre-edit state and diff against it, and
    * whichever dispatches second would clobber the first's change instead of
    * building on top of it. */
-  async function handleAiCommand(payload: AiCommandPayload): Promise<void> {
-    // Before any of the command's own outcomes: an agent has reached this
-    // install for the first time, and this is the one moment the user is
-    // certain to be looking. Raised even if the command below then fails —
-    // something visibly happened either way, and the point is to explain what.
-    if (payload.firstUse) {
-      toasts.push({ kind: 'ai-first-use' });
-    }
-    // Before the ownership check, which cannot tell: mid-switch the window
-    // still reports the old path, but `cancel_ai_ask` has already answered for
-    // it and the widget such a command would add is about to be cleared.
-    if (switchingDocument) {
-      await respondToAi(payload.id, { ok: false, error: 'window is switching documents' });
-      return;
-    }
+  async function handleAiCommandForActive(payload: AiCommandPayload): Promise<void> {
     if (payload.path !== fileState.filePath) {
       await respondToAi(payload.id, { ok: false, error: 'window does not own this file' });
       return;
@@ -1585,7 +1618,7 @@
           console.error('Recovery save failed:', err);
         });
       }
-      reportSession();
+      reportTabs();
     }, 5000);
   }
 
@@ -1606,26 +1639,20 @@
   // window as empty and cost it its sidecar. Set once, by the mount chain.
   let pendingSettled = false;
 
-  // This window's one tab until the tab controller arrives; Rust minted its
-  // id, and the heartbeat reports under it so its untitled sidecar keeps its name.
-  let activeTabId: string | null = null;
-
-  function reportSession(): void {
-    if (!pendingSettled || activeTabId === null) return;
+  /**
+   * Every tab of this window — background untitled text included, or a tab
+   * left out of one report drops out of the session and its sidecar with it.
+   */
+  function reportTabs(): void {
+    if (!pendingSettled) return;
     const view = editorHandle?.view;
     if (!view) return;
-    invoke('tabs_sync', {
-      tabs: [
-        {
-          tabId: activeTabId,
-          path: fileState.filePath,
-          cursor: view.state.selection.main.head,
-          topLine: topVisibleLine(),
-          content: fileState.filePath ? null : view.state.doc.toString(),
-        },
-      ],
-      active: activeTabId,
-    }).catch(() => {
+    const { tabs: reported, active } = tabs.report({
+      cursor: view.state.selection.main.head,
+      topLine: topVisibleLine(),
+      content: view.state.doc.toString(),
+    });
+    invoke('tabs_sync', { tabs: reported, active }).catch(() => {
       // Session tracking is best-effort; never surface it to the user.
     });
   }
@@ -1659,59 +1686,66 @@
       .then(setProductName)
       .catch(() => {});
 
-    // Pull any file path stored by the backend for this window (CLI args or new-window open).
-    // This avoids the race condition of the push-based emit approach.
-    // Retried once: without it this window has no tab id, so it never sends a
-    // heartbeat and is left out of the next session.
-    invoke<WindowInit>('get_window_init')
+    // Every listener that can deliver a tab — a file, a reopened tab, an
+    // agent's command — is in place before `get_window_init`: Rust counts the
+    // window as mounted from that call on and sends it events instead of a
+    // payload, and an event with no listener yet is lost.
+    const unlistenOpenFile = onOpenFile((path) => {
+      void openTab(path);
+    });
+    const unlistenReopenTab = onReopenTab(({ path, cursor, topLine }) => {
+      void openTab(path, { cursor, topLine });
+    });
+    const unlistenAiCommand = onAiCommand((payload) => {
+      void tabSourcesReady.then(() => handleAiCommand(payload));
+    });
+
+    // Pull what the backend stored for this window (its tabs, restored or
+    // handed over before it mounted) — pulled, so it cannot race the listeners.
+    // Retried once: a window that never gets here stays unmounted in Rust, and
+    // files meant for it pile up in a payload nobody pulls.
+    Promise.all([unlistenOpenFile, unlistenReopenTab, unlistenAiCommand])
+      .then(() => invoke<WindowInit>('get_window_init'))
       .catch((err: unknown) => {
         console.error('get_window_init failed, retrying once:', err);
         return invoke<WindowInit>('get_window_init');
       })
-      .catch((err: unknown) => {
-        console.error('get_window_init failed twice; this window has no tab and will not be saved in the session:', err);
-        throw err;
+      .then(
+        async (init) => {
+          setWindowNumber(init.number);
+          const initialized = tabs.init(init.tabs, init.activeTabId);
+          releaseTabSources();
+          await initialized;
+        },
+        async (err: unknown) => {
+          // No Rust behind the page (`npm run dev` in a browser), or both
+          // attempts failed: one local tab.
+          console.error('get_window_init failed twice; this window has only a local tab:', err);
+          const initialized = tabs.init([], null);
+          releaseTabSources();
+          await initialized;
+        }
+      )
+      // Register this window in the session right away, not 5s later — but only
+      // once init has settled. Reported any earlier, a restored Untitled tab
+      // still looks empty: Rust drops its `untitled` name, the ticker prunes the
+      // restored sidecar within a second, and a quit before the next heartbeat
+      // loses that draft for good. `finally`, so a failed init still registers
+      // the window. The recovery interval's heartbeat is held back until here
+      // too (`pendingSettled`), for an init slower than its first 5 s tick.
+      .finally(() => {
+        pendingSettled = true;
+        reportTabs();
       })
-      .then(async (init) => {
-      setWindowNumber(init.number);
-      const tab = init.tabs.find((t) => t.tabId === init.activeTabId) ?? init.tabs[0];
-      if (!tab) return;
-      activeTabId = tab.tabId;
-      if (tab.path) {
-        await switchDocument(tab.path);
-      } else if (tab.content !== null) {
-        // Restored untitled tab — no file on disk, just the buffer.
-        const handle = editorHandle;
-        if (handle) handle.swapState(handle.createState(tab.content, null), { blur: true });
-        fileState.isDirty = true;
-        applyPreviewConfig();
-        applyLineGlow();
-      }
-      if (tab.cursor > 0 || tab.topLine > 1) {
-        await applyRestorePosition(tab.cursor, tab.topLine);
-      }
-    })
-    // Register this window in the session right away, not 5s later — but only
-    // once the pending open has settled. Reported any earlier, a restored
-    // Untitled window still looks empty: Rust drops its `untitled` name, the
-    // ticker prunes the restored sidecar within a second, and a quit before
-    // the next heartbeat loses that draft for good. `finally`, so a failed
-    // pending open still registers the window. The recovery interval's
-    // heartbeat is held back until here too (`pendingSettled`), for a pending
-    // open slower than its first 5 s tick.
-    .finally(() => {
-      pendingSettled = true;
-      reportSession();
-    })
-    .then(async () => {
-      // Commands queued for this file before its window existed (e.g. an
-      // `ai edit` of a file that wasn't open yet triggered this window's
-      // creation) — drained once, after the pending-open/restore settles.
-      const queued = await invoke<AiCommandPayload[]>('ai_pull_pending').catch(() => []);
-      for (const command of queued) {
-        await handleAiCommand(command);
-      }
-    });
+      .then(async () => {
+        // Commands queued for this file before its window existed (e.g. an
+        // `ai edit` of a file that wasn't open yet triggered this window's
+        // creation) — drained once, after init settles.
+        const queued = await invoke<AiCommandPayload[]>('ai_pull_pending').catch(() => []);
+        for (const command of queued) {
+          await handleAiCommand(command);
+        }
+      });
 
     // Menu events
     const unlistenMenu = onMenuEvent((action) => {
@@ -1721,6 +1755,18 @@
           break;
         case 'open':
           handleOpen();
+          break;
+        case 'new_tab':
+          void tabSourcesReady.then(() => tabs.newTab());
+          break;
+        case 'close':
+          void tabSourcesReady.then(() => tabs.closeActive());
+          break;
+        case 'next_tab':
+          void tabSourcesReady.then(() => tabs.cycle(1));
+          break;
+        case 'prev_tab':
+          void tabSourcesReady.then(() => tabs.cycle(-1));
           break;
         case 'save':
           handleSave();
@@ -1810,6 +1856,9 @@
           break;
       }
 
+      const tabDigit = /^select_tab_([1-9])$/.exec(action);
+      if (tabDigit) void tabSourcesReady.then(() => tabs.selectIndex(Number(tabDigit[1])));
+
       // macOS/muda toggles the clicked CheckMenuItem natively before this
       // handler runs. Re-clicking the already-active theme assigns the same
       // preference value, so the $effect below never reruns and the native
@@ -1832,16 +1881,8 @@
       }
     });
 
-    const unlistenOpenFile = onOpenFile((path) => {
-      void switchDocument(path);
-    });
-
     const unlistenExternalChange = onFileChangedExternally((path) => {
       handleExternalChange(path);
-    });
-
-    const unlistenAiCommand = onAiCommand((payload) => {
-      handleAiCommand(payload);
     });
 
     // An agent appended a reply to this document's sidecar. Only the comment
@@ -1851,22 +1892,13 @@
       void reloadComments();
     });
 
-    // Drag & drop: open files dropped onto the window
-    // If current window is empty (no file, no edits), open first file here; rest in new windows
+    // Drag & drop: every dropped file becomes a tab of this window; the first
+    // may take a blank tab's place.
     const unlistenDragDrop = import('@tauri-apps/api/webview').then(({ getCurrentWebview }) =>
       getCurrentWebview().onDragDropEvent(async (event) => {
         if (event.payload.type !== 'drop') return;
-        const paths = event.payload.paths as string[];
-        let usedCurrentWindow = false;
-        for (const path of paths) {
-          if (!usedCurrentWindow && !fileState.filePath && !fileState.isDirty) {
-            usedCurrentWindow = true;
-            await switchDocument(path);
-          } else {
-            await invoke('open_file_window_cmd', { path }).catch((err: unknown) => {
-              console.error('Failed to open dropped file:', err);
-            });
-          }
+        for (const path of event.payload.paths as string[]) {
+          await openTab(path);
         }
       })
     );
@@ -1970,6 +2002,7 @@
       if (stopUpdateChecker) stopUpdateChecker();
       unlistenMenu.then((fn) => fn());
       unlistenOpenFile.then((fn) => fn());
+      unlistenReopenTab.then((fn) => fn());
       unlistenExternalChange.then((fn) => fn());
       unlistenAiCommand.then((fn) => fn());
       unlistenComments.then((fn) => fn());
@@ -2058,8 +2091,8 @@
    * Called both from the `$effect` below and imperatively after a file opens,
    * because `Editor.svelte`'s `setCodeMode`/`setEnvMode` reconfigure the SAME
    * compartment — and its markdown branch installs a bare `livePreviewPlugin`
-   * with no flavour facet and no live-render bundle. `loadDocumentInPlace`
-   * calls `setCodeMode(null)` for every markdown file, so on a freshly opened
+   * with no flavour facet and no live-render bundle. `applyDocumentConfig`
+   * calls `setCodeMode(null)` for every markdown tab, so on a freshly opened
    * window it wiped whatever this effect had just installed: live-render was
    * dead until the engine was toggled by hand, which re-ran the effect. Two
    * owners of one compartment, and this one is authoritative.
@@ -2115,7 +2148,7 @@
 
   // Keep the editor's idea of which file it holds in step with the store.
   //
-  // An effect rather than a call inside `loadDocumentInPlace`, because the path also
+  // An effect as well as a call inside `applyDocumentConfig`, because the path also
   // changes on Save As and on New, and the JSON formatter's fence decision has
   // to be right immediately in all three — a stale path here means a ```
   // line offered into a `.py` buffer.
@@ -2146,7 +2179,7 @@
 {#if showRecentFiles}
   <RecentFilesPanel
     files={recentFiles.list}
-    onopen={switchDocument}
+    onopen={(path) => void openTab(path)}
     onclose={() => { showRecentFiles = false; }}
   />
 {/if}

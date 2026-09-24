@@ -47,6 +47,13 @@ export type ToastPayload =
    * what refuses every switch. The next successful save withdraws it.
    */
   | { kind: 'unsaved-blocked'; fileName: string }
+  /**
+   * A file could not be read to be shown in a tab — opened, switched to, or
+   * restored. The tab is not shown (an empty buffer on that path would be
+   * autosaved over the file), and without this the key or click that asked
+   * for it did nothing visible at all.
+   */
+  | { kind: 'open-error'; fileName: string; message: string }
   | { kind: 'update'; latest: string; current: string; highlight?: string }
   /**
    * Answers to a manual "Check for Updates…" click (#82) — the automatic
@@ -134,6 +141,7 @@ const ORDER: Record<ToastKind, number> = {
   'ai-bind-copied': 4,
   // A direct answer to the key the user just pressed, like the two above.
   'unsaved-blocked': 4,
+  'open-error': 4,
   // Sorts below everything: it is the only toast that is still waiting on a
   // decision, so it belongs closest to the pointer that has to make it.
   'json-offer': 5,

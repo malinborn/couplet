@@ -34,7 +34,11 @@ export type MenuAction =
   | 'recent_files'
   | 'ai_comment'
   | 'ai_watch_command'
-  | 'format_json';
+  | 'format_json'
+  | 'new_tab'
+  | 'next_tab'
+  | 'prev_tab'
+  | `select_tab_${'1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'}`;
 
 /**
  * A native menu action. Rust emits each action exactly once — to every window
@@ -53,11 +57,25 @@ export function onMenuEvent(handler: (action: MenuAction) => void): Promise<() =
  * A file the OS handed to the app (`RunEvent::Opened`), routed by Rust to one
  * window with `emit_to`. Listened for through the current webview window for
  * the same reason as `onAiCommand`: a global listener's target is `Any` and
- * matches targeted emits too, so every window would run `switchDocument` for
- * it.
+ * matches targeted emits too, so every window would open a tab for it
+ * (`lib/tabs/controller.ts`).
  */
 export function onOpenFile(handler: (path: string) => void): Promise<() => void> {
   return getCurrentWebviewWindow().listen<string>('open-file', (event) => {
+    handler(event.payload);
+  });
+}
+
+/** A closed tab coming back into this window (⌘⇧T). Matches `ReopenTab` in `closed.rs`. */
+export interface ReopenTab {
+  path: string;
+  cursor: number;
+  topLine: number;
+}
+
+/** Targeted at the window the tab was closed from — see `onAiCommand` on why per-window. */
+export function onReopenTab(handler: (tab: ReopenTab) => void): Promise<() => void> {
+  return getCurrentWebviewWindow().listen<ReopenTab>('reopen-tab', (event) => {
     handler(event.payload);
   });
 }

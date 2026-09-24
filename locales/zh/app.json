@@ -10,6 +10,7 @@
   "toast.language_error.headline": "无法更改语言",
   "toast.unsaved_blocked.headline": "{fileName} 尚未写入磁盘",
   "toast.unsaved_blocked.message": "最新的修改仍在保存中，请稍后再试",
+  "toast.open_error.headline": "无法打开 {fileName}",
 
   "toast.update.headline": "mdmini {latest} 已发布",
   "toast.update.current": "你当前是 v{current}",

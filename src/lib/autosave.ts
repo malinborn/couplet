@@ -1,5 +1,5 @@
 /**
- * Debounced autosave, extracted so `switchDocument` can `flush()` it
+ * Debounced autosave, extracted so a tab switch (`lib/tabs/controller.ts`) can `flush()` it
  * synchronously before replacing the document — otherwise the last ≤300ms of
  * typing before a Cmd+O / Recent Files switch is silently dropped (the
  * pending `setTimeout` was still holding it, unfired, when the document

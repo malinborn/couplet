@@ -10,6 +10,7 @@
   "toast.language_error.headline": "Не удалось изменить язык",
   "toast.unsaved_blocked.headline": "{fileName} ещё не записан на диск",
   "toast.unsaved_blocked.message": "Последние правки ещё сохраняются — повторите через мгновение",
+  "toast.open_error.headline": "Не удалось открыть {fileName}",
 
   "toast.update.headline": "Доступна версия mdmini {latest}",
   "toast.update.current": "у вас установлена v{current}",

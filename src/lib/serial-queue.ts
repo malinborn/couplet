@@ -1,7 +1,7 @@
 /**
  * Runs async tasks one at a time, in the order they were submitted.
  *
- * Built for `switchDocument`: a Cmd+O arriving while an `open-file` switch is
+ * Built for a tab switch (`lib/tabs/controller.ts`): a Cmd+O arriving while an `open-file` switch is
  * still in its awaits must not interleave with it — two handovers of one
  * document, and the first one's cleanup running while the second is still
  * mid-switch.

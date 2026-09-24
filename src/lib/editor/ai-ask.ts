@@ -43,7 +43,7 @@ export const removeAiAsk = StateEffect.define<number>();
 
 /**
  * Clears every pending ask widget without invoking any `onAnswer` callback.
- * Used by `switchDocument` right before it replaces the document: the CLI
+ * Used by a tab switch (`lib/tabs/controller.ts`) right before it replaces the document: the CLI
  * connection behind each ask is answered separately, in Rust, by
  * `cancel_ai_ask` — this effect only takes the now-stale widget off the
  * screen so it doesn't survive into whatever document loads next.

@@ -465,50 +465,6 @@ pub async fn open_file_window_cmd(app: AppHandle, path: Option<String>) -> Resul
     Ok(())
 }
 
-/// IPC command: register `path` as owned by the calling window and (re)start
-/// its file watcher.
-///
-/// A window that opens a file directly — `Cmd+O`, a drag-drop, a restored
-/// pending payload — never goes through `open_file_window`'s registration, so
-/// without this the path stays invisible to `OpenFiles`. That breaks every
-/// dedup check that consults it: the AI-command router would open a second,
-/// duplicate window for a file already sitting in this one, and reopening the
-/// file from the Open dialog wouldn't find/focus the existing window either.
-#[tauri::command]
-pub async fn register_open_file(
-    app: AppHandle,
-    window: tauri::WebviewWindow,
-    path: String,
-) -> Result<(), String> {
-    let label = window.label().to_string();
-
-    // The window's one tab now shows `path`; the path it held before is
-    // released by the same call. Another window's claim is never taken.
-    let claimed = {
-        let open_files = app.state::<OpenFiles>();
-        let mut reg = open_files.0.lock().unwrap();
-        live_owner(&app, &mut reg, &path);
-        reg.set_single_path(&label, &path, crate::session::new_tab_id)
-            .is_some()
-    };
-    if !claimed {
-        // Still `Ok`: the frontend has no handling for a refused registration
-        // yet, and an error here would surface as a failed open.
-        eprintln!("register_open_file: {path} is held by another window; {label} was refused");
-        return Ok(());
-    }
-
-    // Replacing any existing entry under this label drops (and thus stops)
-    // the previous watcher.
-    if let Ok(watcher) = crate::watcher::watch_file(&app, label.clone(), path) {
-        let watchers = app.state::<FileWatchers>();
-        let mut wmap = watchers.0.lock().unwrap();
-        wmap.insert(label, watcher);
-    }
-
-    Ok(())
-}
-
 /// Recreate a window from a session snapshot — geometry, tabs, and a payload
 /// the frontend pulls on mount. Returns the new window's label.
 ///
@@ -679,45 +635,6 @@ pub fn label_to_focus(reg: &TabRegistry, path: &str, exclude_label: &str) -> Opt
     reg.label_of(path).filter(|label| label != exclude_label)
 }
 
-/// IPC command: whether `path` is open in a window other than the caller —
-/// the query half of `focus_if_open`, with no side effect.
-///
-/// `switchDocument` needs the answer before it decides anything, and focusing
-/// is only one of the outcomes: with a save error standing the window must
-/// stay put, so the focus waits for `focus_if_open` in the branch that wants
-/// it.
-#[tauri::command]
-pub async fn is_open_elsewhere(
-    app: AppHandle,
-    window: tauri::WebviewWindow,
-    path: String,
-) -> Result<bool, String> {
-    let open_files = app.state::<OpenFiles>();
-    let reg = open_files.0.lock().unwrap();
-    Ok(label_to_focus(&reg, &path, window.label())
-        .is_some_and(|other| app.get_webview_window(&other).is_some()))
-}
-
-/// IPC command: give up the calling window's claim on `path`.
-///
-/// `RunEvent::Opened` reuses "main" whenever `OpenFiles` has no entry for it,
-/// and registers the file to it before the frontend has decided anything. A
-/// main window holding a dirty Untitled buffer has no entry either, so the
-/// frontend refuses the swap and asks for a new window instead — which
-/// `open_file_window` would then dedup against that very registration, focus
-/// main, and open nothing. The frontend calls this right before
-/// `open_file_window_cmd` so the path is free to get a window of its own.
-#[tauri::command]
-pub async fn release_open_file(
-    app: AppHandle,
-    window: tauri::WebviewWindow,
-    path: String,
-) -> Result<(), String> {
-    let open_files = app.state::<OpenFiles>();
-    open_files.0.lock().unwrap().clear_path(window.label(), &path);
-    Ok(())
-}
-
 /// Where a file handed to the app by the OS (`RunEvent::Opened`) goes.
 #[derive(Debug, PartialEq, Eq)]
 pub enum OpenedRoute {
@@ -765,8 +682,8 @@ pub(crate) fn reveal(win: &tauri::WebviewWindow) {
 }
 
 /// IPC command: if `path` is already open in a *different* window, focus it
-/// and report `true`. Used by `switchDocument` before it replaces the current
-/// window's document, so the same file never ends up open — and
+/// and report `true`. Used by a tab open (`lib/tabs/controller.ts`) for a file
+/// another window holds, so the same file never ends up open — and
 /// autosaving — in two windows at once.
 ///
 /// `path` is looked up exactly as given, like every other `OpenFiles` lookup:
@@ -1038,15 +955,5 @@ mod tests {
             Handover::Pending
         );
         assert_eq!(reg.label_of("/a.md").as_deref(), Some("main"));
-    }
-
-    #[test]
-    fn opening_a_file_into_the_mounted_window_keeps_its_tab_id() {
-        // Cmd+O in a window that mounted with an untitled tab: the claim
-        // (`register_open_file`) retargets that tab rather than minting one.
-        let mut reg = TabRegistry::new();
-        let init = window_init(&mut reg, "main", None, || "u1".to_string());
-        let claimed = reg.set_single_path("main", "/a.md", || panic!("must reuse the mounted tab"));
-        assert_eq!(claimed, init.active_tab_id);
     }
 }
