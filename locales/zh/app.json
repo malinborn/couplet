@@ -173,6 +173,10 @@
   "tabs.drawer.empty": "未找到",
   "tabs.drawer.in_text": "正文：",
 
+  "tabs.transient.label": "来自 AI 的快速查看",
+  "tabs.transient.close": "关闭",
+  "tabs.transient.keep": "保留",
+
   "tabs.card.unsaved": "未保存",
   "tabs.card.ai_chip": "✦ 来自 AI",
   "tabs.card.close": "关闭 {name}",

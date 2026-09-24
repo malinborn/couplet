@@ -41,6 +41,8 @@ export type MenuAction =
   | 'toggle_drawer'
   | 'toggle_tabs_compact:on'
   | 'toggle_tabs_compact:off'
+  | 'transient_ignored_keep'
+  | 'transient_ignored_close'
   | `select_tab_${'1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'}`;
 
 /**

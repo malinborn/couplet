@@ -13,6 +13,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { t } from './i18n';
 import { applyWindowZoom, clampZoom, stepZoom } from './window-zoom';
 import { windowTitle } from './window-title';
+import type { TransientPolicy } from './tabs/controller';
 
 /**
  * Third mode added alongside the original binary `live-preview | raw`:
@@ -245,6 +246,22 @@ export function createTabsCompactStore() {
     set(value: boolean) {
       enabled = value;
       saveSetting('tabsCompact', enabled);
+    },
+  };
+}
+
+/** File → «Короткие показы без ответа через час» (spec §7): keep them, or close them. */
+export function createTransientPolicyStore() {
+  const stored = loadSetting<unknown>('transientIgnored', 'keep');
+  let policy = $state<TransientPolicy>(stored === 'close' ? 'close' : 'keep');
+
+  return {
+    get value(): TransientPolicy {
+      return policy;
+    },
+    set(value: TransientPolicy) {
+      policy = value;
+      saveSetting('transientIgnored', policy);
     },
   };
 }

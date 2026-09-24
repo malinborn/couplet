@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { EditorView } from '@codemirror/view';
+  import { EditorView, type ViewUpdate } from '@codemirror/view';
   import { ChangeSet, EditorState, Transaction, type Extension, type StateEffect } from '@codemirror/state';
   import { languageCompartment, previewCompartment } from './setup';
   import { createDocumentState } from './state-factory';
@@ -72,7 +72,8 @@
     onJsonOfferWithdrawn,
     handle = $bindable(),
   }: {
-    onchange?: (doc: string) => void;
+    /** `update` says who changed it — see `human-edit.ts`. */
+    onchange?: (doc: string, update: ViewUpdate) => void;
     onAiHighlightVisibilityChange?: (visible: boolean) => void;
     /** Pasted content parses as JSON worth expanding — raise the offer toast. */
     onJsonOffer?: () => void;
@@ -90,7 +91,7 @@
   const extras: Extension[] = [
     EditorView.updateListener.of((update) => {
       if (update.docChanged && onchange) {
-        onchange(update.state.doc.toString());
+        onchange(update.state.doc.toString(), update);
       }
     }),
     // Per-window callbacks are appended here rather than in

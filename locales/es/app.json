@@ -173,6 +173,10 @@
   "tabs.drawer.empty": "No se encontró nada",
   "tabs.drawer.in_text": "en el texto:",
 
+  "tabs.transient.label": "Vista rápida de la IA",
+  "tabs.transient.close": "Cerrar",
+  "tabs.transient.keep": "Mantener",
+
   "tabs.card.unsaved": "sin guardar",
   "tabs.card.ai_chip": "✦ de la IA",
   "tabs.card.close": "Cerrar {name}",

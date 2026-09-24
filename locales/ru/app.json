@@ -173,6 +173,10 @@
   "tabs.drawer.empty": "Ничего не найдено",
   "tabs.drawer.in_text": "в тексте:",
 
+  "tabs.transient.label": "Короткий показ от ИИ",
+  "tabs.transient.close": "Закрыть",
+  "tabs.transient.keep": "Оставить",
+
   "tabs.card.unsaved": "не сохранён",
   "tabs.card.ai_chip": "✦ от ИИ",
   "tabs.card.close": "Закрыть {name}",

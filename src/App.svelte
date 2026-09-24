@@ -2,9 +2,11 @@
   import { onMount } from 'svelte';
   import Editor from './lib/editor/Editor.svelte';
   import type { EditorHandle } from './lib/editor/Editor.svelte';
-  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createTabsCompactStore, createFileState, createRecentFilesStore, setProductName, setWindowNumber, getWindowNumber } from './lib/stores.svelte';
+  import type { ViewUpdate } from '@codemirror/view';
+  import { isHumanEdit } from './lib/editor/human-edit';
+  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createTabsCompactStore, createTransientPolicyStore, createFileState, createRecentFilesStore, setProductName, setWindowNumber, getWindowNumber } from './lib/stores.svelte';
   import { getName } from '@tauri-apps/api/app';
-  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, syncTabsCompactMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type TabClaim, type WindowInit } from './lib/tauri/commands';
+  import { readFile, writeFile, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, syncTabsCompactMenu, syncTransientMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type TabClaim, type WindowInit } from './lib/tauri/commands';
   import {
     onMenuEvent,
     onOpenFile,
@@ -28,6 +30,7 @@
   import AiHintBadge from './lib/AiHintBadge.svelte';
   import AiBindButton from './lib/AiBindButton.svelte';
   import TabDrawer from './lib/tabs/TabDrawer.svelte';
+  import TransientBar from './lib/tabs/TransientBar.svelte';
   import type { TabDrawerHandle } from './lib/tabs/TabDrawer.svelte';
   import type { GitInfo } from './lib/tabs/drawer-data';
   import { tabNames } from './lib/tabs/tab-name';
@@ -108,6 +111,7 @@
   const lineGlow = createLineGlowStore();
   const ocdAlignment = createOcdAlignmentStore();
   const tabsCompact = createTabsCompactStore();
+  const transientPolicy = createTransientPolicyStore();
   const fileState = createFileState();
   const recentFiles = createRecentFilesStore();
   const toasts = createToastStore();
@@ -117,6 +121,10 @@
   // This window's tabs, for the drawer. The controller owns the truth; this
   // is its last published copy.
   let tabList = $state<TabListState>(emptyTabList());
+  // The bar shows while the active tab is a quick look (spec §7).
+  const activeQuickLook = $derived(
+    tabList.tabs.find((tab) => tab.id === tabList.activeId)?.transient === true ? tabList.activeId : null
+  );
 
   let editorHandle: EditorHandle | undefined = $state(undefined);
   let drawerHandle: TabDrawerHandle | undefined = $state(undefined);
@@ -213,9 +221,11 @@
   // already up (FSEvents can fire more than once for one write).
   let conflictDialogOpen = false;
 
-  function handleChange(doc: string) {
+  function handleChange(_doc: string, update: ViewUpdate) {
     fileState.isDirty = true;
     autoSave.schedule();
+    // Editing a quick look is working in it: «Оставить» (spec §7).
+    if (isHumanEdit(update)) tabs.humanEdited();
   }
 
   // --- Auto-save (300ms debounce). `performSave` is declared below, but
@@ -1635,9 +1645,11 @@
 
   async function handleAiCommand(payload: AiCommandPayload): Promise<void> {
     // Before any of the command's own outcomes: an agent has reached this
-    // install for the first time, and this is the one moment the user is
-    // certain to be looking. Raised even if the command below then fails —
-    // something visibly happened either way, and the point is to explain what.
+    // install for the first time. The command may land in the background, in
+    // a window that never comes forward, so this is not a moment the user is
+    // sure to be looking — the toast stays until dismissed and is there when
+    // they do. Raised even if the command below then fails: the point is to
+    // explain what an agent can do here, not what this one did.
     if (payload.firstUse) {
       toasts.push({ kind: 'ai-first-use' });
     }
@@ -1831,6 +1843,12 @@
         case 'toggle_tabs_compact:off':
           tabsCompact.set(false);
           break;
+        case 'transient_ignored_keep':
+          transientPolicy.set('keep');
+          break;
+        case 'transient_ignored_close':
+          transientPolicy.set('close');
+          break;
         case 'save':
           handleSave();
           break;
@@ -1956,6 +1974,11 @@
       if (action.startsWith('toggle_tabs_compact')) {
         syncTabsCompactMenu(tabsCompact.enabled);
       }
+      // macOS flips the clicked radio item by itself, so the pair is always
+      // re-set — the click that chose the current value included.
+      if (action.startsWith('transient_ignored_')) {
+        syncTransientMenu(transientPolicy.value);
+      }
     });
 
     const unlistenExternalChange = onFileChangedExternally((path) => {
@@ -1988,6 +2011,12 @@
 
     // Start recovery interval
     startRecoveryInterval();
+
+    // Spec §7: an hour after being seen, an unanswered quick look is kept or
+    // closed by the File-menu policy. A minute is fine-grained enough.
+    const transientTimer = setInterval(() => {
+      void tabs.expireTransients(transientPolicy.value);
+    }, 60_000);
 
     // Check for updates: first after 15s, then every hour. Only one window
     // actually polls — startUpdateChecker is a no-op in the others.
@@ -2097,6 +2126,7 @@
       window.removeEventListener('focus', handleWindowFocus);
       autoSave.cancel();
       if (recoveryInterval !== null) clearInterval(recoveryInterval);
+      clearInterval(transientTimer);
       clearAiHintTimer();
     };
   });
@@ -2124,6 +2154,9 @@
   });
   $effect(() => {
     syncTabsCompactMenu(tabsCompact.enabled);
+  });
+  $effect(() => {
+    syncTransientMenu(transientPolicy.value);
   });
 
   $effect(() => {
@@ -2271,6 +2304,16 @@
   onreorder={(order) => void tabs.reorder(order)}
   onnewwindows={(tabIds) => void moveTabsToNewWindows(tabIds)}
   onrestorefocus={() => editorHandle?.view?.focus()}
+/>
+
+<TransientBar
+  visible={activeQuickLook !== null}
+  onclose={() => {
+    if (activeQuickLook !== null) void tabs.closeTransient(activeQuickLook);
+  }}
+  onkeep={() => {
+    if (activeQuickLook !== null) void tabs.keepTransient(activeQuickLook);
+  }}
 />
 
 {#if showRecentFiles}

@@ -173,6 +173,10 @@
   "tabs.drawer.empty": "Aucun résultat",
   "tabs.drawer.in_text": "dans le texte :",
 
+  "tabs.transient.label": "Aperçu rapide de l’IA",
+  "tabs.transient.close": "Fermer",
+  "tabs.transient.keep": "Garder",
+
   "tabs.card.unsaved": "non enregistré",
   "tabs.card.ai_chip": "✦ de l’IA",
   "tabs.card.close": "Fermer {name}",

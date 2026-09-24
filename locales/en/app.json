@@ -173,6 +173,10 @@
   "tabs.drawer.empty": "Nothing found",
   "tabs.drawer.in_text": "in text:",
 
+  "tabs.transient.label": "Quick look from AI",
+  "tabs.transient.close": "Close",
+  "tabs.transient.keep": "Keep",
+
   "tabs.card.unsaved": "not saved",
   "tabs.card.ai_chip": "✦ from AI",
   "tabs.card.close": "Close {name}",

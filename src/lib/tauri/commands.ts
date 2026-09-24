@@ -41,6 +41,11 @@ export function syncTabsCompactMenu(enabled: boolean): void {
   invoke('sync_tabs_compact_menu', { enabled }).catch(() => {});
 }
 
+/** Sets File → quick looks' radio pair; harmless no-op outside Tauri. */
+export function syncTransientMenu(policy: 'keep' | 'close'): void {
+  invoke('sync_transient_menu', { policy }).catch(() => {});
+}
+
 const FILE_FILTERS = [
   { name: 'All Supported', extensions: ['md', 'markdown', 'txt', 'csv', 'json', 'yml', 'yaml', 'toml', 'py', 'rs', 'ts', 'js', 'sh', 'env'] },
   { name: 'Markdown', extensions: ['md', 'markdown', 'txt'] },

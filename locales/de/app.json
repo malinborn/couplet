@@ -173,6 +173,10 @@
   "tabs.drawer.empty": "Nichts gefunden",
   "tabs.drawer.in_text": "im Text:",
 
+  "tabs.transient.label": "Kurzansicht von der KI",
+  "tabs.transient.close": "Schließen",
+  "tabs.transient.keep": "Behalten",
+
   "tabs.card.unsaved": "nicht gespeichert",
   "tabs.card.ai_chip": "✦ von der KI",
   "tabs.card.close": "{name} schließen",

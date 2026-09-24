@@ -5,6 +5,7 @@ import {
   createThemeStore,
   createOcdAlignmentStore,
   createTabsCompactStore,
+  createTransientPolicyStore,
   createRecentFilesStore,
   createZoomStore,
   type RecentFile,
@@ -173,6 +174,29 @@ describe('createTabsCompactStore', () => {
     expect(store.enabled).toBe(true);
     expect(JSON.parse(localStorage.getItem('md-mini:tabsCompact')!)).toBe(true);
     expect(createTabsCompactStore().enabled).toBe(true);
+  });
+});
+
+describe('createTransientPolicyStore', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  // Spec §7: «Оставить» is the default.
+  it('DefaultsToKeep', () => {
+    expect(createTransientPolicyStore().value).toBe('keep');
+  });
+
+  it('SetPersists', () => {
+    createTransientPolicyStore().set('close');
+    expect(JSON.parse(localStorage.getItem('md-mini:transientIgnored')!)).toBe('close');
+    expect(createTransientPolicyStore().value).toBe('close');
+  });
+
+  // A hand-edited or future value must not become «Закрыть» by accident.
+  it('AnUnknownStoredValue_MeansKeep', () => {
+    localStorage.setItem('md-mini:transientIgnored', JSON.stringify('sometimes'));
+    expect(createTransientPolicyStore().value).toBe('keep');
   });
 });
 

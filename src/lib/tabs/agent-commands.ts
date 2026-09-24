@@ -91,7 +91,7 @@ export interface AgentCommandDeps {
    * human is typing here (D4, D19) — neither the caret nor the view moves.
    */
   live: {
-    /** Scroll to and pulse the target; the caret follows unless `keepCaret`. */
+    /** Pulse the target; unless `keepCaret`, the caret and the view go there. */
     show(payload: AiCommandPayload, keepCaret: boolean): AgentResponse;
     /**
      * Apply the edit synchronously (no `await` between reading the doc and
