@@ -14,6 +14,12 @@ export const EXPAND_MS = 600;
  * notch, so the first twitch of the mouse would already be "inside".
  */
 export const DWELL_CAPTURE_MS = 500;
+/**
+ * The dwell is not armed until the pointer has moved this far from where it
+ * was when the drawer hover-opened: a twitch of the hand resting on the notch
+ * is not a decision to use the drawer.
+ */
+export const DWELL_ARM_PX = 20;
 
 /** A hover-opened drawer closes when the pointer leaves; a pinned one stays. */
 export type DrawerMode = 'hover' | 'pinned';

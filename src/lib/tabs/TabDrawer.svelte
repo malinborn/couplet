@@ -27,6 +27,7 @@
   import type { TabListState, TabMeta } from './tab-model';
   import {
     CLOSED,
+    DWELL_ARM_PX,
     DWELL_CAPTURE_MS,
     EXPAND_MS,
     HOVER_CLOSE_MS,
@@ -129,6 +130,7 @@
   let selHintFits = $state(true);
   let rootEl: HTMLDivElement | undefined = $state();
   let listEl: HTMLDivElement | undefined = $state();
+  let asideEl: HTMLElement | undefined = $state();
   let selHintEl: HTMLElement | undefined = $state();
 
   // Bookkeeping nothing renders from.
@@ -146,6 +148,13 @@
   let expandTimer: ReturnType<typeof setTimeout> | undefined;
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
   let dwellTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The pointer's last known position over the notch or the drawer. */
+  let lastPointer: { x: number; y: number } | null = null;
+  /** Where the pointer was when this opening began; the dwell arms DWELL_ARM_PX away from it. */
+  let dwellOrigin: { x: number; y: number } | null = null;
+  let dwellArmed = false;
+  /** Focus landed inside the drawer during this opening — only then is it ours to give back. */
+  let tookFocus = false;
 
   const data = createDrawerData(
     {
@@ -410,6 +419,9 @@
     const focused = document.activeElement;
     restoreFocus = focused instanceof HTMLElement && focused !== document.body && !insideDrawer(focused) ? focused : null;
     ds = openState(ds, mode, !lastInputInEditable);
+    dwellOrigin = lastPointer;
+    dwellArmed = false;
+    tookFocus = false;
     data.refresh(list.tabs);
     addWindowListeners();
   }
@@ -422,9 +434,10 @@
     clearTimeout(dwellTimer);
     removeWindowListeners();
     const active = document.activeElement;
-    // Focus on <body> is focus the drawer lost (a removed card, a press that
-    // blurred): give it back too, not only focus still inside.
-    const restore = !active || active === document.body || insideDrawer(active);
+    // Focus on <body> after the drawer held it is focus the drawer lost (a
+    // removed card, a press that blurred): give it back too. Focus that was on
+    // <body> all along (a fresh load blurs the editor on purpose) is not ours.
+    const restore = insideDrawer(active) || (tookFocus && (!active || active === document.body));
     ds = closeState(ds);
     expandedId = null;
     const target = restoreFocus;
@@ -448,6 +461,10 @@
    * a click on the AI button, a programmatic `view.focus()` — comes back. A
    * move to nowhere (the window losing focus) is left alone.
    */
+  function onFocusIn(): void {
+    if (ds.open) tookFocus = true;
+  }
+
   function onFocusOut(e: FocusEvent): void {
     if (!keysCaptured(ds)) return;
     const next = e.relatedTarget;
@@ -462,17 +479,30 @@
   //
   // Not on entering: a hover-open slides the drawer under a pointer resting on
   // the notch, so the first twitch is already "inside". A press, a scroll, or
-  // a rest of DWELL_CAPTURE_MS is a decision to use the drawer.
+  // a rest of DWELL_CAPTURE_MS is a decision to use the drawer — a true rest:
+  // every move starts the wait again, so a slow pass never captures, and only
+  // after the pointer has travelled DWELL_ARM_PX from where it was at the
+  // hover-open, so a twitch of the hand on the notch does not either.
 
   function captureNow(): void {
     clearTimeout(dwellTimer);
     ds = captureTyping(ds);
   }
 
+  function restDwell(e: PointerEvent): void {
+    clearTimeout(dwellTimer);
+    if (!ds.open || ds.typing) return;
+    if (!dwellArmed) {
+      dwellOrigin ??= { x: e.clientX, y: e.clientY };
+      if (Math.hypot(e.clientX - dwellOrigin.x, e.clientY - dwellOrigin.y) < DWELL_ARM_PX) return;
+      dwellArmed = true;
+    }
+    dwellTimer = setTimeout(captureNow, DWELL_CAPTURE_MS);
+  }
+
   function drawerEnter(e: PointerEvent): void {
     trackShift(e);
-    clearTimeout(dwellTimer);
-    if (ds.open && !ds.typing) dwellTimer = setTimeout(captureNow, DWELL_CAPTURE_MS);
+    restDwell(e);
   }
 
   function drawerLeave(e: PointerEvent): void {
@@ -501,8 +531,13 @@
     else openDrawer('pinned');
   }
 
-  function wrapEnter(e: PointerEvent): void {
+  function wrapMove(e: PointerEvent): void {
     trackShift(e);
+    lastPointer = { x: e.clientX, y: e.clientY };
+  }
+
+  function wrapEnter(e: PointerEvent): void {
+    wrapMove(e);
     inWrap = true;
     clearTimeout(hoverCloseTimer);
   }
@@ -547,9 +582,11 @@
     if (action.kind === 'none' || !actionAllowed(ds, action)) return;
     // Enter on a focused drawer button presses it; with no card to open it is
     // not the drawer's either.
+    // Enter on a button in the panel presses it, and with no card to open it
+    // is not the drawer's either. Not the notch: a query's top result wins.
     if (
       action.kind === 'enter' &&
-      ((e.target instanceof HTMLButtonElement && insideDrawer(e.target)) || enterTarget(ds, visible) === null)
+      ((e.target instanceof HTMLButtonElement && !!asideEl?.contains(e.target)) || enterTarget(ds, visible) === null)
     ) {
       return;
     }
@@ -810,6 +847,7 @@
   class:compact
   class:shift={ds.open && ds.shiftHeld}
   bind:this={rootEl}
+  onfocusin={onFocusIn}
   onfocusout={onFocusOut}
 >
   <!-- mousedown's default would blur the editor closeDrawer just refocused. -->
@@ -824,7 +862,7 @@
     role="presentation"
     onpointerenter={wrapEnter}
     onpointerleave={wrapLeave}
-    onpointermove={trackShift}
+    onpointermove={wrapMove}
     onpointerdown={trackShift}
   >
     <aside
@@ -832,7 +870,9 @@
       id="tab-drawer"
       aria-label={listLabel}
       inert={!ds.open}
+      bind:this={asideEl}
       onpointerenter={drawerEnter}
+      onpointermove={restDwell}
       onpointerleave={drawerLeave}
       onpointerdown={captureNow}
       onwheel={captureNow}

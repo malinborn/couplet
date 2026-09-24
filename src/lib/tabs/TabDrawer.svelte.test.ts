@@ -2,7 +2,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, tick, unmount } from 'svelte';
 import TabDrawer, { type TabDrawerHandle } from './TabDrawer.svelte';
-import { DWELL_CAPTURE_MS, HOVER_OPEN_MS } from './drawer-state';
+import { DWELL_ARM_PX, DWELL_CAPTURE_MS, HOVER_OPEN_MS } from './drawer-state';
 import type { TabListState, TabMeta } from './tab-model';
 
 /*
@@ -168,9 +168,12 @@ function pointer(target: Element | Window, type: string, init: PointerEventInit 
   return e;
 }
 
-/** Rest on the notch until a hover-open, with fake timers on. */
+/** Rest on the notch (at `NOTCH`) until a hover-open, with fake timers on. */
+const NOTCH = { clientX: 10, clientY: 60 };
+
 async function hoverOpen(): Promise<void> {
-  pointer(el('.notch'), 'pointerenter');
+  pointer(el('.notch'), 'pointerenter', NOTCH);
+  pointer(el('.notch'), 'pointermove', NOTCH);
   vi.advanceTimersByTime(HOVER_OPEN_MS);
   await settle();
   expect(el('.drawer').hasAttribute('inert')).toBe(false);
@@ -279,11 +282,41 @@ describe('TabDrawer — the pointer takes the keyboard only on purpose (Q5)', ()
     expect(h.editorKeys).toEqual(['q']);
   });
 
-  it('resting inside the drawer takes them: focus moves in, Backspace stays out of the editor', async () => {
+  it('a slow pass across the drawer does not take them: every move restarts the wait', async () => {
     vi.useFakeTimers();
     typeInEditor();
     await hoverOpen();
-    pointer(el('.drawer'), 'pointerenter');
+    pointer(el('.drawer'), 'pointerenter', NOTCH);
+    for (let i = 1; i <= 6; i++) {
+      vi.advanceTimersByTime(100);
+      pointer(el('.drawer'), 'pointermove', { clientX: NOTCH.clientX + i * 60, clientY: NOTCH.clientY });
+    }
+    pointer(el('.drawer'), 'pointerleave');
+    vi.advanceTimersByTime(DWELL_CAPTURE_MS * 2);
+    await settle();
+    expect(document.activeElement).toBe(h.editor);
+  });
+
+  it('a twitch of the hand that rests on the notch does not arm the wait', async () => {
+    vi.useFakeTimers();
+    typeInEditor();
+    await hoverOpen();
+    // The drawer slid in under the pointer; a few pixels of movement land inside.
+    pointer(el('.drawer'), 'pointerenter', { clientX: 12, clientY: 62 });
+    pointer(el('.drawer'), 'pointermove', { clientX: 14, clientY: 63 });
+    vi.advanceTimersByTime(DWELL_CAPTURE_MS * 2);
+    await settle();
+    expect(document.activeElement).toBe(h.editor);
+    press('q');
+    expect(h.editorKeys).toEqual(['q']);
+  });
+
+  it('moving into the drawer and resting there takes them: focus moves in, Backspace stays out of the editor', async () => {
+    vi.useFakeTimers();
+    typeInEditor();
+    await hoverOpen();
+    pointer(el('.drawer'), 'pointerenter', NOTCH);
+    pointer(el('.drawer'), 'pointermove', { clientX: NOTCH.clientX + DWELL_ARM_PX, clientY: NOTCH.clientY });
     vi.advanceTimersByTime(DWELL_CAPTURE_MS - 1);
     await settle();
     expect(document.activeElement).toBe(h.editor);
@@ -387,6 +420,18 @@ describe('TabDrawer — focus comes back on close', () => {
     expect(h.onactivate).toHaveBeenCalledWith('c');
   });
 
+  it('focus that was on <body> all along is not the drawer\'s to give back', async () => {
+    vi.useFakeTimers();
+    typeInEditor();
+    h.editor.blur(); // a fresh load blurs the editor on purpose
+    await hoverOpen();
+    expect(document.activeElement).toBe(document.body);
+    h.handle().close();
+    await settle();
+    expect(h.onrestorefocus).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(document.body);
+  });
+
   it('with the keyboard dropped on <body> anyway, Esc still gives it back', async () => {
     h.editor.focus();
     h.handle().toggle();
@@ -429,6 +474,17 @@ describe('TabDrawer — key routing', () => {
     const onButton = press('Enter');
     expect(onButton.defaultPrevented).toBe(false);
     expect(h.onactivate).not.toHaveBeenCalled();
+  });
+
+  it('Enter on the focused notch opens the top search result rather than pressing the notch', async () => {
+    h.handle().toggle();
+    await settle();
+    press('b');
+    await settle();
+    el('.notch').focus();
+    const e = press('Enter');
+    expect(e.defaultPrevented).toBe(true);
+    expect(h.onactivate).toHaveBeenCalledWith('b');
   });
 
   it('⇧ follows every event, so a ⇧ released outside the window does not stick (I4b)', async () => {
