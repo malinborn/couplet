@@ -322,3 +322,76 @@ pub fn open_restored_window(app: &AppHandle, snapshot: &crate::session::WindowSn
         }
     }
 }
+
+/// Which window (if any) should be focused for `path`, excluding
+/// `exclude_label` (the window making the request) — split out from
+/// `focus_if_open` so the decision is testable without a running window.
+pub fn label_to_focus(
+    open_files: &HashMap<String, String>,
+    path: &str,
+    exclude_label: &str,
+) -> Option<String> {
+    open_files
+        .get(path)
+        .filter(|label| label.as_str() != exclude_label)
+        .cloned()
+}
+
+/// IPC command: if `path` is already open in a *different* window, focus it
+/// and report `true`. Used by `switchDocument` before it replaces the current
+/// window's document, so the same file never ends up open — and
+/// autosaving — in two windows at once.
+///
+/// `path` is looked up exactly as given, like every other `OpenFiles` lookup:
+/// the map is keyed by the string each window registered, never canonicalized.
+#[tauri::command]
+pub async fn focus_if_open(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    path: String,
+) -> Result<bool, String> {
+    let label = window.label().to_string();
+    let target = {
+        let open_files = app.state::<OpenFiles>();
+        let map = open_files.0.lock().unwrap();
+        label_to_focus(&map, &path, &label)
+    };
+    match target {
+        Some(other) => match app.get_webview_window(&other) {
+            Some(win) => {
+                let _ = win.set_focus();
+                Ok(true)
+            }
+            None => Ok(false),
+        },
+        None => Ok(false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn label_to_focus_finds_another_window_showing_the_path() {
+        let mut map = HashMap::new();
+        map.insert("/tmp/a.md".to_string(), "editor-2".to_string());
+        assert_eq!(
+            label_to_focus(&map, "/tmp/a.md", "main"),
+            Some("editor-2".to_string())
+        );
+    }
+
+    #[test]
+    fn label_to_focus_excludes_the_calling_window() {
+        let mut map = HashMap::new();
+        map.insert("/tmp/a.md".to_string(), "main".to_string());
+        assert_eq!(label_to_focus(&map, "/tmp/a.md", "main"), None);
+    }
+
+    #[test]
+    fn label_to_focus_is_none_when_the_path_is_not_open_anywhere() {
+        let map = HashMap::new();
+        assert_eq!(label_to_focus(&map, "/tmp/a.md", "main"), None);
+    }
+}

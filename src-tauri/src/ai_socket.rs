@@ -319,6 +319,12 @@ fn handle_connection(app: &AppHandle, stream: UnixStream) {
 /// `cancel_for_window`) instead of leaking until the listener's own timeout.
 pub struct AiPending {
     map: Mutex<HashMap<u64, (String, mpsc::Sender<AiResponse>)>>,
+    /// Which document each pending id was raised against — kept separately
+    /// from `map` rather than folded into its tuple, so every existing
+    /// `register` call site keeps compiling unchanged. Populated by
+    /// `set_path`, called right after `register` at the two spots in
+    /// `dispatch` that know the path. Lock order: `map` before `paths`.
+    paths: Mutex<HashMap<u64, String>>,
     next: AtomicU64,
 }
 
@@ -332,6 +338,7 @@ impl AiPending {
     pub fn new() -> Self {
         Self {
             map: Mutex::new(HashMap::new()),
+            paths: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
         }
     }
@@ -353,7 +360,9 @@ impl AiPending {
     /// Deliver a response to the connection waiting on `id`. An unknown id is a
     /// no-op — the request may have already timed out and been dropped.
     pub fn respond(&self, id: u64, response: AiResponse) {
-        if let Some((_, tx)) = self.map.lock().unwrap().remove(&id) {
+        let mut map = self.map.lock().unwrap();
+        self.paths.lock().unwrap().remove(&id);
+        if let Some((_, tx)) = map.remove(&id) {
             let _ = tx.send(response);
         }
     }
@@ -364,7 +373,9 @@ impl AiPending {
     /// deliver instead of resurrecting a stale sender that nobody is
     /// receiving on anymore.
     pub fn cancel(&self, id: u64) {
-        self.map.lock().unwrap().remove(&id);
+        let mut map = self.map.lock().unwrap();
+        self.paths.lock().unwrap().remove(&id);
+        map.remove(&id);
     }
 
     /// Fail every entry registered under `label` with "window closed" and
@@ -373,14 +384,48 @@ impl AiPending {
     /// before answering doesn't hang the caller for the full timeout.
     pub fn cancel_for_window(&self, label: &str) {
         let mut map = self.map.lock().unwrap();
+        let mut paths = self.paths.lock().unwrap();
         let ids: Vec<u64> = map
             .iter()
             .filter(|(_, (l, _))| l == label)
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
+            paths.remove(&id);
             if let Some((_, tx)) = map.remove(&id) {
                 let _ = tx.send(AiResponse::error("window closed"));
+            }
+        }
+    }
+
+    /// Record which document a pending id belongs to — called right after
+    /// `register`, only at the two call sites in `dispatch` that know the
+    /// path, and before the payload is delivered, so a `respond` can never
+    /// arrive first and leave this entry orphaned.
+    pub fn set_path(&self, id: u64, path: impl Into<String>) {
+        self.paths.lock().unwrap().insert(id, path.into());
+    }
+
+    /// Fail every entry registered under `label` for `path` with "switched
+    /// away from this document" — called by `switchDocument`'s
+    /// `cancel_ai_ask` before the document currently on screen is replaced,
+    /// so an agent's `ask` mid-question doesn't silently vanish into a
+    /// document that no longer shows it (it used to hang until the
+    /// request's own timeout — up to an hour for `ask`).
+    pub fn cancel_for_window_and_path(&self, label: &str, path: &str) {
+        let mut map = self.map.lock().unwrap();
+        let mut paths = self.paths.lock().unwrap();
+        let ids: Vec<u64> = map
+            .iter()
+            .filter(|(id, (l, _))| {
+                l == label && paths.get(*id).map(String::as_str) == Some(path)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            paths.remove(&id);
+            if let Some((_, tx)) = map.remove(&id) {
+                let _ = tx.send(AiResponse::error("switched away from this document"));
             }
         }
     }
@@ -586,6 +631,7 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
     if let Some(label) = existing_label {
         if let Some(win) = app.get_webview_window(&label) {
             app.state::<AiPending>().register(id, label.clone(), tx);
+            app.state::<AiPending>().set_path(id, path.clone());
             // emit() broadcasts to every window — a window that does not own the
             // file would race to answer with an error. Target the owner only.
             if win.emit_to(label.as_str(), "ai-command", &payload).is_ok() {
@@ -624,6 +670,7 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
         };
         if let Some(label) = label {
             app.state::<AiPending>().register(id, label.clone(), tx);
+            app.state::<AiPending>().set_path(id, path.clone());
             app.state::<AiQueue>().push(&label, payload);
             return id;
         }
@@ -640,6 +687,20 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
 #[tauri::command]
 pub async fn ai_respond(app: AppHandle, id: u64, response: AiResponse) -> Result<(), String> {
     app.state::<AiPending>().respond(id, response);
+    Ok(())
+}
+
+/// IPC command: cancel any `ask`/`edit` still waiting on a response for
+/// `path` in the calling window — called by `switchDocument` before it
+/// replaces that window's document.
+#[tauri::command]
+pub async fn cancel_ai_ask(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    path: String,
+) -> Result<(), String> {
+    app.state::<AiPending>()
+        .cancel_for_window_and_path(window.label(), &path);
     Ok(())
 }
 
@@ -1698,6 +1759,47 @@ mod tests {
         // Cancelling an already-cancelled or unknown label is a no-op.
         pending.cancel_for_window("editor-1");
         pending.cancel_for_window("no-such-window");
+    }
+
+    #[test]
+    fn cancel_for_window_and_path_responds_only_the_matching_entry() {
+        let pending = AiPending::new();
+
+        let (tx_a, rx_a) = mpsc::channel();
+        let id_a = pending.alloc_id();
+        pending.register(id_a, "editor-1", tx_a);
+        pending.set_path(id_a, "/tmp/a.md");
+
+        let (tx_b, rx_b) = mpsc::channel();
+        let id_b = pending.alloc_id();
+        pending.register(id_b, "editor-1", tx_b);
+        pending.set_path(id_b, "/tmp/b.md");
+
+        pending.cancel_for_window_and_path("editor-1", "/tmp/a.md");
+
+        let received = rx_a.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(!received.ok);
+        assert_eq!(
+            received.error.as_deref(),
+            Some("switched away from this document")
+        );
+        assert!(
+            rx_b.try_recv().is_err(),
+            "a different path in the same window must be untouched"
+        );
+    }
+
+    #[test]
+    fn cancel_for_window_and_path_ignores_a_different_window_with_the_same_path() {
+        let pending = AiPending::new();
+        let (tx, rx) = mpsc::channel();
+        let id = pending.alloc_id();
+        pending.register(id, "editor-1", tx);
+        pending.set_path(id, "/tmp/a.md");
+
+        pending.cancel_for_window_and_path("editor-2", "/tmp/a.md");
+
+        assert!(rx.try_recv().is_err(), "a different window must not be cancelled");
     }
 
     fn args(parts: &[&str]) -> Vec<String> {

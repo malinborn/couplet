@@ -130,6 +130,16 @@ pub fn commit_document(doc: &Path) {
     }
 }
 
+/// IPC command: commit whatever a document's comment pauses were mid-typing.
+/// `switchDocument` calls this for the document it is about to leave, so a
+/// countdown started a moment before the switch is handed over instead of
+/// ticking down inside a window that no longer shows that document.
+#[tauri::command]
+pub async fn commit_document_pauses(path: String) -> Result<(), String> {
+    commit_document(Path::new(&path));
+    Ok(())
+}
+
 /// Commit every pause on every document the app still has open.
 ///
 /// This is the answer to "who flips the status if the app is closed five
