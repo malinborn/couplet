@@ -146,7 +146,7 @@ pub fn prune_missing(session: Session, exists: impl Fn(&str) -> bool) -> Session
 
 /// Sort key that puts `main` first, then `editor-N` in numeric order. Without
 /// this, HashMap iteration order makes both tests and restore order random.
-fn label_order(label: &str) -> (u8, u32) {
+pub(crate) fn label_order(label: &str) -> (u8, u32) {
     if label == "main" {
         return (0, 0);
     }

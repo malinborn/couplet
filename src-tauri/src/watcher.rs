@@ -93,9 +93,13 @@ pub fn watch_file(
                                     .first()
                                     .map(|p| p.display().to_string())
                                     .unwrap_or_else(|| watched_path.clone());
-                                let _ = window.emit("comments-changed", &payload);
+                                let _ = window.emit_to(window_label.as_str(), "comments-changed", &payload);
                             } else {
-                                let _ = window.emit("file-changed-externally", &watched_path);
+                                let _ = window.emit_to(
+                                    window_label.as_str(),
+                                    "file-changed-externally",
+                                    &watched_path,
+                                );
                             }
                         } else {
                             break;

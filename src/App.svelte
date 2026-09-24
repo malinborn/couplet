@@ -1250,18 +1250,8 @@
   };
 
   /**
-   * Put the "start watching this document's comments" prompt on the clipboard.
-   *
-   * Same focus guard as comment creation, and for the same reason: a menu event
-   * reaches every window, and only the focused one should answer for its own
-   * document. The toast is the whole point — a clipboard write is invisible.
-   */
-  /**
    * Put the "here is the document I'm looking at" prompt on the clipboard —
    * the top-left button's whole job (#29).
-   *
-   * No focus guard, unlike `copyWatchCommand` below: this is a click inside
-   * this window's own chrome, so which document is meant is never in question.
    */
   function copyBindPrompt(): void {
     const path = fileState.filePath;
@@ -1290,8 +1280,8 @@
     formatJsonCommand(view);
   }
 
+  /** Put the "start watching this document's comments" prompt on the clipboard. */
   function copyWatchCommand(): void {
-    if (!document.hasFocus()) return;
     const path = fileState.filePath;
     if (!path) {
       toasts.push({ kind: 'ai-watch-copied', saved: false });
@@ -1304,27 +1294,17 @@
   }
 
   /**
-   * Start a comment on the selection, or on the caret's line if nothing is
-   * selected — an empty quote would give the thread no anchor to survive on.
+   * The menu item's entry point. Rust delivers a document action to exactly
+   * one window (`menu_route.rs`), so there is nothing left to guard against
+   * here; the toolbar button calls `startCommentFromSelection` directly.
    */
   function createCommentFromSelection(): void {
-    // Menu events reach every window: `onMenuEvent` listens globally, and a
-    // global listener's target is `Any`. That is harmless for idempotent
-    // actions like theme or zoom, but this one creates a card — so without
-    // this guard a single menu click would start a draft in every open
-    // document. Focus is only knowable here, not in the Rust menu handler,
-    // where the menu bar itself is what the OS considers active.
-    //
-    // The in-editor toolbar button calls `startCommentFromSelection` directly
-    // instead: a click inside this window's own toolbar already says which
-    // document is meant, and going through the guard would make the button
-    // untestable under automation, where nothing holds OS focus.
-    if (!document.hasFocus()) return;
     startCommentFromSelection();
   }
 
   /**
-   * The actual work, with no focus guard — see `createCommentFromSelection`.
+   * Start a comment on the selection, or on the caret's line if nothing is
+   * selected — an empty quote would give the thread no anchor to survive on.
    *
    * `target` overrides the document selection. The live-render toolbar passes
    * one for text selected inside a table cell: that selection lives in the
@@ -1776,7 +1756,7 @@
           // The native accelerator wins over the webview, so in the app this
           // is the path that actually runs for Cmd+Shift+J; the CM6 binding in
           // json-paste.ts covers the browser build of the same editor.
-          if (document.hasFocus()) formatJson(false);
+          formatJson(false);
           break;
       }
 
@@ -2063,9 +2043,6 @@
       effects: previewCompartment.reconfigure([
         livePreviewPlugin,
         flavourFacet.of(liveRender ? LIVE_RENDER : LIVE_PREVIEW),
-        // The toolbar's comment button reaches the same code path as the menu
-        // item, minus the focus guard: a click in this window's own toolbar is
-        // unambiguous about which document is meant.
         ...(liveRender
           ? liveRenderExtensions({ onComment: (range) => startCommentFromSelection(range) })
           : []),

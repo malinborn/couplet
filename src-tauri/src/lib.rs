@@ -17,6 +17,7 @@ mod i18n;
 mod locale;
 pub mod mcp_server;
 mod menu;
+mod menu_route;
 mod migration;
 mod onboarding;
 mod paths;
@@ -132,6 +133,7 @@ pub fn run() {
         .manage(FileWatchers::new())
         .manage(SessionState::new())
         .manage(closed::ClosedStack::new())
+        .manage(menu_route::FocusTracker::new())
         .manage(UpdateState::new())
         .manage(ai_socket::AiPending::new())
         .manage(ai_socket::AiQueue::new())
@@ -277,38 +279,10 @@ pub fn run() {
                     return;
                 }
 
-                // "Comment on Selection" acts on a specific document's
-                // selection, so it goes to the focused window only — same
-                // reasoning as "close" below. The generic path at the bottom
-                // broadcasts to every window, which is right for global
-                // preferences (theme, zoom) but here would drop a draft comment
-                // card into every open document at once.
-                // "Comment on Selection" acts on one document's selection, so
-                // it needs exactly one handler to run exactly once — which the
-                // generic path below cannot give it.
-                //
-                // Two traps, both learned the hard way. First, `is_focused()`
-                // queried here is not reliable: the menu bar is what the OS
-                // considers active, and gating on it silently swallowed the
-                // command. Second, the generic path emits per window in a
-                // loop, and `onMenuEvent` listens *globally* — and a global
-                // listener's target is `Any`, so it also receives targeted
-                // emits (the same trap `onAiCommand` documents). With two
-                // windows open, one menu click therefore arrived twice in each
-                // window and created a draft card per delivery.
-                //
-                // So: emit once, app-wide, and let the frontend ignore it
-                // unless its own window has focus. That is the only place
-                // where focus is actually knowable.
-                if id == "ai_comment" {
-                    let _ = _app.emit("menu-event", &id);
-                    return;
-                }
-
-                // Manual "Check for Updates…". Must reach exactly one window,
-                // for the same reason "ai_comment" is not routed through the
-                // per-window broadcast loop at the bottom of this handler:
-                // that loop would fire one GitHub request per open window.
+                // Manual "Check for Updates…". Must reach exactly one window —
+                // one GitHub request, not one per open window — and the one
+                // that owns the update poll, which the generic `Focused` route
+                // at the bottom of this handler does not know about.
                 //
                 // A bare `app.emit` does NOT do this — it broadcasts to every
                 // registered listener regardless of target label (an unfiltered
@@ -354,13 +328,12 @@ pub fn run() {
                     return;
                 }
 
-                // Handle "close" — close the focused window directly from Rust
+                // Still closes the whole window until Task 13 of the tabs-02
+                // plan hands ⌘W to the frontend; the target is the tracked
+                // window, not `is_focused()`, which is unreliable here.
                 if id == "close" {
-                    for (_label, win) in _app.webview_windows() {
-                        if win.is_focused().unwrap_or(false) {
-                            let _ = win.close();
-                            break;
-                        }
+                    if let Some(win) = focused_window(_app).and_then(|l| _app.get_webview_window(&l)) {
+                        let _ = win.close();
                     }
                     return;
                 }
@@ -371,9 +344,7 @@ pub fn run() {
                 // к своей копии настройки. Для radio-пункта это безвредно: N
                 // окон выставляют одно и то же значение. Для тумблера — нет:
                 // N окон переключают его N раз, и с двумя открытыми окнами
-                // галочка на экране не меняется вовсе. Это родня того, что уже
-                // описано выше про `ai_comment`, только там дублировалась
-                // доставка, а здесь — сам эффект.
+                // галочка на экране не меняется вовсе.
                 //
                 // Значение берётся из `Toggle`, а не из самого пункта меню:
                 // macOS применяет щелчок уже после нашего обработчика, и пункт
@@ -384,9 +355,15 @@ pub fn run() {
                     None => id,
                 };
 
-                // Broadcast all other menu events to all windows
-                for (_label, win) in _app.webview_windows() {
-                    let _ = win.emit("menu-event", &id);
+                match menu_route::menu_route(&id) {
+                    menu_route::MenuRoute::Broadcast => {
+                        let _ = _app.emit("menu-event", &id);
+                    }
+                    menu_route::MenuRoute::Focused => {
+                        if let Some(label) = focused_window(_app) {
+                            let _ = _app.emit_to(label.as_str(), "menu-event", &id);
+                        }
+                    }
                 }
             });
 
@@ -443,6 +420,7 @@ pub fn run() {
                 tauri::WindowEvent::Destroyed => {
                     let app = window.app_handle();
                     let label = window.label();
+                    app.state::<menu_route::FocusTracker>().forget(label);
                     let session_state = app.state::<SessionState>();
                     // Before `remove` and `untrack_window` below erase what
                     // this window was showing. `open_path_of` has released the
@@ -458,6 +436,12 @@ pub fn run() {
                     // Hand the update poll to a surviving window.
                     app.state::<UpdateState>().release(label);
                     window::untrack_window(app, label);
+                }
+                tauri::WindowEvent::Focused(true) => {
+                    window
+                        .app_handle()
+                        .state::<menu_route::FocusTracker>()
+                        .focused(window.label());
                 }
                 tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
                     let app = window.app_handle();
@@ -614,6 +598,13 @@ fn save_session_on_exit(app: &tauri::AppHandle) {
         return;
     }
     let _ = session::write_session(&snapshot);
+}
+
+/// The window a document-scoped menu action belongs to — see `menu_route`.
+fn focused_window(app: &tauri::AppHandle) -> Option<String> {
+    let live: Vec<String> = app.webview_windows().keys().cloned().collect();
+    let last = app.state::<menu_route::FocusTracker>().last();
+    menu_route::menu_target(last.as_deref(), &live)
 }
 
 /// Hand a file to the `main` window and register it as open.

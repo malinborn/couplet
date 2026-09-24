@@ -36,8 +36,15 @@ export type MenuAction =
   | 'ai_watch_command'
   | 'format_json';
 
+/**
+ * A native menu action. Rust emits each action exactly once — to every window
+ * for a preference, to the last-focused window for a document action
+ * (`src-tauri/src/menu_route.rs`) — so this must listen through the current
+ * webview window: a global listener's target is `Any` and would also receive
+ * the actions targeted at other windows.
+ */
 export function onMenuEvent(handler: (action: MenuAction) => void): Promise<() => void> {
-  return listen<string>('menu-event', (event) => {
+  return getCurrentWebviewWindow().listen<string>('menu-event', (event) => {
     handler(event.payload as MenuAction);
   });
 }
@@ -55,8 +62,9 @@ export function onOpenFile(handler: (path: string) => void): Promise<() => void>
   });
 }
 
+/** The file this window watches changed on disk. Targeted by the watcher. */
 export function onFileChangedExternally(handler: (path: string) => void): Promise<() => void> {
-  return listen<string>('file-changed-externally', (event) => {
+  return getCurrentWebviewWindow().listen<string>('file-changed-externally', (event) => {
     handler(event.payload);
   });
 }
@@ -119,9 +127,9 @@ export function onUpdateDismissed(handler: () => void): Promise<() => void> {
  * The user picked "Check for Updates…" from the menu (#82).
  *
  * Routed like `ai-command`, deliberately **not** through the general
- * `menu-event` broadcast (`onMenuEvent`, above): that channel reaches every
- * window, and five open windows would mean five simultaneous GitHub
- * requests for the same answer. Rust targets exactly one window with
+ * `menu-event` channel (`onMenuEvent`, above): it must reach the window that
+ * owns the update poll, not merely the last-focused one, and five open
+ * windows must not mean five GitHub requests. Rust targets exactly one window with
  * `emit_to` (see the `check_updates` handler in `lib.rs`) — a bare `emit`
  * would not have been enough on its own, since an unfiltered `emit`
  * broadcasts to every listener regardless of target label. That is also why
