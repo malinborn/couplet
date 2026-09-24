@@ -2,7 +2,7 @@
 //!
 //! The directory name is derived from the product name so that a dev build never
 //! shares state with an installed release one. They differ only by config
-//! (`tauri.dev.conf.json` renames the product to `md-mini-dev`), so a hardcoded
+//! (`tauri.dev.conf.json` renames the product to `couplet-dev`), so a hardcoded
 //! name would put `recovery/` — which holds the user's unsaved work — and
 //! `session.json` in the same place for both, and running `npm run dev:app` would
 //! quietly overwrite the real app's files.
@@ -59,9 +59,19 @@ pub fn init(product_name: &str) {
 }
 
 /// `~/Library/Application Support/<product name>/`, created if missing.
+///
+/// Refuses before `init` instead of guessing a name. A guess is a directory
+/// created — and one file written into a freshly created `couplet/` before the
+/// first real launch makes `migration.rs` see `NewAlreadyPopulated` and leave
+/// md-mini's data behind for good. An error here costs one write; the guess
+/// could cost the user's drafts.
 pub fn app_data_dir() -> Result<PathBuf, String> {
     let base = dirs::data_dir().ok_or("Cannot determine application data directory")?;
-    let name = APP_DIR_NAME.get().map(String::as_str).unwrap_or(FALLBACK_DIR);
+    data_dir_under(&base, APP_DIR_NAME.get().map(String::as_str))
+}
+
+fn data_dir_under(base: &std::path::Path, name: Option<&str>) -> Result<PathBuf, String> {
+    let name = name.ok_or("paths::init has not run")?;
     let dir = base.join(name);
     if !dir.exists() {
         fs::create_dir_all(&dir).map_err(|e| format!("Failed to create data dir: {}", e))?;
@@ -113,6 +123,21 @@ mod tests {
             crate::migration::known_legacy_product_names().any(|n| n == "md-mini"),
             "\"md-mini\" must stay listed in migration.rs so existing installs are not stranded by a rename"
         );
+    }
+
+    #[test]
+    fn nothing_is_created_before_init() {
+        let base = std::env::temp_dir().join(format!("couplet-paths-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+
+        assert_eq!(data_dir_under(&base, None), Err("paths::init has not run".to_string()));
+        assert_eq!(fs::read_dir(&base).unwrap().count(), 0, "a refused call must not create a directory");
+
+        let dir = data_dir_under(&base, Some("couplet")).unwrap();
+        assert_eq!(dir, base.join("couplet"));
+        assert!(dir.is_dir());
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

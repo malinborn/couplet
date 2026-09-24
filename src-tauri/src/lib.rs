@@ -216,8 +216,8 @@ pub fn run() {
             paths::init(app.config().product_name.as_deref().unwrap_or(paths::FALLBACK_PRODUCT_NAME));
 
             // Managed here, not on the builder: `RecentFiles::load()` reads
-            // `recent.json`, and before `paths::init` `app_data_dir()` answers the
-            // release directory — a dev build would load the installed app's list.
+            // `recent.json`, and before `paths::init` `app_data_dir()` refuses — the
+            // list would silently load empty.
             // No IPC reaches a command before `setup` returns.
             app.manage(recent::RecentFiles::load());
             // Before anything can register a file to `main` (CLI args, the
