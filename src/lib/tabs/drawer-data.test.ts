@@ -123,4 +123,92 @@ describe('createDrawerData', () => {
     h.data.ensure([meta('a', '/a.md'), meta('b', '/b.md'), meta('c', '/c.md')]);
     expect(h.gits.map((g) => g.paths)).toEqual([['/a.md', '/b.md'], ['/c.md']]);
   });
+
+  it('AReadThatLandsAfterTheTabBecameHeldDoesNotOverwriteIt', async () => {
+    const held: Record<string, string> = {};
+    const h = harness(held);
+    h.data.refresh([meta('b', '/b.md')]);
+    held.b = 'Live';
+    h.data.refresh([meta('b', '/b.md')]);
+    h.reads[0].d.resolve('disk');
+    await flush();
+    expect(h.data.text('b')?.first).toBe('Live');
+  });
+
+  it('AReadThatFailsAfterTheTabBecameHeldKeepsTheHeldText', async () => {
+    const held: Record<string, string> = {};
+    const h = harness(held);
+    h.data.refresh([meta('b', '/b.md')]);
+    held.b = 'Live';
+    h.data.refresh([meta('b', '/b.md')]);
+    h.reads[0].d.reject(new Error('EACCES'));
+    await flush();
+    expect(h.data.text('b')?.first).toBe('Live');
+  });
+
+  it('AFailedReadIsRetriedOncePerOpening_NotOnEveryEnsure', async () => {
+    const h = harness();
+    const tabs = [meta('b', '/b.md')];
+    h.data.refresh(tabs);
+    h.reads[0].d.reject(new Error('EACCES'));
+    await flush();
+    h.data.ensure(tabs);
+    h.data.ensure(tabs);
+    h.data.ensure(tabs);
+    expect(h.reads).toHaveLength(1);
+    h.data.refresh(tabs);
+    expect(h.reads).toHaveLength(2);
+  });
+
+  it('AnOlderGitAnswerDoesNotOverwriteANewerOne', async () => {
+    const h = harness({ a: 'A' });
+    h.data.refresh([meta('a', '/a.md')]);
+    h.data.refresh([meta('a', '/a.md')]);
+    h.gits[1].d.resolve([{ project: 'md-mini', branch: 'feat' }]);
+    await flush();
+    h.gits[0].d.resolve([{ project: 'md-mini', branch: 'main' }]);
+    await flush();
+    expect(h.data.git('/a.md')).toEqual({ project: 'md-mini', branch: 'feat' });
+  });
+
+  it('AFailedGitCallAnswersNull_WithoutLosingAnEarlierAnswer', async () => {
+    const h = harness({ a: 'A', b: 'B' });
+    h.data.refresh([meta('a', '/a.md')]);
+    h.gits[0].d.resolve([{ project: 'md-mini', branch: 'main' }]);
+    await flush();
+    h.data.refresh([meta('a', '/a.md'), meta('b', '/b.md')]);
+    h.onChange.mockClear();
+    h.gits[1].d.reject(new Error('ipc'));
+    await flush();
+    expect(h.data.git('/a.md')).toEqual({ project: 'md-mini', branch: 'main' });
+    expect(h.data.git('/b.md')).toBeNull();
+    expect(h.onChange).toHaveBeenCalled();
+  });
+
+  it('EnsureDoesNotAskGitAgainForAPathStillBeingAnswered', () => {
+    const h = harness({ a: 'A', c: 'C' });
+    h.data.refresh([meta('a', '/a.md')]);
+    h.data.ensure([meta('a', '/a.md'), meta('c', '/c.md')]);
+    expect(h.gits.map((g) => g.paths)).toEqual([['/a.md'], ['/c.md']]);
+  });
+
+  it('EnsureAsksGitForAKnownTabThatMovedToANewPath', () => {
+    const h = harness({ a: 'A' });
+    h.data.refresh([meta('a', '/a.md')]);
+    h.data.ensure([meta('a', '/renamed.md')]);
+    expect(h.gits.map((g) => g.paths)).toEqual([['/a.md'], ['/renamed.md']]);
+  });
+
+  it('ForgetsGitForPathsNoTabHas_AndDropsTheirLateAnswers', async () => {
+    const h = harness({ a: 'A', b: 'B' });
+    h.data.refresh([meta('a', '/a.md'), meta('b', '/b.md')]);
+    h.data.ensure([meta('a', '/a.md')]);
+    h.gits[0].d.resolve([
+      { project: 'md-mini', branch: 'main' },
+      { project: 'other', branch: 'dev' },
+    ]);
+    await flush();
+    expect(h.data.git('/a.md')).toEqual({ project: 'md-mini', branch: 'main' });
+    expect(h.data.git('/b.md')).toBeUndefined();
+  });
 });

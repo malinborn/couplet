@@ -39,10 +39,18 @@ export function createDrawerData(deps: DrawerDataDeps, onChange: () => void) {
   const texts = new Map<string, TabText>();
   /** Tab id → the opening its read belongs to. */
   const inflight = new Map<string, number>();
+  /** Tab id → the opening in which its read failed; retried on the next one. */
+  const failed = new Map<string, number>();
   const git = new Map<string, GitInfo | null>();
+  /** Path → the gitInfo request whose answer it waits for; only that one may land. */
+  const gitAsked = new Map<string, number>();
   let generation = 0;
+  let gitSeq = 0;
 
   function load(tab: TabMeta, gen: number): void {
+    // Any text set here supersedes a read still in flight for this tab.
+    inflight.delete(tab.id);
+    failed.delete(tab.id);
     const held = deps.held(tab.id);
     if (held !== null) {
       texts.set(tab.id, digest(held));
@@ -63,6 +71,7 @@ export function createDrawerData(deps: DrawerDataDeps, onChange: () => void) {
       () => {
         if (inflight.get(tab.id) !== gen) return;
         inflight.delete(tab.id);
+        failed.set(tab.id, gen);
         // Text from an earlier opening would be a file that may no longer exist.
         if (texts.delete(tab.id)) onChange();
       }
@@ -71,23 +80,43 @@ export function createDrawerData(deps: DrawerDataDeps, onChange: () => void) {
 
   function loadGit(paths: string[]): void {
     if (paths.length === 0) return;
+    const seq = ++gitSeq;
+    for (const p of paths) gitAsked.set(p, seq);
     deps.gitInfo(paths).then(
       (infos) => {
-        paths.forEach((p, i) => git.set(p, infos[i] ?? null));
-        onChange();
+        let changed = false;
+        paths.forEach((p, i) => {
+          if (gitAsked.get(p) !== seq) return;
+          git.set(p, infos[i] ?? null);
+          changed = true;
+        });
+        if (changed) onChange();
       },
-      () => {}
+      () => {
+        let changed = false;
+        for (const p of paths) {
+          if (gitAsked.get(p) !== seq || git.has(p)) continue;
+          git.set(p, null);
+          changed = true;
+        }
+        if (changed) onChange();
+      }
     );
-  }
-
-  function prune(tabs: readonly TabMeta[]): void {
-    const live = new Set(tabs.map((t) => t.id));
-    for (const id of [...texts.keys()]) if (!live.has(id)) texts.delete(id);
-    for (const id of [...inflight.keys()]) if (!live.has(id)) inflight.delete(id);
   }
 
   const filePaths = (tabs: readonly TabMeta[]) =>
     tabs.flatMap((t) => (t.path === null ? [] : [t.path]));
+
+  function prune(tabs: readonly TabMeta[]): void {
+    const live = new Set(tabs.map((t) => t.id));
+    for (const byId of [texts, inflight, failed]) {
+      for (const id of [...byId.keys()]) if (!live.has(id)) byId.delete(id);
+    }
+    const paths = new Set(filePaths(tabs));
+    for (const byPath of [git, gitAsked]) {
+      for (const p of [...byPath.keys()]) if (!paths.has(p)) byPath.delete(p);
+    }
+  }
 
   return {
     /** The drawer opened: everything again. */
@@ -101,9 +130,12 @@ export function createDrawerData(deps: DrawerDataDeps, onChange: () => void) {
     /** Tabs that arrived while the drawer is open. */
     ensure(tabs: readonly TabMeta[]): void {
       prune(tabs);
-      const fresh = tabs.filter((t) => !texts.has(t.id) && !inflight.has(t.id));
+      const fresh = tabs.filter(
+        (t) => !texts.has(t.id) && !inflight.has(t.id) && failed.get(t.id) !== generation
+      );
       for (const tab of fresh) load(tab, generation);
-      loadGit(filePaths(fresh).filter((p) => !git.has(p)));
+      // Every live path, not just fresh tabs': Save As moves a known tab to a new one.
+      loadGit(filePaths(tabs).filter((p) => !gitAsked.has(p)));
       if (fresh.length > 0) onChange();
     },
     text: (tabId: string): TabText | null => texts.get(tabId) ?? null,
