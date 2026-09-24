@@ -8,6 +8,7 @@ import {
   AGENT_ERRORS,
   answerResponse,
   createAgentCommands,
+  dropExpired,
   type AgentCommands,
   type AgentResponse,
   type AgentTabs,
@@ -159,10 +160,17 @@ function makeWorld(tabIds: string[], activeId: string) {
     },
   };
 
+  /** Requests whose `ai_is_pending` IPC fails. */
+  const pendingFails = new Set<number>();
+  /** Requests whose widget throws while being placed. */
+  const placeThrows = new Set<number>();
+
   const agent = createAgentCommands({
     tabs,
-    activePath: () => (list.activeId === null ? null : pathOf(list.activeId)),
-    isPending: async (id) => pending.has(id),
+    isPending: async (id) => {
+      if (pendingFails.has(id)) throw new Error('ipc down');
+      return pending.has(id);
+    },
     respond: async (id, response) => {
       pending.delete(id);
       responses.push([id, response]);
@@ -179,11 +187,13 @@ function makeWorld(tabIds: string[], activeId: string) {
         log.push(`live show ${p.path}${keepCaret ? ' keepCaret' : ''}`);
         return { ok: true };
       },
-      edit: (p) => {
-        log.push(`live edit ${p.path}`);
+      edit: (p, keepCaret) => {
+        log.push(`live edit ${p.path}${keepCaret ? ' keepCaret' : ''}`);
         return { ok: true, changed_lines: [[1, 1]] };
       },
-      placeAsk: (p, _deadline, onAnswer) => {
+      placeAsk: (p, _deadline, onAnswer, quiet) => {
+        if (placeThrows.has(p.id)) throw new Error('widget broke');
+        if (quiet) log.push(`quiet ${p.id}`);
         liveAsks.push(p.id);
         answerers.set(p.id, (r) => {
           liveAsks = liveAsks.filter((x) => x !== p.id);
@@ -192,8 +202,8 @@ function makeWorld(tabIds: string[], activeId: string) {
         log.push(`placed ${p.id}`);
         return true;
       },
-      pulse: (p) => {
-        log.push(`pulse ${p.path}`);
+      pulse: (p, quiet) => {
+        log.push(`pulse ${p.path}${quiet ? ' quiet' : ''}`);
       },
       askIds: () => liveAsks,
     },
@@ -207,6 +217,8 @@ function makeWorld(tabIds: string[], activeId: string) {
     clock,
     disk,
     pending,
+    pendingFails,
+    placeThrows,
     list: () => list,
     /** A request an agent is waiting on. */
     send: (p: AiCommandPayload) => {
@@ -556,6 +568,99 @@ describe('the exclusive slot (D9)', () => {
     await w.send(payload({ id: 6, cmd: 'close', path: '/c.md' }));
     expect(w.outside()).toEqual([]);
     expect(w.count('respond 5')).toBe(1);
+  });
+});
+
+describe('while the human types in the active tab (D4, D19)', () => {
+  it('AnEditWithShowIsAppliedThere_WithoutMovingTheCaret', async () => {
+    const w = makeWorld(['a', 'b'], 'a');
+    w.clock.typing = true;
+    await w.send(payload({ id: 1, cmd: 'edit', path: '/a.md', content: 'x', show: true }));
+    expect(w.log).toContain('live edit /a.md keepCaret');
+    expect(w.response(1)).toEqual({ ok: true, changed_lines: [[1, 1]], focused: true });
+    w.clock.typing = false;
+    await w.send(payload({ id: 2, cmd: 'edit', path: '/a.md', content: 'y', show: true }));
+    expect(w.log).toContain('live edit /a.md');
+  });
+
+  it('AQuestionIsPlacedQuietly', async () => {
+    const w = makeWorld(['a'], 'a');
+    w.clock.typing = true;
+    await w.send(payload({ id: 1, cmd: 'ask', path: '/a.md' }));
+    expect(w.log).toEqual(expect.arrayContaining(['placed 1', 'quiet 1']));
+    w.clock.typing = false;
+    await w.send(payload({ id: 2, cmd: 'ask', path: '/a.md' }));
+    expect(w.log).toContain('placed 2');
+    expect(w.log).not.toContain('quiet 2');
+  });
+
+  it('WhatArrivesWithATabShownMeanwhileIsQuietToo', async () => {
+    const w = makeWorld(['a', 'b'], 'a');
+    await w.send(payload({ id: 1, cmd: 'ask', path: '/b.md' }));
+    await w.send(payload({ id: 2, cmd: 'show', path: '/b.md', line: 2 }));
+    w.clock.typing = true;
+    await w.click('b');
+    expect(w.log).toEqual(expect.arrayContaining(['pulse /b.md quiet', 'quiet 1', 'placed 1']));
+  });
+});
+
+describe('when Rust cannot say whether an agent still waits', () => {
+  it('TheCommandDoesNothing_AndItsAgentIsToldSo', async () => {
+    const w = makeWorld(['a', 'b'], 'a');
+    w.pendingFails.add(1);
+    await w.send(payload({ id: 1, cmd: 'close', path: '/b.md' }));
+    expect(w.response(1)).toEqual({ ok: false, error: AGENT_ERRORS.pendingUnknown });
+    expect(w.log).toEqual(['respond 1']);
+  });
+
+  it('AParkedQuestionIsAnsweredWithTheError_TheOthersAreStillShown', async () => {
+    const w = makeWorld(['a', 'b'], 'a');
+    await w.send(payload({ id: 1, cmd: 'ask', path: '/b.md' }));
+    await w.send(payload({ id: 2, cmd: 'ask', path: '/b.md' }));
+    w.pendingFails.add(1);
+    await w.click('b');
+    expect(w.response(1)).toEqual({ ok: false, error: AGENT_ERRORS.pendingUnknown });
+    expect(w.count('placed 1')).toBe(0);
+    expect(w.count('placed 2')).toBe(1);
+  });
+
+  it('AQuestionThatBreaksWhilePlacedLosesNoneOfTheOthers', async () => {
+    const w = makeWorld(['a', 'b'], 'a');
+    await w.send(payload({ id: 1, cmd: 'ask', path: '/b.md' }));
+    await w.send(payload({ id: 2, cmd: 'ask', path: '/b.md' }));
+    await w.send(payload({ id: 3, cmd: 'ask', path: '/b.md' }));
+    w.placeThrows.add(2);
+    await w.click('b');
+    expect(w.response(2)).toEqual({ ok: false, error: 'widget broke' });
+    expect(w.count('placed 1')).toBe(1);
+    expect(w.count('placed 3')).toBe(1);
+  });
+});
+
+describe('a background open that finds the active tab', () => {
+  it('IsHandledLive', async () => {
+    // Another spelling missed the lookup; the controller found the tab the
+    // human is looking at. It is not a background tab to shimmer or park on.
+    const w = makeWorld(['a', 'b'], 'a');
+    w.tabs.openBackgroundNow = async () => ({ kind: 'existing', tabId: 'a' });
+    await w.send(payload({ id: 1, cmd: 'show', path: '/A.md', line: 2 }));
+    expect(w.log).toContain('live show /A.md');
+    expect(w.log.some((l) => l.startsWith('caret'))).toBe(false);
+    expect(w.response(1)).toEqual({ ok: true, focused: true });
+    await w.send(payload({ id: 2, cmd: 'ask', path: '/A.md' }));
+    expect(w.count('placed 2')).toBe(1);
+  });
+});
+
+describe('dropExpired', () => {
+  it('KeepsOnlyRecordsBeforeTheirDeadline', () => {
+    const records = new Map([
+      [1, { deadline: 10 }],
+      [2, { deadline: 20 }],
+      [3, { deadline: 30 }],
+    ]);
+    dropExpired(records, 20);
+    expect([...records.keys()]).toEqual([3]);
   });
 });
 

@@ -2,7 +2,7 @@ import { EditorState } from '@codemirror/state';
 import type { AiCommandPayload } from '../tauri/events';
 import { applyAiEditToState, resolveShowTarget } from '../ai-commands';
 import { decideLanding } from './agent-landing';
-import { createAgentInbox, deliverable } from './agent-inbox';
+import { createAgentInbox, deliverable, type InboxItem } from './agent-inbox';
 import type { QuickLookOrigin, TabController } from './controller';
 
 /** The answer an agent gets — `AiResponse` in src-tauri/src/ai_socket.rs; Rust adds `window`. */
@@ -40,7 +40,15 @@ export const AGENT_ERRORS = {
   notOpen: 'file is not open in this window',
   targetNotFound: 'target not found',
   editorNotReady: 'editor not ready',
+  pendingUnknown: 'could not confirm the request is still pending',
 } as const;
+
+/** Drop the records whose deadline has come: nobody waits for them any more. */
+export function dropExpired<K>(records: Map<K, { deadline: number }>, now: number): void {
+  for (const [key, record] of records) {
+    if (now >= record.deadline) records.delete(key);
+  }
+}
 
 /** The verbs a window carries out. Anything else is refused before a tab moves. */
 const VERBS: ReadonlySet<string> = new Set<AiCommandPayload['cmd']>(['show', 'edit', 'ask', 'open', 'close']);
@@ -64,8 +72,11 @@ export type AgentTabs = Pick<
 
 export interface AgentCommandDeps {
   tabs: AgentTabs;
-  activePath(): string | null;
-  /** Rust still has an agent waiting on `id` (`ai_is_pending`). */
+  /**
+   * Rust still has an agent waiting on `id` (`ai_is_pending`). Rejects when
+   * Rust cannot be asked — never guessed either way: `true` would act for an
+   * agent that may be gone, `false` would leave one waiting for nothing.
+   */
   isPending(id: number): Promise<boolean>;
   respond(id: number, response: AgentResponse): Promise<void>;
   /** `typing.ts`: the human is typing in this window. */
@@ -75,16 +86,31 @@ export interface AgentCommandDeps {
   /** Bring this window forward (`reveal_window`). */
   revealWindow(): Promise<void>;
   now(): number;
-  /** The live view — CodeMirror, in App.svelte. */
+  /**
+   * The live view — CodeMirror, in App.svelte. `keepCaret` / `quiet`: the
+   * human is typing here (D4, D19) — neither the caret nor the view moves.
+   */
   live: {
     /** Scroll to and pulse the target; the caret follows unless `keepCaret`. */
     show(payload: AiCommandPayload, keepCaret: boolean): AgentResponse;
-    /** Apply the edit synchronously (no `await` between reading the doc and dispatching). */
-    edit(payload: AiCommandPayload): AgentResponse;
-    /** Place the question widget; `false` when its target is not in the document. */
-    placeAsk(payload: AiCommandPayload, deadline: number, onAnswer: (result: AskResult) => void): boolean;
-    /** Pulse the target without touching the caret — a background show, on entry. */
-    pulse(payload: AiCommandPayload): void;
+    /**
+     * Apply the edit synchronously (no `await` between reading the doc and
+     * dispatching). With `show`, the caret and the view go to the change
+     * unless `keepCaret`.
+     */
+    edit(payload: AiCommandPayload, keepCaret: boolean): AgentResponse;
+    /**
+     * Place the question widget; `false` when its target is not in the
+     * document. Unless `quiet`, the caret follows it and the view scrolls there.
+     */
+    placeAsk(
+      payload: AiCommandPayload,
+      deadline: number,
+      onAnswer: (result: AskResult) => void,
+      quiet: boolean
+    ): boolean;
+    /** Pulse the target without touching the caret — a background show, on entry. Unless `quiet`, may scroll to it. */
+    pulse(payload: AiCommandPayload, quiet: boolean): void;
     /** Ids of the question widgets in the live view. */
     askIds(): number[];
   };
@@ -129,13 +155,24 @@ export function createAgentCommands(deps: AgentCommandDeps) {
   const deadlineOf = (payload: AiCommandPayload) => deps.now() + payload.timeoutSecs * 1000;
 
   /** Show the question on `tabId`, the active tab. */
-  function place(payload: AiCommandPayload, tabId: string, deadline: number): boolean {
-    const shown = deps.live.placeAsk(payload, deadline, (result) => {
-      placed.delete(payload.id);
-      void deps.respond(payload.id, answerResponse(result));
-    });
+  function place(payload: AiCommandPayload, tabId: string, deadline: number, quiet: boolean): boolean {
+    dropExpired(placed, deps.now());
+    const shown = deps.live.placeAsk(
+      payload,
+      deadline,
+      (result) => {
+        placed.delete(payload.id);
+        void deps.respond(payload.id, answerResponse(result));
+      },
+      quiet
+    );
     if (shown) placed.set(payload.id, { payload, deadline, tabId });
     return shown;
+  }
+
+  /** Wait in `tabId`'s inbox — tidying away asks nobody waits for any more. */
+  function park(tabId: string, item: InboxItem): void {
+    inbox.park(tabId, item, deps.now());
   }
 
   /**
@@ -154,17 +191,18 @@ export function createAgentCommands(deps: AgentCommandDeps) {
   /** `tabId` is the active tab: the command acts in the live view. */
   async function landLive(payload: AiCommandPayload, tabId: string, opened: QuickLookOrigin | null): Promise<void> {
     stamp(payload, tabId, opened);
+    // Read once: every live action below honours the same answer.
+    const typing = deps.typing();
     if (payload.cmd === 'ask') {
       // Answered from the widget.
-      if (!place(payload, tabId, deadlineOf(payload))) {
+      if (!place(payload, tabId, deadlineOf(payload), typing)) {
         await respond(payload, { ok: false, error: AGENT_ERRORS.targetNotFound });
       }
       return;
     }
-    const typing = deps.typing();
     const response: AgentResponse =
       payload.cmd === 'edit'
-        ? deps.live.edit(payload)
+        ? deps.live.edit(payload, typing)
         : payload.cmd === 'show'
           ? deps.live.show(payload, typing)
           : { ok: true };
@@ -185,7 +223,7 @@ export function createAgentCommands(deps: AgentCommandDeps) {
     if (pos === null) return respond(payload, { ok: false, error: AGENT_ERRORS.targetNotFound });
     const line = doc.doc.lineAt(pos).number;
     deps.tabs.placeCaretNow(tabId, { cursor: pos, topLine: Math.max(1, line - CONTEXT_LINES) });
-    inbox.park(tabId, { kind: 'pulse', payload });
+    park(tabId, { kind: 'pulse', payload });
     return respond(payload, { ok: true, focused: false });
   }
 
@@ -222,6 +260,9 @@ export function createAgentCommands(deps: AgentCommandDeps) {
       if (result.kind === 'opened') {
         opened = { kind: 'opened', tabId: result.tabId };
         text = result.text;
+      } else if (tabId === deps.tabs.list.activeId) {
+        // Another spelling missed the lookup: the tab is the one in front.
+        return landLive(payload, tabId, null);
       }
     }
     stamp(payload, tabId, opened);
@@ -234,7 +275,7 @@ export function createAgentCommands(deps: AgentCommandDeps) {
         return editInBackground(payload, tabId);
       case 'ask':
         // Answered from the widget once the human opens the tab (`enter`).
-        inbox.park(tabId, { kind: 'ask', payload, deadline: deadlineOf(payload) });
+        park(tabId, { kind: 'ask', payload, deadline: deadlineOf(payload) });
         return;
       case 'close':
         return;
@@ -327,8 +368,17 @@ export function createAgentCommands(deps: AgentCommandDeps) {
       await deps.tabs.runExclusive(async () => {
         // A command can wait here behind a switch or past its own timeout;
         // its agent has been answered already, and acting now — a close
-        // included — acts for nobody.
-        if (!(await deps.isPending(payload.id))) return;
+        // included — acts for nobody. When Rust cannot say, nothing is done
+        // and the agent, if it still listens, is told why.
+        let pending: boolean;
+        try {
+          pending = await deps.isPending(payload.id);
+        } catch (err) {
+          console.error('ai_is_pending failed:', err);
+          await respond(payload, { ok: false, error: AGENT_ERRORS.pendingUnknown });
+          return;
+        }
+        if (!pending) return;
         try {
           await run(payload);
         } catch (err) {
@@ -350,23 +400,45 @@ export function createAgentCommands(deps: AgentCommandDeps) {
         if (record.tabId !== tabId) continue;
         placed.delete(id);
         if (!shown.has(id) || deps.now() >= record.deadline) continue;
-        inbox.park(tabId, { kind: 'ask', payload: record.payload, deadline: record.deadline });
+        park(tabId, { kind: 'ask', payload: record.payload, deadline: record.deadline });
         parked = true;
       }
       return parked;
     },
 
-    /** `tabId` is shown: its pulse first, then the questions still waited on, in the order they came. */
+    /**
+     * `tabId` is shown: its pulse first, then the questions still waited on,
+     * in the order they came — quietly while the human types (D19). Taken out
+     * of the inbox at once, so each is answered here if it cannot be shown:
+     * one that fails never costs the others.
+     */
     async enter(tabId: string): Promise<void> {
       const items = deliverable(inbox.take(tabId), deps.now());
+      const quiet = deps.typing();
       for (const item of items) {
-        if (item.kind === 'pulse') deps.live.pulse(item.payload);
+        if (item.kind === 'pulse') deps.live.pulse(item.payload, quiet);
       }
-      for (const item of items) {
-        if (item.kind !== 'ask') continue;
-        if (!(await deps.isPending(item.payload.id))) continue;
-        if (!place(item.payload, tabId, item.deadline)) {
-          await respond(item.payload, { ok: false, error: AGENT_ERRORS.targetNotFound });
+      const asks = items.filter((item) => item.kind === 'ask');
+      const pending = await Promise.all(
+        asks.map((item) =>
+          deps.isPending(item.payload.id).catch((err: unknown) => {
+            console.error('ai_is_pending failed:', err);
+            return 'unknown' as const;
+          })
+        )
+      );
+      // Typing is read again: the human may have started while Rust was asked.
+      for (const [i, item] of asks.entries()) {
+        const still = pending[i];
+        try {
+          if (still === 'unknown') {
+            await respond(item.payload, { ok: false, error: AGENT_ERRORS.pendingUnknown });
+          } else if (still && !place(item.payload, tabId, item.deadline, deps.typing())) {
+            await respond(item.payload, { ok: false, error: AGENT_ERRORS.targetNotFound });
+          }
+        } catch (err) {
+          console.error('Failed to show a question that waited for the tab:', err);
+          await respond(item.payload, { ok: false, error: message(err) }).catch(() => {});
         }
       }
     },

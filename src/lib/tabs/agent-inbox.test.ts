@@ -21,6 +21,18 @@ describe('createAgentInbox', () => {
     expect(inbox.take('c').map((i) => i.payload.id)).toEqual([3]);
   });
 
+  it('ParkingDropsAsksPastTheirDeadlineFromEveryTab', () => {
+    const inbox = createAgentInbox();
+    inbox.park('b', { kind: 'ask', payload: payload(1), deadline: 10 });
+    inbox.park('b', { kind: 'pulse', payload: payload(2, 'show') });
+    inbox.park('c', { kind: 'ask', payload: payload(3), deadline: 10 });
+    inbox.park('c', { kind: 'ask', payload: payload(4), deadline: 30 });
+    inbox.park('d', { kind: 'ask', payload: payload(5), deadline: 40 }, 10);
+    expect(inbox.take('b').map((i) => i.payload.id), 'a pulse has no deadline').toEqual([2]);
+    expect(inbox.take('c').map((i) => i.payload.id)).toEqual([4]);
+    expect(inbox.take('d').map((i) => i.payload.id)).toEqual([5]);
+  });
+
   it('ALaterPulseReplacesAnEarlierOne', () => {
     const inbox = createAgentInbox();
     inbox.park('b', { kind: 'pulse', payload: payload(1, 'show') });

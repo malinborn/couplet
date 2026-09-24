@@ -18,8 +18,19 @@ export function createAgentInbox() {
     return items;
   }
   return {
-    /** A later pulse replaces an earlier one: only the last "look here" matters. */
-    park(tabId: string, item: InboxItem): void {
+    /**
+     * A later pulse replaces an earlier one: only the last "look here" matters.
+     * Given `now`, asks past their deadline are dropped from every tab —
+     * nobody waits for them, and a tab never shown would keep them forever.
+     */
+    park(tabId: string, item: InboxItem, now?: number): void {
+      if (now !== undefined) {
+        for (const [id, waiting] of byTab) {
+          const kept = waiting.filter((i) => i.kind !== 'ask' || now < i.deadline);
+          if (kept.length > 0) byTab.set(id, kept);
+          else byTab.delete(id);
+        }
+      }
       const items = (byTab.get(tabId) ?? []).filter((i) => item.kind !== 'pulse' || i.kind !== 'pulse');
       items.push(item);
       byTab.set(tabId, items);
