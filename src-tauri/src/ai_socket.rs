@@ -1679,12 +1679,16 @@ pub(crate) const AGENT_SNIPPET: &str = r#"## md-mini AI interface
 
 If `mdmini` is available, use it to point at things in the user's open editor and to push edits into the live buffer, instead of only writing files to disk:
 
-- `mdmini show <file> --line N` — scroll to line N in the open window and pulse-highlight it.
+- `mdmini show <file> --line N` — scroll to line N in the file's tab and pulse-highlight it.
 - `mdmini show <file> --find "some text"` — same, but locate the first match of the text instead of a line number.
 - `cat new-content.md | mdmini edit <file> [--show]` — replace the file's live buffer with the **complete** new content read from stdin. md-mini diffs it against what's on screen, applies only the changed span, and highlights it. `--show` also scrolls to the change.
 - `mdmini ask <file> --question "..." --option A --option B [--option ...]` — post a question with 2-6 option buttons inside the document and block until the user clicks one; prints `{"ok":true,"answer":"A"}` with the chosen option's text. Add `--multi` for checkbox mode (any number of options, including none, checked and confirmed) — prints `{"ok":true,"answers":["A","C"]}` instead. Add `--free-text` to also let the user type a custom answer — prints `{"ok":true,"custom":"..."}` (or alongside `answers` in `--multi` mode) when they do.
+- `mdmini <file>` — open a file as a tab. From you (an agent, `CLAUDECODE` set) it opens in the background: the tab shimmers until the user looks; `-f` brings it to the front. When the user should read something now, use `mdmini show <file>` (or `-f`).
+- `mdmini ls` — the open windows: number, project, tabs (`--json` for machine-readable output). `mdmini close <file>` — close a tab you opened and no longer need.
 
-All three verbs print one line of JSON to stdout: `{"ok":true}` (plus `"changed_lines":[[start,end]]` for `edit`, `"answer":"..."` for `ask`, `"answers":[...]` for `ask --multi`, or `"custom":"..."` for a typed `ask --free-text` answer) on success, `{"ok":false,"error":"..."}` on failure. Exit code 0 = success, 1 = md-mini rejected the request, 2 = md-mini isn't running or the command was malformed. If the target file isn't already open, `edit`/`show` open a new window for it automatically — the file must already exist on disk (`ask` requires the same: already open, or existing on disk). Always send the full document on stdin for `edit`, never a diff.
+Windows: every answer names the window it landed in — `{"ok":true,"window":7,"focused":true}`. Pass `-t 7` to `show`/`edit`/`ask`/`mdmini <file>` to keep working in that window. Without `-t` a file goes to its own tab if it is open (wherever that is — the answer's `window` says where), else to a window of its project (the git toplevel), else to a new window. The tab the user is typing in is never taken from them: `"focused":false` means your show landed in the background — tell them where to look instead of retrying. If they are typing in that very tab, the answer is `"focused":true` but nothing moves: the target only pulses, possibly off-screen. An `edit` of a background tab is applied and saved there; an `ask` for one waits there until they open it, and its timeout still counts from the call. Use `mdmini show <file> --transient` for a quick look: the tab asks them "Close / Keep" by itself.
+
+All verbs print one line of JSON to stdout: `{"ok":true}` (plus `"window"`/`"focused"`, `"changed_lines":[[start,end]]` for `edit`, `"answer":"..."` for `ask`, `"answers":[...]` for `ask --multi`, or `"custom":"..."` for a typed `ask --free-text` answer) on success, `{"ok":false,"error":"..."}` on failure. Exit code 0 = success, 1 = md-mini rejected the request, 2 = md-mini isn't running or the command was malformed. If the target file isn't open yet, `edit`/`show` open it as a tab by the rule above — for `show` it must already exist on disk (`ask` requires the same: already open, or existing on disk). Always send the full document on stdin for `edit`, never a diff.
 
 ### Comments the user leaves for you
 
@@ -1739,6 +1743,11 @@ pub(crate) const MCP_AGENT_SNIPPET: &str = r#"## md-mini via MCP — how to use 
 - After edits, the changed span stays highlighted until the user presses Esc or you edit again — use `show: true` on the edit when they should see the change immediately.
 - Respect their attention: batch related questions into one `ask` with options rather than many small ones; timeouts/dismissals mean "not now", not failure — fall back to chat.
 - `edit` takes the COMPLETE new document, never a diff; md-mini diffs internally and preserves their scroll position and undo history.
+- Windows: every answer names the `window` (#N) it landed in. Pass it back as `window_binding` to keep working in that window; call `windows` to see what is open (projects, tabs) and pick one. Without a binding a file goes to its own tab if it is open anywhere, else to a window of its project, else to a new window.
+- `show` switches to the tab by default; `focus: false` opens it in the background, where it shimmers until the user looks. A user who is typing always keeps their tab — the answer then says `focused: false`: tell them where to look instead of retrying. If they are typing in that very tab, the answer is `focused: true` but nothing moves: the target only pulses.
+- `transient: true` is for a quick look — something they glance at once. The tab asks them «Close / Keep» by itself; leave it off for documents you will keep working in.
+- An `edit` of a background tab is applied and saved there, highlighted when they open it; an `ask` for one waits there until they do, and its timeout still counts from the call.
+- Close what you opened and no longer need with `close` — hygiene, not isolation.
 
 ### Comments the user leaves for you
 
@@ -2922,6 +2931,9 @@ mod tests {
         assert!(text.contains("AGENTS.md"));
         assert!(text.contains("## md-mini AI interface"));
         assert!(text.contains("--mcp"), "should point at agent --mcp for MCP setups");
+        for needle in ["-t 7", "mdmini ls", "mdmini close", "--transient", "\"focused\":false"] {
+            assert!(text.contains(needle), "agent snippet missing {needle}");
+        }
     }
 
     #[test]
@@ -2939,6 +2951,9 @@ mod tests {
         // This is a behavioral snippet, not CLI syntax — it should not carry
         // the `mdmini ask <file> --question ...` shell-command shape.
         assert!(!text.contains("mdmini ask <file>"));
+        for needle in ["window_binding", "`windows`", "`close`", "transient", "focused: false"] {
+            assert!(text.contains(needle), "MCP snippet missing {needle}");
+        }
     }
 
     #[test]
