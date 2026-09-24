@@ -427,29 +427,44 @@ pub fn move_tabs_between(
     Ok(Moved { arrival, snapshots, drafts })
 }
 
-/// After the lock: a moved untitled tab's text goes to its sidecar now, and
-/// its snapshot names that file. Nothing else writes it until the target's
-/// first heartbeat, so a quit before a target built for the move has mounted
-/// would restore the draft as the source last reported it — up to 5 s old.
-/// The name is the one the source recorded (`untitled_file_for`), so a
-/// migrated draft keeps its file. A failed write is logged and the snapshot
-/// left without a name: `move_tab` then keeps the recorded one, and the move
-/// stands.
+/// After the lock: move the tabs' session entries from `from` to `to`, then
+/// write each moved untitled tab's text to its sidecar. Nothing else writes
+/// it until the target's first heartbeat, so a quit before a target built
+/// for the move has mounted would restore the draft as the source last
+/// reported it — up to 5 s old.
+///
+/// The name is the one the source recorded (`untitled_file_for`, read before
+/// the move takes the entry away), so a migrated draft keeps its file. It is
+/// recorded — in the target's entry — **before** the file is written, as in
+/// `session::record_heartbeat`: the GC ticker deletes every sidecar
+/// `referenced_untitled` does not name, and a draft that never had a
+/// heartbeat would otherwise be written unreferenced and could be deleted
+/// before its name lands. A failed write is logged and the move stands; the
+/// name stays recorded — the file it names is the last one written, or none
+/// yet, and restore skips an untitled tab whose sidecar cannot be read.
 pub fn save_moved_drafts(
     session: &SessionState,
     from: &str,
-    snapshots: &mut [TabSnapshot],
+    to: &str,
+    mut snapshots: Vec<TabSnapshot>,
     drafts: &[(String, String)],
     write: impl Fn(&str, &str) -> Result<(), String>,
 ) {
+    let mut writes = Vec::new();
     for (tab_id, text) in drafts {
         let Some(snapshot) = snapshots.iter_mut().find(|s| &s.tab_id == tab_id) else {
             continue;
         };
         let name = session.untitled_file_for(from, tab_id);
-        match write(&name, text) {
-            Ok(()) => snapshot.untitled = Some(name),
-            Err(e) => eprintln!("tab_move: the draft of {tab_id} was not saved: {e}"),
+        snapshot.untitled = Some(name.clone());
+        writes.push((tab_id, name, text));
+    }
+    for snapshot in snapshots {
+        session.move_tab(from, to, snapshot);
+    }
+    for (tab_id, name, text) in writes {
+        if let Err(e) = write(&name, text) {
+            eprintln!("tab_move: the draft of {tab_id} was not saved: {e}");
         }
     }
 }
@@ -525,7 +540,7 @@ pub async fn tab_move(
             (m.snapshots, m.drafts, reg.window(&to).and_then(|w| w.number))
         })
     };
-    let (mut snapshots, drafts, number) = match outcome {
+    let (snapshots, drafts, number) = match outcome {
         Ok(ok) => ok,
         Err(e) => {
             if built {
@@ -537,11 +552,7 @@ pub async fn tab_move(
         }
     };
     let session = app.state::<SessionState>();
-    // Before `move_tab`: the name comes from the source's entry.
-    save_moved_drafts(&session, &from, &mut snapshots, &drafts, crate::session::write_untitled);
-    for snapshot in snapshots {
-        session.move_tab(&from, &to, snapshot);
-    }
+    save_moved_drafts(&session, &from, &to, snapshots, &drafts, crate::session::write_untitled);
     Ok(MoveDone { label: to, number })
 }
 
@@ -894,10 +905,10 @@ mod tests {
             moved("a"),
             MovedTab { content: None, ..moved("e") },
         ];
-        let mut out =
+        let out =
             move_tabs_between(&mut reg, &mut HashMap::new(), &AiPending::new(), "main", "editor-5", tabs, |_| true).unwrap();
         let writes = std::cell::RefCell::new(Vec::new());
-        save_moved_drafts(&session, "main", &mut out.snapshots, &out.drafts, |name, text| {
+        save_moved_drafts(&session, "main", "editor-5", out.snapshots.clone(), &out.drafts, |name, text| {
             writes.borrow_mut().push((name.to_string(), text.to_string()));
             Ok(())
         });
@@ -909,15 +920,34 @@ mod tests {
             ],
             "the file tab writes nothing; an emptied draft is written empty, not left stale"
         );
-        let names: Vec<_> = out.snapshots.iter().map(|s| (s.tab_id.as_str(), s.untitled.as_deref())).collect();
+        let target = session.snapshot_for("editor-5").unwrap();
+        let names: Vec<_> = target.tabs.iter().map(|s| (s.tab_id.as_str(), s.untitled.as_deref())).collect();
         assert_eq!(names, vec![("u", Some("untitled-main.md")), ("a", None), ("e", Some("draft-e.md"))]);
+        assert!(session.snapshot_for("main").unwrap().tabs.is_empty(), "moved out of the source's entry");
 
-        let mut failed = out.snapshots.clone();
-        for s in &mut failed {
-            s.untitled = None;
-        }
-        save_moved_drafts(&session, "main", &mut failed, &out.drafts, |_, _| Err("disk full".into()));
-        assert!(failed.iter().all(|s| s.untitled.is_none()), "a failed write names no file: move_tab keeps the recorded one");
+        let failed = SessionState::new();
+        save_moved_drafts(&failed, "main", "editor-5", out.snapshots.clone(), &out.drafts, |_, _| Err("disk full".into()));
+        assert_eq!(failed.snapshot_for("editor-5").unwrap().tabs.len(), 3, "a failed write does not undo the move");
+    }
+
+    #[test]
+    fn a_moved_draft_is_referenced_before_it_is_written() {
+        // The ticker prunes whatever `referenced_untitled` does not name: a
+        // draft that never had a heartbeat, written first and named after,
+        // could be deleted in between.
+        let mut reg = reg_with(&[("main", "u", None)]);
+        let session = SessionState::new();
+        let tabs = vec![MovedTab { content: Some("never heartbeated".into()), ..moved("u") }];
+        let out =
+            move_tabs_between(&mut reg, &mut HashMap::new(), &AiPending::new(), "main", "editor-5", tabs, |_| true).unwrap();
+        let checked = std::cell::Cell::new(false);
+        save_moved_drafts(&session, "main", "editor-5", out.snapshots, &out.drafts, |name, _| {
+            assert_eq!(name, "draft-u.md");
+            assert!(session.referenced_untitled().contains(name), "{name} written before it was referenced");
+            checked.set(true);
+            Ok(())
+        });
+        assert!(checked.get());
     }
 
     #[test]
