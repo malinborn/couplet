@@ -488,7 +488,11 @@
         // Comment text first: a pause committed before its text is written
         // would hand an agent the text as of the last autosave.
         if (!(await flushCommentsFor(leavingPath))) return;
-        await invoke('commit_document_pauses', { path: leavingPath }).catch(() => {});
+        // Queued, so it lands after any write still waiting — a countdown's
+        // fire, say — rather than between that write's read and its rename.
+        await commentWriter.enqueue(() =>
+          invoke('commit_document_pauses', { path: leavingPath }).catch(() => {})
+        );
         await invoke('cancel_ai_ask', { path: leavingPath }).catch(() => {});
         forgetCommentsFor(leavingPath);
       }
@@ -859,19 +863,27 @@
     const entry = commentCountdowns.get(id);
     if (!entry) return;
     disarmCommentCountdown(id, true);
-    // A draft becomes a real thread on its first write, under an id the file
-    // gives it — the commit has to follow it there.
-    const written = (await writeComment(id)) ?? id;
-    try {
-      await commentCommit(entry.path, written);
-      toasts.dismissKind('comment-error');
-    } catch (err) {
-      // The thread stays paused: the write that would have handed it to the
-      // agent did not happen, and pretending otherwise would leave the user
-      // waiting for a reply to a question no agent can see.
-      reportCommentError(entry.path, err);
-      return;
-    }
+    // Write and commit are one queued step: the sidecar is read-modify-written
+    // with no lock on the Rust side, so a write queued behind this one must not
+    // land between them. `writeCommentNow`, not `writeComment` — the latter
+    // would queue behind this very step and wait for itself.
+    const committed = await commentWriter.run(id, async (realId) => {
+      // A draft becomes a real thread on its first write, under an id the file
+      // gives it — the commit has to follow it there.
+      const written = (await writeCommentNow(realId)) ?? realId;
+      try {
+        await commentCommit(entry.path, written);
+        toasts.dismissKind('comment-error');
+        return true;
+      } catch (err) {
+        // The thread stays paused: the write that would have handed it to the
+        // agent did not happen, and pretending otherwise would leave the user
+        // waiting for a reply to a question no agent can see.
+        reportCommentError(entry.path, err);
+        return false;
+      }
+    });
+    if (!committed) return;
     await reloadComments();
   }
 
@@ -1014,9 +1026,8 @@
         );
         const realId = started.id;
         commentWriter.redirect(id, realId);
-        // The countdown was started under the draft's id by the keystroke that
-        // created this thread; move it, with the deadline the file actually
-        // recorded rather than the one this side guessed.
+        // The start opened the thread already paused; count that pause down
+        // from the deadline the file recorded, under the id the file gave it.
         disarmCommentCountdown(id);
         armCommentCountdown(realId, entry.path, started.until * 1000);
         adoptStartedDraft(commentPending, id, realId, text);

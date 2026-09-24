@@ -111,6 +111,26 @@ describe('createCommentWriter', () => {
     await expect(resolved).resolves.toBe('resolved c-abc');
   });
 
+  it('RunsAWholeDocumentStepOnlyAfterTheWritesQueuedBeforeIt', async () => {
+    const first = deferred<string | null>();
+    const log: string[] = [];
+    const writer = createCommentWriter(async (id) => {
+      log.push(`write ${id}`);
+      return first.promise;
+    });
+    const write = writer.write('c-1');
+    const commit = writer.enqueue(async () => {
+      log.push('commit');
+      return true;
+    });
+    await tick();
+    expect(log).toEqual(['write c-1']);
+    first.resolve('c-1');
+    await write;
+    await expect(commit).resolves.toBe(true);
+    expect(log).toEqual(['write c-1', 'commit']);
+  });
+
   it('MapsADraftIdToItsRealIdOnceRedirected', () => {
     const writer = createCommentWriter(async () => null);
     expect(writer.idFor('draft:1')).toBe('draft:1');

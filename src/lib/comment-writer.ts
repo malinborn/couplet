@@ -23,6 +23,11 @@ export interface CommentWriter {
    * `fn` threw.
    */
   run<T>(id: string, fn: (id: string) => Promise<T>): Promise<T | undefined>;
+  /**
+   * A sidecar operation on no one thread (committing a whole document's
+   * pauses), after every write queued before it.
+   */
+  enqueue<T>(fn: () => Promise<T>): Promise<T | undefined>;
   /** The id `id` currently stands for — the real one once a draft has been started. */
   idFor(id: string): string;
   /** A draft became a real thread: every later write for `draftId` goes to `realId`. */
@@ -46,6 +51,7 @@ export function createCommentWriter(
       return written ?? redirects.get(id) ?? null;
     },
     run,
+    enqueue: (fn) => queue.run(fn),
     idFor,
     redirect(draftId: string, realId: string): void {
       redirects.set(draftId, realId);
