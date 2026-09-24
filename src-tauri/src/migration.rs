@@ -1119,6 +1119,9 @@ pub(crate) trait MigrationEnv {
     fn show_failure_dialog(&self, label: &str) -> DialogChoice;
     /// Sends `terminate` to `bundle_id` and waits for it to actually quit.
     fn terminate_and_wait(&self, bundle_id: &str) -> bool;
+    /// Leaves the one-time rename letter's flag in the new app-data
+    /// directory — see [`write_rename_letter_flag`].
+    fn leave_rename_letter(&self, new_app_data: &Path);
     fn log(&self, msg: &str);
 }
 
@@ -1185,6 +1188,10 @@ impl MigrationEnv for RealEnv {
 
     fn terminate_and_wait(&self, bundle_id: &str) -> bool {
         unsafe { terminate_bundle_and_wait(bundle_id, Duration::from_secs(10)) }
+    }
+
+    fn leave_rename_letter(&self, new_app_data: &Path) {
+        write_rename_letter_flag(new_app_data, &|m| self.log(m));
     }
 
     fn log(&self, msg: &str) {
@@ -1299,10 +1306,8 @@ fn append_log_line(path: &Path, msg: &str) -> io::Result<()> {
 // ---------------------------------------------------------------------------
 
 pub(crate) enum OrchestrateOutcome {
-    /// Proceed normally. `moved`: this launch actually carried data across
-    /// (either side came back [`MigrationOutcome::Migrated`]) — what the
-    /// one-time rename letter keys off, so a fresh install never sees it.
-    Done { moved: bool },
+    /// Proceed normally — nothing further to do.
+    Done,
     /// The caller must `std::process::exit(0)` and start nothing.
     Abort,
 }
@@ -1429,36 +1434,46 @@ pub(crate) fn orchestrate(
         }
     }
 
-    let app_data_outcome = match run_migration_with_retry(
+    // The rename letter is left the moment a side comes back `Migrated`, not
+    // once both are done: the app data may be across already when the WebKit
+    // copy fails and the user quits, and the next launch — where app data is
+    // `AlreadyDone` — would then have nothing left to say it moved.
+    let letter_dir = app_data.map(|(_, new, _)| new);
+    let leave_letter_if_moved = |outcome: MigrationOutcome| {
+        if let (MigrationOutcome::Migrated, Some(dir)) = (outcome, letter_dir) {
+            env.leave_rename_letter(dir);
+        }
+    };
+
+    match run_migration_with_retry(
         env,
         app_data.map(|(o, n, _)| (o, n)),
         app_data_decision,
         "app data directory",
         Strategy::PreferRename,
     ) {
-        Ok(o) => o,
+        Ok(o) => leave_letter_if_moved(o),
         Err(()) => {
             env.release_lock();
             return OrchestrateOutcome::Abort;
         }
-    };
-    let webkit_outcome = match run_migration_with_retry(
+    }
+    match run_migration_with_retry(
         env,
         webkit.map(|(o, n, _)| (o, n)),
         webkit_decision,
         "WebKit profile",
         Strategy::CopyOnly,
     ) {
-        Ok(o) => o,
+        Ok(o) => leave_letter_if_moved(o),
         Err(()) => {
             env.release_lock();
             return OrchestrateOutcome::Abort;
         }
-    };
-    let moved = app_data_outcome == MigrationOutcome::Migrated || webkit_outcome == MigrationOutcome::Migrated;
+    }
 
     env.release_lock();
-    OrchestrateOutcome::Done { moved }
+    OrchestrateOutcome::Done
 }
 
 /// Real, top-level entry point. Called once from `run()` before
@@ -1503,14 +1518,8 @@ pub(crate) fn migrate_all_real(current_product_name: &str, current_identifier: &
         app_data_paths.as_ref().map(|(o, n, id)| (o.as_path(), n.as_path(), *id)),
         webkit_paths.as_ref().map(|(o, n, id)| (o.as_path(), n.as_path(), *id)),
     );
-    match outcome {
-        OrchestrateOutcome::Abort => std::process::exit(0),
-        OrchestrateOutcome::Done { moved: true } => {
-            if let Some((_, new, _)) = &app_data_paths {
-                write_rename_letter_flag(new, &|m| env.log(m));
-            }
-        }
-        OrchestrateOutcome::Done { moved: false } => {}
+    if matches!(outcome, OrchestrateOutcome::Abort) {
+        std::process::exit(0);
     }
 }
 
@@ -1623,6 +1632,7 @@ pub(crate) mod testing {
         pub(crate) legacy_dialog_calls: Cell<u32>,
         pub(crate) failure_dialog_calls: Cell<u32>,
         pub(crate) terminate_calls: Cell<u32>,
+        pub(crate) letters_left: RefCell<Vec<std::path::PathBuf>>,
         pub(crate) log_lines: RefCell<Vec<String>>,
     }
 
@@ -1638,6 +1648,7 @@ pub(crate) mod testing {
                 legacy_dialog_calls: Cell::new(0),
                 failure_dialog_calls: Cell::new(0),
                 terminate_calls: Cell::new(0),
+                letters_left: RefCell::new(Vec::new()),
                 log_lines: RefCell::new(Vec::new()),
             }
         }
@@ -1682,6 +1693,10 @@ pub(crate) mod testing {
                 }
                 TerminateBehavior::SucceedsButRelaunches => true, // `is_running` deliberately left true
             }
+        }
+
+        fn leave_rename_letter(&self, new_app_data: &std::path::Path) {
+            self.letters_left.borrow_mut().push(new_app_data.to_path_buf());
         }
 
         fn log(&self, msg: &str) {
@@ -2506,31 +2521,69 @@ mod tests {
 
         let outcome = orchestrate(&env, Some((&old, &new, "com.md-mini.dev")), None);
 
-        assert!(matches!(outcome, OrchestrateOutcome::Done { moved: true }));
+        assert!(matches!(outcome, OrchestrateOutcome::Done));
         assert_eq!(fs::read_to_string(new.join("session.json")).unwrap(), "real data");
         assert_eq!(env.legacy_dialog_calls.get(), 1);
         fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn only_a_launch_that_moved_data_reports_it() {
-        // The rename letter keys off `moved`: a fresh install (nothing to
-        // migrate) and an already-migrated one must both stay silent, and
-        // only the launch that actually carried data across says so.
+    fn only_a_launch_that_moved_data_leaves_the_letter() {
+        // A fresh install (nothing to migrate) and an already-migrated one
+        // must both stay silent; only the launch that actually carried data
+        // across leaves the letter.
         let dir = scratch("t2-moved");
         let old = dir.join("md-mini-dev");
         let new = dir.join("couplet-dev");
         let env = testing::MockEnv::new();
 
         let fresh = orchestrate(&env, Some((&old, &new, "com.md-mini.dev")), None);
-        assert!(matches!(fresh, OrchestrateOutcome::Done { moved: false }));
+        assert!(matches!(fresh, OrchestrateOutcome::Done));
+        assert!(env.letters_left.borrow().is_empty());
 
         write(&old.join("session.json"), "real data");
         let first = orchestrate(&env, Some((&old, &new, "com.md-mini.dev")), None);
-        assert!(matches!(first, OrchestrateOutcome::Done { moved: true }));
+        assert!(matches!(first, OrchestrateOutcome::Done));
+        assert_eq!(*env.letters_left.borrow(), vec![new.clone()]);
 
         let again = orchestrate(&env, Some((&old, &new, "com.md-mini.dev")), None);
-        assert!(matches!(again, OrchestrateOutcome::Done { moved: false }));
+        assert!(matches!(again, OrchestrateOutcome::Done));
+        assert_eq!(env.letters_left.borrow().len(), 1, "an already-migrated launch must not leave another");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_letter_survives_a_webkit_failure_after_app_data_moved() {
+        // App data moves, then the WebKit copy fails and the user quits. The
+        // next launch sees app data `AlreadyDone`, so the letter has to be
+        // on disk already — left before the WebKit side ran, not after.
+        let dir = scratch("t2-letter-webkit-fails");
+        let old_app = dir.join("md-mini-dev");
+        write(&old_app.join("session.json"), "real data");
+        let new_app = dir.join("couplet-dev");
+
+        let old_wk = dir.join("com.md-mini.dev");
+        write(&old_wk.join("secret.txt"), "never gets read");
+        fs::set_permissions(&old_wk.join("secret.txt"), fs::Permissions::from_mode(0o000)).unwrap();
+        let new_wk = dir.join("pro.couplet.dev");
+
+        let env = testing::MockEnv::new();
+        env.failure_dialog_choices.borrow_mut().push_back(DialogChoice::Alternate);
+
+        let outcome = orchestrate(
+            &env,
+            Some((&old_app, &new_app, "com.md-mini.dev")),
+            Some((&old_wk, &new_wk, "com.md-mini.dev")),
+        );
+
+        if env.failure_dialog_calls.get() == 0 {
+            eprintln!("skipping strict assertions: this process can read 0o000 files (likely running as root)");
+        } else {
+            assert!(matches!(outcome, OrchestrateOutcome::Abort));
+            assert_eq!(fs::read_to_string(new_app.join("session.json")).unwrap(), "real data");
+            assert_eq!(*env.letters_left.borrow(), vec![new_app.clone()]);
+        }
+        fs::set_permissions(&old_wk.join("secret.txt"), fs::Permissions::from_mode(0o600)).ok();
         fs::remove_dir_all(&dir).ok();
     }
 
