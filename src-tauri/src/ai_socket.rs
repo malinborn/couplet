@@ -312,19 +312,21 @@ fn handle_connection(app: &AppHandle, stream: UnixStream) {
     }
 }
 
+/// One request waiting on the frontend.
+struct PendingEntry {
+    /// The window it was delivered (or queued) to.
+    label: String,
+    /// The document it is about. `None` only for a request that never had one.
+    path: Option<String>,
+    tx: mpsc::Sender<AiResponse>,
+}
+
 /// Requests waiting on a response from the frontend, keyed by an id the
-/// frontend echoes back via the `ai_respond` command. Each entry also carries
-/// the label of the window the request was delivered to, so a window closing
-/// before it answers can fail exactly its own pending entries (see
-/// `cancel_for_window`) instead of leaking until the listener's own timeout.
+/// frontend echoes back via `ai_respond`. Each carries the window and the
+/// document it is about, so closing a window — or one tab of it — fails
+/// exactly its own requests instead of leaving them to time out.
 pub struct AiPending {
-    map: Mutex<HashMap<u64, (String, mpsc::Sender<AiResponse>)>>,
-    /// Which document each pending id was raised against — kept separately
-    /// from `map` rather than folded into its tuple, so every existing
-    /// `register` call site keeps compiling unchanged. Populated by
-    /// `set_path`, called right after `register` at the two spots in
-    /// `dispatch` that know the path. Lock order: `map` before `paths`.
-    paths: Mutex<HashMap<u64, String>>,
+    map: Mutex<HashMap<u64, PendingEntry>>,
     next: AtomicU64,
 }
 
@@ -338,7 +340,6 @@ impl AiPending {
     pub fn new() -> Self {
         Self {
             map: Mutex::new(HashMap::new()),
-            paths: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
         }
     }
@@ -351,89 +352,69 @@ impl AiPending {
         self.next.fetch_add(1, Ordering::SeqCst)
     }
 
-    /// Register a waiting request under `id` (from `alloc_id`), tagged with
-    /// the label of the window it was delivered to.
-    fn register(&self, id: u64, label: impl Into<String>, tx: mpsc::Sender<AiResponse>) {
-        self.map.lock().unwrap().insert(id, (label.into(), tx));
+    /// Register a waiting request under `id` (from `alloc_id`) before the
+    /// payload is delivered, so a response can never arrive first.
+    fn register(
+        &self,
+        id: u64,
+        label: impl Into<String>,
+        path: Option<String>,
+        tx: mpsc::Sender<AiResponse>,
+    ) {
+        self.map.lock().unwrap().insert(
+            id,
+            PendingEntry {
+                label: label.into(),
+                path,
+                tx,
+            },
+        );
     }
 
     /// Deliver a response to the connection waiting on `id`. An unknown id is a
     /// no-op — the request may have already timed out and been dropped.
     pub fn respond(&self, id: u64, response: AiResponse) {
-        let mut map = self.map.lock().unwrap();
-        self.paths.lock().unwrap().remove(&id);
-        if let Some((_, tx)) = map.remove(&id) {
-            let _ = tx.send(response);
+        if let Some(entry) = self.map.lock().unwrap().remove(&id) {
+            let _ = entry.tx.send(response);
         }
     }
 
     /// Remove a waiting request without delivering anything — used once the
     /// caller has already given up (the socket listener's own timeout), so a
-    /// `respond` that arrives afterwards for the same id finds nothing to
-    /// deliver instead of resurrecting a stale sender that nobody is
-    /// receiving on anymore.
+    /// later `respond` for the same id finds nothing to deliver.
     pub fn cancel(&self, id: u64) {
-        let mut map = self.map.lock().unwrap();
-        self.paths.lock().unwrap().remove(&id);
-        map.remove(&id);
+        self.map.lock().unwrap().remove(&id);
     }
 
-    /// Fail every entry registered under `label` with "window closed" and
-    /// remove them — called from `window::untrack_window` so an `ask` (or any
-    /// other still-pending request) delivered to a window that then closes
-    /// before answering doesn't hang the caller for the full timeout.
-    pub fn cancel_for_window(&self, label: &str) {
+    /// Fail every entry matching `matches` with `error` and remove them.
+    fn fail_where(&self, error: &str, matches: impl Fn(&PendingEntry) -> bool) {
         let mut map = self.map.lock().unwrap();
-        let mut paths = self.paths.lock().unwrap();
         let ids: Vec<u64> = map
             .iter()
-            .filter(|(_, (l, _))| l == label)
+            .filter(|(_, entry)| matches(entry))
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
-            paths.remove(&id);
-            if let Some((_, tx)) = map.remove(&id) {
-                let _ = tx.send(AiResponse::error("window closed"));
+            if let Some(entry) = map.remove(&id) {
+                let _ = entry.tx.send(AiResponse::error(error));
             }
         }
     }
 
-    /// Record which document a pending id belongs to — called right after
-    /// `register`, only at the two call sites in `dispatch` that know the
-    /// path, and before the payload is delivered, so a `respond` can never
-    /// arrive first and leave this entry orphaned.
-    pub fn set_path(&self, id: u64, path: impl Into<String>) {
-        self.paths.lock().unwrap().insert(id, path.into());
+    /// Fail every entry of a window that closed — `window::untrack_window`.
+    pub fn cancel_for_window(&self, label: &str) {
+        self.fail_where("window closed", |e| e.label == label);
+    }
+
+    /// Fail every entry of `label` about `path` — the tab was switched away
+    /// from or closed. An entry with no path is never matched.
+    pub fn cancel_for_window_and_path(&self, label: &str, path: &str, error: &str) {
+        self.fail_where(error, |e| e.label == label && e.path.as_deref() == Some(path));
     }
 
     #[cfg(test)]
-    fn path_count(&self) -> usize {
-        self.paths.lock().unwrap().len()
-    }
-
-    /// Fail every entry registered under `label` for `path` — `show`, `edit`
-    /// and `ask` alike — with "switched away from this document". Called by
-    /// `switchDocument`'s `cancel_ai_ask` before the document currently on
-    /// screen is replaced, so an agent's request doesn't silently vanish into
-    /// a document that no longer shows it (it used to hang until the
-    /// request's own timeout — up to an hour for `ask`). An entry that never
-    /// had `set_path` called is left alone.
-    pub fn cancel_for_window_and_path(&self, label: &str, path: &str) {
-        let mut map = self.map.lock().unwrap();
-        let mut paths = self.paths.lock().unwrap();
-        let ids: Vec<u64> = map
-            .iter()
-            .filter(|(id, (l, _))| {
-                l == label && paths.get(*id).map(String::as_str) == Some(path)
-            })
-            .map(|(id, _)| *id)
-            .collect();
-        for id in ids {
-            paths.remove(&id);
-            if let Some((_, tx)) = map.remove(&id) {
-                let _ = tx.send(AiResponse::error("switched away from this document"));
-            }
-        }
+    fn len(&self) -> usize {
+        self.map.lock().unwrap().len()
     }
 }
 
@@ -464,6 +445,18 @@ impl AiQueue {
     pub fn pull(&self, label: &str) -> Vec<AiCommandPayload> {
         self.0.lock().unwrap().remove(label).unwrap_or_default()
     }
+
+    /// Take out every command queued for `label` about `path`.
+    pub fn drop_for(&self, label: &str, path: &str) -> Vec<AiCommandPayload> {
+        let mut map = self.0.lock().unwrap();
+        let Some(queued) = map.get_mut(label) else {
+            return Vec::new();
+        };
+        let (dropped, kept): (Vec<_>, Vec<_>) =
+            std::mem::take(queued).into_iter().partition(|p| p.path == path);
+        *queued = kept;
+        dropped
+    }
 }
 
 /// Fail every AI command still queued for a window that's closing before its
@@ -483,6 +476,17 @@ pub fn cancel_queued_for_window(app: &AppHandle, label: &str) {
             AiResponse::error("window closed before the command was delivered"),
         );
     }
+}
+
+/// Fail everything addressed to one document of one window — pending and
+/// queued alike — with `error`. A queued command left in place would be
+/// pulled and applied after its agent had already been told it failed.
+pub fn cancel_for_tab(app: &AppHandle, label: &str, path: &str, error: &str) {
+    let pending = app.state::<AiPending>();
+    for payload in app.state::<AiQueue>().drop_for(label, path) {
+        pending.respond(payload.id, AiResponse::error(error));
+    }
+    pending.cancel_for_window_and_path(label, path, error);
 }
 
 /// The event payload sent to the owning window as `ai-command`, and the shape
@@ -636,8 +640,7 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
 
     if let Some(label) = existing_label {
         if let Some(win) = app.get_webview_window(&label) {
-            app.state::<AiPending>().register(id, label.clone(), tx);
-            app.state::<AiPending>().set_path(id, path.clone());
+            app.state::<AiPending>().register(id, label.clone(), Some(path.clone()), tx);
             // emit() broadcasts to every window — a window that does not own the
             // file would race to answer with an error. Target the owner only.
             if win.emit_to(label.as_str(), "ai-command", &payload).is_ok() {
@@ -675,8 +678,7 @@ fn dispatch(app: &AppHandle, req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u6
             reg.label_of(&path)
         };
         if let Some(label) = label {
-            app.state::<AiPending>().register(id, label.clone(), tx);
-            app.state::<AiPending>().set_path(id, path.clone());
+            app.state::<AiPending>().register(id, label.clone(), Some(path.clone()), tx);
             app.state::<AiQueue>().push(&label, payload);
             return id;
         }
@@ -696,17 +698,14 @@ pub async fn ai_respond(app: AppHandle, id: u64, response: AiResponse) -> Result
     Ok(())
 }
 
-/// IPC command: fail every `show`/`edit`/`ask` still waiting on a response
-/// for `path` in the calling window — called by `switchDocument` before it
-/// replaces that window's document.
+/// IPC command: fail every `show`/`edit`/`ask` for `path` in the calling window — pending and queued — before the window stops showing it.
 #[tauri::command]
 pub async fn cancel_ai_ask(
     app: AppHandle,
     window: tauri::WebviewWindow,
     path: String,
 ) -> Result<(), String> {
-    app.state::<AiPending>()
-        .cancel_for_window_and_path(window.label(), &path);
+    cancel_for_tab(&app, window.label(), &path, "switched away from this document");
     Ok(())
 }
 
@@ -1726,136 +1725,76 @@ mod tests {
         assert!(queue.pull("editor-3").is_empty());
     }
 
+    /// Register a waiting request for `label`/`path`, returning its id and receiver.
+    fn waiting(
+        pending: &AiPending,
+        label: &str,
+        path: Option<&str>,
+    ) -> (u64, mpsc::Receiver<AiResponse>) {
+        let (tx, rx) = mpsc::channel();
+        let id = pending.alloc_id();
+        pending.register(id, label, path.map(str::to_string), tx);
+        (id, rx)
+    }
+
     #[test]
     fn respond_routes_to_waiting_request() {
         let pending = AiPending::new();
-        let (tx, rx) = mpsc::channel();
-        let id = pending.alloc_id();
-        pending.register(id, "editor-1", tx);
-
+        let (id, rx) = waiting(&pending, "editor-1", Some("/a.md"));
         pending.respond(id, AiResponse::ok());
-        let received = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert!(received.ok);
-
+        assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap().ok);
+        assert_eq!(pending.len(), 0);
         // Unknown id is a no-op — must not panic or block.
         pending.respond(9999, AiResponse::error("ignored"));
     }
 
     #[test]
-    fn cancel_for_window_responds_window_closed_to_matching_entries_only() {
+    fn cancel_for_window_fails_that_windows_entries_only() {
         let pending = AiPending::new();
-
-        let (tx_a, rx_a) = mpsc::channel();
-        let id_a = pending.alloc_id();
-        pending.register(id_a, "editor-1", tx_a);
-
-        let (tx_b, rx_b) = mpsc::channel();
-        let id_b = pending.alloc_id();
-        pending.register(id_b, "editor-2", tx_b);
-
+        let (_, rx_a) = waiting(&pending, "editor-1", Some("/a.md"));
+        let (_, rx_b) = waiting(&pending, "editor-2", Some("/a.md"));
         pending.cancel_for_window("editor-1");
-
-        let received = rx_a.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert!(!received.ok);
-        assert_eq!(received.error.as_deref(), Some("window closed"));
-
-        // The other window's pending entry is untouched.
+        let a = rx_a.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(a.error.as_deref(), Some("window closed"));
         assert!(rx_b.try_recv().is_err());
-
-        // Cancelling an already-cancelled or unknown label is a no-op.
-        pending.cancel_for_window("editor-1");
+        assert_eq!(pending.len(), 1);
         pending.cancel_for_window("no-such-window");
     }
 
     #[test]
-    fn cancel_for_window_and_path_responds_only_the_matching_entry() {
+    fn cancel_for_window_and_path_fails_only_the_matching_document() {
         let pending = AiPending::new();
+        let (_, rx_a) = waiting(&pending, "editor-1", Some("/tmp/a.md"));
+        let (_, rx_b) = waiting(&pending, "editor-1", Some("/tmp/b.md"));
+        let (_, rx_other) = waiting(&pending, "editor-2", Some("/tmp/a.md"));
+        let (_, rx_none) = waiting(&pending, "editor-1", None);
 
-        let (tx_a, rx_a) = mpsc::channel();
-        let id_a = pending.alloc_id();
-        pending.register(id_a, "editor-1", tx_a);
-        pending.set_path(id_a, "/tmp/a.md");
+        pending.cancel_for_window_and_path("editor-1", "/tmp/a.md", "tab closed");
 
-        let (tx_b, rx_b) = mpsc::channel();
-        let id_b = pending.alloc_id();
-        pending.register(id_b, "editor-1", tx_b);
-        pending.set_path(id_b, "/tmp/b.md");
-
-        pending.cancel_for_window_and_path("editor-1", "/tmp/a.md");
-
-        let received = rx_a.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert!(!received.ok);
-        assert_eq!(
-            received.error.as_deref(),
-            Some("switched away from this document")
-        );
-        assert!(
-            rx_b.try_recv().is_err(),
-            "a different path in the same window must be untouched"
-        );
+        let a = rx_a.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(a.error.as_deref(), Some("tab closed"));
+        assert!(rx_b.try_recv().is_err(), "another document in the same window");
+        assert!(rx_other.try_recv().is_err(), "the same path in another window");
+        assert!(rx_none.try_recv().is_err(), "an entry without a path is never matched");
+        assert_eq!(pending.len(), 3);
     }
 
     #[test]
-    fn cancel_for_window_and_path_ignores_a_different_window_with_the_same_path() {
-        let pending = AiPending::new();
-        let (tx, rx) = mpsc::channel();
-        let id = pending.alloc_id();
-        pending.register(id, "editor-1", tx);
-        pending.set_path(id, "/tmp/a.md");
+    fn queue_drop_for_removes_only_that_windows_payloads_for_that_path() {
+        let queue = AiQueue::new();
+        let mut a = test_payload("edit");
+        a.id = 1;
+        let mut b = test_payload("show");
+        b.id = 2;
+        b.path = "/b.md".to_string();
+        queue.push("editor-3", a);
+        queue.push("editor-3", b);
+        queue.push("editor-4", test_payload("show"));
 
-        pending.cancel_for_window_and_path("editor-2", "/tmp/a.md");
-
-        assert!(rx.try_recv().is_err(), "a different window must not be cancelled");
-    }
-
-    #[test]
-    fn cancel_for_window_and_path_ignores_an_entry_with_no_recorded_path() {
-        let pending = AiPending::new();
-        let (tx, rx) = mpsc::channel();
-        let id = pending.alloc_id();
-        pending.register(id, "editor-1", tx);
-
-        pending.cancel_for_window_and_path("editor-1", "/tmp/a.md");
-
-        assert!(rx.try_recv().is_err(), "an entry without a path must not be cancelled");
-        pending.respond(id, AiResponse::ok());
-        assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap().ok);
-    }
-
-    #[test]
-    fn every_removal_also_drops_the_recorded_path() {
-        let pending = AiPending::new();
-        let register = |label: &str, path: &str| {
-            let (tx, rx) = mpsc::channel();
-            let id = pending.alloc_id();
-            pending.register(id, label, tx);
-            pending.set_path(id, path);
-            (id, rx)
-        };
-
-        let (id, _rx) = register("editor-1", "/tmp/a.md");
-        pending.respond(id, AiResponse::ok());
-        assert_eq!(pending.path_count(), 0, "respond");
-
-        let (id, _rx) = register("editor-1", "/tmp/a.md");
-        pending.cancel(id);
-        assert_eq!(pending.path_count(), 0, "cancel");
-
-        let (_, _rx1) = register("editor-1", "/tmp/a.md");
-        let (_, _rx2) = register("editor-1", "/tmp/b.md");
-        pending.cancel_for_window("editor-1");
-        assert_eq!(pending.path_count(), 0, "cancel_for_window");
-
-        let (_, _rx1) = register("editor-1", "/tmp/a.md");
-        let (_, _rx2) = register("editor-2", "/tmp/a.md");
-        pending.cancel_for_window_and_path("editor-1", "/tmp/a.md");
-        assert_eq!(
-            pending.path_count(),
-            1,
-            "cancel_for_window_and_path drops only the entry it cancelled"
-        );
-        pending.cancel_for_window("editor-2");
-        assert_eq!(pending.path_count(), 0);
+        let dropped = queue.drop_for("editor-3", "/a.md");
+        assert_eq!(dropped.iter().map(|p| p.id).collect::<Vec<_>>(), vec![1]);
+        assert_eq!(queue.pull("editor-3").iter().map(|p| p.id).collect::<Vec<_>>(), vec![2]);
+        assert_eq!(queue.pull("editor-4").len(), 1);
     }
 
     fn args(parts: &[&str]) -> Vec<String> {
@@ -2240,9 +2179,10 @@ mod tests {
         let pending = AiPending::new();
         let (tx, rx) = mpsc::channel();
         let id = pending.alloc_id();
-        pending.register(id, "editor-1", tx);
+        pending.register(id, "editor-1", None, tx);
 
         pending.cancel(id);
+        assert_eq!(pending.len(), 0);
         // A response that arrives after the caller gave up must not be
         // delivered — the receiver should see nothing, ever.
         pending.respond(id, AiResponse::ok());
