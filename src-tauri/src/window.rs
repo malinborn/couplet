@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 
 use notify::RecommendedWatcher;
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::tabs::TabRegistry;
 
@@ -108,9 +108,12 @@ pub async fn get_window_init(
     open_files: tauri::State<'_, OpenFiles>,
 ) -> Result<WindowInit, String> {
     let label = window.label().to_string();
-    let taken = pending.0.lock().map_err(|e| e.to_string())?.remove(&label);
     let (init, moved) = {
         let mut reg = open_files.0.lock().map_err(|e| e.to_string())?;
+        // Taken under the registry lock, together with `mark_mounted`: see
+        // `queue_tab`, which appends to a payload only while it is unmounted.
+        let taken = pending.0.lock().map_err(|e| e.to_string())?.remove(&label);
+        reg.mark_mounted(&label);
         // A window created before `WindowNumbers` was managed missed its number.
         let moved = number_if_missing(&mut reg, &label, allocate_from(&app));
         (window_init(&mut reg, &label, taken, crate::session::new_tab_id), moved)
@@ -122,11 +125,87 @@ pub async fn get_window_init(
 }
 
 /// Stores a pending payload per window label, pulled by the frontend on mount.
+///
+/// Lock order: `OpenFiles` → `PendingFiles`, never the reverse.
 pub struct PendingFiles(pub Mutex<HashMap<String, PendingOpen>>);
 
 impl PendingFiles {
     pub fn new() -> Self {
         Self(Mutex::new(HashMap::new()))
+    }
+}
+
+/// How a tab reached a window, or why it did not.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Handover {
+    /// Registered and waiting, active, in the window's pending payload.
+    Pending,
+    /// Its frontend has mounted: an event reaches it now, and it opens and
+    /// claims the tab itself.
+    Mounted,
+    /// A live window's tab holds the file already.
+    Held(String),
+}
+
+/// Give `label` a tab for `tab` while its frontend has not mounted: an event
+/// sent now would be lost. Registered in the registry (every dedup check
+/// consults it) and appended, active, to the pending payload — a tab, not a
+/// replacement, so several files can wait for one window. A holder whose
+/// window is gone does not block it.
+///
+/// Called with both locks held: `get_window_init` takes the payload and marks
+/// the window mounted under the same registry lock, so a payload is never
+/// appended to after it was taken.
+pub fn queue_tab(
+    reg: &mut TabRegistry,
+    pending: &mut HashMap<String, PendingOpen>,
+    label: &str,
+    tab: PendingTab,
+    is_live: impl Fn(&str) -> bool,
+) -> Handover {
+    if let Some(path) = &tab.path {
+        if let Some(owner) = evict_dead(reg, path, is_live) {
+            return Handover::Held(owner);
+        }
+    }
+    if reg.is_mounted(label) {
+        return Handover::Mounted;
+    }
+    if !reg.add_tab(label, &tab.tab_id, tab.path.clone()) {
+        return Handover::Held(label.to_string());
+    }
+    reg.set_active(label, &tab.tab_id);
+    let entry = pending.entry(label.to_string()).or_default();
+    entry.active_tab_id = Some(tab.tab_id.clone());
+    entry.tabs.push(tab);
+    Handover::Pending
+}
+
+/// `queue_tab` for a live app.
+pub fn hand_over_tab(app: &AppHandle, label: &str, tab: PendingTab) -> Handover {
+    let open_files = app.state::<OpenFiles>();
+    let mut reg = open_files.0.lock().unwrap();
+    let pending = app.state::<PendingFiles>();
+    let mut map = pending.0.lock().unwrap();
+    queue_tab(&mut reg, &mut map, label, tab, |l| app.get_webview_window(l).is_some())
+}
+
+/// Point `label`'s one watcher at `path`, or stop watching (`None`, or a file
+/// that does not exist yet). Background tabs are not watched; returning to
+/// one compares its file with what it held when it was left.
+pub fn set_watcher(app: &AppHandle, label: &str, path: Option<&str>) {
+    let watcher = path.and_then(|p| {
+        crate::watcher::watch_file(app, label.to_string(), p.to_string()).ok()
+    });
+    let watchers = app.state::<FileWatchers>();
+    let mut map = watchers.0.lock().unwrap();
+    match watcher {
+        Some(w) => {
+            map.insert(label.to_string(), w);
+        }
+        None => {
+            map.remove(label);
+        }
     }
 }
 
@@ -320,13 +399,6 @@ pub fn open_file_window(app: &AppHandle, path: Option<String>) {
             eprintln!("Failed to create window: {}", e);
         }
     }
-}
-
-/// The file `label` is showing, if any. The lock is released before this returns.
-pub fn open_path_of(app: &AppHandle, label: &str) -> Option<String> {
-    let open_files = app.state::<OpenFiles>();
-    let reg = open_files.0.lock().unwrap();
-    reg.paths_of(label).into_iter().next()
 }
 
 /// Removes a file path from the open files tracking when a window is closed.
@@ -656,7 +728,8 @@ pub fn route_opened_file(
     let main_shows_a_file = reg
         .window("main")
         .is_some_and(|w| w.tabs.iter().any(|t| t.path.is_some()));
-    if main_shows_a_file {
+    // A closed main would take the file into a payload nobody pulls.
+    if main_shows_a_file || !is_live("main") {
         OpenedRoute::NewWindow
     } else {
         OpenedRoute::UseMain
@@ -695,6 +768,9 @@ pub async fn focus_if_open(
         Some(other) => match app.get_webview_window(&other) {
             Some(win) => {
                 reveal(&win);
+                // The file may sit in a background tab there; that window
+                // activates it through its own open path.
+                let _ = win.emit_to(other.as_str(), "open-file", &path);
                 Ok(true)
             }
             None => Ok(false),
@@ -790,6 +866,12 @@ mod tests {
     }
 
     #[test]
+    fn route_opened_file_opens_a_new_window_when_main_is_gone() {
+        let reg = TabRegistry::new();
+        assert_eq!(route_opened_file(&reg, "/tmp/x.md", |label| label != "main"), OpenedRoute::NewWindow);
+    }
+
+    #[test]
     fn route_opened_file_opens_a_new_window_when_main_shows_another_file() {
         let reg = reg(&[("/tmp/b.md", "main")]);
         assert_eq!(route_opened_file(&reg, "/tmp/x.md", |_| true), OpenedRoute::NewWindow);
@@ -878,16 +960,65 @@ mod tests {
         assert_eq!(init.tabs[0].tab_id, "t1");
     }
 
+    fn file_tab(id: &str, path: &str) -> PendingTab {
+        PendingTab {
+            tab_id: id.to_string(),
+            path: Some(path.to_string()),
+            content: None,
+            cursor: 0,
+            top_line: 1,
+        }
+    }
+
     #[test]
     fn a_file_opened_into_main_before_it_mounts_reports_under_the_registry_id() {
-        // `assign_file_to_main`'s shape: the claim mints the id, the pending
-        // payload carries the same one, and the frontend reports under it.
+        // `assign_file_to_main`'s shape: the queued tab's id is both the
+        // registry's and the pending payload's, and the frontend reports under it.
         let mut reg = TabRegistry::new();
-        let id = reg.set_single_path("main", "/a.md", || "m1".to_string()).unwrap();
-        let init = window_init(&mut reg, "main", Some(PendingOpen::single_file(id, "/a.md".to_string())), || {
-            panic!("no id needed")
-        });
+        let mut pending = HashMap::new();
+        assert_eq!(queue_tab(&mut reg, &mut pending, "main", file_tab("m1", "/a.md"), |_| true), Handover::Pending);
+        let init = window_init(&mut reg, "main", pending.remove("main"), || panic!("no id needed"));
         assert_eq!(reg.owner_of("/a.md"), Some(("main".to_string(), init.active_tab_id.clone().unwrap())));
+    }
+
+    #[test]
+    fn queue_tab_adds_tabs_to_an_unmounted_window_the_last_one_active() {
+        let mut reg = TabRegistry::new();
+        let mut pending = HashMap::new();
+        queue_tab(&mut reg, &mut pending, "main", file_tab("m1", "/a.md"), |_| true);
+        assert_eq!(queue_tab(&mut reg, &mut pending, "main", file_tab("m2", "/b.md"), |_| true), Handover::Pending);
+        let payload = &pending["main"];
+        let ids: Vec<&str> = payload.tabs.iter().map(|t| t.tab_id.as_str()).collect();
+        assert_eq!(ids, vec!["m1", "m2"], "a tab, not a replacement");
+        assert_eq!(payload.active_tab_id.as_deref(), Some("m2"));
+        assert_eq!(reg.window("main").unwrap().active.as_deref(), Some("m2"));
+        assert_eq!(reg.paths_of("main"), vec!["/a.md".to_string(), "/b.md".to_string()]);
+    }
+
+    #[test]
+    fn queue_tab_leaves_a_mounted_window_to_its_event() {
+        let mut reg = TabRegistry::new();
+        let mut pending = HashMap::new();
+        reg.mark_mounted("main");
+        assert_eq!(queue_tab(&mut reg, &mut pending, "main", file_tab("m1", "/a.md"), |_| true), Handover::Mounted);
+        assert!(!reg.contains_path("/a.md"), "the frontend claims it itself");
+        assert!(pending.is_empty(), "a payload nobody will pull again");
+    }
+
+    #[test]
+    fn queue_tab_refuses_a_file_a_live_window_holds_but_not_a_dead_one() {
+        let mut reg = reg(&[("/a.md", "editor-2")]);
+        let mut pending = HashMap::new();
+        assert_eq!(
+            queue_tab(&mut reg, &mut pending, "main", file_tab("m1", "/a.md"), |_| true),
+            Handover::Held("editor-2".to_string())
+        );
+        assert!(pending.is_empty());
+        assert_eq!(
+            queue_tab(&mut reg, &mut pending, "main", file_tab("m1", "/a.md"), |l| l != "editor-2"),
+            Handover::Pending
+        );
+        assert_eq!(reg.label_of("/a.md").as_deref(), Some("main"));
     }
 
     #[test]

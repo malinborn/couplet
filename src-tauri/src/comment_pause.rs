@@ -157,11 +157,13 @@ pub fn commit_all_open(app: &tauri::AppHandle) {
     }
 }
 
-/// The document a window is showing, if it has one.
-pub fn document_of_window(app: &tauri::AppHandle, label: &str) -> Option<PathBuf> {
+/// Every document a window holds, in any tab.
+pub fn documents_of_window(app: &tauri::AppHandle, label: &str) -> Vec<PathBuf> {
     let open_files = app.state::<crate::window::OpenFiles>();
-    let reg = open_files.0.lock().ok()?;
-    reg.paths_of(label).into_iter().next().map(PathBuf::from)
+    let Ok(reg) = open_files.0.lock() else {
+        return Vec::new();
+    };
+    reg.paths_of(label).into_iter().map(PathBuf::from).collect()
 }
 
 /// Every document currently open in a window.

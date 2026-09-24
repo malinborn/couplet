@@ -25,6 +25,7 @@ mod preferences;
 mod recent;
 mod recovery;
 mod session;
+mod tab_commands;
 mod tabs;
 mod updater;
 pub mod watch;
@@ -36,7 +37,7 @@ use tauri::{Emitter, Manager};
 use tauri_plugin_cli::CliExt;
 use session::SessionState;
 use updater::UpdateState;
-use window::{FileWatchers, OpenFiles, PendingFiles, PendingOpen};
+use window::{FileWatchers, OpenFiles, PendingFiles, PendingTab};
 
 /// Новое значение тумблера — то, которое рассылается окнам.
 ///
@@ -151,6 +152,12 @@ pub fn run() {
             comment_pause::comment_commit,
             comment_pause::commit_document_pauses,
             window::get_window_init,
+            tab_commands::tab_owner,
+            tab_commands::tab_open,
+            tab_commands::tab_claim,
+            tab_commands::tab_release,
+            tab_commands::tab_activate,
+            tab_commands::tab_close,
             window::open_file_window_cmd,
             window::register_open_file,
             window::focus_if_open,
@@ -420,7 +427,7 @@ pub fn run() {
                     // comes to. So the pause is ended here, while the window
                     // still knows which document it was showing.
                     let app = window.app_handle();
-                    if let Some(doc) = comment_pause::document_of_window(app, window.label()) {
+                    for doc in comment_pause::documents_of_window(app, window.label()) {
                         comment_pause::commit_document(&doc);
                     }
                 }
@@ -430,13 +437,19 @@ pub fn run() {
                     app.state::<menu_route::FocusTracker>().forget(label);
                     let session_state = app.state::<SessionState>();
                     // Before `remove` and `untrack_window` below erase what
-                    // this window was showing. `open_path_of` has released the
-                    // `OpenFiles` lock by the time `record_close` takes the
-                    // stack's — see `ClosedStack` on lock order.
-                    let open_path = window::open_path_of(app, label);
-                    let stack = app.state::<closed::ClosedStack>();
-                    if closed::record_close(&session_state, &stack, label, open_path.as_deref()) {
-                        closed::refresh_reopen_item(app);
+                    // this window held. The registry lock is released before
+                    // `record_window_close` takes the stack's — see
+                    // `ClosedStack` on lock order.
+                    let closing = {
+                        let open_files = app.state::<OpenFiles>();
+                        let reg = open_files.0.lock().unwrap();
+                        reg.window(label).cloned()
+                    };
+                    if let Some(tabs) = closing {
+                        let stack = app.state::<closed::ClosedStack>();
+                        if closed::record_window_close(&session_state, &stack, label, &tabs) > 0 {
+                            closed::refresh_reopen_item(app);
+                        }
                     }
                     // No-op while quitting, so an exit keeps every window.
                     session_state.remove(label);
@@ -484,26 +497,14 @@ pub fn run() {
                                 window::OpenedRoute::FocusExisting(label) => {
                                     if let Some(win) = _app_handle.get_webview_window(&label) {
                                         window::reveal(&win);
+                                        // The file may sit in a background tab
+                                        // there; that window activates it
+                                        // through its own open path.
+                                        let _ = win.emit_to(label.as_str(), "open-file", &file_path);
                                     }
                                 }
                                 window::OpenedRoute::UseMain => {
-                                    if !assign_file_to_main(_app_handle, file_path.clone()) {
-                                        continue;
-                                    }
-                                    // Emit in case frontend is already loaded.
-                                    // `emit_to`, not `emit`: a bare `emit` reaches
-                                    // every window, and each would run its own
-                                    // `switchDocument` for a file routed to main.
-                                    if let Some(win) = _app_handle.get_webview_window("main") {
-                                        let _ = win.emit_to("main", "open-file", &file_path);
-                                        let _ = win.set_focus();
-                                    }
-                                    // Start watcher
-                                    if let Ok(watcher) = crate::watcher::watch_file(_app_handle, "main".to_string(), file_path) {
-                                        let watchers = _app_handle.state::<window::FileWatchers>();
-                                        let mut wmap = watchers.0.lock().unwrap();
-                                        wmap.insert("main".to_string(), watcher);
-                                    }
+                                    assign_file_to_main(_app_handle, file_path);
                                 }
                                 window::OpenedRoute::NewWindow => {
                                     window::open_file_window(_app_handle, Some(file_path));
@@ -615,49 +616,43 @@ fn focused_window(app: &tauri::AppHandle) -> Option<String> {
     menu_route::menu_target(last.as_deref(), &live)
 }
 
-/// Hand a file to the `main` window and register it as open.
+/// Give the `main` window a tab for `path`.
 ///
-/// `OpenFiles` is what every dedup check consults — `open_file_window`'s focus
-/// path and `open_restored_window`'s. Registering only in `PendingFiles`, as the
-/// CLI paths used to, leaves the file the app launched with invisible to both, so
-/// opening it a second time or restoring a session that contains it silently
-/// produces a duplicate window.
+/// Before its frontend mounts, an event would be lost: the tab is registered
+/// in `OpenFiles` — every dedup check consults it, and registering only in
+/// `PendingFiles` once made the launch file invisible to them, so opening it
+/// again produced a duplicate window — and waits in main's pending payload. A
+/// tab, not a replacement: launch arguments may add several. Once mounted,
+/// main gets `open-file` and opens and claims the tab itself.
 ///
 /// Returns `false` when another live window already holds the file: that
 /// window is brought forward instead and main is left untouched.
 fn assign_file_to_main(app: &tauri::AppHandle, path: String) -> bool {
-    let claim = {
-        let open_files = app.state::<OpenFiles>();
-        let mut reg = open_files.0.lock().unwrap();
-        // A holder whose window is gone must not block main from taking the file.
-        window::live_owner(app, &mut reg, &path);
-        match reg.set_single_path("main", &path, session::new_tab_id) {
-            Some(tab_id) => Ok(tab_id),
-            None => Err(reg.label_of(&path)),
-        }
+    let tab = PendingTab {
+        tab_id: session::new_tab_id(),
+        path: Some(path.clone()),
+        content: None,
+        cursor: 0,
+        top_line: 1,
     };
-    let tab_id = match claim {
-        Ok(tab_id) => tab_id,
-        Err(owner) => {
-            if let Some(owner) = owner {
-                eprintln!("assign_file_to_main: {path} is held by {owner}; focusing it instead of main");
-                if let Some(win) = app.get_webview_window(&owner) {
-                    window::reveal(&win);
-                }
+    match window::hand_over_tab(app, "main", tab) {
+        window::Handover::Pending => true,
+        window::Handover::Mounted => {
+            // `emit_to`, not `emit`: a bare `emit` reaches every window.
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.emit_to("main", "open-file", &path);
+                let _ = win.set_focus();
             }
-            return false;
+            true
         }
-    };
-
-    // The registry's id for main's tab, so the claim and the heartbeat name
-    // the same tab.
-    let pending = app.state::<PendingFiles>();
-    pending
-        .0
-        .lock()
-        .unwrap()
-        .insert("main".to_string(), PendingOpen::single_file(tab_id, path));
-    true
+        window::Handover::Held(owner) => {
+            eprintln!("assign_file_to_main: {path} is held by {owner}; focusing it instead of main");
+            if let Some(win) = app.get_webview_window(&owner) {
+                window::reveal(&win);
+            }
+            false
+        }
+    }
 }
 
 /// Resolve a potentially relative path to an absolute path.

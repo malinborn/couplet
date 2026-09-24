@@ -25,6 +25,9 @@ pub struct WindowTabs {
     pub active: Option<String>,
     /// `#N` in the title; `None` only when all 99 were in use.
     pub number: Option<u32>,
+    /// Its frontend has pulled `get_window_init`. Before that an event sent to
+    /// it is lost, so a file must reach it through `PendingFiles`.
+    pub mounted: bool,
 }
 
 #[derive(Debug, Default)]
@@ -103,6 +106,67 @@ impl TabRegistry {
             window.active = Some(tab_id.to_string());
         }
         true
+    }
+
+    pub fn mark_mounted(&mut self, label: &str) {
+        self.windows.entry(label.to_string()).or_default().mounted = true;
+    }
+
+    pub fn is_mounted(&self, label: &str) -> bool {
+        self.windows.get(label).is_some_and(|w| w.mounted)
+    }
+
+    /// Remove one tab. When it was active, the first remaining tab is active
+    /// until the frontend says otherwise.
+    pub fn remove_tab(&mut self, label: &str, tab_id: &str) -> Option<RegTab> {
+        let window = self.windows.get_mut(label)?;
+        let at = window.tabs.iter().position(|t| t.id == tab_id)?;
+        let tab = window.tabs.remove(at);
+        if window.active.as_deref() == Some(tab_id) {
+            window.active = window.tabs.first().map(|t| t.id.clone());
+        }
+        Some(tab)
+    }
+
+    /// Point one of `label`'s tabs at `path` (Save As). Refused when any other
+    /// tab holds `path`.
+    pub fn set_tab_path(&mut self, label: &str, tab_id: &str, path: &str) -> bool {
+        if self
+            .owner_of(path)
+            .is_some_and(|(l, t)| !(l == label && t == tab_id))
+        {
+            return false;
+        }
+        let Some(tab) = self
+            .windows
+            .get_mut(label)
+            .and_then(|w| w.tabs.iter_mut().find(|t| t.id == tab_id))
+        else {
+            return false;
+        };
+        tab.path = Some(path.to_string());
+        true
+    }
+
+    pub fn set_active(&mut self, label: &str, tab_id: &str) -> bool {
+        let Some(window) = self.windows.get_mut(label) else {
+            return false;
+        };
+        if !window.tabs.iter().any(|t| t.id == tab_id) {
+            return false;
+        }
+        window.active = Some(tab_id.to_string());
+        true
+    }
+
+    pub fn tab_path(&self, label: &str, tab_id: &str) -> Option<String> {
+        self.windows
+            .get(label)?
+            .tabs
+            .iter()
+            .find(|t| t.id == tab_id)?
+            .path
+            .clone()
     }
 
     /// For one-tab windows, until the frontend has tabs: point the window's
@@ -393,6 +457,58 @@ mod tests {
         assert_eq!(reg.window("editor-2").unwrap().number, None);
         reg.remove_window("main");
         assert_eq!(reg.numbers_in_use(), [9].into_iter().collect(), "a closed window's number is free");
+    }
+
+    #[test]
+    fn remove_tab_hands_active_to_the_first_remaining_tab() {
+        let mut reg = reg_with(&[("main", "a", Some("/a.md")), ("main", "b", Some("/b.md"))]);
+        assert_eq!(reg.remove_tab("main", "a").map(|t| t.id), Some("a".to_string()));
+        assert!(!reg.contains_path("/a.md"));
+        assert_eq!(reg.window("main").unwrap().active.as_deref(), Some("b"));
+        assert_eq!(reg.remove_tab("main", "ghost"), None);
+    }
+
+    #[test]
+    fn remove_tab_of_a_background_tab_keeps_active() {
+        let mut reg = reg_with(&[("main", "a", Some("/a.md")), ("main", "b", Some("/b.md"))]);
+        reg.remove_tab("main", "b");
+        assert_eq!(reg.window("main").unwrap().active.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn set_tab_path_retargets_one_tab_but_never_takes_anothers_file() {
+        let mut reg = reg_with(&[("main", "a", None), ("main", "b", Some("/b.md")), ("editor-2", "x", Some("/x.md"))]);
+        assert!(reg.set_tab_path("main", "a", "/new.md"));
+        assert_eq!(reg.owner_of("/new.md"), Some(("main".to_string(), "a".to_string())));
+        assert!(!reg.set_tab_path("main", "a", "/b.md"), "another tab in this window");
+        assert!(!reg.set_tab_path("main", "a", "/x.md"), "another window");
+        assert!(reg.set_tab_path("main", "a", "/new.md"), "its own path again is fine");
+        assert!(!reg.set_tab_path("main", "ghost", "/g.md"));
+    }
+
+    #[test]
+    fn set_active_accepts_only_a_tab_of_that_window() {
+        let mut reg = reg_with(&[("main", "a", None), ("main", "b", None), ("editor-2", "x", None)]);
+        assert!(reg.set_active("main", "b"));
+        assert_eq!(reg.window("main").unwrap().active.as_deref(), Some("b"));
+        assert!(!reg.set_active("main", "x"));
+        assert_eq!(reg.window("main").unwrap().active.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn tab_path_answers_one_tabs_file() {
+        let reg = reg_with(&[("main", "a", Some("/a.md")), ("main", "u", None)]);
+        assert_eq!(reg.tab_path("main", "a").as_deref(), Some("/a.md"));
+        assert_eq!(reg.tab_path("main", "u"), None);
+        assert_eq!(reg.tab_path("editor-9", "a"), None);
+    }
+
+    #[test]
+    fn a_window_is_mounted_once_it_pulled_its_init() {
+        let mut reg = TabRegistry::new();
+        assert!(!reg.is_mounted("main"));
+        reg.mark_mounted("main");
+        assert!(reg.is_mounted("main"));
     }
 
     #[test]

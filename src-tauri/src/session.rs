@@ -95,10 +95,12 @@ impl WindowSnapshot {
 
     /// A brand-new window holding one reopened file — Cmd+Shift+T when the
     /// window it was closed from is gone. A fresh `tab_id`: it is a new tab.
+    /// The number of the window it was closed from comes along;
+    /// `open_restored_window` keeps it when it is free.
     pub fn from_closed_entry(entry: crate::closed::ClosedEntry) -> Self {
         let tab_id = new_tab_id();
         Self {
-            number: None,
+            number: entry.number,
             x: entry.x,
             y: entry.y,
             width: entry.width,
@@ -371,6 +373,23 @@ impl SessionState {
             .and_then(|w| w.tabs.iter().find(|t| t.tab_id == tab_id))
             .and_then(|t| t.untitled.clone())
             .unwrap_or_else(|| untitled_file_name(tab_id))
+    }
+
+    /// Drop one closed tab from its window's entry now, so a quit before the
+    /// next heartbeat does not bring it back.
+    pub fn remove_tab(&self, label: &str, tab_id: &str) {
+        if self.is_quitting() {
+            return;
+        }
+        let mut map = self.entries.lock().unwrap();
+        if let Some(entry) = map.get_mut(label) {
+            entry.tabs.retain(|t| t.tab_id != tab_id);
+            if entry.active_tab.as_deref() == Some(tab_id) {
+                entry.active_tab = entry.tabs.first().map(|t| t.tab_id.clone());
+            }
+        }
+        drop(map);
+        self.touch();
     }
 
     /// Forget a window. A no-op while quitting — see the module docs on why.
@@ -1194,11 +1213,13 @@ mod tests {
     }
 
     #[test]
-    fn from_closed_entry_carries_geometry_and_position_with_a_fresh_tab_id() {
+    fn from_closed_entry_carries_geometry_position_and_number_with_a_fresh_tab_id() {
         let entry = crate::closed::ClosedEntry {
             path: "/tmp/a.md".to_string(),
             cursor: 42,
             top_line: 9,
+            label: "editor-3".to_string(),
+            number: Some(7),
             x: 11,
             y: 22,
             width: 800,
@@ -1206,12 +1227,32 @@ mod tests {
         };
         let a = WindowSnapshot::from_closed_entry(entry.clone());
         assert_eq!((a.x, a.y, a.width, a.height), (11, 22, 800, 600));
+        assert_eq!(a.number, Some(7));
         assert_eq!(a.tabs.len(), 1);
         assert_eq!(a.tabs[0].path.as_deref(), Some("/tmp/a.md"));
         assert_eq!((a.tabs[0].cursor, a.tabs[0].top_line), (42, 9));
         assert_eq!(a.active_tab.as_deref(), Some(a.tabs[0].tab_id.as_str()));
         let b = WindowSnapshot::from_closed_entry(entry);
         assert_ne!(a.tabs[0].tab_id, b.tabs[0].tab_id, "every reopened tab is a new tab");
+    }
+
+    #[test]
+    fn remove_tab_drops_one_tab_and_moves_active() {
+        let state = SessionState::new();
+        state.set_tabs("main", vec![tab("a", Some("/a.md")), tab("b", Some("/b.md"))], Some("a".to_string()));
+        state.remove_tab("main", "a");
+        let w = state.snapshot_for("main").unwrap();
+        assert_eq!(w.tabs.iter().map(|t| t.tab_id.as_str()).collect::<Vec<_>>(), vec!["b"]);
+        assert_eq!(w.active_tab.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn remove_tab_changes_nothing_while_quitting() {
+        let state = SessionState::new();
+        state.set_tabs("main", vec![tab("a", Some("/a.md"))], Some("a".to_string()));
+        state.mark_quitting();
+        state.remove_tab("main", "a");
+        assert_eq!(state.snapshot_for("main").unwrap().tabs.len(), 1, "a quit keeps every tab");
     }
 
     #[test]
