@@ -12,6 +12,8 @@
   import { livePreviewPlugin } from './preview/plugin';
   import { envPreviewPlugin } from './preview/env';
   import { computeReplacement } from './content-diff';
+  import { replaceContentSpec } from './replace-content';
+  import { normalizeLineEndings } from '../line-endings';
   import { aiHighlightPresenceNotifier } from './ai-highlight';
   import { jsonPasteNotifier } from './json-paste';
   import { jsonDocumentPath, setDocumentPath } from './json-fence';
@@ -67,19 +69,17 @@
       },
       replaceContent(newContent: string) {
         if (!view) return;
-        const docLen = view.state.doc.length;
-        view.dispatch({
-          changes: { from: 0, to: docLen, insert: newContent },
-          selection: newContent.length > 0 ? { anchor: newContent.length } : undefined,
-          annotations: Transaction.addToHistory.of(false),
-        });
+        view.dispatch(replaceContentSpec(view.state, newContent));
         if (newContent.length > 0) {
           view.contentDOM.blur();
         }
       },
       updateContent(newContent: string) {
         if (!view) return;
-        const repl = computeReplacement(view.state.doc.toString(), newContent);
+        // The buffer is LF-only; diffing it against text that still carries
+        // `\r` would treat every line ending as changed. Callers pass text
+        // from `readDocument`, already normalized — this is the backstop.
+        const repl = computeReplacement(view.state.doc.toString(), normalizeLineEndings(newContent));
         if (!repl) return;
         // Single-span diff keeps CM6's automatic selection mapping intact and
         // preserves scroll position — unlike replaceContent's full-doc swap.

@@ -222,6 +222,56 @@ pub async fn register_open_file(
     Ok(())
 }
 
+/// Compare-and-delete: removes `path` from the map only if it still maps to
+/// `label`, returning whether it did. Split out of the command so it can be
+/// tested without an `AppHandle`.
+///
+/// By path rather than "everything this label owns", because IPC calls from
+/// one window are not guaranteed to be handled in the order they were sent:
+/// a release for a failed open of P1 that lands after a successful
+/// `register_open_file(P2)` must not take P2 away from the window.
+fn release_path(map: &mut HashMap<String, String>, path: &str, label: &str) -> bool {
+    if map.get(path).map(String::as_str) == Some(label) {
+        map.remove(path);
+        true
+    } else {
+        false
+    }
+}
+
+/// IPC command: the calling window does not, after all, own `path`.
+///
+/// The counterpart of `register_open_file`, for one case: a window created for
+/// a path (CLI launch, a second-instance open, a session restore) is registered
+/// as that path's owner — and its watcher started — before the frontend has
+/// read a byte. When the read then fails (not valid UTF-8, permissions), the
+/// window stays Untitled and shows the error; without this the stale entry
+/// would make every later open of the same path focus that Untitled window
+/// instead of trying again.
+///
+/// The watcher is dropped only when an entry was actually removed: a window's
+/// watcher follows its registration, so if `path` was not (or no longer) this
+/// window's, the watcher belongs to whatever the window does own now.
+#[tauri::command]
+pub async fn unregister_open_file(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    path: String,
+) -> Result<(), String> {
+    let label = window.label().to_string();
+    let removed = {
+        let open_files = app.state::<OpenFiles>();
+        let mut map = open_files.0.lock().unwrap();
+        release_path(&mut map, &path, &label)
+    };
+    if removed {
+        // Dropping the watcher stops it.
+        let watchers = app.state::<FileWatchers>();
+        watchers.0.lock().unwrap().remove(&label);
+    }
+    Ok(())
+}
+
 /// Recreate a window from a session snapshot: saved geometry, and a payload the
 /// frontend picks up on mount.
 ///
@@ -320,5 +370,50 @@ pub fn open_restored_window(app: &AppHandle, snapshot: &crate::session::WindowSn
         Err(e) => {
             eprintln!("Failed to restore window: {}", e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map(entries: &[(&str, &str)]) -> HashMap<String, String> {
+        entries
+            .iter()
+            .map(|(p, l)| (p.to_string(), l.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn release_path_removes_the_windows_own_entry() {
+        let mut m = map(&[("/a.md", "editor-1"), ("/b.md", "editor-2")]);
+        assert!(release_path(&mut m, "/a.md", "editor-1"));
+        assert!(!m.contains_key("/a.md"));
+        assert_eq!(m.get("/b.md").map(String::as_str), Some("editor-2"));
+    }
+
+    #[test]
+    fn release_path_leaves_a_path_owned_by_another_window() {
+        let mut m = map(&[("/a.md", "editor-2")]);
+        assert!(!release_path(&mut m, "/a.md", "editor-1"));
+        assert_eq!(m.get("/a.md").map(String::as_str), Some("editor-2"));
+    }
+
+    #[test]
+    fn release_path_after_the_label_re_registered_to_another_path_is_a_no_op() {
+        // The out-of-order case: the window failed to open P1, then opened P2
+        // successfully, and `register_open_file(P2)` (which drops every entry
+        // for the label first) was handled before the release for P1. The
+        // release must not touch P2.
+        let mut m = map(&[("/p2.md", "editor-1")]);
+        assert!(!release_path(&mut m, "/p1.md", "editor-1"));
+        assert_eq!(m.get("/p2.md").map(String::as_str), Some("editor-1"));
+    }
+
+    #[test]
+    fn release_path_for_an_unknown_path_is_a_no_op() {
+        let mut m = map(&[("/b.md", "editor-2")]);
+        assert!(!release_path(&mut m, "/nope.md", "editor-1"));
+        assert_eq!(m.len(), 1);
     }
 }

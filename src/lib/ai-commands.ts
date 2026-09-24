@@ -2,6 +2,7 @@ import type { EditorState, Text } from '@codemirror/state';
 import type { LineRange, Replacement } from './editor/content-diff';
 import type { AiHighlightRange } from './editor/ai-highlight';
 import type { AiCommandPayload } from './tauri/events';
+import { normalizeLineEndings } from './line-endings';
 
 /**
  * Resolve the document position an `ai show` command should scroll to.
@@ -20,7 +21,9 @@ export function resolveShowTarget(
     return state.doc.line(clamped).from;
   }
   if (target.find !== null) {
-    const idx = state.doc.toString().indexOf(target.find);
+    // The buffer is LF-only (see `line-endings.ts`); a multi-line `find` copied
+    // from a CRLF file on disk would otherwise never match.
+    const idx = state.doc.toString().indexOf(normalizeLineEndings(target.find));
     return idx === -1 ? null : idx;
   }
   return 0;

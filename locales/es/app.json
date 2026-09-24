@@ -9,6 +9,11 @@
 
   "toast.language_error.headline": "No se pudo cambiar el idioma",
 
+  "toast.open_error.headline": "No se pudo abrir {fileName}",
+
+  "toast.reload_error.headline": "No se pudo recargar {fileName}",
+  "toast.reload_error.instruction": "El guardado automático está en pausa hasta que el archivo vuelva a poder leerse. Para conservar tu versión, pulsa",
+
   "toast.update.headline": "mdmini {latest} disponible",
   "toast.update.current": "tienes la v{current}",
   "toast.update.copy_title": "Haz clic para copiar",

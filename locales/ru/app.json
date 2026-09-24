@@ -9,6 +9,11 @@
 
   "toast.language_error.headline": "Не удалось изменить язык",
 
+  "toast.open_error.headline": "Не удалось открыть {fileName}",
+
+  "toast.reload_error.headline": "Не удалось перечитать {fileName}",
+  "toast.reload_error.instruction": "Автосохранение приостановлено, пока файл снова не прочитается. Чтобы сохранить свою версию, нажмите",
+
   "toast.update.headline": "Доступна версия mdmini {latest}",
   "toast.update.current": "у вас установлена v{current}",
   "toast.update.copy_title": "Нажмите, чтобы скопировать",
