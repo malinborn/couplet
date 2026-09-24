@@ -139,7 +139,7 @@ fn tools_list() -> Value {
     json!([
         {
             "name": "show",
-            "description": "Open a file in md-mini (the user's markdown editor) as a tab and optionally scroll to a location with a pulse highlight — use it to point the user at a specific place. `line` and `find` are mutually exclusive. The answer names the `window` (#N) it landed in: pass it back as `window_binding` in later calls. `focus` (default true) makes the tab active and brings its window forward; `focus: false` opens it in the background, where it shimmers until the user looks. The tab the user is typing in is never taken from them — then the answer says `focused: false`. With `transient` the tab asks the user «Close / Keep» by itself. Reuse the returned window; use transient for quick looks.",
+            "description": "Open a file in md-mini (the user's markdown editor) as a tab and optionally scroll to a location with a pulse highlight — use it to point the user at a specific place. `line` and `find` are mutually exclusive. The answer names the `window` (#N) it landed in: pass it back as `window_binding` in later calls. `focus` (default true) makes the tab active and brings its window forward; `focus: false` opens it in the background, where it shimmers until the user looks. The tab the user is typing in is never taken from them, and no other window comes forward while they type — then the answer says `focused: false`. With `transient` the tab asks the user «Close / Keep» by itself. Reuse the returned window; use transient for quick looks.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

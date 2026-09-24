@@ -30,6 +30,7 @@ mod routing;
 mod session;
 mod tab_commands;
 mod tabs;
+mod typing;
 mod updater;
 pub mod watch;
 mod watcher;
@@ -148,6 +149,7 @@ pub fn run() {
         .manage(UpdateState::new())
         .manage(ai_socket::AiPending::new())
         .manage(ai_socket::AiQueue::new())
+        .manage(typing::TypingClock::new())
         .invoke_handler(tauri::generate_handler![
             commands::read_file,
             commands::write_file,
@@ -190,6 +192,7 @@ pub fn run() {
             ai_socket::ai_pull_pending,
             ai_socket::ai_is_pending,
             ai_socket::ai_forward,
+            typing::note_typing,
             onboarding::ai_nudge_pending,
             onboarding::ai_nudge_dismiss,
             onboarding::ai_open_getting_started,

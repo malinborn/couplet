@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { countsAsTyping, createTypingTracker, isEditableTarget, isHumanTyping, TYPING_GRACE_MS } from './typing';
+import {
+  countsAsTyping,
+  createTypingTracker,
+  isEditableTarget,
+  isHumanTyping,
+  TYPING_GRACE_MS,
+  TYPING_NOTE_INTERVAL_MS,
+} from './typing';
 
 function key(target: EventTarget | null, key = 'a', mods: { metaKey?: boolean; ctrlKey?: boolean } = {}) {
   return { key, target, metaKey: mods.metaKey ?? false, ctrlKey: mods.ctrlKey ?? false };
@@ -87,5 +94,39 @@ describe('createTypingTracker', () => {
     expect(tracker.typing()).toBe(false);
     tracker.note(key(document.body));
     expect(tracker.typing(), 'a key outside an editable element is not typing').toBe(false);
+  });
+
+  it('ReportsToRustAtMostOncePerInterval', () => {
+    const clock = { now: 10_000, focused: true };
+    let reports = 0;
+    const tracker = createTypingTracker({ now: () => clock.now, focused: () => clock.focused, report: () => reports++ });
+    const area = document.createElement('textarea');
+    tracker.note(key(area));
+    expect(reports, 'the first key reports at once').toBe(1);
+    clock.now += TYPING_NOTE_INTERVAL_MS - 1;
+    tracker.note(key(area));
+    expect(reports).toBe(1);
+    clock.now += 1;
+    tracker.note(key(area));
+    expect(reports).toBe(2);
+    clock.now += 10 * TYPING_NOTE_INTERVAL_MS;
+    tracker.note(key(area));
+    expect(reports, 'after a pause the next key reports at once').toBe(3);
+  });
+
+  it('ReportsOnlyKeysThatCountAndOnlyWhileTheWindowHasFocus', () => {
+    const clock = { now: 10_000, focused: false };
+    let reports = 0;
+    const tracker = createTypingTracker({ now: () => clock.now, focused: () => clock.focused, report: () => reports++ });
+    const input = document.createElement('input');
+    tracker.note(key(input));
+    expect(reports, 'an unfocused window reports nothing').toBe(0);
+    clock.focused = true;
+    tracker.note(key(input, 's', { metaKey: true }));
+    tracker.note(key(input, 'Shift'));
+    tracker.note(key(document.body));
+    expect(reports, 'a shortcut, a lone modifier, a key outside an editable element').toBe(0);
+    tracker.note(key(input));
+    expect(reports, 'the unfocused key did not start the interval').toBe(1);
   });
 });

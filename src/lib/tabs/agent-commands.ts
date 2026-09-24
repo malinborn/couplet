@@ -91,8 +91,11 @@ export interface AgentCommandDeps {
   typing(): boolean;
   /** The active tab shows an agent's live `ask`. */
   liveAsk(): boolean;
-  /** Bring this window forward (`reveal_window`). */
-  revealWindow(): Promise<void>;
+  /**
+   * Bring this window forward (`reveal_window`). `false`: Rust refused — the
+   * human is typing in another window (Q10) — and the window stays behind.
+   */
+  revealWindow(): Promise<boolean>;
   now(): number;
   /**
    * The live view — CodeMirror, in App.svelte. `keepCaret` / `quiet`: the
@@ -226,10 +229,11 @@ export function createAgentCommands(deps: AgentCommandDeps) {
           ? deps.live.show(payload, typing)
           : { ok: true };
     // While the human types here the window is already in front of them.
+    let focused = true;
     if (response.ok && payload.focus && !typing && (payload.cmd === 'show' || payload.cmd === 'open')) {
-      await deps.revealWindow();
+      focused = await deps.revealWindow();
     }
-    await respond(payload, response.ok ? { ...response, focused: true } : response);
+    await respond(payload, response.ok ? { ...response, focused } : response);
   }
 
   /** D8: the target is resolved now; the caret waits there, and a pulse plays on entry. */

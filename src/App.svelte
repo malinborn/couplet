@@ -1524,7 +1524,12 @@
   // Where a command lands, and what it does to a tab in the background, is
   // `lib/tabs/agent-commands.ts`. What stays here is the live view.
 
-  const typingTracker = createTypingTracker({ now: () => Date.now(), focused: () => document.hasFocus() });
+  const typingTracker = createTypingTracker({
+    now: () => Date.now(),
+    focused: () => document.hasFocus(),
+    // App-wide (Q10): an agent's command for another window must not bring it forward mid-word.
+    report: () => void invoke('note_typing').catch(logTabIpc('note_typing')),
+  });
 
   /** Capture phase on the window: every key, before anything stops it. */
   function noteTyping(e: KeyboardEvent): void {
@@ -1672,7 +1677,12 @@
     forward: (payload) => invoke<boolean>('ai_forward', { payload }),
     typing: () => typingTracker.typing(),
     liveAsk: liveAskShown,
-    revealWindow: () => invoke<void>('reveal_window').catch(logTabIpc('reveal_window')),
+    // A failed IPC answers as before the refusal existed: the window was asked to come forward.
+    revealWindow: () =>
+      invoke<boolean>('reveal_window').catch((err: unknown) => {
+        logTabIpc('reveal_window')(err);
+        return true;
+      }),
     now: () => Date.now(),
     live: {
       show: liveShow,

@@ -43,7 +43,7 @@ function makeWorld(tabIds: string[], activeId: string) {
   const log: string[] = [];
   const responses: [number, AgentResponse][] = [];
   const pending = new Set<number>();
-  const clock = { now: 1_000, typing: false, liveAsk: false };
+  const clock = { now: 1_000, typing: false, liveAsk: false, typingElsewhere: false };
   let liveAsks: number[] = [];
   const answerers = new Map<number, (r: AskResult) => void>();
   const pathOf = (id: string) => list.tabs.find((t) => t.id === id)?.path ?? null;
@@ -194,6 +194,7 @@ function makeWorld(tabIds: string[], activeId: string) {
     liveAsk: () => clock.liveAsk,
     revealWindow: async () => {
       log.push('reveal');
+      return !clock.typingElsewhere;
     },
     now: () => clock.now,
     live: {
@@ -370,6 +371,15 @@ describe('focus (spec §5)', () => {
     await w.send(payload({ id: 1, cmd: 'show', path: '/b.md', focus: true }));
     expect(w.log).toEqual(expect.arrayContaining(['activateNow b', 'live show /b.md', 'reveal']));
     expect(w.response(1)).toEqual({ ok: true, focused: true });
+  });
+
+  it('ARevealRustRefusesBecauseTheHumanTypesInAnotherWindowAnswersNotFocused', async () => {
+    // Q10: the command came before they started typing elsewhere.
+    const w = makeWorld(['a', 'b'], 'a');
+    w.clock.typingElsewhere = true;
+    await w.send(payload({ id: 1, cmd: 'show', path: '/b.md', focus: true }));
+    expect(w.log).toEqual(expect.arrayContaining(['activateNow b', 'live show /b.md', 'reveal']));
+    expect(w.response(1)).toEqual({ ok: true, focused: false });
   });
 
   it('FocusTrueForAFileNotOpenYetOpensItInFront', async () => {

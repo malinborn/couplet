@@ -403,14 +403,19 @@ fn handle_connection(app: &AppHandle, stream: UnixStream) {
                     _ => Duration::from_secs(8),
                 };
                 let (tx, rx) = mpsc::channel::<AiResponse>();
-                let id = dispatch(app, req, tx);
+                let dispatched = dispatch(app, req, tx);
                 match rx.recv_timeout(wait) {
-                    Ok(resp) => resp,
+                    Ok(mut resp) => {
+                        if dispatched.quiet {
+                            quiet_answer(&mut resp);
+                        }
+                        resp
+                    }
                     Err(_) => {
                         // Drop the waiting entry so a response that arrives after
                         // we've given up on it is a harmless no-op instead of a
                         // permanent leak in `AiPending`'s map.
-                        app.state::<AiPending>().cancel(id);
+                        app.state::<AiPending>().cancel(dispatched.id);
                         AiResponse::error("timeout waiting for editor")
                     }
                 }
@@ -710,8 +715,9 @@ pub struct AiCommandPayload {
     /// lives. Rides the payload rather than being a separate event so a command
     /// pulled from `AiQueue` by a window that did not exist yet carries it too.
     pub first_use: bool,
-    /// The command may take the view (see `AiRequest::focus`). The frontend
-    /// still keeps it in the background while the human is typing (spec §5).
+    /// The command may take the view (see `AiRequest::focus`). `false` while
+    /// the human types in another window (`quiet_payload`); the frontend still
+    /// keeps it in the background while they type in this one (spec §5).
     pub focus: bool,
     /// `show(transient: true)` — spec §7.
     pub transient: bool,
@@ -829,13 +835,48 @@ fn payload_for(req: &AiRequest, id: u64, first_use: bool) -> AiCommandPayload {
     p
 }
 
+/// What `dispatch` did with a request.
+#[derive(Debug, PartialEq, Eq)]
+struct Dispatched {
+    /// The id registered for it in `AiPending` — `0` (never a real id, since
+    /// `AiPending::next` starts at 1) if it was answered directly on `tx`
+    /// without ever registering, so the caller's later `AiPending::cancel(id)`
+    /// on timeout is a harmless no-op.
+    id: u64,
+    /// Typing in another window kept it from coming forward (`quiet_payload`):
+    /// its answer goes through `quiet_answer`.
+    quiet: bool,
+}
+
+impl Dispatched {
+    const ANSWERED: Dispatched = Dispatched { id: 0, quiet: false };
+}
+
+/// Q10: a command that may take the view loses it while the human types in
+/// another window (`typing::blocks_raise`) — the window it reaches then keeps
+/// it in the background, and a window built for it is built behind. `true`:
+/// it was downgraded. A command that never takes the view is left alone.
+fn quiet_payload(payload: &mut AiCommandPayload, typing_elsewhere: bool) -> bool {
+    if !payload.focus || !typing_elsewhere {
+        return false;
+    }
+    payload.focus = false;
+    true
+}
+
+/// The answer to a downgraded command: its tab may be its window's active one
+/// (the file already was, or a new window holds only it), but that window did
+/// not come forward — for the agent it landed in the background, and
+/// `"focused":false` tells it to point the human there instead of retrying.
+fn quiet_answer(response: &mut AiResponse) {
+    if response.focused == Some(true) {
+        response.focused = Some(false);
+    }
+}
+
 /// Route a parsed request to its window (spec §5 — see `routing::route`),
 /// opening one first if needed, and arrange for the response to come back on `tx`.
-/// Returns the id registered for this request in `AiPending` — `0` (never a
-/// real id, since `AiPending::next` starts at 1) if the request was answered
-/// directly on `tx` without ever registering, so the caller's later
-/// `AiPending::cancel(id)` on timeout is a harmless no-op.
-fn dispatch(app: &AppHandle, mut req: AiRequest, tx: mpsc::Sender<AiResponse>) -> u64 {
+fn dispatch(app: &AppHandle, mut req: AiRequest, tx: mpsc::Sender<AiResponse>) -> Dispatched {
     // MCP and raw clients converge on the spelling the CLI resolves to, so
     // one file is one tab however the caller wrote it.
     if let Some(path) = req.path_mut() {
@@ -843,7 +884,7 @@ fn dispatch(app: &AppHandle, mut req: AiRequest, tx: mpsc::Sender<AiResponse>) -
             Ok(normalized) => *path = normalized,
             Err(e) => {
                 let _ = tx.send(AiResponse::error(e));
-                return 0;
+                return Dispatched::ANSWERED;
             }
         }
     }
@@ -852,9 +893,9 @@ fn dispatch(app: &AppHandle, mut req: AiRequest, tx: mpsc::Sender<AiResponse>) -
             let mut resp = AiResponse::ok();
             resp.windows = Some(crate::routing::windows_now(app));
             let _ = tx.send(resp);
-            return 0;
+            return Dispatched::ANSWERED;
         }
-        AiRequest::Close { .. } => return dispatch_close(app, &req, tx),
+        AiRequest::Close { .. } => return Dispatched { id: dispatch_close(app, &req, tx), quiet: false },
         _ => {}
     }
 
@@ -867,7 +908,7 @@ fn dispatch(app: &AppHandle, mut req: AiRequest, tx: mpsc::Sender<AiResponse>) -
     // normal "start a new file" request.
     if matches!(&req, AiRequest::Show { .. }) && !std::path::Path::new(&path).exists() {
         let _ = tx.send(AiResponse::error("file does not exist"));
-        return 0;
+        return Dispatched::ANSWERED;
     }
 
     if let AiRequest::Ask {
@@ -876,7 +917,7 @@ fn dispatch(app: &AppHandle, mut req: AiRequest, tx: mpsc::Sender<AiResponse>) -
     {
         if let Err(msg) = validate_ask(question, options) {
             let _ = tx.send(AiResponse::error(msg));
-            return 0;
+            return Dispatched::ANSWERED;
         }
         // Unlike `edit`, `ask` has no "start a new file" meaning — a question
         // about a file that neither exists on disk nor is already open (which
@@ -889,7 +930,7 @@ fn dispatch(app: &AppHandle, mut req: AiRequest, tx: mpsc::Sender<AiResponse>) -
         };
         if !already_open && !std::path::Path::new(&path).exists() {
             let _ = tx.send(AiResponse::error("file does not exist"));
-            return 0;
+            return Dispatched::ANSWERED;
         }
     }
 
@@ -899,7 +940,7 @@ fn dispatch(app: &AppHandle, mut req: AiRequest, tx: mpsc::Sender<AiResponse>) -
         crate::routing::Route::DeadNumber(number) => {
             let listing = crate::routing::windows_now(app);
             let _ = tx.send(AiResponse::error(crate::routing::dead_number_error(number, &listing)));
-            return 0;
+            return Dispatched::ANSWERED;
         }
         crate::routing::Route::Existing(label) => Some(label),
         crate::routing::Route::NewWindow => None,
@@ -917,11 +958,16 @@ fn dispatch(app: &AppHandle, mut req: AiRequest, tx: mpsc::Sender<AiResponse>) -
         app.config().version.as_deref().unwrap_or("0.0.0"),
     );
     let mut payload = payload_for(&req, id, first_use);
+    // Q10: the human types in another window. Nothing comes forward for this
+    // command — no tab switch, no raised window, a new one built behind —
+    // and its answer says so (`quiet_answer`).
+    let typing_elsewhere = crate::typing::blocks_raise_now(app, target.as_deref());
+    let quiet = quiet_payload(&mut payload, typing_elsewhere);
 
     if let Some(label) = target {
         app.state::<AiPending>().register(id, label.clone(), Some(path), tx);
         deliver(app, &label, payload);
-        return id;
+        return Dispatched { id, quiet };
     }
 
     // Step 4: a window of its own, in the background unless the command may
@@ -945,7 +991,7 @@ fn dispatch(app: &AppHandle, mut req: AiRequest, tx: mpsc::Sender<AiResponse>) -
         .is_err()
     {
         let _ = tx.send(AiResponse::error("failed to open window for file"));
-        return id;
+        return Dispatched { id, quiet };
     }
     let outcome = match opened_rx.recv_timeout(OPEN_WINDOW_TIMEOUT) {
         Ok(outcome) => Some(outcome),
@@ -959,16 +1005,16 @@ fn dispatch(app: &AppHandle, mut req: AiRequest, tx: mpsc::Sender<AiResponse>) -
         Some(Err(e)) => {
             eprintln!("ai: failed to open a window for {path}: {e}");
             let _ = tx.send(AiResponse::error("failed to open window for file"));
-            return id;
+            return Dispatched { id, quiet };
         }
         None => {
             let _ = tx.send(AiResponse::error("failed to open window for file"));
-            return id;
+            return Dispatched { id, quiet };
         }
     };
     app.state::<AiPending>().register(id, label.clone(), Some(path), tx);
     deliver(app, &label, payload);
-    id
+    Dispatched { id, quiet }
 }
 
 /// A request's path in its one spelling (`path_norm::normalize_path`). It
@@ -1570,8 +1616,9 @@ SHOW — point at a location in an already-open (or newly opened) window
     -f, --focus       Switch to it and bring its window forward (default).
     --transient       A quick look: the tab asks the user "Close / Keep" by
                       itself; nothing comes back to you.
-  The tab the user is typing in is never taken from them: while they type,
-  show lands in the background and answers "focused":false.
+  The tab the user is typing in is never taken from them: while they type
+  (in any md-mini window), show lands in the background, brings no window
+  forward, and answers "focused":false.
   Neither --line nor --find: just opens/focuses the file, no scroll.
 
   Examples:
@@ -1758,7 +1805,7 @@ If `mdmini` is available, use it to point at things in the user's open editor an
 - `mdmini <file>` — open a file as a tab. From you (an agent, `CLAUDECODE` set) it opens in the background: the tab shimmers until the user looks; `-f` brings it to the front. When the user should read something now, use `mdmini show <file>` (or `-f`).
 - `mdmini ls` — the open windows: number, project, tabs (`--json` for machine-readable output). `mdmini close <file>` — close a tab you opened and no longer need.
 
-Windows: every answer names the window it landed in — `{"ok":true,"window":7,"focused":true}`. Pass `-t 7` to `show`/`edit`/`ask`/`mdmini <file>` to keep working in that window. Without `-t` a file goes to its own tab if it is open (wherever that is — the answer's `window` says where), else to a window of its project (the git toplevel), else to a new window. The tab the user is typing in is never taken from them: `"focused":false` means your show landed in the background — tell them where to look instead of retrying. If they are typing in that very tab, the answer is `"focused":true` but nothing moves: the target only pulses, possibly off-screen. An `edit` of a background tab is applied and saved there; an `ask` for one waits there until they open it, and its timeout still counts from the call. Use `mdmini show <file> --transient` for a quick look: the tab asks them "Close / Keep" by itself.
+Windows: every answer names the window it landed in — `{"ok":true,"window":7,"focused":true}`. Pass `-t 7` to `show`/`edit`/`ask`/`mdmini <file>` to keep working in that window. Without `-t` a file goes to its own tab if it is open (wherever that is — the answer's `window` says where), else to a window of its project (the git toplevel), else to a new window. The tab the user is typing in is never taken from them, and while they type in one md-mini window no other window comes forward: `"focused":false` means your show landed in the background — tell them where to look instead of retrying. If they are typing in that very tab, the answer is `"focused":true` but nothing moves: the target only pulses, possibly off-screen. An `edit` of a background tab is applied and saved there; an `ask` for one waits there until they open it, and its timeout still counts from the call. Use `mdmini show <file> --transient` for a quick look: the tab asks them "Close / Keep" by itself.
 
 All verbs print one line of JSON to stdout: `{"ok":true}` (plus `"window"`/`"focused"`, `"changed_lines":[[start,end]]` for `edit`, `"answer":"..."` for `ask`, `"answers":[...]` for `ask --multi`, or `"custom":"..."` for a typed `ask --free-text` answer) on success, `{"ok":false,"error":"..."}` on failure. Exit code 0 = success, 1 = md-mini rejected the request, 2 = md-mini isn't running or the command was malformed. If the target file isn't open yet, `edit`/`show` open it as a tab by the rule above — for `show` it must already exist on disk (`ask` requires the same: already open, or existing on disk). Always send the full document on stdin for `edit`, never a diff.
 
@@ -1816,7 +1863,7 @@ pub(crate) const MCP_AGENT_SNIPPET: &str = r#"## md-mini via MCP — how to use 
 - Respect their attention: batch related questions into one `ask` with options rather than many small ones; timeouts/dismissals mean "not now", not failure — fall back to chat.
 - `edit` takes the COMPLETE new document, never a diff; md-mini diffs internally and preserves their scroll position and undo history.
 - Windows: every answer names the `window` (#N) it landed in. Pass it back as `window_binding` to keep working in that window; call `windows` to see what is open (projects, tabs) and pick one. Without a binding a file goes to its own tab if it is open anywhere, else to a window of its project, else to a new window.
-- `show` switches to the tab by default; `focus: false` opens it in the background, where it shimmers until the user looks. A user who is typing always keeps their tab — the answer then says `focused: false`: tell them where to look instead of retrying. If they are typing in that very tab, the answer is `focused: true` but nothing moves: the target only pulses.
+- `show` switches to the tab by default; `focus: false` opens it in the background, where it shimmers until the user looks. A user who is typing always keeps their tab, and while they type in one window no other window comes forward — the answer then says `focused: false`: tell them where to look instead of retrying. If they are typing in that very tab, the answer is `focused: true` but nothing moves: the target only pulses.
 - `transient: true` is for a quick look — something they glance at once. The tab asks them «Close / Keep» by itself; leave it off for documents you will keep working in.
 - An `edit` of a background tab is applied and saved there, highlighted when they open it; an `ask` for one waits there until they do, and its timeout still counts from the call.
 - Close what you opened and no longer need with `close` — hygiene, not isolation.
@@ -2469,6 +2516,44 @@ mod tests {
         .unwrap();
         let p = payload_for(&ask, 1, false);
         assert_eq!((p.cmd.as_str(), p.focus, p.timeout_secs), ("ask", false, 10), "timeout clamped");
+    }
+
+    #[test]
+    fn typing_in_another_window_takes_the_view_from_a_focusing_command_only() {
+        let show = parse_request(r#"{"v":1,"cmd":"show","path":"/a.md"}"#).unwrap();
+        let mut p = payload_for(&show, 1, false);
+        assert!(!quiet_payload(&mut p, false), "nobody types elsewhere: untouched");
+        assert!(p.focus);
+        assert!(quiet_payload(&mut p, true));
+        assert!(!p.focus, "the window keeps it in the background, a new one is built behind");
+
+        let open = parse_request(r#"{"v":1,"cmd":"open","path":"/a.md","focus":true}"#).unwrap();
+        let mut p = payload_for(&open, 2, false);
+        assert!(quiet_payload(&mut p, true));
+        assert!(!p.focus);
+
+        for line in [
+            r#"{"v":1,"cmd":"show","path":"/a.md","focus":false}"#,
+            r#"{"v":1,"cmd":"open","path":"/a.md"}"#,
+            r#"{"v":1,"cmd":"edit","path":"/a.md","content":"x","show":true}"#,
+            r#"{"v":1,"cmd":"ask","path":"/a.md","question":"Q?","options":["A","B"]}"#,
+        ] {
+            let mut p = payload_for(&parse_request(line).unwrap(), 3, false);
+            assert!(!quiet_payload(&mut p, true), "never took the view, nothing to downgrade: {line}");
+        }
+    }
+
+    #[test]
+    fn a_downgraded_answer_says_it_is_not_in_front() {
+        let mut live = AiResponse { ok: true, focused: Some(true), ..Default::default() };
+        quiet_answer(&mut live);
+        assert_eq!(live.focused, Some(false), "active in its window, but that window stayed behind");
+        let mut background = AiResponse { ok: true, focused: Some(false), ..Default::default() };
+        quiet_answer(&mut background);
+        assert_eq!(background.focused, Some(false));
+        let mut error = AiResponse::error("target not found");
+        quiet_answer(&mut error);
+        assert_eq!(error.focused, None, "an error gains no `focused`");
     }
 
     #[test]

@@ -701,10 +701,16 @@ fn after_handover(label: &str, handover: Handover, activation: Activation) -> (O
 
 /// IPC: bring the calling window forward — an agent's `show` with `focus`
 /// (spec §5). Unminimizes it, gives it key focus and activates the app.
+/// Agent-only, so it refuses while the human types in another window (Q10):
+/// the command may have been sent before they started. `false`: not raised.
 #[tauri::command]
-pub async fn reveal_window(window: tauri::WebviewWindow) -> Result<(), String> {
+pub async fn reveal_window(app: AppHandle, window: tauri::WebviewWindow) -> Result<bool, String> {
+    if crate::typing::blocks_raise_now(&app, Some(window.label())) {
+        return Ok(false);
+    }
     reveal(&window);
-    window.run_on_main_thread(activate_app).map_err(|e| e.to_string())
+    window.run_on_main_thread(activate_app).map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 /// IPC: bring window `label` forward — «Перейти» on the toast after a move
