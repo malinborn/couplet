@@ -1,10 +1,34 @@
 #!/usr/bin/env bash
-# CLI wrapper for md-mini
+# CLI wrapper for md-mini (`coup` once the product is renamed)
 APP="/Applications/md-mini.app"
 BIN="$APP/Contents/MacOS/md-mini"
 SOCK="/tmp/com_md_mini_app_si.sock"
 PENDING="/tmp/md-mini-pending-files"
 CMD_SOCK="/tmp/md_mini_cmd.sock"
+
+# Make sure the running app's command socket is up, launching the app if it
+# is not (no pending-files handoff needed — the request itself carries the
+# file). Exits the script with an error line if it never comes up.
+ensure_running() {
+  if [ -S "$CMD_SOCK" ] && ! pgrep -f "md-mini.app/Contents/MacOS/md-mini" >/dev/null; then
+    # Socket file survived a crash/kill-9 of the process that owned it — a
+    # stale socket makes every command below hang until its own read times
+    # out. Treat it as absent so the launch path below rebinds it.
+    rm -f "$CMD_SOCK"
+  fi
+  if [ ! -S "$CMD_SOCK" ]; then
+    open "$APP"
+    waited=0
+    while [ ! -S "$CMD_SOCK" ]; do
+      sleep 0.1
+      waited=$((waited + 1))
+      if [ "$waited" -ge 50 ]; then
+        echo '{"ok":false,"error":"md-mini did not start in time"}'
+        exit 2
+      fi
+    done
+  fi
+}
 
 # `mdmini help` / `agent` / `question` / `answer` / `watch` are local and
 # offline (no socket, no running app required) — hand off straight to the
@@ -24,32 +48,37 @@ if [ "$1" = "mcp" ]; then
   exec "$BIN" "$@"
 fi
 
-# AI interface: `mdmini show <file> ...` / `mdmini edit <file> ...` / `mdmini
-# ask <file> ...` talk to the running app's command socket instead of the
-# file-open path above. Launch the app first (no pending files needed — the
-# request itself carries the file) if the command socket isn't there yet,
-# then hand off to the binary's own `ai` client (see `run_ai_cli` in
-# src-tauri/src/ai_socket.rs). stdin passes through untouched for `edit`.
-if [ "$1" = "show" ] || [ "$1" = "edit" ] || [ "$1" = "ask" ]; then
-  if [ -S "$CMD_SOCK" ] && ! pgrep -f "md-mini.app/Contents/MacOS/md-mini" >/dev/null; then
-    # Socket file survived a crash/kill-9 of the process that owned it — a
-    # stale socket makes every command below hang until its own read times
-    # out. Treat it as absent so the launch path below rebinds it.
-    rm -f "$CMD_SOCK"
-  fi
-  if [ ! -S "$CMD_SOCK" ]; then
-    open "$APP"
-    waited=0
-    while [ ! -S "$CMD_SOCK" ]; do
-      sleep 0.1
-      waited=$((waited + 1))
-      if [ "$waited" -ge 50 ]; then
-        echo '{"ok":false,"error":"md-mini did not start in time"}'
-        exit 2
-      fi
-    done
-  fi
+# `ls` and `close` only mean something to a running app: never launch it just
+# to list or close windows — the binary answers "md-mini is not running".
+if [ "$1" = "ls" ] || [ "$1" = "close" ]; then
   exec "$BIN" ai "$@"
+fi
+
+# AI interface: `mdmini show|edit|ask <file> ...` talk to the running app's
+# command socket instead of the file-open path below. stdin passes through
+# untouched for `edit`.
+if [ "$1" = "show" ] || [ "$1" = "edit" ] || [ "$1" = "ask" ]; then
+  ensure_running
+  exec "$BIN" ai "$@"
+fi
+
+# A routed open (spec §4) — an agent (CLAUDECODE set), or a window/focus
+# flag — goes through the command socket and prints the window it landed in.
+# The plain human open below needs no answer and keeps the single-instance
+# path, which also works before the app is running.
+routed=0
+if [ -n "${CLAUDECODE:-}" ]; then routed=1; fi
+for arg in "$@"; do
+  case "$arg" in
+    -t|--window|-b|--background|-f|--focus) routed=1 ;;
+  esac
+done
+case "${1:-}" in
+  ""|--version|-V|--help|-h) routed=0 ;;
+esac
+if [ "$routed" = 1 ]; then
+  ensure_running
+  exec "$BIN" ai open "$@"
 fi
 
 # Resolve relative paths to absolute
