@@ -4,6 +4,7 @@ import {
   createEngineStore,
   createThemeStore,
   createOcdAlignmentStore,
+  createTabsCompactStore,
   createRecentFilesStore,
   createZoomStore,
   type RecentFile,
@@ -152,6 +153,26 @@ describe('createOcdAlignmentStore', () => {
     expect(store.enabled).toBe(true);
     expect(JSON.parse(localStorage.getItem('md-mini:ocdAlignment')!)).toBe(true);
     expect(createOcdAlignmentStore().enabled).toBe(true);
+  });
+});
+
+describe('createTabsCompactStore', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('DefaultsToOff', () => {
+    expect(createTabsCompactStore().enabled).toBe(false);
+  });
+
+  // A value, not a flip: the menu event reaches every window.
+  it('SetIsIdempotent_AndPersists', () => {
+    const store = createTabsCompactStore();
+    store.set(true);
+    store.set(true);
+    expect(store.enabled).toBe(true);
+    expect(JSON.parse(localStorage.getItem('md-mini:tabsCompact')!)).toBe(true);
+    expect(createTabsCompactStore().enabled).toBe(true);
   });
 });
 

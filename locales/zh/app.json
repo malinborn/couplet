@@ -143,5 +143,51 @@
   "ui.ai_hint.text": "隐藏 AI 编辑高亮",
 
   "dialog.external_change.title": "外部更改",
-  "dialog.external_change.message": "文件已被外部修改。重新加载并放弃你的修改？"
+  "dialog.external_change.message": "文件已被外部修改。重新加载并放弃你的修改？",
+
+  "tabs.notch.title": "窗口 #{n} 的标签页 — 悬停、点击或 {key}",
+  "tabs.notch.aria": "窗口 #{n} 的标签页",
+  "tabs.notch.unviewed.one": "{count} 个未查看（来自 AI）",
+  "tabs.notch.unviewed.few": "{count} 个未查看（来自 AI）",
+  "tabs.notch.unviewed.many": "{count} 个未查看（来自 AI）",
+  "tabs.notch.unviewed.other": "{count} 个未查看（来自 AI）",
+
+  "tabs.drawer.window": "窗口",
+  "tabs.drawer.count.one": "{count} 个标签页",
+  "tabs.drawer.count.few": "{count} 个标签页",
+  "tabs.drawer.count.many": "{count} 个标签页",
+  "tabs.drawer.count.other": "{count} 个标签页",
+  "tabs.drawer.select_hint": "⇧ — 选择",
+  "tabs.drawer.type_hint": "输入以搜索",
+  "tabs.drawer.sort_label": "整理：",
+  "tabs.drawer.sort_opened": "打开",
+  "tabs.drawer.sort_opened_title": "最近打开的在前",
+  "tabs.drawer.sort_viewed": "查看",
+  "tabs.drawer.sort_viewed_title": "最近查看的在前",
+  "tabs.drawer.sort_ai": "AI",
+  "tabs.drawer.sort_ai_title": "未查看的 AI 标签页在前",
+  "tabs.drawer.search_count": "{shown} / {total}",
+  "tabs.drawer.search_reset": "esc — 清除",
+  "tabs.drawer.empty": "未找到",
+  "tabs.drawer.in_text": "正文：",
+
+  "tabs.card.unsaved": "未保存",
+  "tabs.card.ai_chip": "✦ 来自 AI",
+  "tabs.card.close": "关闭 {name}",
+  "tabs.card.close_title": "关闭（⌘-点击）",
+
+  "tabs.selection.count.one": "已选 {count} 个",
+  "tabs.selection.count.few": "已选 {count} 个",
+  "tabs.selection.count.many": "已选 {count} 个",
+  "tabs.selection.count.other": "已选 {count} 个",
+  "tabs.selection.drag_hint": "⇅ 拖动",
+  "tabs.selection.new_window": "移到新窗口",
+  "tabs.selection.new_windows": "移到新窗口",
+  "tabs.selection.close": "关闭所选",
+  "tabs.selection.clear": "取消选择",
+
+  "tabs.hint.select": "⇧ 点击 / 拖动",
+  "tabs.hint.select_tail": "— 选择",
+  "tabs.hint.close": "⌘ 点击",
+  "tabs.hint.close_tail": "— 关闭"
 }

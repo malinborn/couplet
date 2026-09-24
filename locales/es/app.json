@@ -143,5 +143,51 @@
   "ui.ai_hint.text": "ocultar resaltado de ediciones de IA",
 
   "dialog.external_change.title": "Cambio externo",
-  "dialog.external_change.message": "El archivo se modificó externamente. ¿Recargar y perder tus cambios?"
+  "dialog.external_change.message": "El archivo se modificó externamente. ¿Recargar y perder tus cambios?",
+
+  "tabs.notch.title": "Pestañas de la ventana #{n}: pasa el cursor, haz clic o {key}",
+  "tabs.notch.aria": "Pestañas de la ventana #{n}",
+  "tabs.notch.unviewed.one": "{count} sin ver de la IA",
+  "tabs.notch.unviewed.few": "{count} sin ver de la IA",
+  "tabs.notch.unviewed.many": "{count} sin ver de la IA",
+  "tabs.notch.unviewed.other": "{count} sin ver de la IA",
+
+  "tabs.drawer.window": "Ventana",
+  "tabs.drawer.count.one": "{count} pestaña",
+  "tabs.drawer.count.few": "{count} pestañas",
+  "tabs.drawer.count.many": "{count} pestañas",
+  "tabs.drawer.count.other": "{count} pestañas",
+  "tabs.drawer.select_hint": "⇧ — seleccionar",
+  "tabs.drawer.type_hint": "escribe para buscar",
+  "tabs.drawer.sort_label": "Ordenar:",
+  "tabs.drawer.sort_opened": "apertura",
+  "tabs.drawer.sort_opened_title": "Abiertas recientemente primero",
+  "tabs.drawer.sort_viewed": "vista",
+  "tabs.drawer.sort_viewed_title": "Vistas recientemente primero",
+  "tabs.drawer.sort_ai": "IA",
+  "tabs.drawer.sort_ai_title": "Pestañas de la IA sin ver primero",
+  "tabs.drawer.search_count": "{shown} de {total}",
+  "tabs.drawer.search_reset": "esc — borrar",
+  "tabs.drawer.empty": "No se encontró nada",
+  "tabs.drawer.in_text": "en el texto:",
+
+  "tabs.card.unsaved": "sin guardar",
+  "tabs.card.ai_chip": "✦ de la IA",
+  "tabs.card.close": "Cerrar {name}",
+  "tabs.card.close_title": "Cerrar (⌘-clic)",
+
+  "tabs.selection.count.one": "{count} seleccionada",
+  "tabs.selection.count.few": "{count} seleccionadas",
+  "tabs.selection.count.many": "{count} seleccionadas",
+  "tabs.selection.count.other": "{count} seleccionadas",
+  "tabs.selection.drag_hint": "⇅ arrastrar",
+  "tabs.selection.new_window": "A una ventana nueva",
+  "tabs.selection.new_windows": "A ventanas nuevas",
+  "tabs.selection.close": "Cerrar seleccionadas",
+  "tabs.selection.clear": "Quitar selección",
+
+  "tabs.hint.select": "⇧ clic / arrastrar",
+  "tabs.hint.select_tail": "— seleccionar",
+  "tabs.hint.close": "⌘ clic",
+  "tabs.hint.close_tail": "— cerrar"
 }

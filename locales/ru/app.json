@@ -143,5 +143,51 @@
   "ui.ai_hint.text": "скрыть подсветку правок AI",
 
   "dialog.external_change.title": "Внешнее изменение",
-  "dialog.external_change.message": "Файл изменён извне. Перезагрузить и потерять ваши изменения?"
+  "dialog.external_change.message": "Файл изменён извне. Перезагрузить и потерять ваши изменения?",
+
+  "tabs.notch.title": "Вкладки окна #{n} — навести, клик или {key}",
+  "tabs.notch.aria": "Вкладки окна #{n}",
+  "tabs.notch.unviewed.one": "{count} непросмотренная от ИИ",
+  "tabs.notch.unviewed.few": "{count} непросмотренные от ИИ",
+  "tabs.notch.unviewed.many": "{count} непросмотренных от ИИ",
+  "tabs.notch.unviewed.other": "{count} непросмотренных от ИИ",
+
+  "tabs.drawer.window": "Окно",
+  "tabs.drawer.count.one": "{count} вкладка",
+  "tabs.drawer.count.few": "{count} вкладки",
+  "tabs.drawer.count.many": "{count} вкладок",
+  "tabs.drawer.count.other": "{count} вкладок",
+  "tabs.drawer.select_hint": "⇧ — выделить",
+  "tabs.drawer.type_hint": "печатайте для поиска",
+  "tabs.drawer.sort_label": "Разложить:",
+  "tabs.drawer.sort_opened": "открытие",
+  "tabs.drawer.sort_opened_title": "Недавно открытые сверху",
+  "tabs.drawer.sort_viewed": "просмотр",
+  "tabs.drawer.sort_viewed_title": "Недавно просмотренные сверху",
+  "tabs.drawer.sort_ai": "ИИ",
+  "tabs.drawer.sort_ai_title": "Непросмотренные вкладки от ИИ сверху",
+  "tabs.drawer.search_count": "{shown} из {total}",
+  "tabs.drawer.search_reset": "esc — сброс",
+  "tabs.drawer.empty": "Ничего не найдено",
+  "tabs.drawer.in_text": "в тексте:",
+
+  "tabs.card.unsaved": "не сохранён",
+  "tabs.card.ai_chip": "✦ от ИИ",
+  "tabs.card.close": "Закрыть {name}",
+  "tabs.card.close_title": "Закрыть (⌘-клик)",
+
+  "tabs.selection.count.one": "{count} выбрана",
+  "tabs.selection.count.few": "{count} выбраны",
+  "tabs.selection.count.many": "{count} выбрано",
+  "tabs.selection.count.other": "{count} выбрано",
+  "tabs.selection.drag_hint": "⇅ тянуть",
+  "tabs.selection.new_window": "В новое окно",
+  "tabs.selection.new_windows": "В новые окна",
+  "tabs.selection.close": "Закрыть выбранные",
+  "tabs.selection.clear": "Снять выделение",
+
+  "tabs.hint.select": "⇧ клик / протяжка",
+  "tabs.hint.select_tail": "— выделение",
+  "tabs.hint.close": "⌘ клик",
+  "tabs.hint.close_tail": "— закрыть"
 }

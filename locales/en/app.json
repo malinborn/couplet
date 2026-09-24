@@ -143,5 +143,51 @@
   "ui.ai_hint.text": "hide AI edit highlight",
 
   "dialog.external_change.title": "External Change",
-  "dialog.external_change.message": "The file has been modified externally. Reload and lose your changes?"
+  "dialog.external_change.message": "The file has been modified externally. Reload and lose your changes?",
+
+  "tabs.notch.title": "Tabs of window #{n} — hover, click or {key}",
+  "tabs.notch.aria": "Tabs of window #{n}",
+  "tabs.notch.unviewed.one": "{count} unseen from AI",
+  "tabs.notch.unviewed.few": "{count} unseen from AI",
+  "tabs.notch.unviewed.many": "{count} unseen from AI",
+  "tabs.notch.unviewed.other": "{count} unseen from AI",
+
+  "tabs.drawer.window": "Window",
+  "tabs.drawer.count.one": "{count} tab",
+  "tabs.drawer.count.few": "{count} tabs",
+  "tabs.drawer.count.many": "{count} tabs",
+  "tabs.drawer.count.other": "{count} tabs",
+  "tabs.drawer.select_hint": "⇧ — select",
+  "tabs.drawer.type_hint": "type to search",
+  "tabs.drawer.sort_label": "Arrange:",
+  "tabs.drawer.sort_opened": "opened",
+  "tabs.drawer.sort_opened_title": "Recently opened first",
+  "tabs.drawer.sort_viewed": "viewed",
+  "tabs.drawer.sort_viewed_title": "Recently viewed first",
+  "tabs.drawer.sort_ai": "AI",
+  "tabs.drawer.sort_ai_title": "Unseen tabs from AI first",
+  "tabs.drawer.search_count": "{shown} of {total}",
+  "tabs.drawer.search_reset": "esc — reset",
+  "tabs.drawer.empty": "Nothing found",
+  "tabs.drawer.in_text": "in text:",
+
+  "tabs.card.unsaved": "not saved",
+  "tabs.card.ai_chip": "✦ from AI",
+  "tabs.card.close": "Close {name}",
+  "tabs.card.close_title": "Close (⌘-click)",
+
+  "tabs.selection.count.one": "{count} selected",
+  "tabs.selection.count.few": "{count} selected",
+  "tabs.selection.count.many": "{count} selected",
+  "tabs.selection.count.other": "{count} selected",
+  "tabs.selection.drag_hint": "⇅ drag",
+  "tabs.selection.new_window": "To a new window",
+  "tabs.selection.new_windows": "To new windows",
+  "tabs.selection.close": "Close selected",
+  "tabs.selection.clear": "Clear selection",
+
+  "tabs.hint.select": "⇧ click / drag",
+  "tabs.hint.select_tail": "— select",
+  "tabs.hint.close": "⌘ click",
+  "tabs.hint.close_tail": "— close"
 }

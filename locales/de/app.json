@@ -143,5 +143,51 @@
   "ui.ai_hint.text": "KI-Bearbeitungsmarkierung ausblenden",
 
   "dialog.external_change.title": "Externe Änderung",
-  "dialog.external_change.message": "Die Datei wurde extern geändert. Neu laden und Ihre Änderungen verwerfen?"
+  "dialog.external_change.message": "Die Datei wurde extern geändert. Neu laden und Ihre Änderungen verwerfen?",
+
+  "tabs.notch.title": "Tabs von Fenster #{n} — zeigen, klicken oder {key}",
+  "tabs.notch.aria": "Tabs von Fenster #{n}",
+  "tabs.notch.unviewed.one": "{count} ungesehen von der KI",
+  "tabs.notch.unviewed.few": "{count} ungesehen von der KI",
+  "tabs.notch.unviewed.many": "{count} ungesehen von der KI",
+  "tabs.notch.unviewed.other": "{count} ungesehen von der KI",
+
+  "tabs.drawer.window": "Fenster",
+  "tabs.drawer.count.one": "{count} Tab",
+  "tabs.drawer.count.few": "{count} Tabs",
+  "tabs.drawer.count.many": "{count} Tabs",
+  "tabs.drawer.count.other": "{count} Tabs",
+  "tabs.drawer.select_hint": "⇧ — auswählen",
+  "tabs.drawer.type_hint": "tippen zum Suchen",
+  "tabs.drawer.sort_label": "Ordnen:",
+  "tabs.drawer.sort_opened": "geöffnet",
+  "tabs.drawer.sort_opened_title": "Zuletzt geöffnete zuerst",
+  "tabs.drawer.sort_viewed": "angesehen",
+  "tabs.drawer.sort_viewed_title": "Zuletzt angesehene zuerst",
+  "tabs.drawer.sort_ai": "KI",
+  "tabs.drawer.sort_ai_title": "Ungesehene Tabs der KI zuerst",
+  "tabs.drawer.search_count": "{shown} von {total}",
+  "tabs.drawer.search_reset": "esc — zurücksetzen",
+  "tabs.drawer.empty": "Nichts gefunden",
+  "tabs.drawer.in_text": "im Text:",
+
+  "tabs.card.unsaved": "nicht gespeichert",
+  "tabs.card.ai_chip": "✦ von der KI",
+  "tabs.card.close": "{name} schließen",
+  "tabs.card.close_title": "Schließen (⌘-Klick)",
+
+  "tabs.selection.count.one": "{count} ausgewählt",
+  "tabs.selection.count.few": "{count} ausgewählt",
+  "tabs.selection.count.many": "{count} ausgewählt",
+  "tabs.selection.count.other": "{count} ausgewählt",
+  "tabs.selection.drag_hint": "⇅ ziehen",
+  "tabs.selection.new_window": "In ein neues Fenster",
+  "tabs.selection.new_windows": "In neue Fenster",
+  "tabs.selection.close": "Auswahl schließen",
+  "tabs.selection.clear": "Auswahl aufheben",
+
+  "tabs.hint.select": "⇧ Klick / Ziehen",
+  "tabs.hint.select_tail": "— auswählen",
+  "tabs.hint.close": "⌘ Klick",
+  "tabs.hint.close_tail": "— schließen"
 }

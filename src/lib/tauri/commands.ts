@@ -36,6 +36,11 @@ export function syncOcdAlignmentMenu(enabled: boolean): void {
   invoke('sync_ocd_alignment_menu', { enabled }).catch(() => {});
 }
 
+/** Sets View → Tabs → Compact; harmless no-op outside Tauri. */
+export function syncTabsCompactMenu(enabled: boolean): void {
+  invoke('sync_tabs_compact_menu', { enabled }).catch(() => {});
+}
+
 const FILE_FILTERS = [
   { name: 'All Supported', extensions: ['md', 'markdown', 'txt', 'csv', 'json', 'yml', 'yaml', 'toml', 'py', 'rs', 'ts', 'js', 'sh', 'env'] },
   { name: 'Markdown', extensions: ['md', 'markdown', 'txt'] },

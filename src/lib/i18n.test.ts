@@ -156,6 +156,16 @@ describe('plural', () => {
     installCatalog('en');
     expect(plural(5, 'toast.session.windows')).toContain('5');
   });
+
+  // The drawer header reads «Окно #7 · 6 вкладок» (spec §6).
+  it('Ru_DrawerTabCount_UsesAllThreeForms', () => {
+    installCatalog('ru');
+    expect(plural(1, 'tabs.drawer.count')).toBe('1 вкладка');
+    expect(plural(3, 'tabs.drawer.count')).toBe('3 вкладки');
+    expect(plural(6, 'tabs.drawer.count')).toBe('6 вкладок');
+    expect(plural(21, 'tabs.drawer.count')).toBe('21 вкладка');
+    expect(plural(12, 'tabs.drawer.count')).toBe('12 вкладок');
+  });
 });
 
 describe('locales/*/app.json completeness', () => {

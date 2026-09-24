@@ -143,5 +143,51 @@
   "ui.ai_hint.text": "masquer la surbrillance des modifications IA",
 
   "dialog.external_change.title": "Modification externe",
-  "dialog.external_change.message": "Le fichier a été modifié de l'extérieur. Recharger et perdre vos modifications ?"
+  "dialog.external_change.message": "Le fichier a été modifié de l'extérieur. Recharger et perdre vos modifications ?",
+
+  "tabs.notch.title": "Onglets de la fenêtre #{n} — survolez, cliquez ou {key}",
+  "tabs.notch.aria": "Onglets de la fenêtre #{n}",
+  "tabs.notch.unviewed.one": "{count} non vu de l’IA",
+  "tabs.notch.unviewed.few": "{count} non vus de l’IA",
+  "tabs.notch.unviewed.many": "{count} non vus de l’IA",
+  "tabs.notch.unviewed.other": "{count} non vus de l’IA",
+
+  "tabs.drawer.window": "Fenêtre",
+  "tabs.drawer.count.one": "{count} onglet",
+  "tabs.drawer.count.few": "{count} onglets",
+  "tabs.drawer.count.many": "{count} onglets",
+  "tabs.drawer.count.other": "{count} onglets",
+  "tabs.drawer.select_hint": "⇧ — sélectionner",
+  "tabs.drawer.type_hint": "tapez pour chercher",
+  "tabs.drawer.sort_label": "Ranger :",
+  "tabs.drawer.sort_opened": "ouverture",
+  "tabs.drawer.sort_opened_title": "Ouverts récemment en premier",
+  "tabs.drawer.sort_viewed": "consultation",
+  "tabs.drawer.sort_viewed_title": "Consultés récemment en premier",
+  "tabs.drawer.sort_ai": "IA",
+  "tabs.drawer.sort_ai_title": "Onglets de l’IA non vus en premier",
+  "tabs.drawer.search_count": "{shown} sur {total}",
+  "tabs.drawer.search_reset": "échap — effacer",
+  "tabs.drawer.empty": "Aucun résultat",
+  "tabs.drawer.in_text": "dans le texte :",
+
+  "tabs.card.unsaved": "non enregistré",
+  "tabs.card.ai_chip": "✦ de l’IA",
+  "tabs.card.close": "Fermer {name}",
+  "tabs.card.close_title": "Fermer (⌘-clic)",
+
+  "tabs.selection.count.one": "{count} sélectionné",
+  "tabs.selection.count.few": "{count} sélectionnés",
+  "tabs.selection.count.many": "{count} sélectionnés",
+  "tabs.selection.count.other": "{count} sélectionnés",
+  "tabs.selection.drag_hint": "⇅ glisser",
+  "tabs.selection.new_window": "Vers une nouvelle fenêtre",
+  "tabs.selection.new_windows": "Vers de nouvelles fenêtres",
+  "tabs.selection.close": "Fermer la sélection",
+  "tabs.selection.clear": "Désélectionner",
+
+  "tabs.hint.select": "⇧ clic / glisser",
+  "tabs.hint.select_tail": "— sélection",
+  "tabs.hint.close": "⌘ clic",
+  "tabs.hint.close_tail": "— fermer"
 }

@@ -234,6 +234,21 @@ export function createLineGlowStore() {
   };
 }
 
+/** View → Tabs → Compact (spec §6): one-line drawer cards. Off by default. */
+export function createTabsCompactStore() {
+  let enabled = $state<boolean>(loadSetting('tabsCompact', false));
+
+  return {
+    get enabled() {
+      return enabled;
+    },
+    set(value: boolean) {
+      enabled = value;
+      saveSetting('tabsCompact', enabled);
+    },
+  };
+}
+
 /**
  * Масштаб всего окна. Шаг и применение живут в `window-zoom.ts` — здесь только
  * состояние и его сохранение.
@@ -292,6 +307,11 @@ let windowNumber = $state<number | null>(null);
 
 export function setWindowNumber(n: number | null): void {
   windowNumber = n;
+}
+
+/** `#N` of this window; reactive when read from a template or an effect. */
+export function getWindowNumber(): number | null {
+  return windowNumber;
 }
 
 export function createFileState() {
