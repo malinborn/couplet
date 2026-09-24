@@ -327,7 +327,7 @@
         console.error('tab_claim failed:', err);
         return null;
       });
-      const step = decideSaveAs(claim);
+      const step = decideSaveAs(claim, path);
       if (step.kind === 'blocked') {
         toasts.push({ kind: 'save-as-blocked', fileName, reason: step.reason });
         if (step.focusOtherWindow) {
@@ -335,13 +335,13 @@
         }
         return;
       }
-      fileState.filePath = path;
-      tabs.renameActive(path);
+      fileState.filePath = step.path;
+      tabs.renameActive(step.path);
       await performSave();
-      // The claim pointed the watcher at `path` before the save created it,
+      // The claim pointed the watcher at the path before the save created it,
       // and a file that does not exist yet is not watched.
       await invoke('tab_activate', { tabId }).catch(logTabIpc('tab_activate'));
-      recentFiles.add(path);
+      recentFiles.add(step.path);
     });
   }
 

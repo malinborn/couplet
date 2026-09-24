@@ -122,12 +122,28 @@ fn live_windows(app: &AppHandle) -> impl Fn(&str) -> bool + '_ {
     move |label| app.get_webview_window(label).is_some()
 }
 
+/// An answer plus the path as the registry spells it
+/// (`path_norm::normalize_str`), which the frontend adopts for its tab: an
+/// agent names the file by that spelling, and the frontend finds its tabs by
+/// path. `None` for an untitled tab.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub struct WithPath<T> {
+    #[serde(flatten)]
+    pub answer: T,
+    pub path: Option<String>,
+}
+
+// The tab commands below are the registry's door for paths from the
+// frontend (⌘O, Save As, Recent Files): each normalizes before it takes the
+// `OpenFiles` lock, never under it.
+
 #[tauri::command]
 pub async fn tab_owner(
     app: AppHandle,
     window: tauri::WebviewWindow,
     path: String,
 ) -> Result<TabOwner, String> {
+    let path = crate::path_norm::normalize_str(&path);
     let open_files = app.state::<OpenFiles>();
     let reg = open_files.0.lock().unwrap();
     Ok(owner_for(&reg, &path, window.label(), live_windows(&app)))
@@ -138,19 +154,21 @@ pub async fn tab_open(
     app: AppHandle,
     window: tauri::WebviewWindow,
     path: Option<String>,
-) -> Result<TabOpened, String> {
+) -> Result<WithPath<TabOpened>, String> {
+    let path = path.as_deref().map(crate::path_norm::normalize_str);
     let open_files = app.state::<OpenFiles>();
     let mut reg = open_files.0.lock().unwrap();
     let pending = app.state::<PendingFiles>();
     let mut pending = pending.0.lock().unwrap();
-    Ok(open_tab(
+    let answer = open_tab(
         &mut reg,
         &mut pending,
         window.label(),
         path.as_deref(),
         crate::session::new_tab_id(),
         live_windows(&app),
-    ))
+    );
+    Ok(WithPath { answer, path })
 }
 
 #[tauri::command]
@@ -159,7 +177,8 @@ pub async fn tab_claim(
     window: tauri::WebviewWindow,
     tab_id: String,
     path: String,
-) -> Result<TabClaim, String> {
+) -> Result<WithPath<TabClaim>, String> {
+    let path = crate::path_norm::normalize_str(&path);
     let label = window.label().to_string();
     let open_files = app.state::<OpenFiles>();
     let mut reg = open_files.0.lock().unwrap();
@@ -173,7 +192,7 @@ pub async fn tab_claim(
     if claim == TabClaim::Claimed && is_active {
         window::set_watcher(&app, &label, Some(&path));
     }
-    Ok(claim)
+    Ok(WithPath { answer: claim, path: Some(path) })
 }
 
 /// A tab that never came to show its file (an aborted open, an unreadable
@@ -408,5 +427,77 @@ mod tests {
         assert_eq!(serde_json::to_string(&TabOwner::None).unwrap(), r#"{"kind":"none"}"#);
         assert_eq!(serde_json::to_string(&TabClaim::Claimed).unwrap(), r#"{"kind":"claimed"}"#);
         assert_eq!(serde_json::to_string(&TabClaim::Refused).unwrap(), r#"{"kind":"refused"}"#);
+        assert_eq!(
+            serde_json::to_string(&WithPath { answer: TabOpened::Created { tab_id: "t1".to_string() }, path: Some("/a.md".to_string()) })
+                .unwrap(),
+            r#"{"kind":"created","tabId":"t1","path":"/a.md"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&WithPath { answer: TabClaim::Claimed, path: Some("/a.md".to_string()) }).unwrap(),
+            r#"{"kind":"claimed","path":"/a.md"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&WithPath { answer: TabOpened::Created { tab_id: "u".to_string() }, path: None }).unwrap(),
+            r#"{"kind":"created","tabId":"u","path":null}"#
+        );
+    }
+
+    /// `<tmp>/<unique>/real/a.md` and `<tmp>/<unique>/link -> real`.
+    fn linked_file() -> (std::path::PathBuf, std::path::PathBuf) {
+        let base = std::env::temp_dir().join(format!("mdmini-tabcmd-{}", crate::session::new_tab_id()));
+        let real = base.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("a.md"), "x").unwrap();
+        std::os::unix::fs::symlink(&real, base.join("link")).unwrap();
+        (real.join("a.md"), base.join("link").join("a.md"))
+    }
+
+    // The commands normalize with `normalize_str` before they lock; these
+    // follow the same two steps.
+    use crate::path_norm::normalize_str;
+
+    #[test]
+    fn a_tab_opened_by_one_spelling_is_found_by_the_other() {
+        let (real, linked) = linked_file();
+        let mut reg = TabRegistry::new();
+        let path = normalize_str(linked.to_str().unwrap());
+        assert_eq!(
+            open_tab(&mut reg, &mut HashMap::new(), "main", Some(&path), "t1".to_string(), |_| true),
+            TabOpened::Created { tab_id: "t1".to_string() }
+        );
+        assert_eq!(
+            owner_for(&reg, &normalize_str(real.to_str().unwrap()), "editor-2", |_| true),
+            TabOwner::OtherWindow { label: "main".to_string() }
+        );
+        let _ = std::fs::remove_dir_all(real.parent().unwrap().parent().unwrap());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn slash_tmp_and_slash_private_tmp_name_one_tab() {
+        let name = format!("mdmini-tabcmd-{}.md", crate::session::new_tab_id());
+        let file = format!("/tmp/{name}");
+        std::fs::write(&file, "x").unwrap();
+        let mut reg = TabRegistry::new();
+        open_tab(&mut reg, &mut HashMap::new(), "main", Some(&normalize_str(&file)), "t1".to_string(), |_| true);
+        let owner = owner_for(&reg, &normalize_str(&format!("/private/tmp/{name}")), "main", |_| true);
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(owner, TabOwner::ThisWindow { tab_id: "t1".to_string() });
+    }
+
+    #[test]
+    fn a_claim_of_a_symlinked_spelling_is_refused_while_the_real_path_is_held_elsewhere() {
+        let (real, linked) = linked_file();
+        let mut reg = reg_with(&[("editor-2", "x", None), ("main", "a", None)]);
+        assert_eq!(
+            claim_path(&mut reg, &mut HashMap::new(), "editor-2", "x", &normalize_str(real.to_str().unwrap()), |_| true),
+            TabClaim::Claimed
+        );
+        assert_eq!(
+            claim_path(&mut reg, &mut HashMap::new(), "main", "a", &normalize_str(linked.to_str().unwrap()), |_| true),
+            TabClaim::OtherWindow { label: "editor-2".to_string() }
+        );
+        assert_eq!(reg.tab_path("main", "a"), None, "nothing claimed");
+        let _ = std::fs::remove_dir_all(real.parent().unwrap().parent().unwrap());
     }
 }

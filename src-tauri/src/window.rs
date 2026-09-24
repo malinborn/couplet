@@ -217,8 +217,10 @@ pub fn queue_tab(
     Handover::Pending
 }
 
-/// `queue_tab` for a live app.
-pub fn hand_over_tab(app: &AppHandle, label: &str, tab: PendingTab) -> Handover {
+/// `queue_tab` for a live app. The tab's path is normalized first, outside
+/// the locks — this is how ⌘⇧T and launch files reach a window.
+pub fn hand_over_tab(app: &AppHandle, label: &str, mut tab: PendingTab) -> Handover {
+    tab.path = tab.path.map(|p| crate::path_norm::normalize_str(&p));
     let open_files = app.state::<OpenFiles>();
     let mut reg = open_files.0.lock().unwrap();
     let pending = app.state::<PendingFiles>();
@@ -400,6 +402,10 @@ pub(crate) fn try_open_file_window_with(
     path: Option<String>,
     activation: Activation,
 ) -> Result<Opened, String> {
+    // Every window open funnels through here (the frontend's
+    // `open_file_window_cmd` included): the file gets its one spelling
+    // before the registry sees it.
+    let path = path.map(|p| crate::path_norm::normalize_str(&p));
     if let Some(ref file_path) = path {
         let open_files = app.state::<OpenFiles>();
         let mut reg = open_files.0.lock().unwrap();
@@ -877,14 +883,16 @@ pub(crate) fn reveal(win: &tauri::WebviewWindow) {
 /// another window holds, so the same file never ends up open — and
 /// autosaving — in two windows at once.
 ///
-/// `path` is looked up exactly as given, like every other `OpenFiles` lookup:
-/// the map is keyed by the string each window registered, never canonicalized.
+/// `OpenFiles` is keyed by the exact string each window registered, and every
+/// entry registers the normalized spelling (`path_norm`): `path` is
+/// normalized first, like any other path arriving from the frontend.
 #[tauri::command]
 pub async fn focus_if_open(
     app: AppHandle,
     window: tauri::WebviewWindow,
     path: String,
 ) -> Result<bool, String> {
+    let path = crate::path_norm::normalize_str(&path);
     let label = window.label().to_string();
     let target = {
         let open_files = app.state::<OpenFiles>();

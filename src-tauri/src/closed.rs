@@ -266,9 +266,13 @@ pub fn reopen_closed(app: &tauri::AppHandle) -> bool {
             .is_some_and(|label| app.get_webview_window(&label).is_some())
     };
     let stack = app.state::<ClosedStack>();
-    let Some(entry) = stack.pop_live(|p| std::path::Path::new(p).exists() && !is_open(p)) else {
+    let is_open = |p: &str| is_open(&crate::path_norm::normalize_str(p));
+    let Some(mut entry) = stack.pop_live(|p| std::path::Path::new(p).exists() && !is_open(p)) else {
         return false;
     };
+    // Recorded from the registry, so normally spelled right already; this is
+    // the one door every reopen passes, and both branches below register it.
+    entry.path = crate::path_norm::normalize_str(&entry.path);
     let is_live = |label: &str| app.get_webview_window(label).is_some();
     match stack.target_for(&entry.label, is_live) {
         ReopenTarget::Window(label) => {

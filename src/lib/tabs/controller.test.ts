@@ -389,6 +389,22 @@ describe('openPath', () => {
     expect(h.ids()).toEqual(['a']);
   });
 
+  it('ANewTabTakesThePathAsRustRegisteredIt', async () => {
+    // `/tmp` is a symlink on macOS: Rust registers `/private/tmp/b.md`, and
+    // an agent names the file that way — the tab must answer to it.
+    const h = await started({ '/a.md': 'AAAA', '/tmp/b.md': 'BBBB' }, [fileTab('a', '/a.md')]);
+    vi.mocked(h.deps.rust.open).mockResolvedValueOnce({ kind: 'created', tabId: 't9', path: '/private/tmp/b.md' });
+
+    await h.controller.openPath('/tmp/b.md');
+
+    expect(h.controller.list.tabs.find((t) => t.id === 't9')?.path).toBe('/private/tmp/b.md');
+    expect(h.deps.entered).toHaveBeenLastCalledWith('/private/tmp/b.md', true);
+    vi.mocked(h.deps.rust.open).mockClear();
+    await h.controller.openPath('/private/tmp/b.md');
+    expect(h.deps.rust.open).not.toHaveBeenCalled();
+    expect(h.active()).toBe('t9');
+  });
+
   it('AppliesAGivenPositionToTheNewTab', async () => {
     const h = await started({ '/a.md': 'AAAA', '/b.md': 'BBBB' }, [fileTab('a', '/a.md')]);
     await h.controller.openPath('/b.md', { cursor: 2, topLine: 3 });

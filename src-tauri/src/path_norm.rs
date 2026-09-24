@@ -50,6 +50,13 @@ pub(crate) fn normalize_path(path: &Path) -> PathBuf {
     }
 }
 
+/// `normalize_path` for a path the registry keys on — a `String` in, a
+/// `String` out. Never call it under the `OpenFiles` lock: it asks the file
+/// system, which may be a slow network volume.
+pub(crate) fn normalize_str(path: &str) -> String {
+    normalize_path(Path::new(path)).to_string_lossy().into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

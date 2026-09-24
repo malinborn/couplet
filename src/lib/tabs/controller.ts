@@ -53,9 +53,12 @@ export interface TabReport {
   unviewed: boolean;
 }
 
-/** What `tab_open` answers. */
+/**
+ * What `tab_open` answers. `path` on `created`: the file as the registry
+ * spells it (normalized), which the new tab takes — agents name it that way.
+ */
 export type OpenAnswer =
-  | { kind: 'created'; tabId: string }
+  | { kind: 'created'; tabId: string; path?: string | null }
   | { kind: 'this-window'; tabId: string }
   | { kind: 'other-window'; label: string }
   /** Rust could not be asked; no tab was registered, so none may be shown. */
@@ -502,7 +505,7 @@ export function createTabController(deps: TabControllerDeps) {
       }
       return;
     }
-    const tab = newMeta(answer.tabId, path);
+    const tab = newMeta(answer.tabId, answer.path ?? path);
     const shown = await showClaimed(tab, { kind: 'fresh', content, exists }, position, () => {
       const previous = activeTab(list);
       // Re-checked here, after the last await: text typed into the blank tab

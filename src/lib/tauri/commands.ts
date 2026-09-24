@@ -89,7 +89,8 @@ export interface WindowInit {
 
 /** What `tab_claim` answers (Save As). Matches `TabClaim` in src-tauri/src/tab_commands.rs. */
 export type TabClaim =
-  | { kind: 'claimed' }
+  /** `path`: the file as the registry spells it (normalized) — the tab takes that one. */
+  | { kind: 'claimed'; path?: string | null }
   | { kind: 'this-window'; tabId: string }
   | { kind: 'other-window'; label: string }
   /** The tab id is another window's: nothing was claimed. */

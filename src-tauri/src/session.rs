@@ -623,7 +623,30 @@ pub fn read_session() -> Option<Session> {
     let current = read(SESSION_FILE);
     let legacy = read(LEGACY_SESSION_FILE);
     let session = choose_session(current.as_deref(), legacy.as_deref())?;
+    let session = with_paths_normalized(session, crate::path_norm::normalize_str);
     Some(prune_missing(session, |p| std::path::Path::new(p).exists()))
+}
+
+/// Every file path and project of `session` through `normalize`, before any
+/// of it is registered: a session written before paths were normalized holds
+/// `/tmp/a.md` where agents now send `/private/tmp/a.md` — one file, two tabs.
+pub fn with_paths_normalized(session: Session, normalize: impl Fn(&str) -> String) -> Session {
+    let Session {
+        version,
+        saved_at,
+        mut windows,
+    } = session;
+    for w in &mut windows {
+        w.project = w.project.as_deref().map(&normalize);
+        for t in &mut w.tabs {
+            t.path = t.path.as_deref().map(&normalize);
+        }
+    }
+    Session {
+        version,
+        saved_at,
+        windows,
+    }
 }
 
 pub fn read_untitled(file_name: &str) -> Option<String> {
@@ -1008,6 +1031,28 @@ mod tests {
         let older_v1 = r#"{"version":1,"savedAt":4,"windows":[{"path":"/v1.md","x":0,"y":0,"width":9,"height":9}]}"#;
         let s = choose_session(Some(&v2), Some(older_v1)).unwrap();
         assert_eq!(s.windows[0].tabs[0].path.as_deref(), Some("/v2.md"), "an older v1 still loses");
+    }
+
+    #[test]
+    fn a_session_with_an_old_spelling_restores_to_the_normalized_one() {
+        let mut w = window(vec![tab("a", Some("/nope-s/../nope-a.md")), tab("u", None)]);
+        w.project = Some("/nope-s/./proj".to_string());
+        let v2 = serde_json::to_string(&session(vec![w])).unwrap();
+        let s = with_paths_normalized(choose_session(Some(&v2), None).unwrap(), crate::path_norm::normalize_str);
+        assert_eq!(s.windows[0].tabs[0].path.as_deref(), Some("/nope-a.md"));
+        assert_eq!(s.windows[0].tabs[1].path, None, "an untitled tab stays untitled");
+        assert_eq!(s.windows[0].project.as_deref(), Some("/nope-s/proj"));
+
+        let v1 = r#"{"version":1,"savedAt":0,"windows":[{"path":"/nope-s/./v1.md","x":0,"y":0,"width":9,"height":9}]}"#;
+        let s = with_paths_normalized(choose_session(None, Some(v1)).unwrap(), crate::path_norm::normalize_str);
+        assert_eq!(s.windows[0].tabs[0].path.as_deref(), Some("/nope-s/v1.md"), "a migrated v1 too");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_slash_tmp_tab_from_an_older_session_restores_as_slash_private_tmp() {
+        let s = with_paths_normalized(session(vec![window(vec![tab("a", Some("/tmp/nope-s.md"))])]), crate::path_norm::normalize_str);
+        assert_eq!(s.windows[0].tabs[0].path.as_deref(), Some("/private/tmp/nope-s.md"));
     }
 
     #[test]
