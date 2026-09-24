@@ -27,6 +27,7 @@
   import ToastStack from './lib/ToastStack.svelte';
   import AiHintBadge from './lib/AiHintBadge.svelte';
   import AiBindButton from './lib/AiBindButton.svelte';
+  import TabListTemp from './lib/TabListTemp.svelte';
   import { createToastStore } from './lib/toasts.svelte';
   import { shouldShowHint, nextCheckDelay } from './lib/ai-hint';
   import { previewCompartment, lineGlowCompartment } from './lib/editor/setup';
@@ -2225,6 +2226,14 @@
 <AiHintBadge visible={showAiHint} />
 
 <AiBindButton onclick={copyBindPrompt} />
+
+<!-- TEMPORARY (tabs plan 02) — replaced by plan 03's drawer. -->
+<TabListTemp
+  list={tabList}
+  activeDirty={fileState.isDirty}
+  onactivate={(tabId) => void tabs.activate(tabId)}
+  onclose={(tabId) => void tabs.closeTab(tabId)}
+/>
 
 {#if showRecentFiles}
   <RecentFilesPanel
