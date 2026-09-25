@@ -19,7 +19,7 @@ couplet contains no AI of its own and talks to no cloud. It exposes a local Unix
 ```bash
 brew tap malinborn/mdmini
 brew trust malinborn/mdmini
-brew install --cask mdmini
+brew install --cask couplet
 ```
 
 Or download the universal `.dmg` from [Releases](https://github.com/malinborn/couplet/releases) — one build for Apple Silicon and Intel.
@@ -27,7 +27,7 @@ Or download the universal `.dmg` from [Releases](https://github.com/malinborn/co
 Upgrade later with:
 
 ```bash
-brew update && brew upgrade --cask mdmini
+brew update && brew upgrade --cask couplet
 ```
 
 ### Known limitation: macOS asks for folder access again after an update

@@ -29,7 +29,7 @@ import './styles/demo-showcase.css';
 import { initHeroAurora } from './hero-aurora';
 
 const THEME_KEY = 'couplet-site:theme';
-const INSTALL_CMD = 'brew tap malinborn/mdmini && brew trust malinborn/mdmini && brew install --cask mdmini';
+const INSTALL_CMD = 'brew tap malinborn/mdmini && brew trust malinborn/mdmini && brew install --cask couplet';
 
 type ThemeMode = 'auto' | 'dark' | 'light';
 

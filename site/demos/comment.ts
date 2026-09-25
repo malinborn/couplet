@@ -14,8 +14,8 @@ import { mountDemoEditor, prefersReducedMotion } from './editor-demo';
  *
  *   - the pasted prompt is the first line of `buildWatchPrompt()`
  *   - the Monitor call is what that prompt tells the agent to run
- *   - the `[couplet] …` wake-up line is a couplet-branded rendering of `event_line()` (src-tauri/src/watch.rs; the real backend still prints `[mdmini]` until the rename ships)
- *   - `couplet answer <doc> --id <id>` is the verb from docs/ai-interface.md (real CLI today: `mdmini answer`)
+ *   - the `[couplet] …` wake-up line is `event_line()` from src-tauri/src/watch.rs
+ *   - `couplet answer <doc> --id <id>` is the verb from docs/ai-interface.md
  *
  * Nothing here spawns or simulates an AI beyond replaying that transcript, and
  * the terminal labels the agent's rows explicitly so a visitor doesn't read

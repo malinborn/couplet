@@ -1,20 +1,20 @@
 ---
 name: brew-release
-description: Build, release, and publish a new mdmini version to Homebrew — version bump, changelog/site update, git tag, local universal .dmg build, GitHub release, and Homebrew cask update. Use when the user wants to release, ship, cut a version, or publish md-mini to Homebrew.
+description: Build, release, and publish a new couplet (formerly mdmini) version to Homebrew — version bump, changelog/site update, git tag, local universal .dmg build, GitHub release, and Homebrew cask update. Use when the user wants to release, ship, cut a version, or publish md-mini to Homebrew.
 ---
 
 # Brew Release
 
-End-to-end release of mdmini. There is **no CI** — the `.dmg` is built locally and everything is published by hand. Builds are **universal** (Apple Silicon + Intel) as of 1.0.1.
+End-to-end release of couplet (formerly md-mini/mdmini; renamed in 2.0.0). There is **no CI** — the `.dmg` is built locally and everything is published by hand. Builds are **universal** (Apple Silicon + Intel) as of 1.0.1.
 
 ## Facts
 
 | Thing | Value |
 |-------|-------|
 | App repo | `malinborn/couplet` (default branch `main`) |
-| Homebrew tap repo | `malinborn/homebrew-mdmini` (cask at `Casks/mdmini.rb`, branch `main`) |
-| Cask / CLI name | `mdmini` (app bundle is `md-mini.app`; dmg filename uses `md-mini`) |
-| dmg artifact | `md-mini_<version>_universal.dmg` |
+| Homebrew tap repo | `malinborn/homebrew-mdmini` (the tap keeps its old name; cask at `Casks/couplet.rb`, branch `main`). `cask_renames.json` maps `mdmini` → `couplet` — never delete it and never recreate `Casks/mdmini.rb`, or every 1.x user stops getting updates |
+| Cask / CLI name | `couplet`; the cask also links `mdmini` (alias) and `coup`. App bundle `couplet.app`, executable `Contents/MacOS/couplet` |
+| dmg artifact | `couplet_<version>_universal.dmg` |
 | Bundle output dir | `$CARGO_TARGET_DIR/universal-apple-darwin/release/bundle/` — **note `CARGO_TARGET_DIR` is set to `~/.cargo/shared-target`, so this is NOT under `src-tauri/target/`**. Resolve it with `cargo metadata --format-version 1 --no-deps --manifest-path src-tauri/Cargo.toml --jq '.target_directory'` rather than hardcoding. |
 | Version lives in | `package.json`, `package-lock.json`, `src-tauri/tauri.conf.json` (NOT `Cargo.toml` — stays `0.1.0`) |
 | Changelog / site | **source** `site/index.html`, **built** into `docs/` by `npm run build:site` |
@@ -77,30 +77,30 @@ git push origin v<version>
 
 ### 7. Build the universal dmg locally
 ```bash
-pkill -9 -f "debug/md-mini" 2>/dev/null   # stop any dev:app instance
+pkill -9 -f "debug/md-mini" 2>/dev/null   # stop any dev:app instance — the cargo crate (and so the debug binary) is still `md-mini`; `mainBinaryName` only renames the bundle executable
 npm run build:universal                    # tauri build --target universal-apple-darwin
 ```
 Needs both rustup targets: `rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
 
-Output: `<target-dir>/universal-apple-darwin/release/bundle/dmg/md-mini_<version>_universal.dmg`.
-`tauri build` does **not** install or run the app, so it does not disrupt a running production mdmini (unlike `tauri dev`).
+Output: `<target-dir>/universal-apple-darwin/release/bundle/dmg/couplet_<version>_universal.dmg`.
+`tauri build` does **not** install or run the app, so it does not disrupt a running production couplet (unlike `tauri dev`).
 
 Sanity-check both the bundled CLI and the architectures actually present:
 ```bash
-ls "$BUNDLE/macos/md-mini.app/Contents/Resources/bin/mdmini"
-lipo -archs "$BUNDLE/macos/md-mini.app/Contents/MacOS/md-mini"   # expect: x86_64 arm64
+ls "$BUNDLE/macos/couplet.app/Contents/Resources/bin/"   # expect: couplet mdmini coup
+lipo -archs "$BUNDLE/macos/couplet.app/Contents/MacOS/couplet"   # expect: x86_64 arm64
 ```
 `lipo -archs` is the one check that catches a silently arm64-only "universal" build.
 
 ### 8. sha256
 ```bash
-shasum -a 256 "$BUNDLE/dmg/md-mini_<version>_universal.dmg"
+shasum -a 256 "$BUNDLE/dmg/couplet_<version>_universal.dmg"
 ```
 
 ### 9. GitHub release
 ```bash
 gh release create v<version> \
-  "$BUNDLE/dmg/md-mini_<version>_universal.dmg" \
+  "$BUNDLE/dmg/couplet_<version>_universal.dmg" \
   --repo malinborn/couplet \
   --title "v<version> — <summary>" \
   --notes-file <notes.md>
@@ -115,29 +115,29 @@ the only thing standing between a mismatched hash and a broken
 
 ```bash
 curl -sL -o /tmp/verify.dmg \
-  "https://github.com/malinborn/couplet/releases/download/v<version>/md-mini_<version>_universal.dmg"
+  "https://github.com/malinborn/couplet/releases/download/v<version>/couplet_<version>_universal.dmg"
 shasum -a 256 /tmp/verify.dmg   # must equal the sha256 from step 8
 ```
 
 ### 10. Update the Homebrew cask
-In `malinborn/homebrew-mdmini`, edit `Casks/mdmini.rb` — change **only** `version "<version>"` and `sha256 "<new-sha>"` (the `url` uses interpolation, no edit needed).
+In `malinborn/homebrew-mdmini`, edit `Casks/couplet.rb` — change **only** `version "<version>"` and `sha256 "<new-sha>"` (the `url` uses interpolation, no edit needed).
 
 The migration to universal was done in 1.0.1 — the cask no longer has `depends_on arch: :arm64` and its url already says `_universal.dmg`. **Never reintroduce either**: `depends_on arch:` locks Intel users out no matter what you publish, and an `_aarch64` url 404s against a universal release.
 
 ```bash
-BLOB_SHA=$(gh api repos/malinborn/homebrew-mdmini/contents/Casks/mdmini.rb --jq '.sha')
+BLOB_SHA=$(gh api repos/malinborn/homebrew-mdmini/contents/Casks/couplet.rb --jq '.sha')
 # edit version + sha256, base64 the file, then:
-gh api -X PUT repos/malinborn/homebrew-mdmini/contents/Casks/mdmini.rb \
-  -f message="chore: bump mdmini to <version>" \
+gh api -X PUT repos/malinborn/homebrew-mdmini/contents/Casks/couplet.rb \
+  -f message="chore: bump couplet to <version>" \
   -f content="<base64 of new cask>" -f sha="$BLOB_SHA"
 ```
 
 ### 11. Verify
 ```bash
 gh release view v<version> --json assets --jq '[.assets[].name]'
-gh api repos/malinborn/homebrew-mdmini/contents/Casks/mdmini.rb --jq '.content' | base64 -d | grep -E 'version|sha256|depends_on|url'
+gh api repos/malinborn/homebrew-mdmini/contents/Casks/couplet.rb --jq '.content' | base64 -d | grep -E 'version|sha256|depends_on|url|binary'
 ```
-User upgrades with `brew update && brew upgrade --cask mdmini` — **suggest it, don't run it yourself**; it replaces their installed app.
+User upgrades with `brew update && brew upgrade --cask couplet` (1.x users can still type `mdmini`; `cask_renames.json` resolves it) — **suggest it, don't run it yourself**; it replaces their installed app.
 
 ## Notes / Gotchas
 
@@ -147,7 +147,7 @@ User upgrades with `brew update && brew upgrade --cask mdmini` — **suggest it,
 - **`docs/` is generated; `site/` is the source.** This bit the runbook itself — step 4 used to say the changelog "lives in `docs/index.html`", which is true of the served file and false of the one to edit. `vite.config.site.ts`: `root: site/`, `outDir: docs/`, `emptyOutDir: false`. A hand-edit to `docs/index.html` survives right up until the next `npm run build:site` erases it, which is the kind of trap that reads authoritative and costs an hour.
 - **Never pass a `bool` literal to an Objective-C API.** `objc`'s `BOOL` is `bool` on aarch64 but `i8` elsewhere, so `foo_(true)` compiles on Apple Silicon and breaks the x86_64 half of the universal build. Use `cocoa::base::YES`/`NO`. `npm run check:x86` catches this in seconds; it is the reason Intel was broken through 1.0.
 - **`CARGO_TARGET_DIR` is redirected** to `~/.cargo/shared-target`, so bundle paths are *not* under `src-tauri/target/`. Resolve the dir, don't hardcode it.
-- **dmg filename uses `md-mini`** (`md-mini_X.Y.Z_universal.dmg`), but the cask/CLI name is `mdmini`.
+- **Names since 2.0.0:** dmg `couplet_X.Y.Z_universal.dmg`, cask/CLI `couplet`. Releases ≤1.3.0 are `md-mini_X.Y.Z_universal.dmg` under the `mdmini` cask — don't rename those assets, old caskfiles still point at them.
 - **Committed broken symlinks.** `src-tauri/target` (and sometimes `node_modules`) have historically been tracked as self-referential absolute symlinks despite `.gitignore`. Stage release files **explicitly** (never `git add -A`) so a typechange can't leak into the release commit.
 - **No `latest.json` / updater** wired up (see `docs/distribution.md` section 2) — just the dmg + cask, no signature step. The in-app update notice polls the GitHub releases API instead.
 - The cask has a `postflight` that strips the quarantine xattr (unsigned app).
