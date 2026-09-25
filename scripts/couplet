@@ -6,6 +6,26 @@ SOCK="/tmp/pro_couplet_app_si.sock"
 PENDING="/tmp/couplet-pending-files"
 CMD_SOCK="/tmp/couplet_cmd.sock"
 
+# `--version` / `-V` answer from the bundle's Info.plist, never through the
+# binary: that is an app launch — it would start couplet, or hand `--version`
+# to the running one, which opens an empty window and prints nothing. The
+# plist is there whether or not the app runs.
+if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-V" ]; then
+  # The existence check is not redundant: on a missing file PlistBuddy prints
+  # "File Doesn't Exist, Will Create" to STDOUT, which would read as a version.
+  plist="$APP/Contents/Info.plist"
+  version=""
+  if [ -f "$plist" ]; then
+    version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist" 2>/dev/null)" || version=""
+  fi
+  if [ -z "$version" ]; then
+    echo "couplet: cannot read the version from $APP" >&2
+    exit 1
+  fi
+  echo "couplet $version"
+  exit 0
+fi
+
 # Make sure the running app's command socket is up, launching the app if it
 # is not (no pending-files handoff needed — the request itself carries the
 # file). Exits the script with an error line if it never comes up.

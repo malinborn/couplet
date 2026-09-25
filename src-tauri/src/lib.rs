@@ -859,4 +859,63 @@ mod cli_script_tests {
     fn pending_files_path_is_the_one_the_app_reads() {
         assert_eq!(var("PENDING"), super::PENDING_FILES_PATH);
     }
+
+    /// Runs a copy of the script whose `APP` points at a fake bundle under a
+    /// scratch dir. The fake binary leaves a file behind if anything runs it.
+    #[cfg(target_os = "macos")]
+    fn run_against_fake_bundle(tag: &str, version: Option<&str>, arg: &str) -> (std::process::Output, bool) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("couplet-cli-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let app = dir.join("couplet.app");
+        let macos = app.join("Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        if let Some(version) = version {
+            std::fs::write(
+                app.join("Contents/Info.plist"),
+                format!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
+                     <key>CFBundleShortVersionString</key><string>{version}</string></dict></plist>\n"
+                ),
+            )
+            .unwrap();
+        }
+        let ran = dir.join("binary-ran");
+        let bin = macos.join("couplet");
+        std::fs::write(&bin, format!("#!/bin/sh\ntouch '{}'\n", ran.display())).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let script: String = SCRIPT
+            .lines()
+            .map(|l| if l.starts_with("APP=\"") { format!("APP=\"{}\"", app.display()) } else { l.to_string() })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let script_path = dir.join("couplet");
+        std::fs::write(&script_path, script).unwrap();
+
+        let out = std::process::Command::new("bash").arg(&script_path).arg(arg).output().unwrap();
+        let binary_ran = ran.exists();
+        let _ = std::fs::remove_dir_all(&dir);
+        (out, binary_ran)
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn version_is_read_from_the_bundle_and_never_launches_the_app() {
+        for arg in ["--version", "-V"] {
+            let (out, binary_ran) = run_against_fake_bundle("version", Some("9.8.7"), arg);
+            assert!(out.status.success(), "{arg}: {out:?}");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "couplet 9.8.7\n", "{arg}");
+            assert!(!binary_ran, "{arg} must not run the app binary");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn version_without_a_bundle_fails_instead_of_launching() {
+        let (out, binary_ran) = run_against_fake_bundle("no-plist", None, "--version");
+        assert_eq!(out.status.code(), Some(1));
+        assert!(out.stdout.is_empty());
+        assert!(!binary_ran);
+    }
 }
