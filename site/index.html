@@ -53,7 +53,7 @@
     "url": "https://couplet.pro/",
     "downloadUrl": "https://github.com/malinborn/couplet/releases",
     "sameAs": ["https://github.com/malinborn/couplet"],
-    "softwareVersion": "1.3.0",
+    "softwareVersion": "2.0.0",
     "license": "https://opensource.org/licenses/GPL-3.0"
   }
   </script>
@@ -457,6 +457,27 @@
       <div class="changelog-list">
 
         <details class="changelog-entry" open>
+          <summary class="changelog-summary">
+            <span class="changelog-version">v2.0.0</span>
+            <span class="changelog-date">2026-09-25</span>
+            <span class="changelog-tag feature">feature</span>
+            <span class="changelog-title">md-mini is now couplet &mdash; and it brought tabs</span>
+          </summary>
+          <ul class="changelog-body-list">
+            <li><strong>md-mini is now couplet</strong> &mdash; there are two apps called mdmini, and the other one has mdmini.com. Two small editors under one name meant confused searches, downloads of the wrong thing and bug reports about someone else&rsquo;s program, so we stepped aside rather than fight over it. The name also stopped telling the truth: this began as a minimalist markdown editor and became a page you and your agent work on together. A couplet is two lines that read as one</li>
+            <li><strong>Your data moves on first launch</strong> &mdash; windows and tabs, caret positions, unsaved drafts, crash copies, theme and recent files go from md-mini&rsquo;s folder into couplet&rsquo;s, and md-mini&rsquo;s folder keeps a note saying where they went. If md-mini is still running, couplet asks it to quit first instead of copying data out from under it. <code>brew upgrade --cask mdmini</code> still works and moves you onto the <code>couplet</code> cask</li>
+            <li><strong>The old name keeps working</strong> &mdash; <code>mdmini</code> is an alias for <code>couplet</code>, and <code>coup</code> is the short one, so scripts, aliases and <code>$EDITOR</code> need no edits. An MCP server registered as <code>mdmini</code> still answers with the same tools. Restart agent sessions opened before the upgrade: they still talk to md-mini&rsquo;s socket</li>
+            <li><strong>Your agent moves over in one step</strong> &mdash; <code>AI &rarr; Teach Your AI couplet</code> hands over a prompt that now also cleans up the md-mini setup: it registers <code>couplet</code> instead of <code>mdmini</code>, replaces the old skill (and keeps it if you edited it by hand), rewrites the note in <code>CLAUDE.md</code>, and tells you what it changed. Installed from the DMG? Delete <code>md-mini.app</code> &mdash; opened by accident, it would start empty</li>
+            <li><strong>Tabs</strong> &mdash; <code>&#8984;T</code>, <code>&#8984;W</code>, <code>&#8984;1</code>&hellip;<code>&#8984;9</code>, <code>&#8963;Tab</code>. A file lives in one tab across the whole app, so opening it again focuses it instead of making a copy. Windows are numbered <code>#N</code>; the notch on the left edge opens the tab drawer with <code>&#8984;J</code> and glints while a tab your agent opened is unread. <code>&#8984;&#8679;T</code> brings back the last closed tab, caret included</li>
+            <li><strong><code>&#8984;Z</code> stays in its own document</strong> &mdash; after <code>&#8984;O</code> or a Recent file, undo could write the previous document&rsquo;s text into the new one: the inverse of a deletion survived the swap. History is rebuilt on every switch now, and the last few hundred milliseconds of typing are saved before it rather than dropped</li>
+            <li><strong>Six languages</strong> &mdash; English, Spanish, German, French, Russian and Simplified Chinese, taken from your system on first launch, with Language and Check for Updates&hellip; in the app menu. Changing the language restarts the app: rebuilding the native menu in place would have meant four new places for a silent mismatch</li>
+            <li><strong>Paper and Ink, and a Dock that follows the theme</strong> &mdash; <em>Paper</em> is ink on paper, and the same paper at night in sepia, with coral only for what you change. <em>Ink</em> is cream on ink with a coral caret that glows. The Dock icon now takes the colours of whichever of the six families is on screen, both halves; the Finder icon stays the default, because writing into an ad-hoc signed bundle would break its signature. <code>/theme</code> in the slash menu switches themes live as you arrow through the list</li>
+            <li><strong>Zoom scales the whole window</strong> &mdash; <code>&#8984;+</code>/<code>&#8984;&minus;</code> set a font size the editor overrode, so the only thing that ever grew was the slash-menu tooltip. It is page zoom now: text, tables, diagrams and toasts scale and rewrap</li>
+            <li><strong>Files with Windows line endings open</strong> &mdash; a CRLF file opened as an empty Untitled window with no error: the caret was placed past the end of a document CodeMirror had already shortened. Line endings are normalised on read and restored on save, a failed open now says so, and your own saves no longer trigger the &ldquo;External Change&rdquo; dialog &mdash; they were recognised by a 600&nbsp;ms timer that could lose the race to the file-system event, and are recognised by content now</li>
+          </ul>
+        </details>
+
+        <details class="changelog-entry">
           <summary class="changelog-summary">
             <span class="changelog-version">v1.3.0</span>
             <span class="changelog-date">2026-09-21</span>
