@@ -398,7 +398,8 @@ pub(crate) fn connect_doc() -> String {
 /// only set once per process.
 ///
 /// Внешний забор — четыре бэктика: внутри промпта есть свои тройные блоки.
-/// `PROMPT_INTRO`, `PROMPT_VERIFY`, `CONFIG_BLOCK` и сниппеты `ai_socket`
+/// `PROMPT_OPENING`, `PROMPT_MIGRATION_STEP`, `PROMPT_INTRO`, `PROMPT_VERIFY`,
+/// `CONFIG_BLOCK` и сниппеты `ai_socket`
 /// остаются английскими в любом языке — это промпт для агента и он должен
 /// совпадать байт в байт с тем, что печатает `couplet agent`.
 pub(crate) fn connect_doc_for(lang: &str) -> String {
@@ -434,6 +435,8 @@ pub(crate) fn connect_doc_for(lang: &str) -> String {
 
     d.push_str(&format!("## {}\n\n", heading_prompt));
     d.push_str(&format!("{}\n\n````\n", t("doc.connect.copy_instruction")));
+    d.push_str(PROMPT_OPENING);
+    d.push_str(PROMPT_MIGRATION_STEP);
     d.push_str(PROMPT_INTRO);
     d.push_str(
         r#"
@@ -456,6 +459,7 @@ pub(crate) fn connect_doc_for(lang: &str) -> String {
         t("doc.connect.back_to_it"),
         slug_prompt,
     ));
+    d.push_str(PROMPT_OPENING);
     d.push_str(PROMPT_INTRO);
     d.push_str(
         r#"
@@ -474,20 +478,43 @@ pub(crate) fn connect_doc_for(lang: &str) -> String {
     d
 }
 
-/// Первые два шага обоих промптов — они одинаковы; различается только третий.
-/// Остаётся английским во всех языках: это текст промпта для агента.
-const PROMPT_INTRO: &str = r#"Set up couplet for me. Do the steps in order, then tell me in one
+/// Первая фраза обоих промптов. Остаётся английской во всех языках.
+const PROMPT_OPENING: &str = r#"Set up couplet for me. Do the steps in order, then tell me in one
 short paragraph what you changed and what you skipped.
 
-1. Register couplet over MCP, if your harness supports MCP at all.
+"#;
+
+/// ВРЕМЕННО: шаг 0 основного промпта — убрать установку, оставшуюся от
+/// md-mini. Удалить в релизе после того, как переименование уляжется (см.
+/// фоллоу-ап в `docs/superpowers/plans/2026-09-22-couplet-rebrand.md`).
+/// Только в основном промпте: промпт «только скилл» обещает не трогать
+/// главный конфиг, а пункт Config этого шага его правит. Текст утверждён
+/// владельцем дословно.
+const PROMPT_MIGRATION_STEP: &str = r#"0. Migrating from md-mini (temporary — remove after the rename has settled).
+   This app used to be called md-mini; its CLI, MCP server and skill were named
+   `mdmini`. Replace leftovers of that setup instead of adding a second copy:
+   - MCP: if an `mdmini` server is registered (`claude mcp list`), remove it
+     with `claude mcp remove mdmini` (use its scope). Step 1 registers `couplet`.
+     Same for an `mdmini` entry in another client's `mcpServers`.
+   - Skill: once step 2 has written ~/.claude/skills/couplet/SKILL.md, delete
+     ~/.claude/skills/mdmini/ — unless it holds anything besides the generated
+     md-mini text (personal notes, edits); then keep it and tell me.
+   - Config: in CLAUDE.md / AGENTS.md / your main config, replace an existing
+     `## md-mini` / `## mdmini` section with the block from step 3.
+   - Anything else that calls `mdmini` (hooks, scripts, Monitor filters on
+     `[mdmini]`): list it, do not change it — `mdmini` keeps working as an alias.
+   Report every change from this step in your summary.
+
+"#;
+
+/// Шаги 1–2 обоих промптов — они одинаковы; различается только третий.
+/// Остаётся английским во всех языках: это текст промпта для агента.
+const PROMPT_INTRO: &str = r#"1. Register couplet over MCP, if your harness supports MCP at all.
    Claude Code: `claude mcp add --scope user couplet -- couplet mcp`
    Other clients: add `"couplet": {"command": "couplet", "args": ["mcp"]}` to
    their `mcpServers` config.
    If your harness has no MCP support, skip this step and say so — everything
    below still works through the CLI.
-   This app used to be called md-mini. If an `mdmini` MCP server or skill from
-   that name is already set up, leave it in place and mention it in your
-   summary — the old name keeps working, and removing it is my call.
 
 2. Create the skill file `~/.claude/skills/couplet/SKILL.md` (create the
    directories if needed; for a non-Claude harness use its own skill location).
@@ -748,6 +775,26 @@ mod tests {
             let doc = connect_doc_for(lang);
             assert!(doc.contains("prefer the MCP tools"), "lang {lang}");
             assert!(doc.contains("fall back to the `couplet` CLI"), "lang {lang}");
+        }
+    }
+
+    #[test]
+    fn the_main_prompt_starts_with_the_md_mini_migration_step() {
+        for lang in crate::i18n::SUPPORTED_LANGUAGES {
+            let doc = connect_doc_for(lang);
+            // Exactly once: in the main prompt, between the opening line and
+            // step 1 — not in the skill-only prompt, whose step 3 forbids the
+            // config edit this step makes.
+            assert_eq!(doc.matches(PROMPT_MIGRATION_STEP).count(), 1, "lang {lang}");
+            let step0 = doc.find(PROMPT_MIGRATION_STEP).unwrap();
+            let first_step1 = doc.find(PROMPT_INTRO).unwrap();
+            assert!(step0 < first_step1, "lang {lang}: step 0 must come before step 1");
+            assert!(
+                doc.contains(&format!("{PROMPT_OPENING}{PROMPT_MIGRATION_STEP}{PROMPT_INTRO}")),
+                "lang {lang}: opening, step 0, steps 1–2 must be contiguous"
+            );
+            assert!(doc.contains("claude mcp remove mdmini"), "lang {lang}");
+            assert!(!doc.contains("removing it is my call"), "lang {lang}: the old paragraph is gone");
         }
     }
 
