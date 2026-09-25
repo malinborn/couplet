@@ -887,10 +887,27 @@ mod tests {
         for lang in crate::i18n::SUPPORTED_LANGUAGES {
             let doc = renamed_doc(lang);
             assert!(doc.starts_with("# "), "renamed.{lang}.md has no title");
-            assert!(doc.contains("couplet mcp"), "renamed.{lang}.md lost the MCP setup line");
             if lang != "en" {
                 assert_ne!(doc, RENAMED_EN, "renamed.{lang}.md falls back to English");
             }
+        }
+    }
+
+    #[test]
+    fn rename_letter_names_the_menu_item_it_sends_people_to() {
+        // Step 2 of the letter is "open AI → Teach…" — the same trap as the
+        // welcome: rename the menu item and the step becomes impossible. Each
+        // letter must quote its own locale's menu path exactly.
+        for lang in crate::i18n::SUPPORTED_LANGUAGES {
+            let path = format!(
+                "**{} → {}**",
+                crate::i18n::t_for(lang, "menu.ai.title"),
+                crate::i18n::t_for(lang, "menu.ai.connect")
+            );
+            assert!(
+                renamed_doc(lang).contains(&path),
+                "renamed.{lang}.md does not name {path:?}, the menu item it tells people to open"
+            );
         }
     }
 
