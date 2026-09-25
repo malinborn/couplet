@@ -46,6 +46,7 @@
     type RenumberResult,
     type RevealResult,
   } from './lib/tabs/window-number';
+  import { ctrlTabHandler } from './lib/tabs/tab-cycle-keys';
   import { shouldShowHint, nextCheckDelay } from './lib/ai-hint';
   import { previewCompartment, lineGlowCompartment } from './lib/editor/setup';
   import { stashAndUnfoldAll, restoreStashedFolds } from './lib/editor/fold-memory';
@@ -1756,6 +1757,18 @@
     toast: quietToast,
   });
 
+  /** Show Next / Previous Tab: the menu's ⌘⇧] / ⌘⇧[ and the page's ⌃Tab / ⌃⇧Tab. */
+  function cycleTab(delta: 1 | -1): void {
+    void tabSourcesReady.then(() => tabs.cycle(delta));
+  }
+
+  /**
+   * ⌃Tab / ⌃⇧Tab: a Ctrl-only menu accelerator never fires from the keyboard
+   * (the webview takes the key), so these are caught here, like ⌃1…⌃9, and
+   * registered right after `onWindowDigit`, before the drawer's listener.
+   */
+  const onWindowCtrlTab = ctrlTabHandler(cycleTab);
+
   function liveAskShown(): boolean {
     const view = editorHandle?.view;
     return view ? activeAskIds(view.state).length > 0 : false;
@@ -2112,10 +2125,10 @@
           void tabSourcesReady.then(() => tabs.closeActive());
           break;
         case 'next_tab':
-          void tabSourcesReady.then(() => tabs.cycle(1));
+          cycleTab(1);
           break;
         case 'prev_tab':
-          void tabSourcesReady.then(() => tabs.cycle(-1));
+          cycleTab(-1);
           break;
         case 'toggle_drawer':
           drawerHandle?.toggle();
@@ -2297,6 +2310,7 @@
     window.addEventListener('blur', handleWindowBlur);
     window.addEventListener('keydown', noteTyping, true);
     window.addEventListener('keydown', onWindowDigit, true);
+    window.addEventListener('keydown', onWindowCtrlTab, true);
     window.addEventListener('focus', handleWindowFocus);
 
     // Start recovery interval
@@ -2416,6 +2430,7 @@
       window.removeEventListener('blur', handleWindowBlur);
       window.removeEventListener('keydown', noteTyping, true);
       window.removeEventListener('keydown', onWindowDigit, true);
+      window.removeEventListener('keydown', onWindowCtrlTab, true);
       window.removeEventListener('focus', handleWindowFocus);
       autoSave.cancel();
       if (recoveryInterval !== null) clearInterval(recoveryInterval);

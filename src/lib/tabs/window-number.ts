@@ -55,7 +55,7 @@ export type RevealResult = 'revealed' | 'missing' | 'current';
 
 /**
  * ⌃1…⌃9 → the window number; `null` for any other key. Matched on `e.code`,
- * layout independent. ⌘1…⌘9 (tabs) and ⌃Tab are not this.
+ * layout independent. ⌘1…⌘9 (tabs) and ⌃Tab (`tab-cycle-keys.ts`) are not this.
  */
 export function ctrlDigit(e: KeyboardEvent): number | null {
   if (!e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return null;
