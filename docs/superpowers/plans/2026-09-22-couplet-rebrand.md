@@ -656,8 +656,9 @@ debug-сборки на prod-identity. Тесты 308 и 40/40 release.
 
 ### Фоллоу-апы (найдено при проверке, не входит в переименование)
 
-- **Убрать временный шаг 0 из промпта Teach Your AI** (`PROMPT_MIGRATION_STEP` в
-  `onboarding.rs`) в релизе после того, как переименование уляжется.
+- **Убрать временный шаг 0 из обоих промптов Teach Your AI** (основного и «только
+  скилл»: `MIGRATION_STEP_HEAD`, `MIGRATION_CONFIG_REPLACE`, `MIGRATION_CONFIG_REPORT`,
+  `MIGRATION_STEP_TAIL` и `migration_step` в `onboarding.rs`) в релизе после того, как переименование уляжется.
 - `couplet question <file>` возвращает `[]`: путь считается корнем обхода каталога,
   а по файлу `read_dir` ничего не находит. Без аргумента (текущий каталог) работает.
 - `serverInfo.version` MCP — `CARGO_PKG_VERSION` (1.0.0 из `Cargo.toml`), а не версия

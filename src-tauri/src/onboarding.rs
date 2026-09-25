@@ -398,7 +398,7 @@ pub(crate) fn connect_doc() -> String {
 /// only set once per process.
 ///
 /// Внешний забор — четыре бэктика: внутри промпта есть свои тройные блоки.
-/// `PROMPT_OPENING`, `PROMPT_MIGRATION_STEP`, `PROMPT_INTRO`, `PROMPT_VERIFY`,
+/// `PROMPT_OPENING`, шаг 0 (`migration_step`), `PROMPT_INTRO`, `PROMPT_VERIFY`,
 /// `CONFIG_BLOCK` и сниппеты `ai_socket`
 /// остаются английскими в любом языке — это промпт для агента и он должен
 /// совпадать байт в байт с тем, что печатает `couplet agent`.
@@ -436,7 +436,7 @@ pub(crate) fn connect_doc_for(lang: &str) -> String {
     d.push_str(&format!("## {}\n\n", heading_prompt));
     d.push_str(&format!("{}\n\n````\n", t("doc.connect.copy_instruction")));
     d.push_str(PROMPT_OPENING);
-    d.push_str(PROMPT_MIGRATION_STEP);
+    d.push_str(&migration_step(MIGRATION_CONFIG_REPLACE));
     d.push_str(PROMPT_INTRO);
     d.push_str(
         r#"
@@ -460,6 +460,7 @@ pub(crate) fn connect_doc_for(lang: &str) -> String {
         slug_prompt,
     ));
     d.push_str(PROMPT_OPENING);
+    d.push_str(&migration_step(MIGRATION_CONFIG_REPORT));
     d.push_str(PROMPT_INTRO);
     d.push_str(
         r#"
@@ -484,13 +485,18 @@ short paragraph what you changed and what you skipped.
 
 "#;
 
-/// ВРЕМЕННО: шаг 0 основного промпта — убрать установку, оставшуюся от
-/// md-mini. Удалить в релизе после того, как переименование уляжется (см.
-/// фоллоу-ап в `docs/superpowers/plans/2026-09-22-couplet-rebrand.md`).
-/// Только в основном промпте: промпт «только скилл» обещает не трогать
-/// главный конфиг, а пункт Config этого шага его правит. Текст утверждён
-/// владельцем дословно.
-const PROMPT_MIGRATION_STEP: &str = r#"0. Migrating from md-mini (temporary — remove after the rename has settled).
+// ВРЕМЕННО: шаг 0 обоих промптов — убрать установку, оставшуюся от md-mini.
+// Удалить (четыре константы ниже и `migration_step`) в релизе после того,
+// как переименование уляжется — см. фоллоу-ап в
+// `docs/superpowers/plans/2026-09-22-couplet-rebrand.md`. Текст утверждён
+// владельцем дословно. Шаг собирается из общих кусков, чтобы два варианта не
+// разошлись: различается только пункт Config — промпт «только скилл» обещает
+// не трогать главный конфиг, поэтому там секция не правится, а называется.
+// Пункт MCP одинаков в обоих: шаг 1 (`PROMPT_INTRO`, общий) в обоих
+// регистрирует `couplet`, так что снимать `mdmini` безопасно и там.
+
+/// Заголовок, пункты MCP и Skill.
+const MIGRATION_STEP_HEAD: &str = r#"0. Migrating from md-mini (temporary — remove after the rename has settled).
    This app used to be called md-mini; its CLI, MCP server and skill were named
    `mdmini`. Replace leftovers of that setup instead of adding a second copy:
    - MCP: if an `mdmini` server is registered (`claude mcp list`), remove it
@@ -499,13 +505,29 @@ const PROMPT_MIGRATION_STEP: &str = r#"0. Migrating from md-mini (temporary — 
    - Skill: once step 2 has written ~/.claude/skills/couplet/SKILL.md, delete
      ~/.claude/skills/mdmini/ — unless it holds anything besides the generated
      md-mini text (personal notes, edits); then keep it and tell me.
-   - Config: in CLAUDE.md / AGENTS.md / your main config, replace an existing
+"#;
+
+/// Пункт Config основного промпта: секция заменяется блоком из шага 3.
+const MIGRATION_CONFIG_REPLACE: &str = r#"   - Config: in CLAUDE.md / AGENTS.md / your main config, replace an existing
      `## md-mini` / `## mdmini` section with the block from step 3.
-   - Anything else that calls `mdmini` (hooks, scripts, Monitor filters on
+"#;
+
+/// Пункт Config промпта «только скилл»: его шаг 3 запрещает трогать конфиг.
+const MIGRATION_CONFIG_REPORT: &str = r#"   - Config: if CLAUDE.md / AGENTS.md / your main config has a `## md-mini` /
+     `## mdmini` section, tell me — don't edit it.
+"#;
+
+/// Последний пункт и требование отчёта.
+const MIGRATION_STEP_TAIL: &str = r#"   - Anything else that calls `mdmini` (hooks, scripts, Monitor filters on
      `[mdmini]`): list it, do not change it — `mdmini` keeps working as an alias.
    Report every change from this step in your summary.
 
 "#;
+
+/// Шаг 0 с заданным пунктом Config.
+fn migration_step(config_bullet: &str) -> String {
+    format!("{MIGRATION_STEP_HEAD}{config_bullet}{MIGRATION_STEP_TAIL}")
+}
 
 /// Шаги 1–2 обоих промптов — они одинаковы; различается только третий.
 /// Остаётся английским во всех языках: это текст промпта для агента.
@@ -778,23 +800,50 @@ mod tests {
         }
     }
 
+    /// The doc split at the skill-only heading: (main prompt, skill-only prompt).
+    fn split_prompts(lang: &str) -> (String, String) {
+        let doc = connect_doc_for(lang);
+        let heading = format!("## {}", crate::i18n::t_for(lang, "doc.connect.heading_skill_only"));
+        let at = doc.find(&heading).expect("skill-only heading");
+        (doc[..at].to_string(), doc[at..].to_string())
+    }
+
     #[test]
     fn the_main_prompt_starts_with_the_md_mini_migration_step() {
+        let step0 = migration_step(MIGRATION_CONFIG_REPLACE);
         for lang in crate::i18n::SUPPORTED_LANGUAGES {
-            let doc = connect_doc_for(lang);
-            // Exactly once: in the main prompt, between the opening line and
-            // step 1 — not in the skill-only prompt, whose step 3 forbids the
-            // config edit this step makes.
-            assert_eq!(doc.matches(PROMPT_MIGRATION_STEP).count(), 1, "lang {lang}");
-            let step0 = doc.find(PROMPT_MIGRATION_STEP).unwrap();
-            let first_step1 = doc.find(PROMPT_INTRO).unwrap();
-            assert!(step0 < first_step1, "lang {lang}: step 0 must come before step 1");
+            let (main, skill_only) = split_prompts(lang);
+            assert_eq!(main.matches(step0.as_str()).count(), 1, "lang {lang}");
             assert!(
-                doc.contains(&format!("{PROMPT_OPENING}{PROMPT_MIGRATION_STEP}{PROMPT_INTRO}")),
+                main.contains(&format!("{PROMPT_OPENING}{step0}{PROMPT_INTRO}")),
                 "lang {lang}: opening, step 0, steps 1–2 must be contiguous"
             );
-            assert!(doc.contains("claude mcp remove mdmini"), "lang {lang}");
-            assert!(!doc.contains("removing it is my call"), "lang {lang}: the old paragraph is gone");
+            assert!(main.contains("claude mcp remove mdmini"), "lang {lang}");
+            assert!(!skill_only.contains(step0.as_str()), "lang {lang}: the main variant leaked");
+            assert!(!connect_doc_for(lang).contains("removing it is my call"), "lang {lang}: the old paragraph is gone");
+        }
+    }
+
+    #[test]
+    fn the_skill_only_prompt_has_its_own_migration_step() {
+        let step0 = migration_step(MIGRATION_CONFIG_REPORT);
+        for lang in crate::i18n::SUPPORTED_LANGUAGES {
+            let (main, skill_only) = split_prompts(lang);
+            assert_eq!(skill_only.matches(step0.as_str()).count(), 1, "lang {lang}");
+            assert!(
+                skill_only.contains(&format!("{PROMPT_OPENING}{step0}{PROMPT_INTRO}")),
+                "lang {lang}: opening, step 0, steps 1–2 must be contiguous"
+            );
+            // Its step 3 promises not to touch the main config, so the
+            // section-replacing sentence must not be there — only the report.
+            assert!(!skill_only.contains(MIGRATION_CONFIG_REPLACE), "lang {lang}");
+            assert!(!skill_only.contains("with the block from step 3"), "lang {lang}");
+            assert!(skill_only.contains("tell me — don't edit it"), "lang {lang}");
+            // Step 1 is shared and registers `couplet` in this prompt too, so
+            // replacing an `mdmini` registration cannot leave the user without MCP.
+            assert!(skill_only.contains("claude mcp add --scope user couplet -- couplet mcp"), "lang {lang}");
+            assert!(skill_only.contains("claude mcp remove mdmini"), "lang {lang}");
+            assert!(!main.contains(step0.as_str()), "lang {lang}: the skill-only variant leaked");
         }
     }
 
