@@ -53,7 +53,7 @@
     "url": "https://couplet.pro/",
     "downloadUrl": "https://github.com/malinborn/couplet/releases",
     "sameAs": ["https://github.com/malinborn/couplet"],
-    "softwareVersion": "2.0.0",
+    "softwareVersion": "2.0.1",
     "license": "https://opensource.org/licenses/GPL-3.0"
   }
   </script>
@@ -458,6 +458,19 @@
       <div class="changelog-list">
 
         <details class="changelog-entry" open>
+          <summary class="changelog-summary">
+            <span class="changelog-version">v2.0.1</span>
+            <span class="changelog-date">2026-09-26</span>
+            <span class="changelog-tag fix">fix</span>
+            <span class="changelog-title">&#8963;Tab switches tabs from the keyboard, not just from the menu</span>
+          </summary>
+          <ul class="changelog-body-list">
+            <li><strong>&#8963;Tab works again</strong> &mdash; in 2.0.0 <code>View &rarr; Tabs &rarr; Show Next Tab</code> worked when clicked and did nothing when pressed. The culprit was the kind of shortcut, not the key: a Control-only menu shortcut never reaches the menu while the window is active, the page swallows it as an ordinary keypress, and <code>&#8963;[</code> failed the same way in a trial build. <code>&#8963;Tab</code> / <code>&#8963;&#8679;Tab</code> are now caught by the page itself, the way <code>&#8963;1</code>&hellip;<code>&#8963;9</code> always were</li>
+            <li><strong>The menu says <code>&#8984;&#8679;]</code> / <code>&#8984;&#8679;[</code></strong> &mdash; the same keys as Safari, Chrome, Terminal and Finder, and a Command shortcut does reach the menu. Both pairs do the same thing; a test now fails the build if a Control-only shortcut ever lands in the native menu again</li>
+          </ul>
+        </details>
+
+        <details class="changelog-entry">
           <summary class="changelog-summary">
             <span class="changelog-version">v2.0.0</span>
             <span class="changelog-date">2026-09-25</span>
