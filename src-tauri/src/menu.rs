@@ -327,14 +327,19 @@ pub fn build_menu(
         )
         .item(&tabs_compact)
         .separator()
+        // ⌘⇧] / ⌘⇧[, as in Safari and Terminal. Not ⌃Tab: a Ctrl-only key
+        // equivalent never fires from the keyboard while a window is key —
+        // the WKWebView takes the key and the menu never sees it (measured
+        // 2026-09-25). ⌃Tab / ⌃⇧Tab are caught in the page instead
+        // (`src/lib/tabs/tab-cycle-keys.ts`).
         .item(
             &MenuItemBuilder::with_id("next_tab", t("menu.view.next_tab"))
-                .accelerator("Ctrl+Tab")
+                .accelerator("CmdOrCtrl+Shift+BracketRight")
                 .build(app)?,
         )
         .item(
             &MenuItemBuilder::with_id("prev_tab", t("menu.view.prev_tab"))
-                .accelerator("Ctrl+Shift+Tab")
+                .accelerator("CmdOrCtrl+Shift+BracketLeft")
                 .build(app)?,
         )
         .separator()

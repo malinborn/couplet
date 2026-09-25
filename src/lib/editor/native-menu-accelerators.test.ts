@@ -93,3 +93,21 @@ describe('native menu accelerator mirror', () => {
     expect(nativeAccelerator('nonexistent')).toBeUndefined();
   });
 });
+
+describe('native menu accelerators and the keyboard', () => {
+  it('declares no Ctrl-only accelerator — it would work by click only', () => {
+    // With the window key, a Ctrl-only chord goes to the WKWebView and never
+    // reaches NSMenu (measured 2026-09-25 on Ctrl+Tab and Ctrl+BracketLeft).
+    // Such a chord belongs in the page, like ⌃1…⌃9 and ⌃Tab (`tabs/`). The
+    // mirror equals menu.rs by the drift test above, so this covers the Rust.
+    const command = /^(cmd|command|super|cmdorctrl|cmdorcontrol|commandorctrl|commandorcontrol)$/;
+    for (const { id, accelerator } of NATIVE_MENU_ACCELERATORS) {
+      const mods = accelerator
+        .split('+')
+        .slice(0, -1)
+        .map((m) => m.toLowerCase());
+      const ctrlOnly = mods.some((m) => m === 'ctrl' || m === 'control') && !mods.some((m) => command.test(m));
+      expect(ctrlOnly, `${id}: ${accelerator}`).toBe(false);
+    }
+  });
+});
