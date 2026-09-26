@@ -570,8 +570,30 @@ describe('close', () => {
     await h.controller.closeActive();
     expect(h.deps.reportUnsaved).not.toHaveBeenCalled();
     // A restored tab comes back at its saved caret (0 here), which is what gets recorded.
-    expect(h.deps.rust.close).toHaveBeenCalledWith('u', { cursor: 0, topLine: 1 });
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', { cursor: 0, topLine: 1 }, 'draft');
     expect(h.active()).toBe('a');
+  });
+
+  it('HandsTheDiscardedUntitledTextToRust_AsTheViewHoldsIt', async () => {
+    // The sidecar can be a heartbeat behind: Rust keeps this copy in the draft trash.
+    const h = await started({ '/a.md': 'AAAA' }, [untitledTab('u', 'draft'), fileTab('a', '/a.md')], 'u');
+    h.type(' and the rest');
+    await h.controller.closeActive();
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'draft and the rest');
+  });
+
+  it('HandsABackgroundUntitledTabsCachedTextToRust', async () => {
+    const h = await started({ '/a.md': 'AAAA' }, [untitledTab('u', 'one'), fileTab('a', '/a.md')], 'u');
+    h.type(' two');
+    await h.controller.activate('a');
+    await h.controller.closeTabs(['u']);
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'one two');
+  });
+
+  it('HandsNoTextForAFileTab', async () => {
+    const h = await started({ '/a.md': 'AAAA', '/b.md': 'BBBB' }, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
+    await h.controller.closeActive();
+    expect(h.deps.rust.close).toHaveBeenCalledWith('a', expect.anything(), null);
   });
 
   it('ClosesABackgroundTabWithItsCachedPosition', async () => {
@@ -581,7 +603,7 @@ describe('close', () => {
 
     await h.controller.closeTabs(['a']);
 
-    expect(h.deps.rust.close).toHaveBeenCalledWith('a', { cursor: 2, topLine: 1 });
+    expect(h.deps.rust.close).toHaveBeenCalledWith('a', { cursor: 2, topLine: 1 }, null);
     expect(h.active()).toBe('t1');
     expect(h.calls).not.toContain('swap');
   });
@@ -807,7 +829,7 @@ describe('close, continued', () => {
 
     await h.controller.closeTabs(['u']);
 
-    expect(h.deps.rust.close).toHaveBeenCalledWith('u', { cursor: 0, topLine: 1 });
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', { cursor: 0, topLine: 1 }, 'draft');
     const { tabs } = h.controller.report({ cursor: 0, topLine: 1, content: 'AAAA' });
     expect(tabs.map((t) => t.tabId)).toEqual(['a']);
   });
@@ -836,7 +858,7 @@ describe('close, continued', () => {
     const closing = h.controller.closeActive();
     await Promise.all([opening, closing]);
 
-    expect(h.deps.rust.close).toHaveBeenCalledWith('t1', expect.anything());
+    expect(h.deps.rust.close).toHaveBeenCalledWith('t1', expect.anything(), null);
     expect(h.ids()).toEqual(['a']);
     expect(h.active()).toBe('a');
   });
@@ -1057,7 +1079,7 @@ describe('drawer operations', () => {
     expect(h.ids()).toEqual(['a']);
     expect(h.active()).toBe('a');
     expect(h.deps.reportUnsaved).toHaveBeenCalledTimes(1);
-    expect(h.deps.rust.close).not.toHaveBeenCalledWith('a', expect.anything());
+    expect(h.deps.rust.close).not.toHaveBeenCalledWith('a', expect.anything(), null);
     expect(h.deps.rust.closeWindow).not.toHaveBeenCalled();
     expect(h.live().doc.toString()).toBe('AAAAunsaved');
   });
@@ -1549,7 +1571,7 @@ describe('quick looks', () => {
     await h.controller.keepTransient('t1');
     expect(meta(h, 't1')).toMatchObject({ transient: false, transientSeenAt: 0 });
     await h.controller.closeTransient('t2');
-    expect(h.deps.rust.close).toHaveBeenCalledWith('t2', expect.anything());
+    expect(h.deps.rust.close).toHaveBeenCalledWith('t2', expect.anything(), null);
     expect(h.ids()).toEqual(['a', 't1']);
   });
 
@@ -1699,7 +1721,7 @@ describe('quick looks across a restart (tabs-questions Q8)', () => {
     h.clock.now = 5 * TRANSIENT_IGNORED_AFTER_MS;
     await h.controller.expireTransients('close');
     expect(h.ids(), 'c went; b is active; a was never seen').toEqual(['b', 'a']);
-    expect(h.deps.rust.close).toHaveBeenCalledWith('c', expect.anything());
+    expect(h.deps.rust.close).toHaveBeenCalledWith('c', expect.anything(), null);
   });
 
   it('ExpiredWhileTheAppWasDown_TheKeepPolicyMakesThemOrdinary', async () => {
