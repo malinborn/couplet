@@ -94,6 +94,7 @@ src/                    # Frontend (Svelte + TypeScript)
       selection-toolbar.ts   # Floating inline-format toolbar (floating-ui)
       inspector.ts / inspector-model.ts # Link URL + fenced-code language
     ai-highlight.ts     # AI-edit/pulse highlight StateField (couplet show/edit), Esc to clear
+    ai-mark-nav.ts      # ⌘' / ⌘⇧' cycle the caret through AI marks (edit highlights, comment anchors, asks); menu ids ai_next_mark / ai_prev_mark
     human-edit.ts       # isHumanEdit: did the human change the document (not an agent's edit, not a reload) — a quick look's «Keep»
   lib/ai-commands.ts    # Pure helpers for AI commands (show target resolution, changed-line ranges)
   lib/tabs/             # Tabs, B-lite: only the active tab is a live state
