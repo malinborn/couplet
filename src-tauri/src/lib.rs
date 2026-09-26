@@ -597,15 +597,14 @@ fn save_session_on_exit(app: &tauri::AppHandle) {
     // `RunEvent::Exit` alone. A comment paused seconds before a quit has to be
     // handed over on the way out, or nothing is left to hand it over.
     comment_pause::commit_all_open(app);
-    let snapshot = state.snapshot(session::now_secs());
+    let snapshot = state.exit_snapshot(session::now_secs());
     state.mark_quitting();
-    // A quit records the session, it never erases it. An empty snapshot here
-    // means the windows were already gone before we were called — not that the
-    // user had nothing open — so the last good file on disk is the better answer.
-    if snapshot.windows.is_empty() {
-        return;
+    // A quit records the session, it never erases it: with no live window
+    // left, the last good file on disk stands (`exit_snapshot` says why that
+    // also keeps the un-restored drafts named).
+    if let Some(snapshot) = snapshot {
+        let _ = session::write_session(&snapshot);
     }
-    let _ = session::write_session(&snapshot);
 }
 
 /// The window a document-scoped menu action belongs to — see `menu_route`.

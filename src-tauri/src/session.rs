@@ -561,6 +561,29 @@ impl SessionState {
     /// The session to write: the live windows (main first), then the
     /// un-restored ones that hold drafts (`unrestored_draft_windows`).
     pub fn snapshot(&self, saved_at: u64) -> Session {
+        self.snapshot_counting_live(saved_at).0
+    }
+
+    /// What the exit path writes, or `None` to leave the file on disk alone.
+    ///
+    /// `None` when no window is live. That means the windows were destroyed
+    /// before the exit path ran (the red button on the last window) — not
+    /// that the user had nothing open — so the last good file is the better
+    /// answer. The carried windows must not count: `[W1]` written over the
+    /// ticker's `[main, W1]` would drop `main`.
+    ///
+    /// Skipping keeps the un-restored drafts named too. `pending` was read
+    /// from the file on disk, so until this run writes, that file names every
+    /// window in it; and every write of this run (`snapshot`) carries them.
+    /// Either way the file left standing names them.
+    pub fn exit_snapshot(&self, saved_at: u64) -> Option<Session> {
+        let (session, live) = self.snapshot_counting_live(saved_at);
+        (live > 0).then_some(session)
+    }
+
+    /// `snapshot`, plus how many of its windows are live — both under one
+    /// hold of the locks, so the count describes the same session.
+    fn snapshot_counting_live(&self, saved_at: u64) -> (Session, usize) {
         // entries → pending → restoring: the one lock order (`referenced_untitled`).
         let map = self.entries.lock().unwrap();
         let pending = self.pending.lock().unwrap();
@@ -569,13 +592,15 @@ impl SessionState {
         labelled.sort_by_key(|(label, _)| label_order(label));
         let mut windows: Vec<WindowSnapshot> =
             labelled.into_iter().map(|(_, w)| w.normalized()).collect();
+        let live = windows.len();
         let carried = unrestored_draft_windows(&windows, pending.iter().chain(restoring.iter()));
         windows.extend(carried);
-        Session {
+        let session = Session {
             version: SESSION_VERSION,
             saved_at,
             windows,
-        }
+        };
+        (session, live)
     }
 
     pub fn set_pending(&self, windows: Vec<WindowSnapshot>) {
@@ -1486,13 +1511,46 @@ mod tests {
     }
 
     #[test]
-    fn a_quit_writes_the_unrestored_draft_windows_too() {
-        // `save_session_on_exit` skips an empty snapshot; a launch whose only
-        // window of value is an un-restored draft must not look empty.
+    fn a_quit_with_no_live_window_writes_nothing_even_with_drafts_waiting() {
+        // The carried window alone must not count as "something to record":
+        // the file on disk already names it (see `exit_snapshot`).
         let state = SessionState::new();
         state.set_pending(vec![window(vec![untitled_tab("u", "draft-u.md")])]);
-        state.mark_quitting();
-        assert_eq!(state.snapshot(0).windows.len(), 1);
+        assert!(state.exit_snapshot(0).is_none());
+    }
+
+    #[test]
+    fn a_quit_with_live_windows_writes_them_and_the_unrestored_drafts() {
+        let state = SessionState::new();
+        state.set_pending(vec![window(vec![untitled_tab("u", "draft-u.md")])]);
+        state.set_tabs("main", vec![untitled_tab("m", "draft-m.md")], Some("m".to_string()));
+        let written = state.exit_snapshot(0).expect("a live window is worth recording");
+        let drafts: Vec<Option<&str>> =
+            written.windows.iter().map(|w| w.tabs[0].untitled.as_deref()).collect();
+        assert_eq!(drafts, vec![Some("draft-m.md"), Some("draft-u.md")], "live first, then carried");
+    }
+
+    #[test]
+    fn closing_the_last_window_keeps_the_file_that_names_both_drafts() {
+        // Review I1: an un-restored draft W1 is carried; the user types in
+        // `main` (draft-m); the ticker writes [main, W1]; the red button
+        // destroys `main` before the exit path runs. Writing the snapshot
+        // then ([W1]) would drop `main` — so the exit writes nothing and the
+        // ticker's file stands.
+        let state = SessionState::new();
+        state.set_pending(vec![window(vec![untitled_tab("u", "draft-u.md")])]);
+        state.set_tabs("main", vec![untitled_tab("m", "draft-m.md")], Some("m".to_string()));
+        let on_disk = serde_json::to_string(&state.snapshot(1)).unwrap();
+        state.remove("main");
+        assert!(state.exit_snapshot(2).is_none(), "nothing overwrites the ticker's file");
+        let next = parse_session(&on_disk).expect("parses");
+        let names: HashSet<&str> = next
+            .windows
+            .iter()
+            .flat_map(|w| w.tabs.iter())
+            .filter_map(|t| t.untitled.as_deref())
+            .collect();
+        assert_eq!(names, HashSet::from(["draft-m.md", "draft-u.md"]));
     }
 
     #[test]
