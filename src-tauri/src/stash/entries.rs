@@ -497,12 +497,15 @@ impl Stash {
     }
 
     /// The save hook's work: a stash entry's `modified_at`, and a note's title
-    /// (a file reference keeps its file name, plan D18). `path` is the spelling
-    /// the editor saved under — already the registry's normalized one. Only
-    /// moves forward in time, so a late, older save cannot roll a title back
-    /// (plan D9); a trashed row is left alone (roadmap A8). `true` when the
+    /// (a file reference keeps its file name, plan D18). `path` is normalized
+    /// here like in `put_away` and `touch_opened`: the editor saves under the
+    /// registry's spelling, but no caller has to know that to reach the row.
+    /// Only moves forward in time, so a late, older save cannot roll a title
+    /// back (plan D9); a trashed row is left alone (roadmap A8). `true` when the
     /// title changed — the one case worth a `stash-changed { reason: "title" }`.
     pub fn file_written(&mut self, path: &str, text: &str, now: i64) -> Result<bool, String> {
+        let path = crate::path_norm::normalize_str(path);
+        let path = path.as_str();
         let row: Option<(String, String)> = self
             .conn
             .query_row(
@@ -1314,6 +1317,25 @@ mod tests {
         );
         let e = stash.get(&note.id).unwrap();
         assert_eq!((e.title.as_deref(), e.modified_at), (Some("New"), T0 + 20));
+    }
+
+    #[test]
+    fn a_save_under_another_spelling_reaches_the_entry() {
+        // Like `put_away` and `touch_opened`, the save hook normalizes: a
+        // caller that did not must not silently miss the row.
+        let (mut stash, _root) = stash_in("written-spelling");
+        let note = stash.create_note("# Old", None, T0, MSK).unwrap();
+        let path = Path::new(&note.path);
+        let dir = path.parent().unwrap();
+        let dotted = format!(
+            "{}/./sub/../{}",
+            dir.display(),
+            path.file_name().unwrap().to_string_lossy()
+        );
+        assert_ne!(dotted, note.path);
+        assert!(stash.file_written(&dotted, "# New", T0 + 10).unwrap());
+        let e = stash.get(&note.id).unwrap();
+        assert_eq!((e.title.as_deref(), e.modified_at), (Some("New"), T0 + 10));
     }
 
     #[test]
