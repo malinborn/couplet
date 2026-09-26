@@ -1,5 +1,7 @@
 # Stash 01 — Draft Safety Net Implementation Plan
 
+> **⚠️ Roadmap amendments override this plan.** Read the section «Amendments after planning» in `2026-09-27-stash-00-roadmap.md` first. Most visible here: **A1 — the notes folder is `~/couplet/` (dev `~/couplet-dev/`), not `~/Documents/…`**: use `dirs::home_dir()` instead of `dirs::document_dir()`, rename every `Documents` base in tests to a home base, and drop every TCC-prompt note or step (the home root is not TCC-protected). Also A2 (offline build, `functions` feature), A3 (`repo` = directory name) and A5 (schema v2).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** No untitled draft is ever deleted again: the session GC moves unreferenced drafts to `session/.trash/` (purged after 30 days), ⌘W on an untitled tab with text leaves a rescue copy there, and the root cause of the 2026-09-26 loss (drafts of an un-restored session dropped from `session-v2.json`, then deleted by the next launch) is fixed.

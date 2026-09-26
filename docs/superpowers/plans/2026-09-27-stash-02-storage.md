@@ -1,5 +1,7 @@
 # Stash 02 — Storage Implementation Plan
 
+> **⚠️ Roadmap amendments override this plan.** Read the section «Amendments after planning» in `2026-09-27-stash-00-roadmap.md` first. Most visible here: **A1 — the notes folder is `~/couplet/` (dev `~/couplet-dev/`), not `~/Documents/…`**: use `dirs::home_dir()` instead of `dirs::document_dir()`, rename every `Documents` base in tests to a home base, and drop every TCC-prompt note or step (the home root is not TCC-protected). Also A2 (offline build, `functions` feature), A3 (`repo` = directory name) and A5 (schema v2).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A Rust `stash` module that owns the stash database (`stash.db`, SQLite via `rusqlite` bundled, schema v1 with an empty FTS5 trigram table) and the note files (`~/Documents/<product>/YYYY-MM-DD-HHMM-xxxx.md`), with put-away / list / get / tag / counts / touch-opened, dedup by normalized path, title extraction shared with the future TypeScript mirror through one fixture, daily backups and a plain JSON export, the stage-02 Tauri commands, and the save hook in `write_file`. Rust only, no UI.

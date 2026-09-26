@@ -14,6 +14,42 @@
 
 ---
 
+## Amendments after planning (2026-09-27) — these override the stage plans
+
+The seven stage plans were written in parallel against this roadmap. Their planners found gaps and disagreements; the rulings below are final. **Where a stage plan says otherwise, this section wins** (then the spec, then the plan). Each stage's Task 0 must check its plan against this list.
+
+**A1. Notes folder is `~/couplet/`** (dev: `~/couplet-dev/`), not `~/Documents/…` (owner decision). The home root is not TCC-protected, so there is no macOS privacy prompt — the ad-hoc signed app would otherwise re-prompt after every update, mid-typing. Rust: `dirs::home_dir()` joined with `paths::dir_name(product)`. Trash `~/couplet/.trash/`, export `~/couplet/.stash-export.json`. Every «Documents» path, test expectation and live-check step in the plans changes accordingly; the TCC-prompt steps in plan 03's live check are obsolete.
+
+**A2. Dependency line:** `rusqlite = { version = "0.37", features = ["bundled", "backup", "functions"] }` (`functions` is needed by stage 05's `stash_fold()`). **crates.io is blocked on this network**; rusqlite 0.37.0 / libsqlite3-sys 0.35.0 and every other crate the project needs are already in the cargo cache. Build with `CARGO_NET_OFFLINE=true` (or `--offline`). **Verified 2026-09-27** with an offline probe: bundled SQLite 3.50.2, `ENABLE_FTS5=1`, the trigram tokenizer finds «тайнике» for `"тайник"`, «ДОКУМЕНТ» for `"мент"`, and **folds Cyrillic case** (`"ТАЙНИК"` matches) — plan 02 Task 1 will pass; plan 05's "stop if trigram does not fold Cyrillic case" risk is resolved.
+
+**A3. `repo` = the directory name** (basename of the git toplevel, or of the window project root when not a repo), for notes and files alike. Stored for notes at creation and for **files at put-away time** (so SQL can filter by repo; re-derived on reindex). Rust reduces any value containing `/` to its last component. Known limitation: two checkouts with the same directory name share a scope. Plan 03 must pass the basename, not the absolute project root. Stage 04 does **not** add `window_repo`: it uses stage 03's `window_project` command, which returns `{ root: string | null, repo: string | null }`.
+
+**A4. Titles:** `title TEXT NOT NULL`, stored as `''` for "no title", returned as `null` over IPC; the localized «Без названия» key `stash.untitled` is owned by stage 03. The `title_of` rule is pinned by plan 02's decision D16 and its 33-case fixture.
+
+**A5. Schema:** v1 = stage 02 as specified. **v2 = stage 03's `draft_imports(source, fingerprint)` table.** Stage 05's `search_meta` lives outside `user_version` (`CREATE TABLE IF NOT EXISTS` in `ensure_index`). Every opener — app, CLI, MCP — runs `migrate` to the latest version, and **refuses to open a database with a newer `user_version`** than it knows.
+
+**A6. `stash-changed` payload is `{ reason: string, ids?: string[] }`.** Reasons: `created`, `put-away`, `title`, `tagged`, `deleted`, `restored`, `purged`, `imported`, `reindexed`, `external` (CLI/MCP). `on_file_written` emits only when a note's title changed (not on every autosave). The CLI/MCP socket request is `{"v":1,"cmd":"stash-changed","reason":…}`.
+
+**A7. Deletion contract (stage 06, file-ref branch already in stage 04):** `stash_delete` returns `DeleteOutcome = { kind: 'trashed', entry } | { kind: 'removed' } | { kind: 'kept', reason: 'unsaved'|'timeout'|'open', label, number }`. A note held by a tab is dropped through the owning window (`stash-drop-tab` event → `stash_drop_done`) before its file moves. Stage 04 implements the `removed` branch for file refs; stage 06 adds the note branch.
+
+**A8. Trashed rows are inert:** `stash_put_away`, `stash_tag` and `on_file_written` refuse/ignore rows with `deleted_at`; trashed notes are removed from the FTS index; the short-query title fallback excludes them; agents never see or reach the trash. **Always `unindex_entry` before deleting an `entries` row** (SQLite reuses the highest rowid). `stash_list({deleted:true})` returns only trashed notes, newest deletion first; the default excludes them. `stash_counts.deleted` ignores `repo`. `stash_search` gains `deleted?: boolean`. `TRASH_RETENTION_DAYS = 30` has one Rust source, mirrored in TS with a drift test.
+
+**A9. Shared definitions:** sort «changed» = `max(modifiedAt, stashedAt)` for the drawer and the agent alike; `stashedToday` counts from local midnight; `StashHit.ranges` are UTF-16 code units of the snippet; `score = -bm25` (higher is better); cursors are opaque strings. `stash_list` gains `since?` (`COALESCE(stashed_at, modified_at) >= since`). `stash_put_away` accepts `caret`/`topLine` only with a single path.
+
+**A10. New IPC beyond the table** (as specified in the owning plan): `window_project` and `tab_close({ …, putAway })` (03), `tab_holders(paths)`, `tab_request_move(path)` + `tab-pull` event (04), `stash-drop-tab` / `stash_drop_done` (06). ⌃T with a drawer open: puts away the ⇧-selection, else the ringed card, else the active tab; does nothing while the stash drawer has the keys (04).
+
+**A11. Locks:** the stash connection is only taken with no other lock held — never while holding `OpenFiles`, `PendingFiles` or `ClosedStack`, and never the reverse.
+
+**A12. CLI/MCP (stage 07):** stash verbs require `--product` (it sets DB, notes folder and socket together); `--socket` alone is refused for stash verbs. CLI/MCP **never create the app data directory**: before couplet has run once, writes are refused with «couplet has not run on this Mac yet — open it once» (otherwise `migration.rs` would see the folder as populated and skip md-mini's data); reads create nothing. Agent answers use their own snake_case types (`AgentEntry`, `AgentHit`) that carry no preview text.
+
+**A13. Stage 01 → 03 hand-off:** after stage 01 the session file carries un-restored windows with drafts, so stage 03's import of *referenced and orphaned* drafts covers them. Stage 03 does **not** import `session/.trash/` (deliberately discarded or rescued text stays there, recoverable by hand, purged after 30 days). Stage 01 tests on its own identity `pro.couplet.safety` as its plan says (not `pro.couplet.dev`).
+
+**A14. Unowned items — assigned:** «Save As…» from a note (spec: the note moves to the chosen folder and leaves the stash; the old note file goes to `~/couplet/.trash/` and the entry is removed) → **stage 06, one extra task** after its trash machinery exists. Broken-link «файл не найден» cards and reindexing of stashed files edited outside couplet → **not in this delivery**; list them in the night report as known gaps.
+
+**Owner questions for the morning** (defaults already chosen; do not block on them): the `⊔` glyph in the native window title for notes (stage 03); auto-restoring the session after a self-triggered restart such as a language switch (stage 01 leaves it opt-in); deleting a window's only tab leaves an empty tab (stage 06); «удалить навсегда» without confirmation (as in the mockup); toasts stay bottom-right and shift left of the open stash drawer (stage 04).
+
+---
+
 ## Stages
 
 Each stage is one detailed plan, one branch commit series and a code review. Stages run strictly in this order; each builds on the previous one.
@@ -40,9 +76,9 @@ Every stage plan uses exactly these names. A plan that needs something not liste
 
 | What | Release | Dev (`couplet-dev`) | Rust |
 |---|---|---|---|
-| Notes folder | `~/Documents/couplet/` | `~/Documents/couplet-dev/` | `stash::paths::notes_dir()` — `dirs::document_dir()` joined with `paths::dir_name(product)`; created on demand |
-| Note trash | `~/Documents/couplet/.trash/` | `~/Documents/couplet-dev/.trash/` | `stash::paths::notes_trash_dir()` |
-| Plain export | `~/Documents/couplet/.stash-export.json` | same under `couplet-dev` | `stash::paths::export_path()` |
+| Notes folder | `~/couplet/` | `~/couplet-dev/` | `StashPaths::resolve()` — `dirs::home_dir()` joined with `paths::dir_name(product)`; created on demand (A1) |
+| Note trash | `~/couplet/.trash/` | `~/couplet-dev/.trash/` | `StashPaths` field (stage 06) |
+| Plain export | `~/couplet/.stash-export.json` | same under `couplet-dev` | `StashPaths` field |
 | Database | `<app_data_dir>/stash.db` (`~/Library/Application Support/couplet/stash.db`) | under `couplet-dev/` | `stash::paths::db_path()` — goes through `paths::app_data_dir()` |
 | DB backups | `<app_data_dir>/stash-backups/stash-YYYY-MM-DD.db`, keep 7 | same | `stash::backup` |
 | Session draft trash (stage 01) | `<app_data_dir>/session/.trash/` | same | `session::drafts_trash_dir()` |

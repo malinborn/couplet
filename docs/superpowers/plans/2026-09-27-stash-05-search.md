@@ -1,5 +1,7 @@
 # Stash 05 — Search Implementation Plan
 
+> **⚠️ Roadmap amendments override this plan.** Read the section «Amendments after planning» in `2026-09-27-stash-00-roadmap.md` first. Most visible here: **A1 — the notes folder is `~/couplet/` (dev `~/couplet-dev/`), not `~/Documents/…`**: use `dirs::home_dir()` instead of `dirs::document_dir()`, rename every `Documents` base in tests to a home base, and drop every TCC-prompt note or step (the home root is not TCC-protected). Also A2 (offline build, `functions` feature), A3 (`repo` = directory name) and A5 (schema v2).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** One search for the human and the agent: keep the FTS5 trigram index `entries_fts` in step with the stash, parse the query language (`plain words`, `#tag`, `"phrases"`), rank by bm25 with title above body, return ~200-char snippets with highlight ranges through `stash_search`, and switch the stash drawer's filter from substring matching to that command, with highlighted snippets in the cards.

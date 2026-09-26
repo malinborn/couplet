@@ -1,9 +1,17 @@
 Ты реализуешь **тайник** (stash) в couplet — репозиторий `/Users/maximkovalevskij/playground/md-mini`. Владелец, Max, ушёл спать и утром посмотрит результат. Работай **самостоятельно** и до конца, без вопросов в чат: ночью чат никто не читает.
 
+## Первым делом — будильники на лимиты
+Max спит и не будет тебя перезапускать. Если упрёшься в пятичасовой лимит, работа встанет до сброса. Поэтому **до любой другой работы** поставь два разовых будильника через `CronCreate` (загрузи его через `ToolSearch("select:CronCreate,CronList")`):
+
+- `cron: "50 3 27 9 *"`, `recurring: false`
+- `cron: "50 8 27 9 *"`, `recurring: false`
+
+Текст для обоих: «Будильник после сброса лимитов. Если работа по тайнику остановилась (лимит, ошибка API), продолжи с того места, где остановился: сверься с ночным отчётом `docs/superpowers/plans/2026-09-27-stash-night-report.md`, `git log` своей ветки и чекбоксами текущего плана. Если работа идёт, ничего не делай.» Проверь через `CronList`, что оба стоят, и запиши их id в ночной отчёт. Будильник срабатывает, только пока сессия простаивает: после остановки на лимите это ровно так. Сразу после старта заведи ночной отчёт с разделом «Где я сейчас» и держи его актуальным после каждой задачи: проснувшись, ты продолжишь по нему.
+
 ## Источники истины (прочитай до начала работы)
 1. `CLAUDE.md` в корне репо целиком: Build/Test Policy, MCP dev bridge, все Gotchas.
 2. Спека: `docs/superpowers/specs/2026-09-26-stash-design.md`. В поведении права спека.
-3. Дорожная карта и общие контракты: `docs/superpowers/plans/2026-09-27-stash-00-roadmap.md` — семь этапов, схема БД, пути, IPC, типы, клавиши.
+3. Дорожная карта и общие контракты: `docs/superpowers/plans/2026-09-27-stash-00-roadmap.md` — семь этапов, схема БД, пути, IPC, типы, клавиши. **Её раздел «Amendments after planning» (A1–A14) имеет приоритет над детальными планами**: планы писались параллельно, и там сведены все расхождения. Главное: папка заметок `~/couplet/`, а не `~/Documents` (A1); офлайн-сборка (A2); `repo` — имя папки (A3).
 4. Детальные планы этапов: `docs/superpowers/plans/2026-09-27-stash-0{1..7}-*.md`. Они уже написаны, писать их заново не надо.
 5. Эталон визуала: `docs/investigations/2026-09-26-stash-mockup/stash-drawers.html` (тег `stash-mockup-approved`). В визуале прав макет.
 6. Исследование и история решений: `docs/investigations/2026-09-26-shelf/report.md`.
@@ -32,11 +40,12 @@
 - **UI в браузере:** `npm run dev` + Playwright. Сюда относятся дроверы, зона сброса, фильтр, ширины, сверка с макетом.
 - **Живое приложение с Tauri** (окна, IPC, файлы, SQLite): `npm run dev:app`. Управлять им агентом: `npm run dev:app -- --features mcp-bridge` и tauri MCP-инструменты. Сначала прочитай раздел «MCP dev bridge» в CLAUDE.md: там ловушки 0.12.0 (eval без await, синтетические клавиши без `e.code`, text-стратегия в dev).
 - **Реальные клавиши (⌃T, ⌃S)** проверяй с окном dev-сборки на переднем плане: фоновый `postToPid` врёт (CLAUDE.md). Никаких System Events.
-- **Настоящий бандл** (quit, AppleEvent, обновление версии для этапа 01): `npm run build:dev`, запуск `couplet-dev.app/Contents/MacOS/couplet` прямо из терминала; quit — только `osascript -e 'quit app id "pro.couplet.dev"'`. **В /Applications не устанавливать.**
+- **Настоящий бандл** (quit, AppleEvent, обновление версии для этапа 01): делай так, как написано в плане 01, — на отдельной идентичности `pro.couplet.safety` (у `pro.couplet.dev` может быть занят single-instance сокет чужим `dev:app`). Запуск бинаря бандла прямо из терминала; quit — только `osascript -e 'quit app id "<эта идентичность>"'`, никогда System Events и никогда `pro.couplet.app`. **В /Applications не устанавливать.**
+- **Сеть до crates.io на этом Mac заблокирована.** `rusqlite 0.37.0` и все нужные крейты уже лежат в кэше cargo (проверено 2026-09-27, roadmap A2). Все cargo-команды запускай с `CARGO_NET_OFFLINE=true`. Если cargo всё же просит сеть — вопрос в файл, не выдумывай обходы.
 - **CLI и MCP против dev-сборки — только с явным dev-сокетом и dev-продуктом.** По умолчанию `couplet …` и `couplet mcp` стучатся в боевое приложение Max. Твои собственные MCP-инструменты `couplet` (show/edit/ask) в этой сессии тоже смотрят в боевое приложение: используй их только чтобы показать Max документ, **никогда для тестов**.
 
 ## Жёсткие запреты
-- **Данные Max:** не трогай `~/Documents/couplet/` (это папка заметок боевого приложения), `~/Library/Application Support/couplet/` (включая `stash.db` и `session/`), `/Applications/couplet.app`, `/usr/local/bin/couplet`, `/tmp/pro_couplet_app_si.sock`, `/tmp/couplet_cmd.sock`. Dev пишет в `~/Documents/couplet-dev/` и `~/Library/Application Support/couplet-dev/`; тесты — только во временные каталоги.
+- **Данные Max:** не трогай `~/couplet/` (это будущая папка заметок боевого приложения), `~/Library/Application Support/couplet/` (включая `stash.db` и `session/`), `/Applications/couplet.app`, `/usr/local/bin/couplet`, `/tmp/pro_couplet_app_si.sock`, `/tmp/couplet_cmd.sock`. Dev пишет в `~/couplet-dev/` и `~/Library/Application Support/couplet-dev/`, тестовая идентичность этапа 01 — в свою папку; тесты — только во временные каталоги.
 - **Запрещены команды с боевым идентификатором:** `npm run tauri dev` (без dev-конфига), `npm run tauri build`, `npm run build:universal`, установка чего-либо в `/Applications`.
 - Не убивай процессы, которые запустил не ты: только по записанному PID. Порт 1420/1430 может быть занят чужим vite: смотри «Second instance side by side» в CLAUDE.md.
 - Git: conventional commits, коммит после каждой задачи, `git add` только явными путями, никаких `stash`/`reset --hard`/`push --force`/`branch -D`, **никогда не пушь в main и ничего не мержи**. Ветку не называй `*mcp-bridge*`.
