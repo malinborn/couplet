@@ -878,6 +878,28 @@ fn purge_trash_in(trash: &Path, now_secs: u64) {
     }
 }
 
+/// ⌘W on an untitled tab with text — a deliberate discard (tabs spec §8) —
+/// keeps that text as `session/.trash/closed-<tab_id>.trashed-<secs>.md`.
+/// The sidecar alone can be a heartbeat (5 s) behind what was on screen.
+pub fn rescue_untitled(tab_id: &str, text: &str) -> Result<PathBuf, String> {
+    rescue_untitled_in(&drafts_trash_dir()?, tab_id, text, now_secs())
+}
+
+fn rescue_untitled_in(trash: &Path, tab_id: &str, text: &str, now_secs: u64) -> Result<PathBuf, String> {
+    if !is_valid_tab_id(tab_id) {
+        return Err(format!("invalid tab id: {tab_id:?}"));
+    }
+    fs::create_dir_all(trash).map_err(|e| format!("create {}: {e}", trash.display()))?;
+    let dest = trash_path_for(trash, &format!("closed-{tab_id}"), now_secs)?;
+    let tmp = trash.join(format!(".closed-{tab_id}.tmp"));
+    fs::write(&tmp, text).map_err(|e| format!("write the rescue copy: {e}"))?;
+    fs::rename(&tmp, &dest).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("save the rescue copy: {e}")
+    })?;
+    Ok(dest)
+}
+
 /// A window's position and size in **logical** pixels.
 ///
 /// The getters answer in physical pixels, but `WebviewWindowBuilder::position`
@@ -2114,5 +2136,25 @@ mod tests {
         state.move_tab("main", "editor-2", moved_snap("a", None));
         assert_eq!(state.snapshot_for("main").unwrap().tabs.len(), 1);
         assert!(state.snapshot_for("editor-2").is_none());
+    }
+
+    #[test]
+    fn a_rescue_copy_lands_in_the_trash_with_the_text() {
+        let root = scratch_dir("rescue");
+        let trash = root.join(".trash");
+        let path = rescue_untitled_in(&trash, "1-2-3", "- [ ] plan", 500).unwrap();
+        assert_eq!(path, trash.join("closed-1-2-3.trashed-500.md"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "- [ ] plan");
+        assert_eq!(files_in(&trash), vec!["closed-1-2-3.trashed-500.md"], "no temp file left");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_rescue_refuses_a_tab_id_that_could_name_another_file() {
+        let root = scratch_dir("rescue-bad-id");
+        let trash = root.join(".trash");
+        assert!(rescue_untitled_in(&trash, "../x", "text", 1).is_err());
+        assert!(files_in(&trash).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -239,9 +239,20 @@ pub async fn tab_activate(
     Ok(())
 }
 
+/// What ⌘W leaves for a rescue copy: an untitled tab's text, when it has any.
+/// A file tab's text is on disk already.
+pub(crate) fn rescue_text<'a>(path: Option<&str>, content: Option<&'a str>) -> Option<&'a str> {
+    match (path, content) {
+        (None, Some(text)) if !text.trim().is_empty() => Some(text),
+        _ => None,
+    }
+}
+
 /// ⌘W on a tab, after the frontend flushed and handed it over. Fails the
 /// agents still waiting on its document (pending and queued), commits its
 /// comment pauses, and records it for ⌘⇧T with the caret the frontend saw.
+/// `content` is an untitled tab's text as it was on screen: ⌘W discards it
+/// by design (tabs spec §8), but never without a copy in the draft trash.
 #[tauri::command]
 pub async fn tab_close(
     app: AppHandle,
@@ -249,6 +260,7 @@ pub async fn tab_close(
     tab_id: String,
     cursor: usize,
     top_line: usize,
+    content: Option<String>,
 ) -> Result<(), String> {
     let label = window.label().to_string();
     let (removed, number) = {
@@ -266,6 +278,14 @@ pub async fn tab_close(
     let Some(tab) = removed else {
         return Ok(());
     };
+
+    // After the registry guard (no disk under `OpenFiles`), before the
+    // session forgets the tab and the GC takes its sidecar.
+    if let Some(text) = rescue_text(tab.path.as_deref(), content.as_deref()) {
+        if let Err(e) = crate::session::rescue_untitled(&tab_id, text) {
+            eprintln!("tab_close: no rescue copy of {tab_id}: {e}");
+        }
+    }
 
     let session = app.state::<SessionState>();
     // At once, not at the next heartbeat: a quit in between would restore it.
@@ -642,6 +662,14 @@ pub async fn tab_carousel_windows(app: AppHandle, window: tauri::WebviewWindow) 
 mod tests {
     use super::*;
     use crate::ai_socket::{AiPending, AiResponse};
+
+    #[test]
+    fn only_an_untitled_tab_with_text_leaves_a_rescue_copy() {
+        assert_eq!(rescue_text(None, Some("- [ ] plan")), Some("- [ ] plan"));
+        assert_eq!(rescue_text(None, Some("  \n\t")), None, "blank is not a document");
+        assert_eq!(rescue_text(None, None), None);
+        assert_eq!(rescue_text(Some("/a.md"), Some("text")), None, "a file keeps its own copy on disk");
+    }
 
     #[test]
     fn a_thumbnail_reads_only_the_start_of_a_file_and_nothing_of_a_missing_one() {
