@@ -365,6 +365,99 @@ impl Stash {
             .collect()
     }
 
+    /// Adds then removes tags (plan D8), so a tag in both lists ends up absent.
+    /// A trashed entry refuses (roadmap A8).
+    pub fn tag(
+        &mut self,
+        id: &str,
+        add: &[String],
+        remove: &[String],
+    ) -> Result<StashEntry, String> {
+        let add = normalize_tags(add)?;
+        let remove = normalize_tags(remove)?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db::err)?;
+        let deleted_at: Option<i64> = tx
+            .query_row("SELECT deleted_at FROM entries WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(db::err)?
+            .ok_or_else(|| format!("no stash entry {id}"))?;
+        if deleted_at.is_some() {
+            return Err(format!("in the trash: {id}"));
+        }
+        for tag in &add {
+            tx.execute(
+                "INSERT OR IGNORE INTO tags (entry_id, tag) VALUES (?1, ?2)",
+                params![id, tag],
+            )
+            .map_err(db::err)?;
+        }
+        for tag in &remove {
+            tx.execute(
+                "DELETE FROM tags WHERE entry_id = ?1 AND tag = ?2",
+                params![id, tag],
+            )
+            .map_err(db::err)?;
+        }
+        tx.commit().map_err(db::err)?;
+        self.get(id)
+    }
+
+    /// Records that a document was opened from the stash. `false` when the
+    /// path is not a stash entry (opening any other file is not stash news).
+    pub fn touch_opened(&mut self, path: &str, now: i64) -> Result<bool, String> {
+        let path = crate::path_norm::normalize_str(path);
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE entries SET opened_at = ?1 WHERE path = ?2",
+                params![now, path],
+            )
+            .map_err(db::err)?;
+        Ok(changed > 0)
+    }
+
+    /// The save hook's work: a stash entry's `modified_at`, and a note's title
+    /// (a file reference keeps its file name, plan D18). `path` is the spelling
+    /// the editor saved under — already the registry's normalized one. Only
+    /// moves forward in time, so a late, older save cannot roll a title back
+    /// (plan D9); a trashed row is left alone (roadmap A8). `true` when the
+    /// title changed — the one case worth a `stash-changed { reason: "title" }`.
+    pub fn file_written(&mut self, path: &str, text: &str, now: i64) -> Result<bool, String> {
+        let row: Option<(String, String)> = self
+            .conn
+            .query_row(
+                "SELECT kind, title FROM entries WHERE path = ?1 AND deleted_at IS NULL",
+                [path],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(db::err)?;
+        let Some((kind, old_title)) = row else {
+            return Ok(false);
+        };
+        let title = if kind == StashKind::Note.as_str() {
+            notes::title_of(text).unwrap_or_default()
+        } else {
+            old_title.clone()
+        };
+        // `deleted_at IS NULL` again: the row may have been trashed between the
+        // read and this write by another connection (CLI, MCP).
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE entries SET modified_at = ?1, title = ?2 \
+                 WHERE path = ?3 AND modified_at <= ?1 AND deleted_at IS NULL",
+                params![now, title, path],
+            )
+            .map_err(db::err)?;
+        Ok(changed > 0 && title != old_title)
+    }
+
     fn tags_of(&self, id: &str) -> Result<Vec<String>, String> {
         let mut stmt = self
             .conn
@@ -800,5 +893,146 @@ mod tests {
             normalize_tags(&["A".into(), "#a".into(), "b".into()]).unwrap(),
             vec!["a", "b"]
         );
+    }
+
+    #[test]
+    fn tags_are_added_and_removed_in_one_spelling() {
+        let (mut stash, _root) = stash_in("tag");
+        let note = stash.create_note("x", None, T0, MSK).unwrap();
+        let e = stash
+            .tag(&note.id, &["#Infra".into(), "ИДЕИ".into()], &[])
+            .unwrap();
+        assert_eq!(e.tags, vec!["infra", "идеи"]);
+        let e = stash
+            .tag(&note.id, &["later".into()], &["#INFRA".into()])
+            .unwrap();
+        assert_eq!(e.tags, vec!["later", "идеи"]);
+        assert!(stash.tag(&note.id, &["two words".into()], &[]).is_err());
+        assert_eq!(
+            stash.get(&note.id).unwrap().tags,
+            vec!["later", "идеи"],
+            "a refused call changes nothing"
+        );
+    }
+
+    #[test]
+    fn remove_wins_over_add_in_one_call() {
+        // Plan D8: `add` runs before `remove`.
+        let (mut stash, _root) = stash_in("tag-both");
+        let note = stash.create_note("x", None, T0, MSK).unwrap();
+        let e = stash.tag(&note.id, &["x".into()], &["x".into()]).unwrap();
+        assert!(e.tags.is_empty());
+    }
+
+    #[test]
+    fn tagging_an_unknown_entry_is_an_error() {
+        let (mut stash, _root) = stash_in("tag-unknown");
+        assert_eq!(
+            stash.tag("s1-dead", &["a".into()], &[]).unwrap_err(),
+            "no stash entry s1-dead"
+        );
+        assert_eq!(rows(&stash, "tags"), 0);
+    }
+
+    #[test]
+    fn tagging_a_trashed_entry_is_refused() {
+        // Roadmap A8, stage 06 D18: a trashed row is inert.
+        let (mut stash, _root) = stash_in("tag-trashed");
+        let note = stash.create_note("# Удалённая", None, T0, MSK).unwrap();
+        stash.tag(&note.id, &["keep".into()], &[]).unwrap();
+        set_columns(&stash, &note.id, &format!("deleted_at = {}", T0 + 1));
+        let err = stash
+            .tag(&note.id, &["new".into()], &["keep".into()])
+            .unwrap_err();
+        assert_eq!(err, format!("in the trash: {}", note.id));
+        assert_eq!(stash.get(&note.id).unwrap().tags, vec!["keep"]);
+    }
+
+    #[test]
+    fn opening_from_the_stash_is_remembered() {
+        let (mut stash, root) = stash_in("opened");
+        let file = user_file(&root, "a.md", "a");
+        let id = stash
+            .put_away(&put(vec![file.clone()]), T0)
+            .unwrap()
+            .remove(0)
+            .entry
+            .id;
+        assert!(stash.touch_opened(&file, T0 + 10).unwrap());
+        assert_eq!(stash.get(&id).unwrap().opened_at, Some(T0 + 10));
+        let other = root.join("work/other.md").to_string_lossy().into_owned();
+        assert!(
+            !stash.touch_opened(&other, T0).unwrap(),
+            "not a stash entry"
+        );
+    }
+
+    #[test]
+    fn saving_a_note_updates_its_title_and_time() {
+        let (mut stash, _root) = stash_in("written");
+        let note = stash.create_note("# Old", None, T0, MSK).unwrap();
+        assert!(
+            stash
+                .file_written(&note.path, "# New\nbody", T0 + 10)
+                .unwrap(),
+            "title changed"
+        );
+        let e = stash.get(&note.id).unwrap();
+        assert_eq!((e.title.as_deref(), e.modified_at), (Some("New"), T0 + 10));
+        assert!(
+            !stash
+                .file_written(&note.path, "# New\nmore body", T0 + 20)
+                .unwrap(),
+            "same title: no event"
+        );
+        assert_eq!(stash.get(&note.id).unwrap().modified_at, T0 + 20);
+        assert!(
+            !stash.file_written(&note.path, "# Stale", T0 + 15).unwrap(),
+            "an older save landing late changes nothing"
+        );
+        let e = stash.get(&note.id).unwrap();
+        assert_eq!((e.title.as_deref(), e.modified_at), (Some("New"), T0 + 20));
+    }
+
+    #[test]
+    fn saving_a_file_reference_keeps_its_file_name_as_title() {
+        // Plan D18.
+        let (mut stash, root) = stash_in("written-file");
+        let file = user_file(&root, "readme.md", "# Heading");
+        let id = stash
+            .put_away(&put(vec![file.clone()]), T0)
+            .unwrap()
+            .remove(0)
+            .entry
+            .id;
+        assert!(!stash
+            .file_written(&file, "# Another heading", Y2100)
+            .unwrap());
+        let e = stash.get(&id).unwrap();
+        assert_eq!(e.title.as_deref(), Some("readme.md"));
+        assert_eq!(e.modified_at, Y2100);
+    }
+
+    /// 2100-01-01: later than any real mtime `put_away` records.
+    const Y2100: i64 = 4_102_444_800_000;
+
+    #[test]
+    fn saving_a_file_outside_the_stash_changes_nothing() {
+        let (mut stash, root) = stash_in("written-none");
+        let file = user_file(&root, "x.md", "x");
+        assert!(!stash.file_written(&file, "y", T0).unwrap());
+        assert_eq!(rows(&stash, "entries"), 0);
+    }
+
+    #[test]
+    fn saving_a_trashed_note_does_not_touch_its_row() {
+        // Roadmap A8, stage 06 D18: opening `.trash/x.md` by hand and saving it
+        // must not bump a trashed row's time or title.
+        let (mut stash, _root) = stash_in("written-trashed");
+        let note = stash.create_note("# Old", None, T0, MSK).unwrap();
+        set_columns(&stash, &note.id, &format!("deleted_at = {}", T0 + 1));
+        assert!(!stash.file_written(&note.path, "# New", T0 + 10).unwrap());
+        let e = stash.get(&note.id).unwrap();
+        assert_eq!((e.title.as_deref(), e.modified_at), (Some("Old"), T0));
     }
 }
