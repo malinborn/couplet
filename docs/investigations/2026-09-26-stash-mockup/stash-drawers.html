@@ -518,8 +518,9 @@ body.compact .card.expanded { transform: none; }
 
 /* ───────────────────────── Window carousel (drag a tab out of the drawer) ───────────────────────── */
 .editor { transition: filter .28s var(--ease); }
-.carousel-on .editor { filter: blur(9px) saturate(.85); }
-.carousel-on .scrim { opacity: .82; }
+/* Both drawers open (stash) → the page goes as unreadable as in the carousel state: same values. */
+.carousel-on .editor, .stash-open .editor { filter: blur(9px) saturate(.85); }
+.carousel-on .scrim, .stash-open .scrim { opacity: .82; }
 .carousel {
   position: absolute; top: 0; bottom: 0; right: 0; left: var(--dw); z-index: 950;
   display: flex; flex-direction: column; align-items: center; pointer-events: none;
@@ -1219,7 +1220,7 @@ function when(m) {
   const d = Math.floor((m - TODAY_MIN) / 1440) + 1; return `${d} ${plural(d, 'день', 'дня', 'дней')} назад`;
 }
 function metaText(t) {
-  if (t.kind === 'note') return 'заметка · в стэше';
+  if (t.kind === 'note') return t.repo || 'заметка';   // drag ghost of a note tab: no «в стэше» label, like the card
   if (t.kind === 'draft') return 'пустая заметка';
   return t.proj ? `${t.proj} · ⎇ ${t.br}` : 'не сохранён';
 }
