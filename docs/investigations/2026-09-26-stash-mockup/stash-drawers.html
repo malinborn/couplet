@@ -709,17 +709,16 @@ body.compact .card-path { display: none; }
 }
 .st-foot b { color: var(--text-subtle); font-weight: 600; }
 
-/* Two drawers open: ←/→ move the focus. The focused drawer gets a ring in its own
-   colour; the other one dims a little and its header says how to get back. */
+/* Two drawers open: ←/→ move the focus. Focus is shown ONLY by a glowing rim in the
+   drawer's own colour (tabs: --brand-a violet, stash: --stash); the other drawer keeps
+   full opacity and its plain border, and its header says how to get back. */
 #drawer { --acc: var(--brand-a); }
 .stash-drawer { --acc: var(--stash); }
 .drawer::after {
   content: ''; position: absolute; inset: -1px; border-radius: inherit; pointer-events: none; opacity: 0; transition: opacity .2s;
-  box-shadow: inset 0 0 0 1.5px color-mix(in oklab, var(--acc) 65%, transparent);
+  box-shadow: inset 0 0 0 1.5px color-mix(in oklab, var(--acc) 65%, transparent), 0 0 16px 1px color-mix(in oklab, var(--acc) 30%, transparent);
 }
 .stash-open .drawer.focused::after { opacity: 1; }
-.drawer .drawer-head, .drawer .tab-list { transition: opacity .2s; }
-.stash-open .drawer:not(.focused) .drawer-head, .stash-open .drawer:not(.focused) .tab-list { opacity: .6; }
 .drawer-title .focus-hint { display: none; font-size: 11px; line-height: 1.4; color: var(--text-muted); white-space: nowrap; }
 .drawer-title .focus-hint kbd { font-size: 11px; color: var(--text-subtle); }
 .stash-open .drawer:not(.focused) .drawer-title .type-hint, .stash-open .drawer:not(.focused) .drawer-title .sel-hint { display: none; }
