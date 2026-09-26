@@ -408,18 +408,40 @@ pub fn run() {
             // Crash-safety net. The authoritative save happens on the way out
             // (see `save_session_on_exit`); this only catches a hard kill.
             let ticker_handle = app.handle().clone();
-            std::thread::spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_millis(1000));
-                let state = ticker_handle.state::<SessionState>();
-                if state.is_quitting() {
-                    return;
-                }
-                if state.take_dirty() {
-                    let snapshot = state.snapshot(session::now_secs());
-                    let _ = session::write_session(&snapshot);
-                    // Must include the pending restore's buffers, not just the
-                    // live ones — see `referenced_untitled`.
-                    session::prune_untitled_files(&state.referenced_untitled());
+            std::thread::spawn(move || {
+                // `None`: purge on the first tick — an app that ran for weeks
+                // empties the trash when it is next launched.
+                let mut last_purge: Option<std::time::Instant> = None;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(1000));
+                    let state = ticker_handle.state::<SessionState>();
+                    if state.is_quitting() {
+                        return;
+                    }
+                    // No live window (launch before the first heartbeat, or the
+                    // last window destroyed ahead of the exit path): the file on
+                    // disk stands — `snapshot_to_write` says why. The GC waits
+                    // too: in the second case the file still names the destroyed
+                    // window's draft, which nothing in memory references any
+                    // more, and trashing it would restore that tab empty-handed.
+                    if state.take_dirty() {
+                        if let Some(snapshot) = state.snapshot_to_write(session::now_secs()) {
+                            let _ = session::write_session(&snapshot);
+                            // Includes the pending restore's buffers, not just the
+                            // live ones, and everything the file just written
+                            // names — see `untitled_to_keep_after`. What it leaves
+                            // out goes to `session/.trash/`, never away.
+                            session::prune_untitled_files(&state.untitled_to_keep_after(&snapshot));
+                        }
+                    }
+                    let purge_due = match last_purge {
+                        None => true,
+                        Some(at) => at.elapsed() >= session::DRAFTS_TRASH_PURGE_EVERY,
+                    };
+                    if purge_due {
+                        session::purge_drafts_trash(session::now_secs());
+                        last_purge = Some(std::time::Instant::now());
+                    }
                 }
             });
 
@@ -583,15 +605,14 @@ fn save_session_on_exit(app: &tauri::AppHandle) {
     // `RunEvent::Exit` alone. A comment paused seconds before a quit has to be
     // handed over on the way out, or nothing is left to hand it over.
     comment_pause::commit_all_open(app);
-    let snapshot = state.snapshot(session::now_secs());
+    let snapshot = state.snapshot_to_write(session::now_secs());
     state.mark_quitting();
-    // A quit records the session, it never erases it. An empty snapshot here
-    // means the windows were already gone before we were called — not that the
-    // user had nothing open — so the last good file on disk is the better answer.
-    if snapshot.windows.is_empty() {
-        return;
+    // A quit records the session, it never erases it: with no live window
+    // left, the last good file on disk stands (`snapshot_to_write` says why
+    // that also keeps the un-restored drafts named).
+    if let Some(snapshot) = snapshot {
+        let _ = session::write_session(&snapshot);
     }
-    let _ = session::write_session(&snapshot);
 }
 
 /// The window a document-scoped menu action belongs to — see `menu_route`.

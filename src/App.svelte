@@ -752,8 +752,8 @@
         }),
       release: (tabId) => invoke<void>('tab_release', { tabId }).catch(logTabIpc('tab_release')),
       activate: (tabId) => invoke<void>('tab_activate', { tabId }).catch(logTabIpc('tab_activate')),
-      close: (tabId, { cursor, topLine }) =>
-        invoke<void>('tab_close', { tabId, cursor, topLine }).catch(logTabIpc('tab_close')),
+      close: (tabId, { cursor, topLine }, discarded) =>
+        invoke<void>('tab_close', { tabId, cursor, topLine, content: discarded }).catch(logTabIpc('tab_close')),
       focusElsewhere: async (path) => {
         await invoke('focus_if_open', { path }).catch(logTabIpc('focus_if_open'));
       },

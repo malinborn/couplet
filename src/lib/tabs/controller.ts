@@ -227,7 +227,11 @@ export interface TabControllerDeps {
     open(path: string | null): Promise<OpenAnswer>;
     release(tabId: string): Promise<void>;
     activate(tabId: string): Promise<void>;
-    close(tabId: string, position: Position): Promise<void>;
+    /**
+     * ⌘W (Rust `tab_close`). `discarded`: an untitled tab's text as it was on
+     * screen, for the rescue copy in the draft trash; `null` for a file tab.
+     */
+    close(tabId: string, position: Position, discarded: string | null): Promise<void>;
     focusElsewhere(path: string): Promise<void>;
     closeWindow(): Promise<void>;
     /** Move tabs of this window to `target` (Rust `tab_move`, atomic). Rejects when Rust refused. */
@@ -897,18 +901,25 @@ export function createTabController(deps: TabControllerDeps) {
     onLastTab?: () => Promise<void>,
     quiet = false
   ): Promise<boolean> {
-    if (!findById(list, tabId)) return false;
-    const finish = (position: Position) =>
-      how === 'close' ? deps.rust.close(tabId, position) : deps.rust.release(tabId);
+    const closing = findById(list, tabId);
+    if (!closing) return false;
+    // A release is only for a blank Untitled, but it was judged blank before
+    // an await: text typed since goes through `close`, which keeps a rescue copy.
+    const finish = (position: Position, discarded: string | null) =>
+      how === 'close' || discarded?.trim()
+        ? deps.rust.close(tabId, position, discarded)
+        : deps.rust.release(tabId);
 
     if (tabId !== list.activeId) {
       // A background tab is clean by construction and was handed over when
       // it was left; there is nothing to flush.
       const cached = cache.get(tabId);
+      const discarded =
+        closing.path === null ? (cached?.state?.doc.toString() ?? cached?.content ?? null) : null;
       cache.delete(tabId);
       deps.ai.forget(tabId);
       publish(removeTab(list, tabId).state);
-      await finish({ cursor: cached?.cursor ?? 0, topLine: cached?.topLine ?? 1 });
+      await finish({ cursor: cached?.cursor ?? 0, topLine: cached?.topLine ?? 1 }, discarded);
       deps.settled();
       return true;
     }
@@ -950,13 +961,15 @@ export function createTabController(deps: TabControllerDeps) {
 
     // From the dirty check above to the swap, nothing awaits.
     if (path !== null) deps.comments.forget(path);
+    // What ⌘W discards, as the view holds it now: the sidecar may be a heartbeat behind.
+    const discarded = path === null ? (deps.editor.current()?.doc.toString() ?? null) : null;
     deps.editor.stripForBackground();
     cache.delete(tabId);
     deps.ai.forget(tabId);
     for (const id of next.failed) cache.delete(id);
     publish(next.working);
     if (next.tab === null) {
-      await finish(position);
+      await finish(position, discarded);
       await releaseAll(next.failed);
       deps.settled();
       if (onLastTab) await onLastTab();
@@ -966,7 +979,7 @@ export function createTabController(deps: TabControllerDeps) {
     await enter(next.tab, next.ready, null, false);
     // After the swap: its Rust side fails the document's agents (and, for a
     // close, records it for ⌘⇧T); the watcher has already moved on.
-    await finish(position);
+    await finish(position, discarded);
     await releaseAll(next.failed);
     return true;
   }
