@@ -349,6 +349,36 @@
   .cm-md-task-done .cm-md-inline-code {
     -webkit-text-fill-color: currentColor;
   }
+
+  /* `~~Strikethrough~~` can burn the same way, and it takes TWO hooks, not one.
+   *
+   * Unlike a ticked task, struck text keeps its children's own colours in every
+   * theme today (`~~**a**~~` shows `--color-bold`). A transparent fill would
+   * take that away everywhere, so the fill itself is the hook:
+   * `--strikethrough-fill` falls back to `currentColor`, which is exactly the
+   * current rendering, and only a theme that declares it `transparent` lets
+   * `--strikethrough-grad` show through. The last stop should equal
+   * `--color-strikethrough` for the same reason as the task gradient above.
+   *
+   * `color` stays real, so the line-through (drawn in `currentColor`) survives. */
+  .cm-md-strikethrough {
+    background-color: var(--color-strikethrough);
+    background-image: var(--strikethrough-grad, none);
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: var(--strikethrough-fill, currentColor);
+  }
+  .cm-md-strikethrough .cm-md-inline-code {
+    -webkit-text-fill-color: currentColor;
+  }
+  /* Inside a ticked task the task's own sweep wins, as it did before this hook
+   * existed: no background of its own, and the inherited transparent fill. */
+  .cm-md-task-done .cm-md-strikethrough {
+    background: none;
+    -webkit-text-fill-color: transparent;
+  }
 }
 
 /* Blockquotes */

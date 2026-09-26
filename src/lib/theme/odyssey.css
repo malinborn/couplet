@@ -1,127 +1,133 @@
-/* «Odyssey» — хтоническая и стоическая: по «Одиссее» Нолана.
+/* «Odyssey» — «Сталь и туман»: хтоническая и стоическая, по «Одиссее» Нолана.
  *
- * Стоическая — значит сдержанная. Разнообразие здесь не цель (это история
- * Autumn): заголовки держит одно золото, жирный — это просто текст светлее,
- * а не отдельный цвет, и акцентов ровно столько, сколько нужно для правки.
+ * Одна семья, ведёт тёмная. Тёмная — «Стальные гиганты»: холодная сталь в
+ * снежном лесу, серебряные заголовки. Светлая — туман «Счастья», сдвинутый к
+ * металлу: серо-голубая мгла, текст того же графита, что фон тёмной.
  *
- *   золото Агамемнона — заголовки; блик по золоту только на H1;
- *   огонь Трои        — каретка, чекбоксы: то, что меняют руками;
- *   плюмаж            — линия цитаты, единственный красный;
- *   туман             — ссылки;
- *   штормовой просвет — текст и курсив;
- *   пепел             — выполненное и вычеркнутое.
+ * Общее у половин — три вещи, и больше ничего:
+ *   графит и серебро — весь текст и заголовки, металл без оттенка;
+ *   красный плюмаж   — всё, что меняют руками: курсор, чекбоксы, цитаты;
+ *   огни Трои        — всё зачёркнутое: выполненные задачи и `~~текст~~`
+ *                      горят от золота к плюмажу и тлеют в угли.
  *
- * Тёмная — ночь у Сциллы: сине-зелёная чернь моря, текст — свет в разрыве
- * туч. Светлая — туман над скалами: холодная серо-голубая мгла, текст —
- * чёрная броня, заголовки — то же золото, потемневшее до бронзы (5:1).
+ * Разнообразия по уровням здесь нет намеренно — это история Autumn. Курсор —
+ * один сплошной плюмаж, без градиента. Последний stop обоих огненных
+ * градиентов обязан совпадать со своим плоским тоном (см.
+ * task-done-gradient.test.ts и комментарий в editor.css).
  */
 
 :root[data-theme='odyssey-light'] {
-  --bg-base: #dde4e6;
-  --bg-surface: #d1d9dc;
-  --text-primary: #12181c;
-  --text-subtle: #44525a;
-  --text-muted: #7c878c;
-  --highlight: #cdd6d9;
-  --color-heading: #7a5616;
-  --color-bold: #0a0e10;
-  --color-italic: #3e5a5e;
-  --color-link: #1e5f80;
-  --color-code-bg: #d1d9dc;
-  --color-code-text: #12181c;
-  --color-selection: #c3d3db;
-  --color-border: #c6cfd2;
-  --color-cursor: #b8421c;
-  --color-caret-top: #b8421c;
-  --color-caret-bottom: #8a1f12;
-  --color-line-highlight: #d6dee1;
-  --color-strikethrough: #7c878c;
-  --color-task-done: #7c878c;
-  --color-task-done-line: #b8421c;
-  --color-blockquote-border: #8a1f12;
-  --color-hr: #c6cfd2;
-  --color-list-marker: #7a5a36;
-  --color-checkbox: #b8421c;
-  --color-table-border: #c6cfd2;
-  --color-table-even-bg: #d6dee1;
-  /* Золотая пыль, тающая в тумане. */
-  --table-header-grad: linear-gradient(135deg, #e2d9c2 0%, #d8dcd6 55%, #cfdade 100%);
-  --table-header-text: #12181c;
-  --color-glow: 184, 66, 28;
-  --ai-edit-bg: rgba(184, 66, 28, 0.12);
-  --ai-edit-shimmer: rgba(184, 66, 28, 0.26);
-  --ai-ask-bg: rgba(18, 24, 28, 0.05);
-  --ai-ask-border: rgba(18, 24, 28, 0.22);
-  --ai-ask-chip-bg: #e8edef;
-  --ai-ask-chip-hover-bg: rgba(184, 66, 28, 0.14);
-  --ai-ask-accent: #12181c;
-  --ai-ask-accent-text: #dde4e6;
-  --bg-overlay: rgba(221, 228, 230, 0.78);
-  --border: #c6cfd2;
-  /* Одно золото, стареющее к нижним уровням в бронзу и сталь. */
-  --heading-tone-1: #7a5616;
-  --heading-tone-2: #735418;
-  --heading-tone-3: #6a521e;
-  --heading-tone-4: #5c5028;
-  --heading-tone-5: #4f4f40;
-  --heading-tone-6: #4a5058;
+  --bg-base: #dfe3e8;
+  --bg-surface: #d2d8df;
+  --text-primary: #15181c;
+  --text-subtle: #4a525c;
+  --text-muted: #7b838d;
+  --highlight: #d0d6dd;
+  --color-heading: #26313d;
+  --color-bold: #0a0c0e;
+  --color-italic: #4a5663;
+  --color-link: #34587a;
+  --color-code-bg: #d2d8df;
+  --color-code-text: #15181c;
+  --color-selection: #cbd5df;
+  --color-border: #c9d0d8;
+  --color-cursor: #b3301f;
+  --color-caret-top: #b3301f;
+  --color-caret-bottom: #b3301f;
+  --color-line-highlight: #d8dde3;
+  /* Огни Трои: золото → пламя → плюмаж → угли. */
+  --color-strikethrough: #8a2418;
+  --strikethrough-grad: linear-gradient(100deg, #a8700c 0%, #c0561a 35%, #b3301f 70%, #8a2418 100%);
+  --strikethrough-fill: transparent;
+  --color-task-done: #8a2418;
+  --color-task-done-line: #b3301f;
+  --task-done-grad: linear-gradient(100deg, #a8700c 0%, #c0561a 35%, #b3301f 70%, #8a2418 100%);
+  --color-blockquote-border: #b3301f;
+  --color-hr: #c9d0d8;
+  --color-list-marker: #7b838d;
+  --color-checkbox: #b3301f;
+  --color-table-border: #c9d0d8;
+  --color-table-even-bg: #d8dde3;
+  --table-header-grad: linear-gradient(135deg, #d6dbe1 0%, #d2d8df 55%, #cdd4dc 100%);
+  --table-header-text: #15181c;
+  --color-glow: 179, 48, 31;
+  --ai-edit-bg: rgba(179, 48, 31, 0.1);
+  --ai-edit-shimmer: rgba(179, 48, 31, 0.24);
+  --ai-ask-bg: rgba(21, 24, 28, 0.05);
+  --ai-ask-border: rgba(21, 24, 28, 0.22);
+  --ai-ask-chip-bg: #e9ecf0;
+  --ai-ask-chip-hover-bg: rgba(179, 48, 31, 0.12);
+  --ai-ask-accent: #15181c;
+  --ai-ask-accent-text: #dfe3e8;
+  --bg-overlay: rgba(223, 227, 232, 0.78);
+  --border: #c9d0d8;
+  /* Тёмная сталь, светлеющая к нижним уровням. */
+  --heading-tone-1: #1c232c;
+  --heading-tone-2: #26313d;
+  --heading-tone-3: #2c3743;
+  --heading-tone-4: #343e4a;
+  --heading-tone-5: #3e4752;
+  --heading-tone-6: #4a525c;
   --heading-grad-span: 28em;
-  --heading-grad-1: linear-gradient(100deg, #8a6414 0%, #7a5616 100%);
+  --heading-grad-1: linear-gradient(100deg, #3a4756 0%, #1c232c 100%);
   --font-text: 'Inter', -apple-system, system-ui, sans-serif;
   --font-code: 'JetBrains Mono', 'SF Mono', monospace;
 }
 
 :root[data-theme='odyssey-dark'] {
-  --bg-base: #0e1418;
-  --bg-surface: #151d22;
-  --text-primary: #cdd3c8;
-  --text-subtle: #93a09a;
-  --text-muted: #5f6c6a;
-  --highlight: #1f2a30;
-  --color-heading: #d4b06a;
-  --color-bold: #eef0e4;
-  --color-italic: #a9ad84;
-  --color-link: #6fa6c4;
-  --color-code-bg: #151d22;
-  --color-code-text: #cdd3c8;
-  --color-selection: #263740;
-  --color-border: #1f2b31;
-  --color-cursor: #dd6632;
-  --color-caret-top: #f2c455;
-  --color-caret-bottom: #dd6632;
-  --color-line-highlight: #121a1f;
-  --color-strikethrough: #5f6c6a;
-  --color-task-done: #5f6c6a;
-  --color-task-done-line: #dd6632;
-  --color-blockquote-border: #b8342a;
-  --color-hr: #1f2b31;
-  --color-list-marker: #a8854a;
-  --color-checkbox: #dd6632;
-  --color-table-border: #1f2b31;
-  --color-table-even-bg: #121a1f;
-  /* Золото, уходящее в ночное море. */
-  --table-header-grad: linear-gradient(135deg, #262216 0%, #1c2124 55%, #182329 100%);
-  --table-header-text: #d4b06a;
-  --color-glow: 221, 102, 50;
-  --ai-edit-bg: rgba(221, 102, 50, 0.15);
-  --ai-edit-shimmer: rgba(221, 102, 50, 0.32);
-  --ai-ask-bg: rgba(111, 166, 196, 0.08);
-  --ai-ask-border: rgba(111, 166, 196, 0.26);
-  --ai-ask-chip-bg: rgba(205, 211, 200, 0.05);
-  --ai-ask-chip-hover-bg: rgba(221, 102, 50, 0.18);
-  --ai-ask-accent: #d4b06a;
-  --ai-ask-accent-text: #0e1418;
-  --bg-overlay: rgba(14, 20, 24, 0.78);
-  --border: #1f2b31;
-  --heading-tone-1: #d4b06a;
-  --heading-tone-2: #cfa862;
-  --heading-tone-3: #c49c5c;
-  --heading-tone-4: #b0956a;
-  --heading-tone-5: #9a9282;
-  --heading-tone-6: #8e939c;
-  /* Блик огня на золотом доспехе — только у H1. */
+  --bg-base: #15171a;
+  --bg-surface: #1c1f23;
+  --text-primary: #c8ccd2;
+  --text-subtle: #939aa3;
+  --text-muted: #5e646c;
+  --highlight: #262a2f;
+  --color-heading: #e4e7eb;
+  --color-bold: #f2f4f6;
+  --color-italic: #aab2bc;
+  --color-link: #8fb0cf;
+  --color-code-bg: #1c1f23;
+  --color-code-text: #c8ccd2;
+  --color-selection: #2c333b;
+  --color-border: #262a2f;
+  --color-cursor: #d23a2a;
+  --color-caret-top: #d23a2a;
+  --color-caret-bottom: #d23a2a;
+  --color-line-highlight: #181a1d;
+  /* Огни Трои: золото → пламя → плюмаж → остывающий уголь. */
+  --color-strikethrough: #a8453a;
+  --strikethrough-grad: linear-gradient(100deg, #f2c455 0%, #ec7a2c 30%, #d23a2a 65%, #a8453a 100%);
+  --strikethrough-fill: transparent;
+  --color-task-done: #a8453a;
+  --color-task-done-line: #d23a2a;
+  --task-done-grad: linear-gradient(100deg, #f2c455 0%, #ec7a2c 30%, #d23a2a 65%, #a8453a 100%);
+  --color-blockquote-border: #d23a2a;
+  --color-hr: #262a2f;
+  --color-list-marker: #7b838d;
+  --color-checkbox: #d23a2a;
+  --color-table-border: #262a2f;
+  --color-table-even-bg: #181a1d;
+  --table-header-grad: linear-gradient(135deg, #22262b 0%, #1f2327 55%, #25292f 100%);
+  --table-header-text: #e4e7eb;
+  --color-glow: 210, 58, 42;
+  --ai-edit-bg: rgba(210, 58, 42, 0.16);
+  --ai-edit-shimmer: rgba(210, 58, 42, 0.34);
+  --ai-ask-bg: rgba(143, 176, 207, 0.08);
+  --ai-ask-border: rgba(143, 176, 207, 0.26);
+  --ai-ask-chip-bg: rgba(200, 204, 210, 0.05);
+  --ai-ask-chip-hover-bg: rgba(210, 58, 42, 0.18);
+  --ai-ask-accent: #e4e7eb;
+  --ai-ask-accent-text: #15171a;
+  --bg-overlay: rgba(21, 23, 26, 0.78);
+  --border: #262a2f;
+  /* Серебро, темнеющее к нижним уровням. H1 — шлифованная сталь с бликом. */
+  --heading-tone-1: #aeb4bd;
+  --heading-tone-2: #e4e7eb;
+  --heading-tone-3: #dde1e5;
+  --heading-tone-4: #d0d4d9;
+  --heading-tone-5: #b8bdc4;
+  --heading-tone-6: #a0a6ae;
   --heading-grad-span: 28em;
-  --heading-grad-1: linear-gradient(100deg, #f2d38c 0%, #d4b06a 100%);
+  --heading-grad-1: linear-gradient(100deg, #ffffff 0%, #aeb4bd 100%);
   --font-text: 'Inter', -apple-system, system-ui, sans-serif;
   --font-code: 'JetBrains Mono', 'SF Mono', monospace;
 }

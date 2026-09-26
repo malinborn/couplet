@@ -43,6 +43,8 @@ const OPTIONAL_HOOKS = [
   '--table-header-grad',
   '--table-header-text',
   '--task-done-grad',
+  '--strikethrough-grad',
+  '--strikethrough-fill',
 ] as const;
 
 function walk(dir: string): string[] {

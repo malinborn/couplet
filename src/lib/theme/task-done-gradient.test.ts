@@ -18,11 +18,22 @@ const THEMES = [
   'aurora-dark',
   'autumn-light',
   'autumn-dark',
+  'odyssey-light',
+  'odyssey-dark',
 ] as const;
-const GRADIENT = ['aurora-light', 'aurora-dark', 'autumn-light', 'autumn-dark'] as const;
+const GRADIENT = [
+  'aurora-light',
+  'aurora-dark',
+  'autumn-light',
+  'autumn-dark',
+  'odyssey-light',
+  'odyssey-dark',
+] as const;
+/** Themes that also burn `~~strikethrough~~` (see the two-hook note in editor.css). */
+const STRIKE_GRADIENT = ['odyssey-light', 'odyssey-dark'] as const;
 
 /** Families that keep both halves in one `<family>.css`, one block per half. */
-const SHARED_FILE = new Set(['autumn']);
+const SHARED_FILE = new Set(['autumn', 'odyssey']);
 
 function css(theme: string): string {
   const family = theme.replace(/-(light|dark)$/, '');
@@ -71,5 +82,26 @@ describe('the ticked-task gradient', () => {
   it('is never declared by a strict theme', () => {
     expect(variable('light', 'task-done-grad')).toBeNull();
     expect(variable('dark', 'task-done-grad')).toBeNull();
+  });
+});
+
+describe('the strikethrough gradient', () => {
+  // Same contract as the task sweep: the last stop is the flat tone every
+  // struck span ends on. And the gradient is only visible behind a transparent
+  // fill, so a theme declaring one without the other shows nothing new.
+  it.each(STRIKE_GRADIENT)('%s ends on --color-strikethrough and opens the fill', (theme) => {
+    const grad = variable(theme, 'strikethrough-grad');
+    expect(grad, `${theme} declares --strikethrough-grad`).not.toBeNull();
+    expect(lastStop(grad as string)).toBe(variable(theme, 'color-strikethrough'));
+    expect(variable(theme, 'strikethrough-fill')).toBe('transparent');
+  });
+
+  // The fill hook falls back to currentColor, which is what keeps every other
+  // theme's struck text (and its bold/italic children) exactly as it was.
+  it('is never declared by a strict theme', () => {
+    for (const theme of ['light', 'dark']) {
+      expect(variable(theme, 'strikethrough-grad')).toBeNull();
+      expect(variable(theme, 'strikethrough-fill')).toBeNull();
+    }
   });
 });
