@@ -44,6 +44,7 @@
   "menu.view.select_tab": "Onglet {n}",
   "menu.view.show_tabs": "Afficher les onglets",
   "menu.view.tabs_compact": "Compact",
+  "menu.view.tabs_dates": "Afficher les dates",
 
   "menu.theme.title": "Thème",
   "menu.theme.half_light": "Clair",

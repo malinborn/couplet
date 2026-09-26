@@ -4,14 +4,17 @@
    * project/branch line, a few lines of its text; ⌘1…⌘9 and × on the right.
    * An unviewed tab shimmers AND carries a text label (spec §11). Pointer
    * gestures are delegated to the drawer (`data-tab-id`); the card reports
-   * only hover, for the ~600 ms expansion. Everything shown comes from data —
+   * only hover, for the ~600 ms expansion. When it was last looked at or
+   * changed sits at the end of the grey line (in the head row when Compact),
+   * unless View → Tabs → Show Dates is off. Everything shown comes from data —
    * no `{@html}` over a file's text.
    */
   import { t } from '../i18n';
   import { highlight, hitSnippet, type Match } from './drawer-filter';
   import type { InlineSeg } from './drawer-preview';
   import type { GitInfo, TabText } from './drawer-data';
-  import type { TabMeta } from './tab-model';
+  import { lastTouched, type TabMeta } from './tab-model';
+  import { formatExact, formatTouched } from './relative-time';
 
   let {
     tab,
@@ -22,6 +25,8 @@
     expanded,
     dragging,
     compact,
+    showTime,
+    now,
     query,
     match,
     text,
@@ -40,6 +45,10 @@
     expanded: boolean;
     dragging: boolean;
     compact: boolean;
+    /** View → Tabs → Show Dates. */
+    showTime: boolean;
+    /** The drawer's one ticking clock, so the relative time stays fresh while it is open. */
+    now: number;
     query: string;
     match: Match | undefined;
     text: TabText | null;
@@ -55,7 +64,17 @@
   const nameSegments = $derived(highlight(name, match && match.rank < 2 ? query : ''));
   const hit = $derived(match?.rank === 2 ? highlight(hitSnippet(match.line, query), query) : null);
   const meta = $derived(tab.path === null ? { project: t('tabs.card.unsaved'), branch: null } : (git ?? null));
+  // `active` is the window's active tab: it is being looked at, so it reads «just now».
+  const touched = $derived(lastTouched(tab, active ? tab.id : null, now));
+  const touchedLabel = $derived(showTime ? formatTouched(touched, now) : '');
+  const touchedTitle = $derived(showTime ? formatExact(touched) : '');
 </script>
+
+{#snippet time(where: 'head' | 'meta')}
+  {#if showTime}<time class="card-time" class:in-head={where === 'head'} datetime={new Date(touched).toISOString()} title={touchedTitle}
+      >{touchedLabel}</time
+    >{/if}
+{/snippet}
 
 {#snippet segments(list: InlineSeg[])}
   {#each list as s, i (i)}{#if s.code}<code>{s.text}</code>{:else if s.bold}<strong>{s.text}</strong>{:else if s.italic}<em>{s.text}</em>{:else}{s.text}{/if}{/each}
@@ -91,6 +110,7 @@
     >
     <span class="card-imeta">{@render metaLine(true)}</span>
     {#if tab.unviewed}<span class="ai-chip">{t('tabs.card.ai_chip')}</span>{/if}
+    {@render time('head')}
     {#if shortcut}<kbd class="card-kbd">{shortcut}</kbd>{/if}
     <button
       class="card-close"
@@ -104,7 +124,7 @@
       }}>×</button
     >
   </div>
-  <div class="card-meta">{@render metaLine(false)}</div>
+  <div class="card-meta"><span class="meta-main">{@render metaLine(false)}</span>{@render time('meta')}</div>
   {#if hit}
     <div class="card-preview">
       <div class="hit-l">{t('tabs.drawer.in_text')}</div>
@@ -265,14 +285,42 @@
     font-size: 11.5px;
     color: var(--text-muted);
     display: flex;
+    align-items: baseline;
     gap: 6px;
     white-space: nowrap;
     overflow: hidden;
   }
 
+  /* Project and branch give way first: the time never gets squeezed. */
+  .meta-main {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .meta-main .br {
+    margin-left: 6px;
+  }
+
   .br {
     font-family: var(--font-code);
     font-size: 10.5px;
+  }
+
+  .card-time {
+    flex: 0 0 auto;
+    margin-left: auto;
+    font-family: var(--tabs-ui);
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The head row's copy is for Compact, where the grey line is gone. */
+  .card-time.in-head {
+    display: none;
   }
 
   .card-preview {
@@ -429,6 +477,12 @@
 
   :global(.compact) .card-meta {
     display: none;
+  }
+
+  :global(.compact) .card-time.in-head {
+    display: block;
+    margin-left: 0;
+    font-size: 10.5px;
   }
 
   :global(.compact) .card-name {

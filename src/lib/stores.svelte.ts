@@ -271,6 +271,21 @@ export function createTabsCompactStore() {
   };
 }
 
+/** View → Tabs → Show Dates: the time on each drawer card. On by default. */
+export function createTabsDatesStore() {
+  let enabled = $state<boolean>(loadSetting('tabsDates', true));
+
+  return {
+    get enabled() {
+      return enabled;
+    },
+    set(value: boolean) {
+      enabled = value;
+      saveSetting('tabsDates', enabled);
+    },
+  };
+}
+
 /** File → «Короткие показы без ответа через час» (spec §7): keep them, or close them. */
 export function createTransientPolicyStore() {
   const stored = loadSetting<unknown>('transientIgnored', 'keep');

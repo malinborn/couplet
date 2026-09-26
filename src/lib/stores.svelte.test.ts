@@ -5,6 +5,7 @@ import {
   createThemeStore,
   createOcdAlignmentStore,
   createTabsCompactStore,
+  createTabsDatesStore,
   createTransientPolicyStore,
   createRecentFilesStore,
   createZoomStore,
@@ -174,6 +175,26 @@ describe('createTabsCompactStore', () => {
     expect(store.enabled).toBe(true);
     expect(JSON.parse(localStorage.getItem('md-mini:tabsCompact')!)).toBe(true);
     expect(createTabsCompactStore().enabled).toBe(true);
+  });
+});
+
+describe('createTabsDatesStore', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('DefaultsToOn', () => {
+    expect(createTabsDatesStore().enabled).toBe(true);
+  });
+
+  // A value, not a flip: the menu event reaches every window.
+  it('SetIsIdempotent_AndPersists', () => {
+    const store = createTabsDatesStore();
+    store.set(false);
+    store.set(false);
+    expect(store.enabled).toBe(false);
+    expect(JSON.parse(localStorage.getItem('md-mini:tabsDates')!)).toBe(false);
+    expect(createTabsDatesStore().enabled).toBe(false);
   });
 });
 

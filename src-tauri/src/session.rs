@@ -71,6 +71,10 @@ pub struct TabSnapshot {
     /// The last moment it was the active tab of a focused window — ⌘R. `0`: never.
     #[serde(default)]
     pub viewed_at: u64,
+    /// The last change to its text, by the human or an agent — the drawer
+    /// card's time. `0`: none, or a session written before the stamp.
+    #[serde(default)]
+    pub edited_at: u64,
     /// An agent put it up while nobody was looking, and nobody has since
     /// (spec §2) — it shimmers until it is seen.
     #[serde(default)]
@@ -785,6 +789,8 @@ pub struct TabReport {
     #[serde(default)]
     pub viewed_at: u64,
     #[serde(default)]
+    pub edited_at: u64,
+    #[serde(default)]
     pub unviewed: bool,
     /// Quick-look state — see `TabSnapshot`. Defaulted like the stamps.
     #[serde(default)]
@@ -826,6 +832,7 @@ pub fn tab_snapshots(
                 top_line: r.top_line.max(1),
                 opened_at: r.opened_at,
                 viewed_at: r.viewed_at,
+                edited_at: r.edited_at,
                 unviewed: r.unviewed,
                 transient: r.transient,
                 transient_seen_at: r.transient_seen_at,
@@ -1662,12 +1669,14 @@ mod tests {
             content: None,
             opened_at: 1_700_000_000_123,
             viewed_at: 1_700_000_000_456,
+            edited_at: 1_700_000_000_789,
             unviewed: true,
             ..Default::default()
         }];
         let (snapshots, _) = tab_snapshots(&state, "main", reports);
         assert_eq!(snapshots[0].opened_at, 1_700_000_000_123);
         assert_eq!(snapshots[0].viewed_at, 1_700_000_000_456);
+        assert_eq!(snapshots[0].edited_at, 1_700_000_000_789);
         assert!(snapshots[0].unviewed);
     }
 
@@ -1689,6 +1698,7 @@ mod tests {
         let report: TabReport =
             serde_json::from_str(r#"{"tabId":"1","path":null,"cursor":0,"topLine":1,"content":null}"#).unwrap();
         assert_eq!((report.opened_at, report.viewed_at, report.unviewed), (0, 0, false));
+        assert_eq!(report.edited_at, 0);
         assert_eq!((report.transient, report.transient_seen_at), (false, 0));
     }
 
@@ -1699,6 +1709,7 @@ mod tests {
         let s = parse_session(json).expect("parses");
         let t = &s.windows[0].tabs[0];
         assert_eq!((t.opened_at, t.viewed_at, t.unviewed), (0, 0, false));
+        assert_eq!(t.edited_at, 0, "a session from before the card's time: never edited");
         assert_eq!((t.transient, t.transient_seen_at), (false, 0), "a session from before Q8: ordinary tabs");
     }
 
@@ -1707,9 +1718,10 @@ mod tests {
         let mut t = tab("t1", Some("/tmp/a.md"));
         t.opened_at = 5;
         t.viewed_at = 7;
+        t.edited_at = 9;
         t.unviewed = true;
         let json = serde_json::to_string(&session(vec![window(vec![t.clone()])])).unwrap();
-        for key in [r#""openedAt":5"#, r#""viewedAt":7"#, r#""unviewed":true"#] {
+        for key in [r#""openedAt":5"#, r#""viewedAt":7"#, r#""editedAt":9"#, r#""unviewed":true"#] {
             assert!(json.contains(key), "{key} missing in {json}");
         }
         assert_eq!(parse_session(&json).unwrap().windows[0].tabs[0], t);

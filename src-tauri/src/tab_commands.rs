@@ -298,6 +298,7 @@ pub struct MovedTab {
     pub top_line: usize,
     pub opened_at: u64,
     pub viewed_at: u64,
+    pub edited_at: u64,
     pub unviewed: bool,
     pub transient: bool,
     pub transient_seen_at: u64,
@@ -315,6 +316,7 @@ impl MovedTab {
             top_line: self.top_line.max(1),
             opened_at: self.opened_at,
             viewed_at: self.viewed_at,
+            edited_at: self.edited_at,
             unviewed: self.unviewed,
             transient: self.transient,
             transient_seen_at: self.transient_seen_at,
@@ -406,6 +408,7 @@ pub fn move_tabs_between(
             top_line: t.top_line,
             opened_at: t.opened_at,
             viewed_at: t.viewed_at,
+            edited_at: t.edited_at,
             unviewed: t.unviewed,
             transient: t.transient,
             transient_seen_at: t.transient_seen_at,
@@ -862,7 +865,7 @@ mod tests {
     }
 
     fn moved(id: &str) -> MovedTab {
-        MovedTab { tab_id: id.to_string(), cursor: 3, top_line: 2, opened_at: 10, viewed_at: 20, ..Default::default() }
+        MovedTab { tab_id: id.to_string(), cursor: 3, top_line: 2, opened_at: 10, viewed_at: 20, edited_at: 30, ..Default::default() }
     }
 
     #[test]
@@ -885,6 +888,7 @@ mod tests {
             (arriving[1].cursor, arriving[1].top_line, arriving[1].opened_at, arriving[1].viewed_at),
             (3, 2, 10, 20)
         );
+        assert_eq!(arriving[1].edited_at, 30, "the card's time travels with the tab");
         assert!(arriving[1].transient);
         assert_eq!(arriving[1].transient_seen_at, 5);
         assert_eq!(
@@ -1005,7 +1009,7 @@ mod tests {
     #[test]
     fn the_move_speaks_the_frontends_json() {
         let tab: MovedTab = serde_json::from_str(
-            r#"{"tabId":"1-2-3","content":"x","cursor":4,"topLine":2,"openedAt":5,"viewedAt":6,"unviewed":true,"transient":true,"transientSeenAt":7,"inbox":[]}"#,
+            r#"{"tabId":"1-2-3","content":"x","cursor":4,"topLine":2,"openedAt":5,"viewedAt":6,"editedAt":8,"unviewed":true,"transient":true,"transientSeenAt":7,"inbox":[]}"#,
         )
         .unwrap();
         assert_eq!(
@@ -1017,6 +1021,7 @@ mod tests {
                 top_line: 2,
                 opened_at: 5,
                 viewed_at: 6,
+                edited_at: 8,
                 unviewed: true,
                 transient: true,
                 transient_seen_at: 7,

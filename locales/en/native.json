@@ -44,6 +44,7 @@
   "menu.view.select_tab": "Tab {n}",
   "menu.view.show_tabs": "Show Tabs",
   "menu.view.tabs_compact": "Compact",
+  "menu.view.tabs_dates": "Show Dates",
 
   "menu.theme.title": "Theme",
   "menu.theme.half_light": "Light",
