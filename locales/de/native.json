@@ -55,6 +55,8 @@
   "menu.ai.title": "KI",
   "menu.ai.connect": "Bring deiner KI couplet bei",
   "menu.ai.comment": "Auswahl kommentieren",
+  "menu.ai.next_mark": "Nächste KI-Markierung",
+  "menu.ai.prev_mark": "Vorherige KI-Markierung",
   "menu.ai.watch_command": "Agent mit Dokumentfragen verbinden",
   "menu.ai.playbook": "KI-Playbook",
 

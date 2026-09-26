@@ -55,6 +55,8 @@
   "menu.ai.title": "IA",
   "menu.ai.connect": "Enseña couplet a tu IA",
   "menu.ai.comment": "Comentar la selección",
+  "menu.ai.next_mark": "Siguiente marca de IA",
+  "menu.ai.prev_mark": "Marca de IA anterior",
   "menu.ai.watch_command": "Conectar agente a preguntas del documento",
   "menu.ai.playbook": "Manual de IA",
 

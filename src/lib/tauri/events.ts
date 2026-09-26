@@ -37,6 +37,8 @@ export type MenuAction =
   | 'theme_system:off'
   | 'recent_files'
   | 'ai_comment'
+  | 'ai_next_mark'
+  | 'ai_prev_mark'
   | 'ai_watch_command'
   | 'format_json'
   | 'new_tab'

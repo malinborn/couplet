@@ -41,6 +41,8 @@ export const NATIVE_MENU_ACCELERATORS: readonly NativeMenuAccelerator[] = [
   { id: 'zoom_out', accelerator: 'CmdOrCtrl+Minus' },
   { id: 'zoom_reset', accelerator: 'CmdOrCtrl+0' },
   { id: 'ai_comment', accelerator: 'CmdOrCtrl+Shift+M' },
+  { id: 'ai_next_mark', accelerator: 'CmdOrCtrl+Quote' },
+  { id: 'ai_prev_mark', accelerator: 'CmdOrCtrl+Shift+Quote' },
   { id: 'next_tab', accelerator: 'CmdOrCtrl+Shift+BracketRight' },
   { id: 'prev_tab', accelerator: 'CmdOrCtrl+Shift+BracketLeft' },
   { id: 'toggle_drawer', accelerator: 'CmdOrCtrl+J' },

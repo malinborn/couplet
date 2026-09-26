@@ -535,6 +535,19 @@ pub fn build_menu(
                 .accelerator("CmdOrCtrl+Shift+M")
                 .build(app)?,
         )
+        // Walk the places an AI left in the document — edits, comment
+        // threads, questions — in a cycle (`ai-mark-nav.ts`). Menu keys, not
+        // a CM6 keymap, so they also work with focus in a comment box.
+        .item(
+            &MenuItemBuilder::with_id("ai_next_mark", t("menu.ai.next_mark"))
+                .accelerator("CmdOrCtrl+Quote")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("ai_prev_mark", t("menu.ai.prev_mark"))
+                .accelerator("CmdOrCtrl+Shift+Quote")
+                .build(app)?,
+        )
         // Nothing in the app can make an agent watch for comments — that has
         // to happen in the agent's own session, which the editor cannot reach
         // into. So the discoverable surface is a command the user hands over,
