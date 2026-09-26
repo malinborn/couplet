@@ -174,6 +174,17 @@ impl Stash {
         }
         Ok(self.paths.notes_dir.clone())
     }
+
+    /// The notes folder in the same one spelling, for comparing a path
+    /// against — never created: putting a file away must neither make the
+    /// folder appear nor fail because something else sits at its name.
+    fn notes_dir_spelling(&self) -> PathBuf {
+        if self.notes_dir_ready {
+            self.paths.notes_dir.clone()
+        } else {
+            crate::path_norm::normalize_path(&self.paths.notes_dir)
+        }
+    }
 }
 
 /// Emitted once with `app.emit` after a write that changed the stash — a

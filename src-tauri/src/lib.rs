@@ -236,9 +236,11 @@ pub fn run() {
             // After `paths::init`, for the same reason as `RecentFiles`: the
             // database lives in the data directory it names. Opening touches
             // only that directory; the notes folder (`~/couplet/`) is created by
-            // the first note. A stash that cannot open is managed anyway, as
-            // unavailable: its commands answer with the reason, the app runs on
-            // and the database file is left alone (plan D11).
+            // the first stash write — a new note, or the metadata export that
+            // follows every write command (put away, tag). A stash that cannot
+            // open is managed anyway, as unavailable: its commands answer with
+            // the reason, the app runs on and the database file is left alone
+            // (plan D11).
             let stash_state = stash::StashState::open(stash::StashPaths::resolve());
             if stash_state.is_available() {
                 let emitter = app.handle().clone();

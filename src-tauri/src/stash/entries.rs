@@ -382,7 +382,7 @@ impl Stash {
             .iter()
             .map(|p| crate::path_norm::normalize_str(p))
             .collect();
-        let notes_dir = self.notes_dir()?;
+        let notes_dir = self.notes_dir_spelling();
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -795,7 +795,7 @@ mod tests {
         assert!(root.join("data/stash.db").exists());
         assert!(
             !root.join("home").exists(),
-            "the notes folder appears with the first note"
+            "the notes folder appears with the first note or export"
         );
     }
 
@@ -980,6 +980,45 @@ mod tests {
             .unwrap();
         assert_eq!(r[0].entry.kind, StashKind::Note);
         assert_eq!(r[0].entry.title.as_deref(), Some("позвонить"));
+    }
+
+    #[test]
+    fn a_note_is_recognised_in_a_folder_this_stash_did_not_create() {
+        // The folder made by someone else (an earlier run, a restore), and
+        // spelled through the temp dir's `/var` → `/private/var` symlink: the
+        // comparison is between normalized spellings all the same.
+        let (mut stash, root) = stash_in("note-folder-foreign");
+        let dir = root.join("home/couplet-test");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("2026-09-26-0215-beef.md");
+        fs::write(&path, "# Нашлась\n").unwrap();
+        let r = stash
+            .put_away(&put(vec![path.to_string_lossy().into_owned()]), T0)
+            .unwrap();
+        assert_eq!(r[0].entry.kind, StashKind::Note);
+    }
+
+    #[test]
+    fn putting_away_a_file_does_not_create_the_notes_folder() {
+        let (mut stash, root) = stash_in("put-lazy");
+        let file = user_file(&root, "a.md", "a");
+        stash.put_away(&put(vec![file]), T0).unwrap();
+        assert!(!root.join("home/couplet-test").exists());
+    }
+
+    #[test]
+    fn a_regular_file_where_the_notes_folder_would_be_does_not_break_put_away() {
+        let (mut stash, root) = stash_in("put-blocked");
+        fs::create_dir_all(root.join("home")).unwrap();
+        let blocker = root.join("home/couplet-test");
+        fs::write(&blocker, "not a folder, and it stays").unwrap();
+        let file = user_file(&root, "a.md", "a");
+        let r = stash.put_away(&put(vec![file]), T0).unwrap();
+        assert_eq!(r[0].entry.kind, StashKind::File);
+        assert_eq!(
+            fs::read_to_string(&blocker).unwrap(),
+            "not a folder, and it stays"
+        );
     }
 
     #[test]
