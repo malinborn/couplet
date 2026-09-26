@@ -62,17 +62,42 @@ fn sort_key(row: &EntryRow, sort: ListSort, deleted: bool) -> SortKey {
     }
 }
 
-/// Opaque to callers (roadmap A9); only `decode_cursor` reads it.
-fn encode_cursor(key: SortKey) -> String {
-    format!("{}.{}.{}", key.0, key.1, key.2)
+/// Which order a cursor's key belongs to: the sort, or the trash (whose one
+/// order ignores the sort). A key resumed under another order would skip or
+/// repeat entries silently, so the cursor carries it and is refused elsewhere.
+fn cursor_mode(sort: ListSort, deleted: bool) -> &'static str {
+    if deleted {
+        return "t";
+    }
+    match sort {
+        ListSort::Changed => "c",
+        ListSort::Opened => "o",
+        ListSort::Kind => "k",
+    }
 }
 
-fn decode_cursor(cursor: &str) -> Result<SortKey, String> {
-    let mut parts = cursor.split('.').map(str::parse::<i64>);
-    match (parts.next(), parts.next(), parts.next(), parts.next()) {
-        (Some(Ok(a)), Some(Ok(b)), Some(Ok(c)), None) => Ok((a, b, c)),
-        _ => Err(format!("invalid cursor: {cursor:?}")),
+/// Opaque to callers (roadmap A9); only `decode_cursor` reads it.
+fn encode_cursor(mode: &str, key: SortKey) -> String {
+    format!("{mode}.{}.{}.{}", key.0, key.1, key.2)
+}
+
+fn decode_cursor(cursor: &str, mode: &str) -> Result<SortKey, String> {
+    let invalid = || format!("invalid cursor: {cursor:?}");
+    let (given, key) = cursor.split_once('.').ok_or_else(invalid)?;
+    if !matches!(given, "c" | "o" | "k" | "t") {
+        return Err(invalid());
     }
+    let mut parts = key.split('.').map(str::parse::<i64>);
+    let key = match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(Ok(a)), Some(Ok(b)), Some(Ok(c)), None) => (a, b, c),
+        _ => return Err(invalid()),
+    };
+    if given != mode {
+        return Err(format!(
+            "cursor {cursor:?} belongs to another listing (another sort, or the trash)"
+        ));
+    }
+    Ok(key)
 }
 
 /// A tag as stored: trimmed, without leading `#`, lower-case. `Ok(None)` for
@@ -571,7 +596,12 @@ impl Stash {
 
     /// One page of the stash, or of the trash with `deleted` (plan D6).
     pub fn list(&self, q: &ListQuery) -> Result<ListResult, String> {
-        let after = q.cursor.as_deref().map(decode_cursor).transpose()?;
+        let mode = cursor_mode(q.sort, q.deleted);
+        let after = q
+            .cursor
+            .as_deref()
+            .map(|c| decode_cursor(c, mode))
+            .transpose()?;
         let tag = match q.tag.as_deref().map(normalize_tag).transpose()? {
             // Given but empty once normalized (`#`): a tag no entry can carry,
             // so nothing matches — not the whole stash, as no filter would.
@@ -608,7 +638,7 @@ impl Stash {
         let more = page.len() > limit;
         page.truncate(limit);
         let next_cursor = if more {
-            page.last().map(|row| encode_cursor(key(row)))
+            page.last().map(|row| encode_cursor(mode, key(row)))
         } else {
             None
         };
@@ -1710,9 +1740,97 @@ mod tests {
     }
 
     #[test]
+    fn a_cursor_only_continues_the_listing_it_came_from() {
+        // A key means something only under its own order: resumed under
+        // another sort, or across the stash/trash line, it would skip or
+        // repeat entries silently.
+        let (mut stash, root) = stash_in("list-cursor-mode");
+        seed(&mut stash, &root);
+        let cursor_of = |f: fn(&mut ListQuery)| {
+            stash
+                .list(&query(|q| {
+                    f(q);
+                    q.limit = Some(1);
+                }))
+                .unwrap()
+                .next_cursor
+                .unwrap()
+        };
+        let changed = cursor_of(|_| {});
+        let opened = cursor_of(|q| q.sort = ListSort::Opened);
+        let kind = cursor_of(|q| q.sort = ListSort::Kind);
+        let modes = |cursor: &str, deleted: bool| -> Vec<bool> {
+            [ListSort::Changed, ListSort::Opened, ListSort::Kind]
+                .into_iter()
+                .map(|sort| {
+                    stash
+                        .list(&query(|q| {
+                            q.sort = sort;
+                            q.deleted = deleted;
+                            q.cursor = Some(cursor.to_string());
+                        }))
+                        .is_ok()
+                })
+                .collect()
+        };
+        assert_eq!(modes(&changed, false), vec![true, false, false]);
+        assert_eq!(modes(&opened, false), vec![false, true, false]);
+        assert_eq!(modes(&kind, false), vec![false, false, true]);
+        assert_eq!(modes(&changed, true), vec![false, false, false]);
+        let err = stash
+            .list(&query(|q| {
+                q.sort = ListSort::Opened;
+                q.cursor = Some(changed.clone());
+            }))
+            .unwrap_err();
+        assert!(err.contains("another listing"), "{err}");
+    }
+
+    #[test]
+    fn a_trash_cursor_does_not_continue_the_stash() {
+        let (mut stash, root) = stash_in("list-cursor-trash");
+        let s = seed(&mut stash, &root);
+        set_columns(&stash, &s.a, "deleted_at = 750");
+        let trash = stash
+            .list(&query(|q| {
+                q.deleted = true;
+                q.limit = Some(1);
+            }))
+            .unwrap()
+            .next_cursor
+            .unwrap();
+        for sort in [ListSort::Changed, ListSort::Opened, ListSort::Kind] {
+            let stash_page = stash.list(&query(|q| {
+                q.sort = sort;
+                q.cursor = Some(trash.clone());
+            }));
+            assert!(stash_page.is_err(), "{sort:?}");
+            let trash_page = stash.list(&query(|q| {
+                q.sort = sort;
+                q.deleted = true;
+                q.cursor = Some(trash.clone());
+            }));
+            assert!(trash_page.is_ok(), "the trash ignores the sort: {sort:?}");
+        }
+    }
+
+    #[test]
     fn a_malformed_cursor_is_an_error() {
         let (stash, _root) = stash_in("list-cursor");
-        for bad in ["x", "1.2", "1.2.3.4", "a.b.c", ""] {
+        for bad in [
+            "x",
+            "1.2",
+            "1.2.3",
+            "1.2.3.4",
+            "a.b.c",
+            "",
+            "c.",
+            "c.1.2",
+            "c.1.2.3.4",
+            "c.a.b.c",
+            "z.1.2.3",
+            "cc.1.2.3",
+        ] {
             assert!(
                 stash.list(&query(|q| q.cursor = Some(bad.into()))).is_err(),
                 "{bad}"
