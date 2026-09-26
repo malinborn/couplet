@@ -8,7 +8,7 @@
  *   графит и серебро — весь текст и заголовки, металл без оттенка;
  *   красный плюмаж   — всё, что меняют руками: курсор, чекбоксы, цитаты;
  *   огни Трои        — всё зачёркнутое: выполненные задачи и `~~текст~~`
- *                      горят от золота к плюмажу и тлеют в угли.
+ *                      тлеют сквозь дым, от ядра пламени к углям.
  *
  * Разнообразия по уровням здесь нет намеренно — это история Autumn. Курсор —
  * один сплошной плюмаж, без градиента. Последний stop обоих огненных
@@ -35,13 +35,14 @@
   --color-caret-top: #b3301f;
   --color-caret-bottom: #b3301f;
   --color-line-highlight: #d8dde3;
-  /* Огни Трои: золото → пламя → плюмаж → угли. */
-  --color-strikethrough: #8a2418;
-  --strikethrough-grad: linear-gradient(100deg, #a8700c 0%, #c0561a 35%, #b3301f 70%, #8a2418 100%);
+  /* Огни Трои сквозь дым: тлеющая охра → ржавый дым → угли. Не чистое
+   * пламя — приглушено по кадру с конём: огонь всегда виден через дым. */
+  --color-strikethrough: #743a30;
+  --strikethrough-grad: linear-gradient(100deg, #9a6634 0%, #9c5534 35%, #8a4232 70%, #743a30 100%);
   --strikethrough-fill: transparent;
-  --color-task-done: #8a2418;
-  --color-task-done-line: #b3301f;
-  --task-done-grad: linear-gradient(100deg, #a8700c 0%, #c0561a 35%, #b3301f 70%, #8a2418 100%);
+  --color-task-done: #743a30;
+  --color-task-done-line: #94402e;
+  --task-done-grad: linear-gradient(100deg, #9a6634 0%, #9c5534 35%, #8a4232 70%, #743a30 100%);
   --color-blockquote-border: #b3301f;
   --color-hr: #c9d0d8;
   --color-list-marker: #7b838d;
@@ -93,13 +94,14 @@
   --color-caret-top: #d23a2a;
   --color-caret-bottom: #d23a2a;
   --color-line-highlight: #181a1d;
-  /* Огни Трои: золото → пламя → плюмаж → остывающий уголь. */
-  --color-strikethrough: #a8453a;
-  --strikethrough-grad: linear-gradient(100deg, #f2c455 0%, #ec7a2c 30%, #d23a2a 65%, #a8453a 100%);
+  /* Огни Трои сквозь дым: персиковое ядро → подсвеченный дым → ржавчина →
+   * остывающий уголь. Цвета сняты с кадра с горящим конём. */
+  --color-strikethrough: #8c4c40;
+  --strikethrough-grad: linear-gradient(100deg, #d69a66 0%, #c7774e 35%, #a85a42 70%, #8c4c40 100%);
   --strikethrough-fill: transparent;
-  --color-task-done: #a8453a;
-  --color-task-done-line: #d23a2a;
-  --task-done-grad: linear-gradient(100deg, #f2c455 0%, #ec7a2c 30%, #d23a2a 65%, #a8453a 100%);
+  --color-task-done: #8c4c40;
+  --color-task-done-line: #b0513c;
+  --task-done-grad: linear-gradient(100deg, #d69a66 0%, #c7774e 35%, #a85a42 70%, #8c4c40 100%);
   --color-blockquote-border: #d23a2a;
   --color-hr: #262a2f;
   --color-list-marker: #7b838d;
