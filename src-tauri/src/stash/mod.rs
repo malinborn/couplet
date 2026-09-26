@@ -7,11 +7,39 @@
 //! `docs/superpowers/plans/2026-09-27-stash-00-roadmap.md`.
 
 mod clock;
+mod db;
 mod ids;
 mod notes;
 mod paths;
 
 pub use paths::StashPaths;
+
+use serde::{Deserialize, Serialize};
+
+/// What an entry is: a note couplet owns, or a reference to the user's file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StashKind {
+    Note,
+    File,
+}
+
+impl StashKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StashKind::Note => "note",
+            StashKind::File => "file",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "note" => Some(StashKind::Note),
+            "file" => Some(StashKind::File),
+            _ => None,
+        }
+    }
+}
 
 #[cfg(test)]
 mod fts_probe {
