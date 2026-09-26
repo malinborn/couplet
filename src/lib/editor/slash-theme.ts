@@ -101,8 +101,8 @@ const SWATCH_COLORS: Record<ConcreteTheme, { bg: string; accent: string }> = {
   'paper-dark': { bg: '#1d1a16', accent: '#e8563f' },
   'ink-light': { bg: '#efedf4', accent: '#c13e7b' },
   'ink-dark': { bg: '#1f1b2e', accent: '#ff8a6a' },
-  'riso-light': { bg: '#f1dcb6', accent: '#d4643f' },
-  'riso-dark': { bg: '#2a1230', accent: '#ef8457' },
+  'autumn-light': { bg: '#f4e5d1', accent: '#8a3f22' },
+  'autumn-dark': { bg: '#2c1934', accent: '#ffa45c' },
 };
 
 /**
