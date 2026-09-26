@@ -8,6 +8,7 @@
 
 mod backup;
 mod clock;
+pub(crate) mod commands;
 mod db;
 mod entries;
 mod ids;
@@ -18,9 +19,11 @@ pub use paths::StashPaths;
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter};
 
 /// What an entry is: a note couplet owns, or a reference to the user's file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +176,128 @@ impl Stash {
     }
 }
 
+/// Emitted once with `app.emit` after a write that changed the stash — a
+/// window's emit is a broadcast (CLAUDE.md), so never per window.
+pub const STASH_CHANGED: &str = "stash-changed";
+
+/// `stash-changed`'s payload (roadmap A6). `reason` is one of the roadmap's
+/// list (`created`, `put-away`, `title`, `tagged`, …); `ids` is left out of
+/// the JSON when the emitter does not know which entries changed.
+#[derive(Clone, Debug, Serialize)]
+pub struct StashChanged {
+    pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ids: Option<Vec<String>>,
+}
+
+impl StashChanged {
+    pub fn new(reason: &str, ids: Option<Vec<String>>) -> Self {
+        Self {
+            reason: reason.to_string(),
+            ids,
+        }
+    }
+}
+
+/// The one place that emits `stash-changed`. Best effort: the write it
+/// reports has already happened, and a window that missed the event reloads
+/// on its next stash open.
+pub fn emit_changed(app: &AppHandle, reason: &str, ids: Option<Vec<String>>) {
+    let _ = app.emit(STASH_CHANGED, StashChanged::new(reason, ids));
+}
+
+/// The Tauri-managed stash. `Err` holds why it could not open (plan D11):
+/// the app runs on, every command answers with the reason, the database file
+/// is left as it was.
+///
+/// Lock order (roadmap A11): this mutex is taken with no other lock held —
+/// never while holding `OpenFiles`, `PendingFiles` or `ClosedStack` — and
+/// nothing inside a `with` call takes one of those.
+#[derive(Clone)]
+pub struct StashState(Arc<Mutex<Result<Stash, String>>>);
+
+impl StashState {
+    pub fn open(paths: Result<StashPaths, String>) -> Self {
+        let stash = paths.and_then(Stash::open);
+        if let Err(e) = &stash {
+            eprintln!("stash: unavailable: {e}");
+        }
+        Self(Arc::new(Mutex::new(stash)))
+    }
+
+    /// Runs `f` on the stash under its lock. Blocking (SQLite waits up to its
+    /// busy timeout for the CLI or MCP): call it on the blocking pool, never
+    /// across an `await`. A panic inside an earlier call poisons nothing that
+    /// matters: its transaction rolled back when it was dropped.
+    pub fn with<T>(&self, f: impl FnOnce(&mut Stash) -> Result<T, String>) -> Result<T, String> {
+        let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        match guard.as_mut() {
+            Ok(stash) => f(stash),
+            Err(e) => Err(format!("stash unavailable: {e}")),
+        }
+    }
+
+    pub fn is_available(&self) -> bool {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).is_ok()
+    }
+
+    /// Today's backup, off the launch path (plan D12).
+    pub fn backup_in_background(&self) {
+        let state = self.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let now = clock::now_ms();
+            let offset = clock::local_offset_secs(now.div_euclid(1000));
+            if let Err(e) = state.with(|s| s.daily_backup(now, offset)) {
+                eprintln!("stash: backup: {e}");
+            }
+        });
+    }
+}
+
+type Notify = Box<dyn Fn(&str) + Send + Sync>;
+
+struct WriteHook {
+    state: StashState,
+    notify: Notify,
+}
+
+/// Process-wide, so `commands::write_file` keeps its signature (and its tests)
+/// and still reaches the stash (plan D9).
+static WRITE_HOOK: OnceLock<WriteHook> = OnceLock::new();
+
+/// Installs the save hook once. `notify` receives the event reason when a
+/// save changed what the stash shows. `false`: one was already installed.
+pub fn install_write_hook(
+    state: StashState,
+    notify: impl Fn(&str) + Send + Sync + 'static,
+) -> bool {
+    WRITE_HOOK
+        .set(WriteHook {
+            state,
+            notify: Box::new(notify),
+        })
+        .is_ok()
+}
+
+/// Called by `write_file` after every successful save. Best effort and off
+/// the save's thread: a busy database must never delay an autosave, and the
+/// save has already succeeded whatever happens here. Notifies `title` only
+/// when a note's title changed (roadmap A6) — autosave runs every 300 ms.
+pub fn on_file_written(path: &str, text: &str) {
+    let Some(hook) = WRITE_HOOK.get() else {
+        return;
+    };
+    let now = clock::now_ms();
+    let (path, text) = (path.to_owned(), text.to_owned());
+    tauri::async_runtime::spawn_blocking(move || {
+        match hook.state.with(|s| s.file_written(&path, &text, now)) {
+            Ok(true) => (hook.notify)("title"),
+            Ok(false) => {}
+            Err(e) => eprintln!("stash: after saving {path}: {e}"),
+        }
+    });
+}
+
 #[cfg(test)]
 pub(crate) mod testkit {
     use super::*;
@@ -214,6 +339,61 @@ pub(crate) mod testkit {
             .conn
             .execute(&format!("UPDATE entries SET {assignments} WHERE id = ?1"), [id])
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::atomic_write::testkit::scratch;
+
+    #[test]
+    fn an_unavailable_stash_answers_every_call_with_the_reason() {
+        let state = StashState::open(Err("paths::init has not run".to_string()));
+        assert!(!state.is_available());
+        assert_eq!(
+            state.with(|s| s.get("s1-0000")).unwrap_err(),
+            "stash unavailable: paths::init has not run"
+        );
+    }
+
+    #[test]
+    fn a_database_that_will_not_open_is_left_alone() {
+        let root = scratch("stash-bad-db");
+        let paths = testkit::paths_in(&root);
+        fs::create_dir_all(paths.db_path.parent().unwrap()).unwrap();
+        fs::write(&paths.db_path, b"not a database, and it must survive").unwrap();
+        let state = StashState::open(Ok(paths.clone()));
+        assert!(!state.is_available());
+        assert_eq!(
+            fs::read(&paths.db_path).unwrap(),
+            b"not a database, and it must survive"
+        );
+    }
+
+    #[test]
+    fn a_panic_inside_one_call_does_not_lock_the_stash_forever() {
+        let root = scratch("stash-poison");
+        let state = StashState::open(Ok(testkit::paths_in(&root)));
+        let clone = state.clone();
+        let _ =
+            std::thread::spawn(move || clone.with(|_| -> Result<(), String> { panic!("boom") }))
+                .join();
+        assert!(state.with(|s| s.list(&ListQuery::default())).is_ok());
+    }
+
+    #[test]
+    fn the_event_payload_omits_ids_it_does_not_have() {
+        // Roadmap A6: `{ reason: string, ids?: string[] }`.
+        let bare = serde_json::to_value(StashChanged::new("title", None)).unwrap();
+        assert_eq!(bare, serde_json::json!({ "reason": "title" }));
+        let with_ids =
+            serde_json::to_value(StashChanged::new("tagged", Some(vec!["s1-0000".into()])))
+                .unwrap();
+        assert_eq!(
+            with_ids,
+            serde_json::json!({ "reason": "tagged", "ids": ["s1-0000"] })
+        );
     }
 }
 

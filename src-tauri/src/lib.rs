@@ -187,6 +187,13 @@ pub fn run() {
             recent::recent_files_list,
             recent::recent_files_add,
             recent::recent_files_import,
+            stash::commands::stash_create_note,
+            stash::commands::stash_put_away,
+            stash::commands::stash_list,
+            stash::commands::stash_get,
+            stash::commands::stash_tag,
+            stash::commands::stash_touch_opened,
+            stash::commands::stash_counts,
             recovery::save_recovery,
             recovery::delete_recovery,
             recovery::check_recovery,
@@ -226,6 +233,21 @@ pub fn run() {
             // list would silently load empty.
             // No IPC reaches a command before `setup` returns.
             app.manage(recent::RecentFiles::load());
+            // After `paths::init`, for the same reason as `RecentFiles`: the
+            // database lives in the data directory it names. Opening touches
+            // only that directory; the notes folder (`~/couplet/`) is created by
+            // the first note. A stash that cannot open is managed anyway, as
+            // unavailable: its commands answer with the reason, the app runs on
+            // and the database file is left alone (plan D11).
+            let stash_state = stash::StashState::open(stash::StashPaths::resolve());
+            if stash_state.is_available() {
+                let emitter = app.handle().clone();
+                stash::install_write_hook(stash_state.clone(), move |reason| {
+                    stash::emit_changed(&emitter, reason, None);
+                });
+                stash_state.backup_in_background();
+            }
+            app.manage(stash_state);
             // Before anything can register a file to `main` (CLI args, the
             // pending-files list) and before its frontend asks for its number.
             window::number_main_window(app.handle());
