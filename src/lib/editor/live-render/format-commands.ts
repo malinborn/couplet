@@ -59,15 +59,14 @@ const MARKER_TEXT: Record<InlineFormatKind, string> = {
  * `targetName` that fully covers `[from, to]`. Returns `null` if the
  * selection is not entirely contained in a single node of that kind.
  *
- * This is the "partial overlap" decision point: a selection that only
- * partially overlaps a node of the target kind (e.g. it starts inside
- * `**bold**` and ends past it) will not find an enclosing node here and
- * therefore takes the "add" path in `toggleInlineFormat`, wrapping the
- * exact selected text — markers and all — with a fresh pair of markers.
- * That can nest awkwardly with whatever partial markup was selected, but
- * it is simple and deterministic, and matches the existing `toggleWrap`
- * heuristic's philosophy of "operate on what's selected, don't try to
- * repair surrounding markup".
+ * This is the "remove" decision point and nothing more. A selection that only
+ * partially overlaps a node of the target kind (it starts inside `**bold**`
+ * and ends past it) finds no enclosing node here and takes the "add" path —
+ * which does **not** wrap the raw selected source, markers and all. That used
+ * to produce crossing markup (`**a *b** c*`), and in live-render the repair
+ * filter read the new pair as tearing the old one and wrote a stray `**` back.
+ * `addFormat` instead merges the selection with overlapping nodes of the same
+ * kind and splits it at every other span it crosses — see `planWrap`.
  */
 function findEnclosingNode(tree: Tree, targetName: string, from: number, to: number): SyntaxNode | null {
   let node: SyntaxNode | null = tree.resolveInner(from, 1);
@@ -105,8 +104,10 @@ interface RangeChange {
  * wrap so `"a "` becomes `"**a** "` rather than `"**a **"` (CommonMark
  * doesn't parse emphasis with the space adjacent to the inner side of the
  * marker). The same visible (non-whitespace) text stays selected afterwards.
+ *
+ * Only for a selection that crosses no other markup — `addFormat` decides.
  */
-function addFormat(state: EditorState, marker: string, range: SelectionRange): RangeChange {
+function wrapPlain(state: EditorState, marker: string, range: SelectionRange): RangeChange {
   const raw = state.sliceDoc(range.from, range.to);
   const leading = raw.match(/^\s*/)?.[0] ?? '';
   const trailing = raw.match(/\s*$/)?.[0] ?? '';
@@ -129,6 +130,238 @@ function addFormat(state: EditorState, marker: string, range: SelectionRange): R
     changes: [{ from: range.from, to: range.to, insert }],
     range: EditorSelection.range(selFrom, selFrom + inner.length),
   };
+}
+
+interface Span {
+  from: number;
+  to: number;
+}
+
+/** Inline spans a new pair of markers must nest with, never cross. */
+const PAIRED_NODES = new Set(['StrongEmphasis', 'Emphasis', 'Strikethrough', 'InlineCode', 'Link', 'Image']);
+
+/**
+ * Nodes whose content is literal: no marker may be placed inside them, so a
+ * wrap boundary that falls inside one snaps outward to the whole node.
+ */
+const ATOMIC_NODES = new Set(['InlineCode', 'Autolink']);
+
+/**
+ * The hidden markup of a node, as the pieces a new marker may not sit inside
+ * or straddle: the opening and closing mark of an emphasis-like span, and for
+ * a link or image the opening `[` / `![` and everything from `]` to the end —
+ * `](url)` is hidden as one span, so it is one obstacle.
+ *
+ * Links count whether or not they render. Lezer resolves bracket pairs before
+ * emphasis, so `*a [b* c]` yields no `Emphasis` at all — measured — even though
+ * `[b* c]` is not a link and its brackets stay visible.
+ */
+function markupPieces(node: SyntaxNode): Span[] {
+  if (node.name === 'Link' || node.name === 'Image') {
+    const marks = node.getChildren('LinkMark');
+    const open = marks.find((m) => m.from === node.from);
+    const close = marks.find((m) => m.from > node.from);
+    if (!open || !close) return [];
+    return [
+      { from: open.from, to: open.to },
+      { from: close.from, to: node.to },
+    ];
+  }
+  const markName = node.name === 'Strikethrough' ? 'StrikethroughMark' : node.name === 'InlineCode' ? 'CodeMark' : 'EmphasisMark';
+  const marks = node.getChildren(markName);
+  const open = marks[0];
+  const close = marks[marks.length - 1];
+  if (!open || !close || open === close || open.from !== node.from || close.to !== node.to) return [];
+  return [
+    { from: open.from, to: open.to },
+    { from: close.from, to: close.to },
+  ];
+}
+
+interface WrapPlan {
+  /** The extent being formatted, after snapping and merging. */
+  from: number;
+  to: number;
+  /** Hidden markup of spans that cross `[from, to]`, clipped to it, sorted. */
+  obstacles: Span[];
+  /** Outermost nodes of the kind being applied, absorbed into the wrap. */
+  merged: SyntaxNode[];
+  /** Markers of every absorbed node (nested ones included) — deleted. */
+  deleted: Span[];
+}
+
+/**
+ * Work out how to wrap `[from, to]` in `kind` without producing crossing
+ * markup, or `null` when the selection touches no other markup and the plain
+ * wrap applies unchanged.
+ *
+ * Three rules, in this order:
+ *
+ * 1. **Literal nodes are atomic.** An edge strictly inside inline code (or an
+ *    autolink) moves out to the node's edge — a marker in there is just text.
+ * 2. **Same kind merges.** Nodes of `kind` that intersect the range extend it to
+ *    their union, and their markers are dropped: the new pair covers them.
+ * 3. **Other spans split.** A span of another kind that *crosses* the range —
+ *    one of its markers inside, the other outside — contributes its hidden
+ *    markup inside the range as an obstacle, and the wrap is emitted per
+ *    segment between obstacles. A span wholly inside the range is already
+ *    well-nested in the new pair and is left alone.
+ */
+function planWrap(tree: Tree, kind: InlineFormatKind, rangeFrom: number, rangeTo: number): WrapPlan | null {
+  const targetName = NODE_NAME[kind];
+  const inline: SyntaxNode[] = [];
+  const atomic: SyntaxNode[] = [];
+
+  tree.iterate({
+    from: rangeFrom,
+    to: rangeTo,
+    enter(ref) {
+      if (PAIRED_NODES.has(ref.name)) inline.push(ref.node);
+      if (!ATOMIC_NODES.has(ref.name)) return undefined;
+      atomic.push(ref.node);
+      return false; // nothing inside a literal node is markup
+    },
+  });
+
+  let from = rangeFrom;
+  let to = rangeTo;
+
+  for (const node of atomic) {
+    if (node.name === targetName) continue; // inline code over inline code merges below
+    if (node.from < from && from < node.to) from = node.from;
+    if (node.from < to && to < node.to) to = node.to;
+  }
+
+  // Merge with every node of this kind that intersects, to a fixpoint, so the
+  // range settles on the full union whatever order the nodes arrive in.
+  const same = inline.filter((n) => n.name === targetName);
+  const absorbed = new Set<SyntaxNode>();
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const node of same) {
+      if (absorbed.has(node) || !(node.from < to && node.to > from)) continue;
+      absorbed.add(node);
+      if (node.from < from || node.to > to) grew = true;
+      from = Math.min(from, node.from);
+      to = Math.max(to, node.to);
+    }
+  }
+
+  const obstacles: Span[] = [];
+  for (const node of inline) {
+    if (node.name === targetName || ATOMIC_NODES.has(node.name)) continue;
+    const intersects = node.from < to && node.to > from;
+    const inside = node.from >= from && node.to <= to;
+    const encloses = node.from <= from && node.to >= to;
+    if (!intersects || inside || encloses) continue;
+    for (const piece of markupPieces(node)) {
+      const a = Math.max(piece.from, from);
+      const b = Math.min(piece.to, to);
+      if (b > a) obstacles.push({ from: a, to: b });
+    }
+  }
+
+  if (obstacles.length === 0 && absorbed.size === 0 && from === rangeFrom && to === rangeTo) return null;
+
+  const all = [...absorbed];
+  const merged = all.filter((n) => !all.some((o) => o !== n && o.from <= n.from && o.to >= n.to));
+  const deleted = all.flatMap(markupPieces);
+  obstacles.sort((a, b) => a.from - b.from);
+  deleted.sort((a, b) => a.from - b.from);
+  return { from, to, obstacles, merged, deleted };
+}
+
+interface Insertion {
+  pos: number;
+  text: string;
+}
+
+/**
+ * Apply `kind` to `range` so that the result is well-nested markdown.
+ *
+ * A selection that crosses no markup is the plain wrap (`wrapPlain`). One that
+ * does is planned by `planWrap` and emitted as follows:
+ *
+ * - each segment between obstacles gets its own pair, trimmed of whitespace
+ *   exactly like the plain wrap (a marker against inner whitespace does not
+ *   parse); a segment with nothing visible in it gets none;
+ * - new markers that fall outside an absorbed node are **pure insertions**, which
+ *   `markup-repair.ts` never touches (`repairChange` returns early for them);
+ * - each absorbed node is rewritten by **one** change spanning it from marker to
+ *   marker. The repair filter judges each change on its own, so deleting the
+ *   two markers as two changes would read as two torn pairs and both would be
+ *   written back; one change touching both reads as removal as a unit.
+ *
+ * The selection afterwards covers the same visible text: it starts after a
+ * marker inserted at its start and ends before one inserted at its end.
+ */
+function addFormat(state: EditorState, tree: Tree, kind: InlineFormatKind, range: SelectionRange): RangeChange {
+  const marker = MARKER_TEXT[kind];
+  if (range.empty) return wrapPlain(state, marker, range);
+  const plan = planWrap(tree, kind, range.from, range.to);
+  if (!plan) return wrapPlain(state, marker, range);
+
+  const isDeleted = (pos: number): boolean => plan.deleted.some((d) => pos >= d.from && pos < d.to);
+  const isVisible = (pos: number): boolean => !isDeleted(pos) && !/\s/.test(state.sliceDoc(pos, pos + 1));
+
+  const segments: Span[] = [];
+  let cursor = plan.from;
+  for (const obstacle of plan.obstacles) {
+    if (obstacle.from > cursor) segments.push({ from: cursor, to: obstacle.from });
+    cursor = Math.max(cursor, obstacle.to);
+  }
+  if (cursor < plan.to) segments.push({ from: cursor, to: plan.to });
+
+  const insertions: Insertion[] = [];
+  let visibleFrom = -1;
+  let visibleTo = -1;
+  for (const segment of segments) {
+    let start = segment.from;
+    while (start < segment.to && !isVisible(start)) start++;
+    let end = segment.to;
+    while (end > start && !isVisible(end - 1)) end--;
+    if (start >= end) continue; // whitespace (or absorbed markers) only
+    insertions.push({ pos: start, text: marker }, { pos: end, text: marker });
+    if (visibleFrom < 0) visibleFrom = start;
+    visibleTo = end;
+  }
+  if (insertions.length === 0) return { changes: [], range };
+
+  const changes: { from: number; to: number; insert: string }[] = [];
+  const used = new Set<Insertion>();
+  for (const node of plan.merged) {
+    let insert = '';
+    for (let pos = node.from; pos <= node.to; pos++) {
+      for (const ins of insertions) {
+        if (ins.pos === pos && !used.has(ins)) {
+          insert += ins.text;
+          used.add(ins);
+        }
+      }
+      if (pos < node.to && !isDeleted(pos)) insert += state.sliceDoc(pos, pos + 1);
+    }
+    changes.push({ from: node.from, to: node.to, insert });
+  }
+  for (const ins of insertions) {
+    if (!used.has(ins)) changes.push({ from: ins.pos, to: ins.pos, insert: ins.text });
+  }
+  changes.sort((a, b) => a.from - b.from);
+
+  // Positions are mapped by hand rather than through a ChangeSet: a position
+  // inside a rewritten node would otherwise map to one end of the rewrite.
+  const mapPos = (pos: number, assoc: -1 | 1): number => {
+    let out = pos;
+    for (const ins of insertions) {
+      if (ins.pos < pos || (ins.pos === pos && assoc > 0)) out += ins.text.length;
+    }
+    for (const d of plan.deleted) out -= Math.max(0, Math.min(d.to, pos) - d.from);
+    return out;
+  };
+  const clamp = (pos: number): number => Math.max(visibleFrom, Math.min(pos, visibleTo));
+  const selFrom = mapPos(clamp(range.from), 1);
+  const selTo = Math.max(selFrom, mapPos(clamp(range.to), -1));
+
+  return { changes, range: EditorSelection.range(selFrom, selTo) };
 }
 
 /**
@@ -177,11 +410,10 @@ function removeFormat(node: SyntaxNode, markName: string, range: SelectionRange)
 function formatSpec(state: EditorState, kind: InlineFormatKind, tree: Tree): TransactionSpec {
   const targetName = NODE_NAME[kind];
   const markName = MARK_NAME[kind];
-  const marker = MARKER_TEXT[kind];
 
   return state.changeByRange((range) => {
     const enclosing = findEnclosingNode(tree, targetName, range.from, range.to);
-    return enclosing ? removeFormat(enclosing, markName, range) : addFormat(state, marker, range);
+    return enclosing ? removeFormat(enclosing, markName, range) : addFormat(state, tree, kind, range);
   });
 }
 
@@ -285,11 +517,12 @@ export function toggleInlineFormatAt(
   to: number
 ): boolean {
   const { state } = view;
-  const enclosing = findEnclosingNode(syntaxTree(state), NODE_NAME[kind], from, to);
+  const tree = syntaxTree(state);
+  const enclosing = findEnclosingNode(tree, NODE_NAME[kind], from, to);
   const range = EditorSelection.range(from, to);
   const { changes } = enclosing
     ? removeFormat(enclosing, MARK_NAME[kind], range)
-    : addFormat(state, MARKER_TEXT[kind], range);
+    : addFormat(state, tree, kind, range);
 
   if (changes.length === 0) return false;
   view.dispatch({ changes });
