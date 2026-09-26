@@ -7,6 +7,7 @@
 //! `docs/superpowers/plans/2026-09-27-stash-00-roadmap.md`.
 
 mod clock;
+mod ids;
 
 #[cfg(test)]
 mod fts_probe {
