@@ -9,6 +9,9 @@
 mod clock;
 mod ids;
 mod notes;
+mod paths;
+
+pub use paths::StashPaths;
 
 #[cfg(test)]
 mod fts_probe {

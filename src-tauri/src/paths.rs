@@ -58,6 +58,15 @@ pub fn init(product_name: &str) {
     let _ = APP_DIR_NAME.set(dir_name(product_name));
 }
 
+/// The directory name `init` settled on — `couplet`, or `couplet-dev` for the
+/// dev build — for app state kept outside the data directory: the stash's
+/// notes folder in the home directory (`~/couplet/`) is named the same way so
+/// a dev build never writes into the installed app's notes. `None` before
+/// `init`.
+pub fn current_dir_name() -> Option<&'static str> {
+    APP_DIR_NAME.get().map(String::as_str)
+}
+
 /// `~/Library/Application Support/<product name>/`, created if missing.
 ///
 /// Refuses before `init` instead of guessing a name. A guess is a directory
