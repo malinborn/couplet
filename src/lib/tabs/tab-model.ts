@@ -16,6 +16,13 @@ export interface TabMeta {
   /** The last moment it was active in a focused window — ⌘R. `0`: never. */
   viewedAt: number;
   /**
+   * The last change to its text, by the human or an agent, ms since the epoch
+   * — the drawer card's time. `0`/absent: none since it was opened. The
+   * active tab's typing is not published per keystroke: the controller
+   * stamps it when the tab is left, and reports it on the heartbeat.
+   */
+  editedAt?: number;
+  /**
    * An agent put it up while nobody was looking, and nobody has looked since
    * (spec §2). It shimmers in the drawer and on the notch until it is seen.
    */
@@ -33,6 +40,15 @@ export interface TabMeta {
 export interface TabListState {
   tabs: readonly TabMeta[];
   activeId: string | null;
+}
+
+/**
+ * When the tab was last in front of the human or changed — the drawer card's
+ * time. The active tab is being looked at, so it is `now`, as for ⌘R.
+ */
+export function lastTouched(tab: TabMeta, activeId: string | null, now: number): number {
+  if (tab.id === activeId) return now;
+  return Math.max(tab.viewedAt, tab.editedAt ?? 0, tab.openedAt);
 }
 
 export function emptyTabList(): TabListState {

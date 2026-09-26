@@ -44,6 +44,7 @@
   "menu.view.select_tab": "标签页 {n}",
   "menu.view.show_tabs": "显示标签页",
   "menu.view.tabs_compact": "紧凑",
+  "menu.view.tabs_dates": "显示日期",
 
   "menu.theme.title": "主题",
   "menu.theme.half_light": "浅色",

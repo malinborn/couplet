@@ -94,6 +94,17 @@ pub async fn sync_tabs_compact_menu(
     Ok(())
 }
 
+/// Sets View → Tabs → Show Dates to the frontend's persisted flag — the same
+/// start-up sync as `sync_tabs_compact_menu`.
+#[command]
+pub async fn sync_tabs_dates_menu(
+    state: tauri::State<'_, crate::menu::ViewToggleItems>,
+    enabled: bool,
+) -> Result<(), String> {
+    state.sync_tabs_dates(enabled);
+    Ok(())
+}
+
 /// Sets File → quick looks' radio pair to the frontend's policy (`"keep"` |
 /// `"close"`). Called at start and after every click: macOS toggles the
 /// clicked item natively, and this corrects the pair.
