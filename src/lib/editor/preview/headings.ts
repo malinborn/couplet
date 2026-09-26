@@ -14,6 +14,8 @@ const headingClasses: Record<string, string> = {
   ATXHeading6: 'cm-md-h6',
 };
 
+const headingTextMark = Decoration.mark({ class: 'cm-md-heading-text' });
+
 export function decorateHeading(
   view: EditorView,
   node: SyntaxNode,
@@ -29,8 +31,20 @@ export function decorateHeading(
 
   // Then hide "## " prefix via replace (Decoration.line startSide=-200000000 < replace startSide=-1)
   const mark = node.getChild('HeaderMark');
+  let textFrom = node.from;
   if (mark) {
     const hideEnd = Math.min(mark.to + 1, node.to);
     builder.add(mark.from, hideEnd, Decoration.replace({}));
+    textFrom = hideEnd;
+  }
+
+  // Wrap the heading's text in an inline span. It hides nothing (so live-render's
+  // `hiddenMarkRanges` has nothing to mirror); it exists only as a paint target:
+  // an inline box gets one content area per line fragment, so a theme's
+  // vertical gradient (`--heading-vgrad-N`, see editor.css) lands on the same
+  // part of the glyphs on every wrapped line. Starts where the replace ends,
+  // so it never shares a start position with it. Empty heading → no span.
+  if (textFrom < node.to) {
+    builder.add(textFrom, node.to, headingTextMark);
   }
 }

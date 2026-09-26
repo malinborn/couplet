@@ -6,12 +6,14 @@
  *
  * Общее у половин — три вещи, и больше ничего:
  *   графит и серебро — весь текст и заголовки, металл без оттенка;
+ *   золото Агамемнона — жирный: то, что в тексте выковано;
  *   красный плюмаж   — всё, что меняют руками: курсор, чекбоксы, цитаты;
  *   огни Трои        — всё зачёркнутое: выполненные задачи и `~~текст~~`
  *                      тлеют сквозь дым, от ядра пламени к углям.
  *
- * Разнообразия по уровням здесь нет намеренно — это история Autumn. Курсор —
- * один сплошной плюмаж, без градиента. Последний stop обоих огненных
+ * Уровни различает только отсвет у базовой линии заголовка — второй цвет,
+ * свой у каждого; сам металл общий, радуги по уровням, как в Autumn, нет.
+ * Курсор — один сплошной плюмаж, без градиента. Последний stop обоих огненных
  * градиентов обязан совпадать со своим плоским тоном (см.
  * task-done-gradient.test.ts и комментарий в editor.css).
  */
@@ -24,7 +26,7 @@
   --text-muted: #7b838d;
   --highlight: #d0d6dd;
   --color-heading: #26313d;
-  --color-bold: #0a0c0e;
+  --color-bold: #7a5616;
   --color-italic: #4a5663;
   --color-link: #34587a;
   --color-code-bg: #d2d8df;
@@ -62,15 +64,27 @@
   --ai-ask-accent-text: #dfe3e8;
   --bg-overlay: rgba(223, 227, 232, 0.78);
   --border: #c9d0d8;
-  /* Тёмная сталь, светлеющая к нижним уровням. */
+  /* Заголовки — металл с отсветом снизу: основной тон держит большую часть
+   * буквы, к базовой линии он уходит во второй цвет, свой у каждого уровня.
+   * Градиент вертикальный и лежит на тексте заголовка, а не на строке
+   * (`--heading-vgrad-N`, см. editor.css), поэтому проценты отсчитываются от
+   * области глифов: у Inter верх заглавной ≈ 20%, базовая линия ≈ 80%.
+   * Металла должно быть заметно больше: отсвет занимает нижнюю шестую
+   * видимой буквы (1:5), короткий переход 65–75% с серединой на 70%.
+   * Перенесённый заголовок получает тот же отсвет на каждой строке. */
+  /* Те же роли, что в тёмной, в тонах, держащих контраст на тумане. */
   --heading-tone-1: #1c232c;
   --heading-tone-2: #26313d;
   --heading-tone-3: #2c3743;
   --heading-tone-4: #343e4a;
   --heading-tone-5: #3e4752;
   --heading-tone-6: #4a525c;
-  --heading-grad-span: 28em;
-  --heading-grad-1: linear-gradient(100deg, #3a4756 0%, #1c232c 100%);
+  --heading-vgrad-1: linear-gradient(180deg, #1c232c 0%, #1c232c 65%, #b3301f 75%, #b3301f 100%);
+  --heading-vgrad-2: linear-gradient(180deg, #26313d 0%, #26313d 65%, #8a6414 75%, #8a6414 100%);
+  --heading-vgrad-3: linear-gradient(180deg, #2c3743 0%, #2c3743 65%, #1e5f80 75%, #1e5f80 100%);
+  --heading-vgrad-4: linear-gradient(180deg, #343e4a 0%, #343e4a 65%, #9c5534 75%, #9c5534 100%);
+  --heading-vgrad-5: linear-gradient(180deg, #3e4752 0%, #3e4752 65%, #7a5a36 75%, #7a5a36 100%);
+  --heading-vgrad-6: linear-gradient(180deg, #4a525c 0%, #4a525c 65%, #5a6040 75%, #5a6040 100%);
   --font-text: 'Inter', -apple-system, system-ui, sans-serif;
   --font-code: 'JetBrains Mono', 'SF Mono', monospace;
 }
@@ -83,7 +97,7 @@
   --text-muted: #5e646c;
   --highlight: #262a2f;
   --color-heading: #e4e7eb;
-  --color-bold: #f2f4f6;
+  --color-bold: #d4b06a;
   --color-italic: #aab2bc;
   --color-link: #8fb0cf;
   --color-code-bg: #1c1f23;
@@ -121,15 +135,27 @@
   --ai-ask-accent-text: #15171a;
   --bg-overlay: rgba(21, 23, 26, 0.78);
   --border: #262a2f;
-  /* Серебро, темнеющее к нижним уровням. H1 — шлифованная сталь с бликом. */
-  --heading-tone-1: #aeb4bd;
+  /* Заголовки — металл с отсветом снизу: основной тон держит большую часть
+   * буквы, к базовой линии он уходит во второй цвет, свой у каждого уровня.
+   * Градиент вертикальный и лежит на тексте заголовка, а не на строке
+   * (`--heading-vgrad-N`, см. editor.css), поэтому проценты отсчитываются от
+   * области глифов: у Inter верх заглавной ≈ 20%, базовая линия ≈ 80%.
+   * Металла должно быть заметно больше: отсвет занимает нижнюю шестую
+   * видимой буквы (1:5), короткий переход 65–75% с серединой на 70%.
+   * Перенесённый заголовок получает тот же отсвет на каждой строке. */
+  /* H1 плюмаж · H2 золото · H3 море · H4 угли · H5 бронза · H6 олива. */
+  --heading-tone-1: #e4e7eb;
   --heading-tone-2: #e4e7eb;
   --heading-tone-3: #dde1e5;
   --heading-tone-4: #d0d4d9;
   --heading-tone-5: #b8bdc4;
   --heading-tone-6: #a0a6ae;
-  --heading-grad-span: 28em;
-  --heading-grad-1: linear-gradient(100deg, #ffffff 0%, #aeb4bd 100%);
+  --heading-vgrad-1: linear-gradient(180deg, #e4e7eb 0%, #e4e7eb 65%, #d23a2a 75%, #d23a2a 100%);
+  --heading-vgrad-2: linear-gradient(180deg, #e4e7eb 0%, #e4e7eb 65%, #d4b06a 75%, #d4b06a 100%);
+  --heading-vgrad-3: linear-gradient(180deg, #dde1e5 0%, #dde1e5 65%, #6fa6c4 75%, #6fa6c4 100%);
+  --heading-vgrad-4: linear-gradient(180deg, #d0d4d9 0%, #d0d4d9 65%, #c7774e 75%, #c7774e 100%);
+  --heading-vgrad-5: linear-gradient(180deg, #b8bdc4 0%, #b8bdc4 65%, #a88a5c 75%, #a88a5c 100%);
+  --heading-vgrad-6: linear-gradient(180deg, #a0a6ae 0%, #a0a6ae 65%, #9ea076 75%, #9ea076 100%);
   --font-text: 'Inter', -apple-system, system-ui, sans-serif;
   --font-code: 'JetBrains Mono', 'SF Mono', monospace;
 }

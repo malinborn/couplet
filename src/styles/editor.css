@@ -132,6 +132,44 @@
     background-image: var(--heading-grad-6, none);
   }
 
+  /* Vertical gradient — a second, optional layer, painted on the glyphs rather
+   * than on the line.
+   *
+   * `--heading-grad-N` above lives on the `.cm-line` block box, and that box is
+   * no ruler for vertical stops: measured on an H2, the text's content area
+   * sat 0.313em below the line box top on a single-line heading and 0.039em on
+   * a wrapped one, and the wrapped line step was 1.573em against a 1.3em
+   * line-height. Any em or % stop on the block box therefore lands on a
+   * different part of the letters depending on context, and on the second
+   * line of a wrapped heading it drifts.
+   *
+   * So `headings.ts` wraps the heading text in an inline `.cm-md-heading-text`
+   * span, and a theme that wants a top-to-baseline sweep sets
+   * `--heading-vgrad-N` on it. An inline box's background covers its content
+   * area — ascent plus descent of its own font, the same for every fragment —
+   * and `box-decoration-break: clone` gives each wrapped line fragment its own
+   * copy instead of one gradient sliced across them. Percent stops are then
+   * glyph-relative: for Inter, cap top ≈ 20% and baseline ≈ 80%.
+   *
+   * Without the hook the span has no background and is transparent-filled
+   * like the rest of the line, so its text is clipped out of the line's own
+   * tone or gradient exactly as before. Children that restore their own fill
+   * (the rule below) still do: they paint on top of whichever layer shows. */
+  :is(.cm-md-h1, .cm-md-h2, .cm-md-h3, .cm-md-h4, .cm-md-h5, .cm-md-h6) .cm-md-heading-text {
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+    background-size: 100% 100%;
+    background-repeat: no-repeat;
+    -webkit-background-clip: text;
+    background-clip: text;
+  }
+  .cm-content .cm-md-h1 .cm-md-heading-text { background-image: var(--heading-vgrad-1, none); }
+  .cm-content .cm-md-h2 .cm-md-heading-text { background-image: var(--heading-vgrad-2, none); }
+  .cm-content .cm-md-h3 .cm-md-heading-text { background-image: var(--heading-vgrad-3, none); }
+  .cm-content .cm-md-h4 .cm-md-heading-text { background-image: var(--heading-vgrad-4, none); }
+  .cm-content .cm-md-h5 .cm-md-heading-text { background-image: var(--heading-vgrad-5, none); }
+  .cm-content .cm-md-h6 .cm-md-heading-text { background-image: var(--heading-vgrad-6, none); }
+
   /* Transparent fill inherits. The fold arrow and anything inside a heading
    * that has its own colour (link, inline code, a bold span) paint themselves
    * again on top of the clipped background. */
