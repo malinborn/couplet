@@ -6,6 +6,8 @@
 //! `docs/superpowers/specs/2026-09-26-stash-design.md`; contracts:
 //! `docs/superpowers/plans/2026-09-27-stash-00-roadmap.md`.
 
+mod clock;
+
 #[cfg(test)]
 mod fts_probe {
     //! Search (stage 05) depends on FTS5 and its `trigram` tokenizer being
