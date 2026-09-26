@@ -1,6 +1,7 @@
 //! Entries: creating notes, reading, putting away, tags, list and counts.
 //! Every multi-row change is one `BEGIN IMMEDIATE` transaction (roadmap).
 
+use std::cmp::Reverse;
 use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
@@ -10,7 +11,10 @@ use std::time::UNIX_EPOCH;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use super::db::{self, EntryRow, ENTRY_COLUMNS};
-use super::{ids, notes, PutAway, PutAwayResult, Stash, StashEntry, StashKind};
+use super::{
+    ids, notes, ListQuery, ListResult, ListSort, PutAway, PutAwayResult, Stash, StashCounts,
+    StashEntry, StashKind,
+};
 
 /// Preview length in characters (roadmap: "first ~400 chars").
 pub(crate) const PREVIEW_CHARS: usize = 400;
@@ -19,6 +23,65 @@ const PREVIEW_BYTES: u64 = (PREVIEW_CHARS * 4) as u64;
 const ID_ATTEMPTS: usize = 8;
 /// Longest tag, in characters.
 pub(crate) const TAG_MAX_CHARS: usize = 64;
+pub(crate) const DEFAULT_LIMIT: usize = 50;
+pub(crate) const MAX_LIMIT: usize = 500;
+
+/// What `candidates` filters on, each already in its stored spelling.
+#[derive(Default)]
+struct Filter<'a> {
+    deleted: bool,
+    kind: Option<StashKind>,
+    tag: Option<&'a str>,
+    repo: Option<&'a str>,
+    since: Option<i64>,
+}
+
+/// A row that passed the filters. `derived` is the entry's shown
+/// `(repo, branch)`, filled only when the repo filter had to look at it: a
+/// `.git` lookup per file is paid for the page, not the whole stash.
+struct Candidate {
+    row: EntryRow,
+    derived: Option<(Option<String>, Option<String>)>,
+}
+
+/// Descending sort key; `rowid` last, so every key is unique and a keyset
+/// cursor is exact (plan D6, D7).
+type SortKey = (i64, i64, i64);
+
+/// Roadmap A9: the drawer's and the agent's one meaning of "changed".
+fn changed_at(row: &EntryRow) -> i64 {
+    row.modified_at.max(row.stashed_at.unwrap_or(i64::MIN))
+}
+
+/// The trash has one order, newest deletion first (roadmap A8), whatever the
+/// requested sort.
+fn sort_key(row: &EntryRow, sort: ListSort, deleted: bool) -> SortKey {
+    if deleted {
+        return (row.deleted_at.unwrap_or(0), 0, row.rowid);
+    }
+    match sort {
+        ListSort::Changed => (changed_at(row), 0, row.rowid),
+        ListSort::Opened => (row.opened_at.unwrap_or(0), changed_at(row), row.rowid),
+        ListSort::Kind => (
+            i64::from(row.kind == StashKind::Note),
+            changed_at(row),
+            row.rowid,
+        ),
+    }
+}
+
+/// Opaque to callers (roadmap A9); only `decode_cursor` reads it.
+fn encode_cursor(key: SortKey) -> String {
+    format!("{}.{}.{}", key.0, key.1, key.2)
+}
+
+fn decode_cursor(cursor: &str) -> Result<SortKey, String> {
+    let mut parts = cursor.split('.').map(str::parse::<i64>);
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(Ok(a)), Some(Ok(b)), Some(Ok(c)), None) => Ok((a, b, c)),
+        _ => Err(format!("invalid cursor: {cursor:?}")),
+    }
+}
 
 /// A tag as stored: trimmed, without leading `#`, lower-case. `Ok(None)` for
 /// nothing left; an error for whitespace inside (a `#tag` query could never
@@ -459,6 +522,133 @@ impl Stash {
         Ok(changed > 0 && title != old_title)
     }
 
+    /// Rows passing the filters. SQL decides everything but a file's repo:
+    /// the stored column (written at put-away, roadmap A3) can be stale either
+    /// way — the file moved into a repository later, or its `.git` went away —
+    /// so a file matches when its stored repo *or* its live derived repo equals
+    /// the filter, and the live half is checked here.
+    fn candidates(&self, f: &Filter<'_>) -> Result<Vec<Candidate>, String> {
+        let sql = format!(
+            "SELECT {ENTRY_COLUMNS} FROM entries e \
+             WHERE (e.deleted_at IS NOT NULL) = ?1 \
+               AND (?1 = 0 OR e.kind = 'note') \
+               AND (?2 IS NULL OR e.kind = ?2) \
+               AND (?3 IS NULL OR EXISTS (SELECT 1 FROM tags t WHERE t.entry_id = e.id AND t.tag = ?3)) \
+               AND (?4 IS NULL OR e.kind = 'file' OR e.repo = ?4) \
+               AND (?5 IS NULL OR COALESCE(e.stashed_at, e.modified_at) >= ?5)"
+        );
+        let mut stmt = self.conn.prepare(&sql).map_err(db::err)?;
+        let rows = stmt
+            .query_map(
+                params![
+                    f.deleted,
+                    f.kind.map(StashKind::as_str),
+                    f.tag,
+                    f.repo,
+                    f.since
+                ],
+                db::entry_row,
+            )
+            .map_err(db::err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db::err)?;
+        let Some(repo) = f.repo else {
+            return Ok(rows
+                .into_iter()
+                .map(|row| Candidate { row, derived: None })
+                .collect());
+        };
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let derived = derived_repo(&row);
+            if row.repo.as_deref() == Some(repo) || derived.0.as_deref() == Some(repo) {
+                out.push(Candidate {
+                    row,
+                    derived: Some(derived),
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// One page of the stash, or of the trash with `deleted` (plan D6).
+    pub fn list(&self, q: &ListQuery) -> Result<ListResult, String> {
+        let tag = match q.tag.as_deref() {
+            Some(t) => normalize_tag(t)?,
+            None => None,
+        };
+        let repo = normalize_repo(q.repo.as_deref());
+        let after = q.cursor.as_deref().map(decode_cursor).transpose()?;
+        let limit = q.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+        let key = |row: &EntryRow| sort_key(row, q.sort, q.deleted);
+
+        let mut all = self.candidates(&Filter {
+            deleted: q.deleted,
+            kind: q.kind,
+            tag: tag.as_deref(),
+            repo: repo.as_deref(),
+            since: q.since,
+        })?;
+        all.sort_by_key(|c| Reverse(key(&c.row)));
+        let total = all.len();
+        // Keyset: everything strictly after the last key shown, so an entry
+        // raised above the cursor between two pages is not shown twice.
+        let start = after.map_or(0, |cursor| {
+            all.iter()
+                .position(|c| key(&c.row) < cursor)
+                .unwrap_or(total)
+        });
+        let mut page: Vec<Candidate> = all.into_iter().skip(start).take(limit + 1).collect();
+        let more = page.len() > limit;
+        page.truncate(limit);
+        let next_cursor = if more {
+            page.last().map(|c| encode_cursor(key(&c.row)))
+        } else {
+            None
+        };
+        let mut tags = db::all_tags(&self.conn)?;
+        let entries = page
+            .into_iter()
+            .map(|c| {
+                let (repo, branch) = c.derived.unwrap_or_else(|| derived_repo(&c.row));
+                let preview = read_preview(Path::new(&c.row.path));
+                let tags = tags.remove(&c.row.id).unwrap_or_default();
+                entry_from(c.row, tags, repo, branch, preview)
+            })
+            .collect();
+        Ok(ListResult {
+            entries,
+            total,
+            next_cursor,
+        })
+    }
+
+    /// The drawer's summary line («19 · отложено сегодня 6»). `day_start_ms`
+    /// is the local midnight that starts today (`clock::local_day_start_ms`).
+    /// The trash count ignores `repo` (roadmap A8): the trash is one place.
+    pub fn counts(&self, repo: Option<&str>, day_start_ms: i64) -> Result<StashCounts, String> {
+        let repo = normalize_repo(repo);
+        let live = self.candidates(&Filter {
+            repo: repo.as_deref(),
+            ..Filter::default()
+        })?;
+        let deleted = self
+            .candidates(&Filter {
+                deleted: true,
+                ..Filter::default()
+            })?
+            .len();
+        let stashed_today = live
+            .iter()
+            .filter(|c| c.row.stashed_at.is_some_and(|t| t >= day_start_ms))
+            .count();
+        Ok(StashCounts {
+            total: live.len(),
+            stashed_today,
+            deleted,
+        })
+    }
+
     fn tags_of(&self, id: &str) -> Result<Vec<String>, String> {
         let mut stmt = self
             .conn
@@ -479,6 +669,7 @@ mod tests {
     use crate::atomic_write::testkit::scratch;
     use crate::stash::testkit::*;
     use crate::stash::PutAway;
+    use crate::stash::{ListQuery, ListResult, ListSort, StashCounts};
 
     #[test]
     fn creating_a_note_writes_its_file_and_its_entry() {
@@ -1046,5 +1237,334 @@ mod tests {
         assert!(!stash.file_written(&note.path, "# New", T0 + 10).unwrap());
         let e = stash.get(&note.id).unwrap();
         assert_eq!((e.title.as_deref(), e.modified_at), (Some("Old"), T0));
+    }
+
+    struct Seeded {
+        a: String,
+        b: String,
+        c: String,
+        d: String,
+        e: String,
+    }
+
+    /// a: note (repo couplet), b: file in a git repo "couplet", c: note (repo
+    /// other, #infra), d: loose file, e: deleted note (repo couplet). Times are
+    /// set directly: changed = a 100, b 300, c 500, d 600.
+    fn seed(stash: &mut Stash, root: &Path) -> Seeded {
+        let a = stash
+            .create_note("# A", Some("/src/couplet"), T0, MSK)
+            .unwrap()
+            .id;
+        let repo = root.join("work/couplet");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let b = stash
+            .put_away(&put(vec![user_file(root, "couplet/b.md", "b")]), T0)
+            .unwrap()
+            .remove(0)
+            .entry
+            .id;
+        let c = stash.create_note("# C", Some("other"), T0, MSK).unwrap().id;
+        stash.tag(&c, &["infra".into()], &[]).unwrap();
+        let d = stash
+            .put_away(&put(vec![user_file(root, "loose/d.md", "d")]), T0)
+            .unwrap()
+            .remove(0)
+            .entry
+            .id;
+        let e = stash
+            .create_note("# E", Some("couplet"), T0, MSK)
+            .unwrap()
+            .id;
+        set_columns(
+            stash,
+            &a,
+            "modified_at = 100, stashed_at = NULL, opened_at = 900",
+        );
+        set_columns(
+            stash,
+            &b,
+            "modified_at = 200, stashed_at = 300, opened_at = NULL",
+        );
+        set_columns(
+            stash,
+            &c,
+            "modified_at = 400, stashed_at = 500, opened_at = 100",
+        );
+        set_columns(
+            stash,
+            &d,
+            "modified_at = 50, stashed_at = 600, opened_at = NULL",
+        );
+        set_columns(
+            stash,
+            &e,
+            "modified_at = 800, stashed_at = NULL, deleted_at = 700",
+        );
+        Seeded { a, b, c, d, e }
+    }
+
+    fn ids(r: &ListResult) -> Vec<String> {
+        r.entries.iter().map(|e| e.id.clone()).collect()
+    }
+
+    fn query(f: impl FnOnce(&mut ListQuery)) -> ListQuery {
+        let mut q = ListQuery::default();
+        f(&mut q);
+        q
+    }
+
+    #[test]
+    fn the_default_list_is_newest_change_first_without_the_trash() {
+        let (mut stash, root) = stash_in("list");
+        let s = seed(&mut stash, &root);
+        let r = stash.list(&ListQuery::default()).unwrap();
+        assert_eq!(
+            ids(&r),
+            vec![s.d.clone(), s.c.clone(), s.b.clone(), s.a.clone()]
+        );
+        assert_eq!((r.total, r.next_cursor), (4, None));
+        let b = r.entries.iter().find(|e| e.id == s.b).unwrap();
+        assert_eq!(
+            (b.repo.as_deref(), b.branch.as_deref()),
+            (Some("couplet"), Some("main"))
+        );
+        assert_eq!(b.preview, "b");
+        let c = r.entries.iter().find(|e| e.id == s.c).unwrap();
+        assert_eq!(c.tags, vec!["infra"]);
+    }
+
+    #[test]
+    fn the_other_sorts() {
+        let (mut stash, root) = stash_in("list-sorts");
+        let s = seed(&mut stash, &root);
+        let opened = stash.list(&query(|q| q.sort = ListSort::Opened)).unwrap();
+        assert_eq!(
+            ids(&opened),
+            vec![s.a.clone(), s.c.clone(), s.d.clone(), s.b.clone()]
+        );
+        let kind = stash.list(&query(|q| q.sort = ListSort::Kind)).unwrap();
+        assert_eq!(
+            ids(&kind),
+            vec![s.c.clone(), s.a.clone(), s.d.clone(), s.b.clone()],
+            "notes first"
+        );
+    }
+
+    #[test]
+    fn filters() {
+        let (mut stash, root) = stash_in("list-filters");
+        let s = seed(&mut stash, &root);
+        let list = |q: ListQuery| ids(&stash.list(&q).unwrap());
+        assert_eq!(
+            list(query(|q| q.kind = Some(StashKind::File))),
+            vec![s.d.clone(), s.b.clone()]
+        );
+        assert_eq!(
+            list(query(|q| q.kind = Some(StashKind::Note))),
+            vec![s.c.clone(), s.a.clone()]
+        );
+        assert_eq!(
+            list(query(|q| q.tag = Some("#INFRA".into()))),
+            vec![s.c.clone()]
+        );
+        assert_eq!(
+            list(query(|q| q.repo = Some("couplet".into()))),
+            vec![s.b.clone(), s.a.clone()]
+        );
+        assert_eq!(
+            list(query(|q| q.repo = Some("/Users/u/src/couplet".into()))),
+            vec![s.b.clone(), s.a.clone()]
+        );
+        assert_eq!(list(query(|q| q.deleted = true)), vec![s.e.clone()]);
+    }
+
+    #[test]
+    fn since_is_the_put_away_time_or_else_the_modification_time() {
+        // Roadmap A9: `COALESCE(stashed_at, modified_at) >= since`.
+        let (mut stash, root) = stash_in("list-since");
+        let s = seed(&mut stash, &root);
+        // b: edited after `since`, but put away before it — out.
+        set_columns(&stash, &s.b, "modified_at = 1000");
+        let r = stash.list(&query(|q| q.since = Some(450))).unwrap();
+        assert_eq!(ids(&r), vec![s.d.clone(), s.c.clone()]);
+        assert_eq!(r.total, 2);
+        // a was never put away: its modification time decides.
+        let r = stash.list(&query(|q| q.since = Some(100))).unwrap();
+        assert!(ids(&r).contains(&s.a), "{:?}", ids(&r));
+        let r = stash.list(&query(|q| q.since = Some(101))).unwrap();
+        assert!(!ids(&r).contains(&s.a), "{:?}", ids(&r));
+    }
+
+    #[test]
+    fn a_files_repo_filter_matches_its_stored_or_its_live_repo() {
+        // Roadmap A3: a file's repo is stored at put-away and derived live for
+        // display; either one matching the filter keeps the entry.
+        let (mut stash, root) = stash_in("list-repo-live");
+        let stored_only = {
+            let repo = root.join("work/gone");
+            fs::create_dir_all(repo.join(".git")).unwrap();
+            fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+            let id = stash
+                .put_away(&put(vec![user_file(&root, "gone/a.md", "a")]), T0)
+                .unwrap()
+                .remove(0)
+                .entry
+                .id;
+            fs::remove_dir_all(repo.join(".git")).unwrap();
+            id
+        };
+        let live_only = {
+            let id = stash
+                .put_away(&put(vec![user_file(&root, "later/b.md", "b")]), T0)
+                .unwrap()
+                .remove(0)
+                .entry
+                .id;
+            let repo = root.join("work/later");
+            fs::create_dir_all(repo.join(".git")).unwrap();
+            fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+            id
+        };
+        let gone = stash
+            .list(&query(|q| q.repo = Some("gone".into())))
+            .unwrap();
+        assert_eq!(ids(&gone), vec![stored_only.clone()]);
+        assert_eq!(gone.entries[0].repo, None, "shown as it is now");
+        let later = stash
+            .list(&query(|q| q.repo = Some("later".into())))
+            .unwrap();
+        assert_eq!(ids(&later), vec![live_only]);
+        assert_eq!(later.entries[0].repo.as_deref(), Some("later"));
+        assert_eq!(stash.counts(Some("gone"), 0).unwrap().total, 1);
+    }
+
+    #[test]
+    fn the_trash_lists_only_notes_newest_deletion_first() {
+        // Roadmap A8.
+        let (mut stash, root) = stash_in("list-trash");
+        let s = seed(&mut stash, &root);
+        // a deleted after e, though changed long before it.
+        set_columns(&stash, &s.a, "deleted_at = 750");
+        // A file reference is never in the trash, whatever its row says.
+        set_columns(&stash, &s.b, "deleted_at = 760");
+        for sort in [ListSort::Changed, ListSort::Opened, ListSort::Kind] {
+            let r = stash
+                .list(&query(|q| {
+                    q.deleted = true;
+                    q.sort = sort;
+                }))
+                .unwrap();
+            assert_eq!(ids(&r), vec![s.a.clone(), s.e.clone()], "{sort:?}");
+        }
+        let first = stash
+            .list(&query(|q| {
+                q.deleted = true;
+                q.limit = Some(1);
+            }))
+            .unwrap();
+        let second = stash
+            .list(&query(|q| {
+                q.deleted = true;
+                q.limit = Some(1);
+                q.cursor = first.next_cursor.clone();
+            }))
+            .unwrap();
+        assert_eq!(
+            (ids(&first), ids(&second)),
+            (vec![s.a.clone()], vec![s.e.clone()])
+        );
+        assert_eq!(second.next_cursor, None);
+    }
+
+    #[test]
+    fn pages_follow_the_cursor() {
+        let (mut stash, root) = stash_in("list-pages");
+        let s = seed(&mut stash, &root);
+        let first = stash.list(&query(|q| q.limit = Some(2))).unwrap();
+        assert_eq!(ids(&first), vec![s.d.clone(), s.c.clone()]);
+        assert_eq!(first.total, 4);
+        let second = stash
+            .list(&query(|q| {
+                q.limit = Some(2);
+                q.cursor = first.next_cursor.clone();
+            }))
+            .unwrap();
+        assert_eq!(ids(&second), vec![s.b.clone(), s.a.clone()]);
+        assert_eq!((second.total, second.next_cursor), (4, None));
+        let one = stash.list(&query(|q| q.limit = Some(0))).unwrap();
+        assert_eq!(one.entries.len(), 1, "a limit is at least 1");
+    }
+
+    #[test]
+    fn a_limit_is_clamped_to_the_maximum() {
+        let (mut stash, root) = stash_in("list-limit");
+        let paths = (0..=MAX_LIMIT)
+            .map(|i| user_file(&root, &format!("f{i}.md"), "x"))
+            .collect();
+        stash.put_away(&put(paths), T0).unwrap();
+        let r = stash.list(&query(|q| q.limit = Some(usize::MAX))).unwrap();
+        assert_eq!(r.entries.len(), MAX_LIMIT);
+        assert_eq!(r.total, MAX_LIMIT + 1);
+        assert!(r.next_cursor.is_some());
+        let r = stash.list(&ListQuery::default()).unwrap();
+        assert_eq!(r.entries.len(), DEFAULT_LIMIT);
+    }
+
+    #[test]
+    fn an_entry_raised_between_pages_is_not_repeated() {
+        let (mut stash, root) = stash_in("list-raised");
+        let s = seed(&mut stash, &root);
+        let first = stash.list(&query(|q| q.limit = Some(2))).unwrap();
+        set_columns(&stash, &s.a, "stashed_at = 10000");
+        let second = stash
+            .list(&query(|q| {
+                q.limit = Some(2);
+                q.cursor = first.next_cursor.clone();
+            }))
+            .unwrap();
+        assert_eq!(ids(&second), vec![s.b.clone()]);
+    }
+
+    #[test]
+    fn a_malformed_cursor_is_an_error() {
+        let (stash, _root) = stash_in("list-cursor");
+        for bad in ["x", "1.2", "1.2.3.4", "a.b.c", ""] {
+            assert!(
+                stash.list(&query(|q| q.cursor = Some(bad.into()))).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn counts() {
+        let (mut stash, root) = stash_in("counts");
+        seed(&mut stash, &root);
+        assert_eq!(
+            stash.counts(None, 450).unwrap(),
+            StashCounts {
+                total: 4,
+                stashed_today: 2,
+                deleted: 1
+            }
+        );
+        assert_eq!(
+            stash.counts(Some("couplet"), 0).unwrap(),
+            StashCounts {
+                total: 2,
+                stashed_today: 1,
+                deleted: 1
+            }
+        );
+        // Roadmap A8: the trash count ignores the repo (e is in couplet).
+        assert_eq!(
+            stash.counts(Some("other"), 0).unwrap(),
+            StashCounts {
+                total: 1,
+                stashed_today: 1,
+                deleted: 1
+            }
+        );
     }
 }

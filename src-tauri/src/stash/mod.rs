@@ -92,6 +92,55 @@ pub struct PutAwayResult {
     pub created: bool,
 }
 
+/// `stash_list`'s sort (spec: «изменение ⌘L · открытие ⌘R · тип ⌘U»).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ListSort {
+    /// `max(modified_at, stashed_at)` (roadmap A9).
+    #[default]
+    Changed,
+    Opened,
+    Kind,
+}
+
+/// `stash_list`'s arguments.
+#[derive(Clone, Debug, Default)]
+pub struct ListQuery {
+    /// A project's directory name (a path is reduced to it, roadmap A3).
+    pub repo: Option<String>,
+    pub tag: Option<String>,
+    pub kind: Option<StashKind>,
+    /// Ignored with `deleted`: the trash is always newest deletion first.
+    pub sort: ListSort,
+    /// `true`: the trash (trashed notes only) instead of the stash (roadmap A8).
+    pub deleted: bool,
+    /// Only entries with `COALESCE(stashed_at, modified_at) >= since` (roadmap A9).
+    pub since: Option<i64>,
+    /// Default 50, clamped to 1..=500.
+    pub limit: Option<usize>,
+    /// Opaque: the previous page's `next_cursor`.
+    pub cursor: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListResult {
+    pub entries: Vec<StashEntry>,
+    /// Matching entries across all pages.
+    pub total: usize,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StashCounts {
+    pub total: usize,
+    /// Put away since local midnight (roadmap A9).
+    pub stashed_today: usize,
+    /// Trashed notes, whatever the repo (roadmap A8).
+    pub deleted: usize,
+}
+
 /// The stash: one database connection and where things live. Synchronous and
 /// clock-free — callers pass `now` — so every behaviour is a plain unit test.
 pub struct Stash {
