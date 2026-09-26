@@ -93,6 +93,24 @@ describe('repairChange — a torn pair', () => {
   });
 });
 
+describe('repairChange — inside a blockquote', () => {
+  const QUOTED = '> **bold** x';
+  // Offsets: `> ` 0..2, `**` 2..4, `bold` 4..8, `**` 8..10.
+
+  it('reports the pairs of quoted text, nested quotes included', () => {
+    expect(pairsOf(QUOTED)).toMatchObject([{ kind: 'strong', openFrom: 2, closeTo: 10 }]);
+    expect(pairsOf('> > **b**')).toMatchObject([{ kind: 'strong', openFrom: 4, closeTo: 9 }]);
+  });
+
+  it('writes back a closing marker that a Backspace tore off', () => {
+    expect(applyRepaired(QUOTED, { from: 8, to: 10, insert: '' })).toBe(QUOTED);
+  });
+
+  it('re-closes the span when a selection crosses the closing marker', () => {
+    expect(applyRepaired(QUOTED, { from: 6, to: 11, insert: 'Q' })).toBe('> **bo**Qx');
+  });
+});
+
 describe('repairChange — a pair that should die whole', () => {
   it('leaves a deletion of the entire span alone', () => {
     // Both markers are touched: the user is removing the span, not tearing it.

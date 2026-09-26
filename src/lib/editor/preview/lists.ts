@@ -175,6 +175,9 @@ function sourceIndentRange(doc: Text, markFrom: number): { from: number; to: num
     if (ch !== ' ' && ch !== '\t') break;
     start--;
   }
+  // The one space after a `>` is hidden by the quote already (see
+  // `blockquoteLayout`); collapsing it here too would overlap the two.
+  if (start > 0 && line.text[start - 1] === '>' && line.from + start < markFrom) start++;
   return { from: line.from + start, to: markFrom };
 }
 
@@ -239,24 +242,116 @@ export function decorateListItem(
   }
 }
 
+/** True when `node` sits inside a blockquote, at any distance. */
+export function insideBlockquote(node: SyntaxNode): boolean {
+  for (let p: SyntaxNode | null = node.parent; p; p = p.parent) {
+    if (p.name === 'Blockquote') return true;
+  }
+  return false;
+}
+
+// Levels past this share the deepest step rather than marching off the edge.
+const MAX_QUOTE_DEPTH = 4;
+
+const quoteLines: readonly Decoration[] = Array.from(
+  { length: MAX_QUOTE_DEPTH + 1 },
+  (_, depth) => Decoration.line({ class: `cm-md-blockquote cm-md-blockquote-d${depth}` })
+);
+
+/** What an outermost blockquote draws: a depth per line, and the markers to hide. */
+export interface BlockquoteLayout {
+  /** Every line of the quote: its start, and the depth of the innermost quote on it. */
+  lines: { from: number; depth: number }[];
+  /**
+   * The markers to hide — each a `>` plus the one space or tab after it.
+   * Markers that touch are merged, so `> > x` is one range and not two: in
+   * live-render a boundary between them would be an atomic stop printing at
+   * the same pixel as its neighbours, and typing there splits the quote.
+   */
+  hidden: { from: number; to: number }[];
+}
+
+/**
+ * One marker's hidden range: the `>`, the single space or tab after it, and —
+ * when only indentation precedes it on its line — that indentation too, as the
+ * old per-line `^\s*>\s?` did for the first marker of a line.
+ */
+function quoteMarkHiddenRange(doc: Text, from: number, to: number): { from: number; to: number } {
+  const line = doc.lineAt(from);
+  const next = doc.sliceString(to, Math.min(to + 1, line.to));
+  const end = next === ' ' || next === '\t' ? to + 1 : to;
+  const start = /^[ \t]*$/.test(doc.sliceString(line.from, from)) ? line.from : from;
+  return { from: start, to: end };
+}
+
+/**
+ * Walks an outermost `Blockquote`'s whole subtree for its nested quotes and
+ * every `QuoteMark`. The subtree, not the direct children: Lezer puts the
+ * marker of a continuation line inside whatever block is open on it — a
+ * paragraph, a list item, a fenced code block, a table — so a marker can sit
+ * several levels below the quote it belongs to.
+ *
+ * `live-render/atomic.ts` hides exactly these ranges; computing them in one
+ * place is what keeps the rendered text and the atomic set in step.
+ */
+export function blockquoteLayout(doc: Text, quote: SyntaxNode): BlockquoteLayout {
+  const firstLine = doc.lineAt(quote.from).number;
+  const depths = new Array<number>(doc.lineAt(quote.to).number - firstLine + 1).fill(1);
+  const marks: { from: number; to: number }[] = [];
+
+  let depth = 0;
+  quote.cursor().iterate(
+    (node) => {
+      if (node.name === 'QuoteMark') {
+        marks.push(quoteMarkHiddenRange(doc, node.from, node.to));
+        return;
+      }
+      if (node.name !== 'Blockquote') return;
+      depth++;
+      const d = Math.min(depth, MAX_QUOTE_DEPTH);
+      const last = doc.lineAt(node.to).number - firstLine;
+      for (let i = doc.lineAt(node.from).number - firstLine; i <= last; i++) {
+        depths[i] = Math.max(depths[i], d);
+      }
+    },
+    (node) => {
+      if (node.name === 'Blockquote') depth--;
+    }
+  );
+
+  marks.sort((a, b) => a.from - b.from);
+  const hidden: { from: number; to: number }[] = [];
+  for (const m of marks) {
+    const prev = hidden[hidden.length - 1];
+    if (prev && m.from <= prev.to) prev.to = Math.max(prev.to, m.to);
+    else hidden.push({ from: m.from, to: m.to });
+  }
+  const lines = depths.map((d, i) => ({ from: doc.line(firstLine + i).from, depth: d }));
+  return { lines, hidden };
+}
+
+/**
+ * Quotes are decorated once, from the outermost one; a nested quote's lines
+ * and markers are part of that layout. `plugin.ts` still descends into every
+ * quote, so what is inside — inline formatting, lists, headings — is decorated
+ * by its own decorator.
+ *
+ * The line decoration is emitted whether or not the markers are revealed, so
+ * the caret entering a quote shows its `>` without taking the bar away. Reveal
+ * is decided by the outermost quote: the caret on any of its lines shows every
+ * marker in it at every level, as live-preview did when the whole block went
+ * raw under the caret.
+ */
 export function decorateBlockquote(
   view: EditorView,
   node: SyntaxNode,
   builder: DecoSink
 ): void {
+  if (insideBlockquote(node)) return;
+
+  const layout = blockquoteLayout(view.state.doc, node);
+  for (const line of layout.lines) builder.add(line.from, line.from, quoteLines[line.depth]);
+
   if (shouldReveal(view, 'blockquote', node.from, node.to, true)) return;
-
-  const doc = view.state.doc;
-  const startLine = doc.lineAt(node.from);
-  const endLine = doc.lineAt(node.to);
-
-  for (let i = startLine.number; i <= endLine.number; i++) {
-    const line = doc.line(i);
-    builder.add(line.from, line.from, Decoration.line({ class: 'cm-md-blockquote' }));
-
-    const match = line.text.match(/^(\s*>)\s?/);
-    if (match) {
-      builder.add(line.from, line.from + match[0].length, Decoration.replace({}));
-    }
-  }
+  for (const r of layout.hidden) builder.add(r.from, r.to, Decoration.replace({}));
 }

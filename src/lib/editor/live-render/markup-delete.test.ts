@@ -87,6 +87,25 @@ describe('visibleDeleteRange — other span kinds', () => {
   });
 });
 
+describe('visibleDeleteRange — inside a blockquote', () => {
+  // Quote contents are decorated since the pass descends into Blockquote, so
+  // their pairs are hidden and the same rule has to hold there.
+  const QUOTED = '> **bold** x';
+  // Offsets: `> ` 0..2, `**` 2..4, `bold` 4..8, `**` 8..10.
+
+  it('Backspace just past the closing marker deletes the last content character', () => {
+    expect(press(QUOTED, 10, false)).toBe('> **bol** x');
+  });
+
+  it('Delete before the opening marker deletes the first content character', () => {
+    expect(press(QUOTED, 2, true)).toBe('> **old** x');
+  });
+
+  it('works the same one quote level deeper', () => {
+    expect(press('> > *it* y', 8, false)).toBe('> > *i* y');
+  });
+});
+
 describe('visibleDeleteRange — declines, leaving the default command in charge', () => {
   it('inside the content', () => {
     expect(press(DOC, 13, false)).toBeNull();

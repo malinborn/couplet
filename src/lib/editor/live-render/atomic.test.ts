@@ -154,10 +154,51 @@ describe('hiddenMarkRanges — nested and adjacent formatting', () => {
     ]);
   });
 
-  it('nested blockquote: only the outermost `>` is hidden', () => {
-    // "> > nested" — plugin.ts does not descend into a nested Blockquote,
-    // so its own QuoteMark is never independently decorated/hidden.
-    expect(spans('> > nested\n')).toEqual([[0, 2]]);
+  it('nested blockquote: every level is hidden, as ONE span per line', () => {
+    // "> > nested" — both QuoteMarks are hidden now. They are merged: two
+    // adjacent spans would leave an atomic boundary at 2, a stop that prints
+    // at the same pixel as 0 and 4 and where typing splits the nested quote.
+    expect(spans('> > nested\n')).toEqual([[0, 4]]);
+    expect(spans('>> tight\n')).toEqual([[0, 3]]);
+    // A lazy continuation line has no marker, and a bare `>` has no space.
+    expect(spans('> > a\n> b\n>\n')).toEqual([
+      [0, 4],
+      [6, 8],
+      [10, 11],
+    ]);
+  });
+
+  it('inline markers inside a quote are hidden like anywhere else', () => {
+    // "> a **b** `c`" — the quote prefix, then the pairs of the paragraph.
+    expect(spans('> a **b** `c`\n')).toEqual([
+      [0, 2],
+      [4, 6],
+      [7, 9],
+      [10, 11],
+      [12, 13],
+    ]);
+  });
+
+  it('a list and a heading inside a quote hide their own markers too', () => {
+    expect(spans('> - a\n')).toEqual([
+      [0, 2],
+      [2, 3],
+    ]);
+    expect(spans('> ## h\n')).toEqual([
+      [0, 2],
+      [2, 5],
+    ]);
+    // Ordered markers stay visible inside a quote, as they do outside one.
+    expect(spans('> 1. a\n')).toEqual([[0, 2]]);
+  });
+
+  it('a table inside a quote stays raw: only the quote markers are hidden', () => {
+    const doc = '> | a | b |\n> | - | - |\n> | **x** | c |\n';
+    expect(spans(doc)).toEqual([
+      [0, 2],
+      [12, 14],
+      [24, 26],
+    ]);
   });
 
   it('table cell content is never hidden (Table is always a widget)', () => {
@@ -236,6 +277,25 @@ describe('caretNormalizeFilter', () => {
       const tr = state.update({ selection: EditorSelection.cursor(pos) });
       expect(tr.state.selection.main.head).toBe(pos);
     }
+  });
+
+  it('normalizes a caret inside quoted bold exactly as it does outside a quote', () => {
+    // "> **a**" — quote prefix [0,2), opening [2,4), closing [5,7).
+    const quoted = '> **a**';
+    const state = stateWithCursor(quoted, 0);
+    expect(state.update({ selection: EditorSelection.cursor(3) }).state.selection.main.head).toBe(2);
+    expect(state.update({ selection: EditorSelection.cursor(6) }).state.selection.main.head).toBe(7);
+    expect(state.update({ selection: EditorSelection.cursor(1) }).state.selection.main.head).toBe(0);
+    for (const pos of [0, 2, 4, 5, 7]) {
+      expect(state.update({ selection: EditorSelection.cursor(pos) }).state.selection.main.head).toBe(pos);
+    }
+  });
+
+  it('pushes a caret out of a merged nested-quote prefix', () => {
+    const state = stateWithCursor('> > x', 0);
+    expect(state.update({ selection: EditorSelection.cursor(1) }).state.selection.main.head).toBe(0);
+    expect(state.update({ selection: EditorSelection.cursor(2) }).state.selection.main.head).toBe(0);
+    expect(state.update({ selection: EditorSelection.cursor(3) }).state.selection.main.head).toBe(4);
   });
 
   it('normalizes both anchor and head of a non-empty selection', () => {

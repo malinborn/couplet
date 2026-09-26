@@ -3,14 +3,43 @@ import type { EditorView } from '@codemirror/view';
 import type { RangeSetBuilder } from '@codemirror/state';
 import type { SyntaxNode } from '@lezer/common';
 import { shouldReveal } from './flavour';
+import { insideBlockquote } from './lists';
 import type { DecoSink } from './utils';
 import { t } from '../../i18n';
+
+/** How many quotes `node` sits in. */
+function quoteDepth(node: SyntaxNode): number {
+  let depth = 0;
+  for (let p: SyntaxNode | null = node.parent; p; p = p.parent) {
+    if (p.name === 'Blockquote') depth++;
+  }
+  return depth;
+}
+
+/**
+ * The code a quoted block holds, without the quote prefixes its lines carry:
+ * exactly `depth` levels of `>` (plus the one space after each), which is what
+ * the parser strips too. A deeper `>` is the code's own text and stays.
+ */
+export function stripQuotePrefix(text: string, depth: number): string {
+  if (depth === 0) return text;
+  const level = /^[ \t]*>[ \t]?/;
+  return text
+    .split('\n')
+    .map((line) => {
+      let out = line;
+      for (let i = 0; i < depth; i++) out = out.replace(level, '');
+      return out;
+    })
+    .join('\n');
+}
 
 class CodeBlockHeaderWidget extends WidgetType {
   constructor(
     private language: string,
     private codeFrom: number,
-    private codeTo: number
+    private codeTo: number,
+    private quoteDepth: number
   ) {
     super();
   }
@@ -32,7 +61,10 @@ class CodeBlockHeaderWidget extends WidgetType {
     copyBtn.addEventListener('mousedown', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      const code = view.state.doc.sliceString(this.codeFrom, this.codeTo);
+      const code = stripQuotePrefix(
+        view.state.doc.sliceString(this.codeFrom, this.codeTo),
+        this.quoteDepth
+      );
       navigator.clipboard.writeText(code);
       copyBtn.textContent = t('ui.copied');
       setTimeout(() => {
@@ -48,7 +80,8 @@ class CodeBlockHeaderWidget extends WidgetType {
     return (
       this.language === other.language &&
       this.codeFrom === other.codeFrom &&
-      this.codeTo === other.codeTo
+      this.codeTo === other.codeTo &&
+      this.quoteDepth === other.quoteDepth
     );
   }
 
@@ -66,7 +99,9 @@ export function decorateHorizontalRule(
 
   const line = view.state.doc.lineAt(node.from);
   builder.add(line.from, line.from, Decoration.line({ class: 'cm-md-hr' }));
-  builder.add(line.from, line.to, Decoration.replace({}));
+  // Inside a quote the line starts with `> `, which the quote hides itself;
+  // replacing from the line start would overlap that range.
+  builder.add(insideBlockquote(node) ? node.from : line.from, line.to, Decoration.replace({}));
 }
 
 export function decorateFencedCode(
@@ -80,8 +115,10 @@ export function decorateFencedCode(
   const startLine = doc.lineAt(node.from);
   const endLine = doc.lineAt(node.to);
 
-  // Extract language from the opening fence line (e.g., ```javascript)
-  const fenceText = doc.sliceString(startLine.from, startLine.to);
+  // Extract language from the opening fence line (e.g., ```javascript). From
+  // the fence itself inside a quote, where the line starts with `> `.
+  const depth = quoteDepth(node);
+  const fenceText = doc.sliceString(depth > 0 ? node.from : startLine.from, startLine.to);
   const langMatch = fenceText.match(/^`{3,}(\w+)/);
   const language = langMatch ? langMatch[1] : '';
 
@@ -124,7 +161,7 @@ export function decorateFencedCode(
           line.from,
           line.from,
           Decoration.widget({
-            widget: new CodeBlockHeaderWidget(language, codeFrom, codeTo),
+            widget: new CodeBlockHeaderWidget(language, codeFrom, codeTo, depth),
             side: -1,
           })
         );

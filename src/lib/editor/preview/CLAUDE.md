@@ -10,7 +10,7 @@ Each file handles one category of markdown elements. All are called from `plugin
 |------|----------|-----------------|
 | `headings.ts` | `# H1` through `###### H6` | Line + replace (hides `#` marks) |
 | `inline.ts` | Bold, italic, strikethrough, code, links | Mark + replace |
-| `lists.ts` | Bullets, checkboxes, blockquotes | Replace (widget) + line |
+| `lists.ts` | Bullets, checkboxes, blockquotes (bars, depth, hidden `>`) | Replace (widget) + line |
 | `blocks.ts` | Code blocks, horizontal rules | Line decorations |
 | `tables.ts` | GFM tables | Line + replace (single TableWidget on header line, other lines hidden) |
 | `utils.ts` | `cursorInRange()` helper | — |
@@ -34,6 +34,41 @@ At the same `from` position: **line → mark → replace**.
 ### No `block: true` from Plugins
 
 CM6 does not allow `block: true` on decorations from ViewPlugins. Use `Decoration.line({ class: ... })` + CSS pseudo-elements instead.
+
+## Blockquotes — the pass descends into them
+
+`plugin.ts` descends into `Blockquote`, so what is inside a quote is decorated
+by its own case, exactly as outside one: inline formatting, links, lists,
+checkboxes, headings, HR, fenced code. Four facts that are easy to break:
+
+- **Decorated once, from the outermost quote.** `decorateBlockquote` returns
+  immediately for a nested quote; the outermost one draws everything through
+  `blockquoteLayout`, which walks its whole subtree. The subtree, because Lezer
+  puts a continuation line's `QuoteMark` inside whatever block is open on it
+  (paragraph, list item, fenced code, table). One line decoration per line,
+  `cm-md-blockquote cm-md-blockquote-dN` for the innermost depth (capped at 4);
+  a lazy continuation line gets the depth of the quote it continues.
+- **Touching markers are hidden as one range** (`> > x` → one replace over
+  `> > `). Two adjacent ranges leave an atomic boundary between them in
+  live-render — a caret stop at the same pixel as its neighbours where typing
+  splits the quote. `live-render/atomic.ts` uses the same `blockquoteLayout`,
+  so the atomic set cannot drift from what is hidden.
+- **Reveal is per outermost quote** (live-preview): the caret anywhere in it
+  shows every `>` at every level; inner elements reveal by their own rules. The
+  bars and indent stay up while revealed, so entering a quote does not remove
+  its layout.
+- **Kept raw inside a quote, on purpose:** tables (the widget would render the
+  `> ` into the first cell, and every table operation rewrites the source
+  without the prefix — deleting a row would take the table out of the quote)
+  and mermaid (its source would carry the prefixes; a quoted mermaid fence is
+  an ordinary code block). The quote markers on those lines are still hidden.
+  A quoted code block's language is read from the fence, not the line, and
+  Copy strips exactly one `>` level per enclosing quote (`stripQuotePrefix`).
+
+CSS: the first bar is the line's border, deeper bars are one `::before`
+repeated with `box-shadow`, not a `background-image` — a heading in a quote
+clips its background to the glyphs and a code line paints its own. Depth sets
+`--quote-indent`; list depth rules add it to their own padding.
 
 ## Tables (`tables.ts`) — Deep Dive
 
@@ -564,9 +599,9 @@ easy to get wrong:
   consults the same `RangeSet` rather than resolving the node at a point,
   because `decorateLink` hides `](url)` as one span wider than any `LinkMark`.
 - **`hiddenMarkRanges` mirrors `plugin.ts`'s traversal**, including its
-  `return false` cases. The decoration pass does not descend into inline nodes,
-  so the inner `_x_` of `**_x_**` is never hidden — marking it atomic would
-  trap the caret in text the user can see.
+  `return false` cases (`InlineCode`, a rendered `Link`, `FencedCode`, `Table`).
+  Hiding something the atomic set does not know about, or the reverse, traps
+  the caret — in hidden text, or out of visible text.
 
 ## Two selections in a table cell, and both get a toolbar
 

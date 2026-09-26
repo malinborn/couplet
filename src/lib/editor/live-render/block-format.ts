@@ -10,6 +10,7 @@ import {
 } from '@codemirror/state';
 import { keymap, type Command } from '@codemirror/view';
 import type { SyntaxNode } from '@lezer/common';
+import { markupPairs } from './atomic';
 
 /**
  * Backspace-strips-block-format for live-render mode (Notion behaviour):
@@ -65,6 +66,29 @@ export interface BlockFormatRemoval {
   changes: ChangeSpec[];
   /** Caret position after `changes` is applied, already mapped through them. */
   caret: number;
+}
+
+/**
+ * Whether `pos` is where the caret sits at the start of a block's content *on
+ * screen*. That is `contentFrom` itself, or any offset reached from it by
+ * stepping over opening markers that are hidden there: in `> **bold**` the
+ * content starts at 2, but the caret the user sees before "b" is at 4, and a
+ * Backspace there means the same thing. Without this it fell through to the
+ * default command, which deleted the hidden space after `>` (or after `-`) —
+ * nothing changed on screen, and the list or quote was quietly broken.
+ */
+function isContentStart(state: EditorState, contentFrom: number, pos: number): boolean {
+  if (pos === contentFrom) return true;
+  if (pos < contentFrom) return false;
+  const pairs = markupPairs(state);
+  let at = contentFrom;
+  for (let guard = 0; guard < 8; guard++) {
+    const open = pairs.find((p) => p.openFrom === at);
+    if (!open) return false;
+    at = open.openTo;
+    if (at === pos) return true;
+  }
+  return false;
 }
 
 /**
@@ -159,7 +183,7 @@ function findListMarkAt(state: EditorState, pos: number, line: Line): SyntaxNode
       if (nodeRef.name !== 'ListMark') return;
       const mark = nodeRef.node;
       const contentFrom = mark.nextSibling?.from ?? mark.to;
-      if (contentFrom === pos) found = mark;
+      if (isContentStart(state, contentFrom, pos)) found = mark;
     },
   });
   return found;
@@ -173,13 +197,32 @@ function computeListRemoval(state: EditorState, mark: SyntaxNode): BlockFormatRe
 
   const line = state.doc.lineAt(mark.from);
   const indent = mark.from - line.from;
+  const contentFrom = mark.nextSibling?.from ?? mark.to;
+
+  // An item of a list that sits directly in a quote: its indent is the quote
+  // prefix, not nesting, so it becomes a paragraph of that quote.
+  if (list.parent?.name === 'Blockquote') {
+    return computeQuotedListItemToParagraph(state, item, list, mark, contentFrom);
+  }
 
   if (indent > 0) {
     return computeNestedOutdent(state, item, list, indent);
   }
 
-  const contentFrom = mark.nextSibling?.from ?? mark.to;
   return computeListItemToParagraph(state, item, list, contentFrom);
+}
+
+/** How many characters of `text` the quote prefix at its start takes. */
+function quotePrefixLength(text: string): number {
+  return QUOTE_PREFIX.exec(text)?.[0].length ?? 0;
+}
+
+/** True when `node` sits inside a blockquote, at any distance. */
+function isQuoted(node: SyntaxNode): boolean {
+  for (let p: SyntaxNode | null = node.parent; p; p = p.parent) {
+    if (p.name === 'Blockquote') return true;
+  }
+  return false;
 }
 
 /** Nested list item (indentation > 0): outdent one level, keep it as a list item. */
@@ -200,14 +243,17 @@ function computeNestedOutdent(
   const startLineNo = state.doc.lineAt(item.from).number;
   const endLineNo = state.doc.lineAt(item.to).number;
   const changes: ChangeSpec[] = [];
+  // Inside a quote the indentation follows the `> ` prefix, which stays.
+  const quoted = isQuoted(item);
 
   // Strip `removeCount` leading whitespace characters from every line the
   // item spans, so multi-line continuation content travels with it.
   for (let n = startLineNo; n <= endLineNo; n++) {
     const ln = state.doc.line(n);
-    const leading = /^[ \t]*/.exec(ln.text)![0].length;
+    const skip = quoted ? quotePrefixLength(ln.text) : 0;
+    const leading = /^[ \t]*/.exec(ln.text.slice(skip))![0].length;
     const cut = Math.min(removeCount, leading);
-    if (cut > 0) changes.push({ from: ln.from, to: ln.from + cut, insert: '' });
+    if (cut > 0) changes.push({ from: ln.from + skip, to: ln.from + skip + cut, insert: '' });
   }
   if (changes.length === 0) return null;
 
@@ -241,8 +287,45 @@ function computeListItemToParagraph(
     changes.push({ from: item.to, to: item.to, insert: '\n' });
   }
 
-  const caret = ChangeSet.of(changes, state.doc.length).mapPos(contentFrom, -1);
-  return { changes, caret };
+  return { changes, caret: caretAfter(state, changes, contentFrom) };
+}
+
+/**
+ * Where the caret goes: after `contentFrom`, by as much as it was before. The
+ * two differ only when the caret stood past hidden opening markers, and those
+ * are outside every change here, so the offset between them survives.
+ */
+function caretAfter(state: EditorState, changes: ChangeSpec[], contentFrom: number): number {
+  const mapped = ChangeSet.of(changes, state.doc.length).mapPos(contentFrom, -1);
+  return mapped + (state.selection.main.head - contentFrom);
+}
+
+/**
+ * Item of a list directly inside a quote: strip the list marker and keep the
+ * quote. A neighbouring item gets a blank quote line (`>`) between them rather
+ * than a blank line, which would end the quote — and without any separator
+ * the paragraph would be a lazy continuation of the item above.
+ */
+function computeQuotedListItemToParagraph(
+  state: EditorState,
+  item: SyntaxNode,
+  list: SyntaxNode,
+  mark: SyntaxNode,
+  contentFrom: number
+): BlockFormatRemoval {
+  const siblings = list.getChildren('ListItem');
+  const idx = siblings.findIndex((n) => n.from === item.from && n.to === item.to);
+  const hasBefore = idx > 0;
+  const hasAfter = idx >= 0 && idx < siblings.length - 1;
+
+  const line = state.doc.lineAt(mark.from);
+  const blank = state.doc.sliceString(line.from, mark.from).trimEnd();
+  const changes: ChangeSpec[] = [];
+  if (hasBefore) changes.push({ from: line.from, to: line.from, insert: `${blank}\n` });
+  changes.push({ from: mark.from, to: contentFrom, insert: '' });
+  if (hasAfter) changes.push({ from: item.to, to: item.to, insert: `\n${blank}` });
+
+  return { changes, caret: caretAfter(state, changes, contentFrom) };
 }
 
 // ---------------------------------------------------------------------------
@@ -254,7 +337,7 @@ function computeQuoteRemoval(state: EditorState, pos: number, line: Line): Block
   if (!match) return null;
 
   const contentFrom = line.from + match[0].length;
-  if (contentFrom !== pos) return null;
+  if (!isContentStart(state, contentFrom, pos)) return null;
 
   // Guard against literal '>' text that isn't really a blockquote (e.g. inside
   // a fenced code block) — require an actual QuoteMark node in range.
@@ -288,10 +371,8 @@ function computeNestedQuoteOutdent(
   const changes: ChangeSpec[] = [
     { from: contentFrom - lastGroup.length, to: contentFrom, insert: '' },
   ];
-  const caret = ChangeSet.of(changes, state.doc.length).mapPos(
-    state.selection.main.head - lastGroup.length,
-    -1
-  );
+  // The caret is at or past the removed group; map it straight through.
+  const caret = ChangeSet.of(changes, state.doc.length).mapPos(state.selection.main.head, -1);
   return { changes, caret };
 }
 
@@ -313,6 +394,5 @@ function computeQuoteLineToParagraph(
     changes.push({ from: line.to, to: line.to, insert: '\n' });
   }
 
-  const caret = ChangeSet.of(changes, state.doc.length).mapPos(contentFrom, -1);
-  return { changes, caret };
+  return { changes, caret: caretAfter(state, changes, contentFrom) };
 }

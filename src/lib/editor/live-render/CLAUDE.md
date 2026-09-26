@@ -155,7 +155,25 @@ Both failure directions are bad, and both are quiet:
 Concrete cases that live in this seam: fenced-code fences are hidden with a
 zero-height *line* decoration, not a replace, so the text is really there and
 must **not** be atomic; the ordered-list marker is never replaced by any
-decorator; table cell contents are rendered by a separate path entirely.
+decorator; table cell contents are rendered by a separate path entirely; a
+table inside a blockquote is not decorated at all (its `>` are).
+
+Blockquotes are descended into, and their markers come from one shared
+function, `blockquoteLayout` (`../preview/lists.ts`), used by both sides. Its
+markers are merged when they touch, so `> > x` has **one** atomic range, not
+two — a boundary between them would be a caret stop at the same pixel where
+typing splits the quote. The same kind of stop still exists between a quote
+prefix and a hidden block marker after it (`> ## h` at offset 2, `> - a` at
+offset 2): the line-start stop a top-level heading or bullet already has, one
+level in. Merging those too would make one Backspace strip the heading *and*
+the quote.
+
+`block-format.ts` counts a caret past hidden *opening* markers as the start of
+the block's content (`isContentStart`): in `> **bold**` the caret the user sees
+before "b" is at 4, not at 2, and Backspace there used to fall through and
+delete the invisible space after `>`. A list item directly in a quote becomes a
+paragraph of that quote, with a `>` line — not a blank line — separating it
+from a neighbouring item.
 
 ### Backspace needs `Prec.highest`; Escape only needs `Prec.high`
 

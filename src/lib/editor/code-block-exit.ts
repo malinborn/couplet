@@ -179,6 +179,76 @@ export const exitCodeBlockOnEnter: Command = (view) => {
 };
 
 /**
+ * Enter inside a fenced code block that sits in a blockquote keeps the new
+ * line in the quote.
+ *
+ * Nothing else does: `@codemirror/lang-markdown`'s continuation bails out
+ * wherever the fence's own language is active (`isActiveAt`), and the plain
+ * newline it falls back to has no `> `. That line ends the quote, which closes
+ * the fence early and turns the rest of the block into a new, unterminated
+ * one — invisible as a cause once the quote and the fences are rendered.
+ *
+ * The prefix is the current line's own, exactly one level per enclosing quote
+ * (a deeper `>` is the code's text), plus the code's indentation. Returns null
+ * everywhere else, including on either fence line, so the default Enter keeps
+ * every other case.
+ *
+ * The two-Enter exit above does not fire inside a quote: a blank quoted line is
+ * `> `, not blank. ArrowDown still leaves the block.
+ */
+export function computeQuotedCodeNewline(state: EditorState): CodeBlockExit | null {
+  const sel = state.selection.main;
+  if (!sel.empty) return null;
+  const node = enclosingFence(state, sel.head);
+  if (!node) return null;
+
+  let depth = 0;
+  for (let p: SyntaxNode | null = node.parent; p; p = p.parent) {
+    if (p.name === 'Blockquote') depth++;
+  }
+  if (depth === 0) return null;
+
+  const doc = state.doc;
+  const line = doc.lineAt(sel.head);
+  if (line.number === doc.lineAt(node.from).number) return null;
+  const marks = node.getChildren('CodeMark');
+  if (marks.length >= 2 && line.number >= doc.lineAt(marks[marks.length - 1].from).number) {
+    return null;
+  }
+
+  const level = /^[ \t]*>[ \t]?/;
+  let prefixLength = 0;
+  for (let i = 0; i < depth; i++) {
+    const m = level.exec(line.text.slice(prefixLength));
+    if (!m) break;
+    prefixLength += m[0].length;
+  }
+  if (prefixLength === 0 || sel.head < line.from + prefixLength) return null;
+
+  let prefix = line.text.slice(0, prefixLength);
+  if (!/[ \t]$/.test(prefix)) prefix += ' ';
+  const indent = /^[ \t]*/.exec(line.text.slice(prefixLength))![0];
+  const insert = `\n${prefix}${indent}`;
+  return {
+    changes: [{ from: sel.head, insert }],
+    caret: sel.head + insert.length,
+  };
+}
+
+/** Enter in a quoted code block — see `computeQuotedCodeNewline`. */
+export const continueQuotedCode: Command = (view) => {
+  const result = computeQuotedCodeNewline(view.state);
+  if (!result) return false;
+  view.dispatch({
+    changes: result.changes,
+    selection: EditorSelection.cursor(result.caret),
+    userEvent: 'input',
+    scrollIntoView: true,
+  });
+  return true;
+};
+
+/**
  * `Prec.highest`, not `Prec.high` — the same rule `blockFormatKeymap` carries
  * for Backspace. Enter is in the view's `PendingKeys` table twice
  * (`insertParagraph`, `insertLineBreak`), so where that path is live the key is
@@ -196,7 +266,10 @@ export const exitCodeBlockOnEnter: Command = (view) => {
  * nothing, so it is not worth being clever about.
  */
 export const codeBlockExitKeymap: Extension = Prec.highest(
-  keymap.of([{ key: 'Enter', run: exitCodeBlockOnEnter }])
+  keymap.of([
+    { key: 'Enter', run: exitCodeBlockOnEnter },
+    { key: 'Enter', run: continueQuotedCode },
+  ])
 );
 
 // ---------------------------------------------------------------------------
