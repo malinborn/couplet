@@ -322,6 +322,32 @@ pub(crate) fn label_order(label: &str) -> (u8, u32) {
     (1, n)
 }
 
+/// The windows of the previous session nobody has restored yet — still in
+/// `pending`, or taken by a restore that has not seeded them — that hold an
+/// untitled draft. `snapshot` writes them after the live windows.
+///
+/// Restoring is opt-in, so a launch may never restore; without these, the
+/// file it writes stops naming their drafts and the next launch's GC takes
+/// them (the 2026-09-26 loss, stash-01 plan). A window of file tabs only is
+/// not carried: its files are on disk, and carrying it would grow the restore
+/// offer with every launch. A window with any live tab has been seeded by a
+/// restore and is written as that live window, never twice.
+fn unrestored_draft_windows<'a>(
+    live: &[WindowSnapshot],
+    waiting: impl Iterator<Item = &'a WindowSnapshot>,
+) -> Vec<WindowSnapshot> {
+    let live_ids: HashSet<&str> = live
+        .iter()
+        .flat_map(|w| w.tabs.iter())
+        .map(|t| t.tab_id.as_str())
+        .collect();
+    waiting
+        .filter(|w| w.tabs.iter().any(|t| t.path.is_none() && t.untitled.is_some()))
+        .filter(|w| !w.tabs.iter().any(|t| live_ids.contains(t.tab_id.as_str())))
+        .map(WindowSnapshot::normalized)
+        .collect()
+}
+
 /// The live session plus whatever was loaded from disk at startup.
 pub struct SessionState {
     entries: Mutex<HashMap<String, WindowSnapshot>>,
@@ -532,14 +558,23 @@ impl SessionState {
         self.entries.lock().unwrap().get(label).cloned()
     }
 
+    /// The session to write: the live windows (main first), then the
+    /// un-restored ones that hold drafts (`unrestored_draft_windows`).
     pub fn snapshot(&self, saved_at: u64) -> Session {
+        // entries → pending → restoring: the one lock order (`referenced_untitled`).
         let map = self.entries.lock().unwrap();
+        let pending = self.pending.lock().unwrap();
+        let restoring = self.restoring.lock().unwrap();
         let mut labelled: Vec<(&String, &WindowSnapshot)> = map.iter().collect();
         labelled.sort_by_key(|(label, _)| label_order(label));
+        let mut windows: Vec<WindowSnapshot> =
+            labelled.into_iter().map(|(_, w)| w.normalized()).collect();
+        let carried = unrestored_draft_windows(&windows, pending.iter().chain(restoring.iter()));
+        windows.extend(carried);
         Session {
             version: SESSION_VERSION,
             saved_at,
-            windows: labelled.into_iter().map(|(_, w)| w.normalized()).collect(),
+            windows,
         }
     }
 
@@ -575,10 +610,10 @@ impl SessionState {
     /// Sidecar file names referenced by any tab of the live session, the
     /// restore still on offer, or the restore being opened right now.
     ///
-    /// All of them matter. At startup the live session is deliberately empty — so
-    /// that the first write of the new run supersedes the file — while `pending`
+    /// All of them matter. At startup the live session is empty while `pending`
     /// still holds the previous run's windows. Collecting only the live half makes
-    /// the ticker delete exactly the unsaved buffers the user is about to reopen.
+    /// the ticker trash exactly the unsaved buffers the user is about to reopen.
+    /// This protects them for this run; `snapshot` carries them to the next one.
     pub fn referenced_untitled(&self) -> HashSet<String> {
         // All three locks at once, in the one order used everywhere
         // (entries → pending → restoring): read one at a time, a window could be
@@ -1373,8 +1408,87 @@ mod tests {
         // the very buffer the user was about to reopen.
         let state = SessionState::new();
         state.set_pending(vec![window(vec![untitled_tab("m", "untitled-main.md")])]);
-        assert!(state.snapshot(0).windows.is_empty(), "live session is empty");
+        assert!(state.snapshot_for("main").is_none(), "no live window holds it");
         assert!(state.referenced_untitled().contains("untitled-main.md"));
+    }
+
+    #[test]
+    fn a_session_written_before_the_restore_still_names_its_drafts() {
+        let state = SessionState::new();
+        state.set_pending(vec![window(vec![untitled_tab("plans", "draft-plans.md")])]);
+        state.set_tabs("main", vec![tab("blank", None)], Some("blank".to_string()));
+        let written = state.snapshot(1);
+        assert_eq!(written.windows.len(), 2, "main, then the window nobody restored");
+        assert_eq!(written.windows[1].tabs[0].untitled.as_deref(), Some("draft-plans.md"));
+    }
+
+    #[test]
+    fn upgrade_then_language_restart_before_a_restore_keeps_the_draft() {
+        // 2026-09-26: `brew upgrade` 2.0.0 -> 2.0.1. 2.0.1's first run held
+        // 2.0.0's session in `pending`; nobody restored it (the welcome window
+        // was in front); 18 s later a language switch restarted the app, and
+        // the restarted process's first tick deleted the draft.
+        let dir = scratch_dir("incident");
+        std::fs::write(dir.join("draft-plans.md"), "- [ ] plans").unwrap();
+
+        let first = SessionState::new();
+        first.set_pending(vec![window(vec![untitled_tab("plans", "draft-plans.md")])]);
+        first.set_tabs("main", vec![tab("blank", None)], Some("blank".to_string()));
+        first.set_tabs(
+            "editor-1",
+            vec![tab("welcome", Some("/tmp/welcome-2.0.1-en.md"))],
+            Some("welcome".to_string()),
+        );
+        prune_untitled_files_in(&dir, &first.referenced_untitled(), 1);
+        // What the first tick, the quit and the language restart all write.
+        let on_disk = serde_json::to_string(&first.snapshot(1)).unwrap();
+
+        let second = SessionState::new();
+        second.set_pending(parse_session(&on_disk).expect("parses").windows);
+        second.set_tabs("main", vec![tab("blank-2", None)], Some("blank-2".to_string()));
+        prune_untitled_files_in(&dir, &second.referenced_untitled(), 2);
+
+        assert_eq!(std::fs::read_to_string(dir.join("draft-plans.md")).unwrap(), "- [ ] plans");
+        assert!(files_in(&dir.join(".trash")).is_empty(), "nothing was thrown away");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_window_the_restore_has_not_reached_yet_is_still_written() {
+        let state = SessionState::new();
+        state.set_pending(vec![window(vec![untitled_tab("u", "draft-u.md")])]);
+        let _taken = state.take_pending();
+        let written = state.snapshot(0);
+        assert_eq!(written.windows.len(), 1, "a quit mid-restore keeps it");
+        assert_eq!(written.windows[0].tabs[0].untitled.as_deref(), Some("draft-u.md"));
+    }
+
+    #[test]
+    fn a_quit_writes_the_unrestored_draft_windows_too() {
+        // `save_session_on_exit` skips an empty snapshot; a launch whose only
+        // window of value is an un-restored draft must not look empty.
+        let state = SessionState::new();
+        state.set_pending(vec![window(vec![untitled_tab("u", "draft-u.md")])]);
+        state.mark_quitting();
+        assert_eq!(state.snapshot(0).windows.len(), 1);
+    }
+
+    #[test]
+    fn a_restored_window_is_written_once_as_the_live_window() {
+        let state = SessionState::new();
+        state.set_pending(vec![window(vec![untitled_tab("u", "draft-u.md")])]);
+        let taken = state.take_pending();
+        state.seed("editor-1", taken[0].clone());
+        assert_eq!(state.snapshot(0).windows.len(), 1, "seeded, not also carried");
+        state.finish_restore();
+        assert_eq!(state.snapshot(0).windows.len(), 1);
+    }
+
+    #[test]
+    fn an_unrestored_window_of_files_only_is_not_carried() {
+        let state = SessionState::new();
+        state.set_pending(vec![window(vec![tab("a", Some("/tmp/a.md"))])]);
+        assert!(state.snapshot(0).windows.is_empty(), "its files are on disk");
     }
 
     #[test]
