@@ -1,8 +1,15 @@
 import { EditorView, type ViewUpdate } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import type { EditorState, Line } from '@codemirror/state';
+import { insideBlockquote } from './lists';
 
-function findContainingTable(
+/**
+ * The rendered table whose lines include `line`, or null.
+ *
+ * A table inside a blockquote is not rendered (`plugin.ts` leaves it raw), so
+ * its rows are ordinary visible lines and must not be snapped out of.
+ */
+export function findContainingTable(
   state: EditorState,
   line: Line
 ): { from: number; to: number } | null {
@@ -16,7 +23,7 @@ function findContainingTable(
         node.from <= line.from &&
         node.to >= line.to
       ) {
-        result = { from: node.from, to: node.to };
+        if (!insideBlockquote(node.node)) result = { from: node.from, to: node.to };
         return false;
       }
       return undefined;

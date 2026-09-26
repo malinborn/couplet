@@ -181,6 +181,49 @@ function sourceIndentRange(doc: Text, markFrom: number): { from: number; to: num
   return { from: line.from + start, to: markFrom };
 }
 
+/**
+ * Continuation lines of a quote that sits in this item (`- > x` / `  > y`).
+ *
+ * The first line lays out as [collapsed indent][marker box][space][text]; the
+ * continuation line carries the same characters as whitespace — indent under
+ * the indent, spaces under the marker, a space under the space. Giving them the
+ * same treatment (depth padding, collapsed indent, a marker-sized box) puts the
+ * second line's text on the first line's column. The `> ` itself is hidden by
+ * `blockquoteLayout`, which leaves this indent alone inside a list item.
+ *
+ * Only quotes: an ordinary paragraph continuation (`- a` / `  b`) keeps its
+ * layout, which is a separate decision about every list in every document.
+ */
+function alignQuoteContinuation(
+  doc: Text,
+  item: SyntaxNode,
+  listMark: SyntaxNode,
+  depth: number,
+  indentFrom: number,
+  builder: DecoSink
+): void {
+  const first = doc.lineAt(item.from);
+  const lead = indentFrom - first.from; // where the collapsed indent starts
+  const indentLength = listMark.from - indentFrom;
+  const markLength = listMark.to - listMark.from;
+  const columns = listMarkColumns(item, doc);
+
+  for (const quote of item.getChildren('Blockquote')) {
+    const last = doc.lineAt(quote.to).number;
+    for (let n = doc.lineAt(quote.from).number + 1; n <= last; n++) {
+      if (n <= first.number) continue;
+      const line = doc.line(n);
+      const from = line.from + lead;
+      const to = from + indentLength + markLength;
+      if (to > line.to || !/^[ \t]*$/.test(doc.sliceString(from, to))) continue;
+      if (!/^[ \t]*$/.test(doc.sliceString(line.from, from))) continue;
+      if (depth > 1) builder.add(line.from, line.from, depthLines[depth]);
+      if (indentLength > 0) builder.add(from, from + indentLength, indentMark);
+      builder.add(from + indentLength, to, markBoxes[columns]);
+    }
+  }
+}
+
 export function decorateListItem(
   view: EditorView,
   node: SyntaxNode,
@@ -204,6 +247,9 @@ export function decorateListItem(
   const afterMark = doc.sliceString(listMark.to, Math.min(listMark.to + 5, doc.length));
 
   const checkboxMatch = afterMark.match(/^\s\[([x ])\]/);
+  if (!checkboxMatch) {
+    alignQuoteContinuation(doc, node, listMark, depth, indent.from, builder);
+  }
   if (checkboxMatch) {
     // Always show checkbox widget — even when cursor is on this line
     const isChecked = checkboxMatch[1] === 'x';
@@ -273,15 +319,32 @@ export interface BlockquoteLayout {
 
 /**
  * One marker's hidden range: the `>`, the single space or tab after it, and —
- * when only indentation precedes it on its line — that indentation too, as the
- * old per-line `^\s*>\s?` did for the first marker of a line.
+ * when only indentation precedes it on its line and `hideIndent` — that
+ * indentation too, as the old per-line `^\s*>\s?` did.
+ *
+ * `hideIndent` is false for a quote inside a list item: there the indentation
+ * is the item's continuation indent, and hiding it put the second line's text
+ * at the line edge while the first line's sat after the bullet.
  */
-function quoteMarkHiddenRange(doc: Text, from: number, to: number): { from: number; to: number } {
+function quoteMarkHiddenRange(
+  doc: Text,
+  from: number,
+  to: number,
+  hideIndent: boolean
+): { from: number; to: number } {
   const line = doc.lineAt(from);
   const next = doc.sliceString(to, Math.min(to + 1, line.to));
   const end = next === ' ' || next === '\t' ? to + 1 : to;
-  const start = /^[ \t]*$/.test(doc.sliceString(line.from, from)) ? line.from : from;
+  const start =
+    hideIndent && /^[ \t]*$/.test(doc.sliceString(line.from, from)) ? line.from : from;
   return { from: start, to: end };
+}
+
+function insideListItem(node: SyntaxNode): boolean {
+  for (let p: SyntaxNode | null = node.parent; p; p = p.parent) {
+    if (p.name === 'ListItem') return true;
+  }
+  return false;
 }
 
 /**
@@ -298,12 +361,13 @@ export function blockquoteLayout(doc: Text, quote: SyntaxNode): BlockquoteLayout
   const firstLine = doc.lineAt(quote.from).number;
   const depths = new Array<number>(doc.lineAt(quote.to).number - firstLine + 1).fill(1);
   const marks: { from: number; to: number }[] = [];
+  const hideIndent = !insideListItem(quote);
 
   let depth = 0;
   quote.cursor().iterate(
     (node) => {
       if (node.name === 'QuoteMark') {
-        marks.push(quoteMarkHiddenRange(doc, node.from, node.to));
+        marks.push(quoteMarkHiddenRange(doc, node.from, node.to, hideIndent));
         return;
       }
       if (node.name !== 'Blockquote') return;

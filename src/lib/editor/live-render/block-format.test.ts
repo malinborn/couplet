@@ -188,6 +188,14 @@ describe('computeBlockFormatRemoval — lists inside a blockquote', () => {
     expect(apply('> - **b**\n', 6)).toEqual({ doc: '> **b**\n', caret: 4 });
   });
 
+  it('QuoteInsideListItem_SeparatorUsesTheContinuationPrefix_NotTheOuterMarker', () => {
+    // "- > - a\n  > - b": the quote sits in an outer list item. The blank
+    // quote line must continue that item ("  >"), not repeat "- >", which
+    // would open a new outer item.
+    expect(apply('- > - a\n  > - b\n', 6)).toEqual({ doc: '- > a\n  >\n  > - b\n', caret: 4 });
+    expect(apply('1. > - a\n   > - b\n', 7)).toEqual({ doc: '1. > a\n   >\n   > - b\n', caret: 5 });
+  });
+
   it('ItemInsideNestedQuote_KeepsBothQuoteLevels', () => {
     expect(apply('> > - a\n', 6)).toEqual({ doc: '> > a\n', caret: 4 });
   });

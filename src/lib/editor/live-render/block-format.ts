@@ -10,7 +10,7 @@ import {
 } from '@codemirror/state';
 import { keymap, type Command } from '@codemirror/view';
 import type { SyntaxNode } from '@lezer/common';
-import { markupPairs } from './atomic';
+import { markupModelField, markupPairs } from './atomic';
 
 /**
  * Backspace-strips-block-format for live-render mode (Notion behaviour):
@@ -77,10 +77,18 @@ export interface BlockFormatRemoval {
  * default command, which deleted the hidden space after `>` (or after `-`) —
  * nothing changed on screen, and the list or quote was quietly broken.
  */
+// The first character of every opening marker a pair can have.
+const OPENING_MARKER_CHARS = '*_~`[';
+
 function isContentStart(state: EditorState, contentFrom: number, pos: number): boolean {
   if (pos === contentFrom) return true;
   if (pos < contentFrom) return false;
-  const pairs = markupPairs(state);
+  // Cheap bail-out first: Backspace runs this on every press, and the pairs
+  // cost a whole-tree walk when live-render's cached model is not installed.
+  if (!OPENING_MARKER_CHARS.includes(state.doc.sliceString(contentFrom, contentFrom + 1))) {
+    return false;
+  }
+  const pairs = state.field(markupModelField, false)?.pairs ?? markupPairs(state);
   let at = contentFrom;
   for (let guard = 0; guard < 8; guard++) {
     const open = pairs.find((p) => p.openFrom === at);
@@ -319,7 +327,13 @@ function computeQuotedListItemToParagraph(
   const hasAfter = idx >= 0 && idx < siblings.length - 1;
 
   const line = state.doc.lineAt(mark.from);
-  const blank = state.doc.sliceString(line.from, mark.from).trimEnd();
+  // The prefix as a *continuation* line would carry it: an outer list marker
+  // in front of the quote (`- > - a`) becomes the indent that continues its
+  // item, or the separator line would open a new outer item.
+  const blank = state.doc
+    .sliceString(line.from, mark.from)
+    .replace(/[^>\s]/g, ' ')
+    .trimEnd();
   const changes: ChangeSpec[] = [];
   if (hasBefore) changes.push({ from: line.from, to: line.from, insert: `${blank}\n` });
   changes.push({ from: mark.from, to: contentFrom, insert: '' });

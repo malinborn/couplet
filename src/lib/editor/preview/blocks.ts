@@ -122,35 +122,37 @@ export function decorateFencedCode(
   const langMatch = fenceText.match(/^`{3,}(\w+)/);
   const language = langMatch ? langMatch[1] : '';
 
+  // The closing fence is the line of the last CodeMark, and only when there
+  // are two: an unterminated fence has one, runs to the end of its container,
+  // and its last line is content — usually the line being typed. Reading the
+  // closing line from `node.to` hid that line.
+  const marks = node.getChildren('CodeMark');
+  const closeLineNum = marks.length >= 2 ? doc.lineAt(marks[marks.length - 1].from).number : null;
+
   // Content range: lines between the fence markers (exclusive)
   const firstContentLineNum = startLine.number + 1;
-  const lastContentLineNum = endLine.number - 1;
+  const lastContentLineNum = closeLineNum !== null ? closeLineNum - 1 : endLine.number;
   const hasContent = firstContentLineNum <= lastContentLineNum;
 
   const codeFrom = hasContent ? doc.line(firstContentLineNum).from : startLine.to;
   const codeTo = hasContent ? doc.line(lastContentLineNum).to : startLine.to;
 
-  // Collect all line numbers in this code block
-  const totalLines = endLine.number - startLine.number + 1;
-
   for (let i = startLine.number; i <= endLine.number; i++) {
     const line = doc.line(i);
     const isFirst = i === startLine.number;
-    const isLast = i === endLine.number;
+    const isLast = i === closeLineNum;
 
     if (isFirst || isLast) {
       // Hide opening and closing fence lines via CSS
       builder.add(line.from, line.from, Decoration.line({ class: 'cm-md-code-fence-hidden' }));
     } else {
-      // Code content lines — apply background + optional radius classes
-      const isFirstCode = i === startLine.number + 1;
-      const isLastCode = i === endLine.number - 1;
+      // Code content lines — apply background + radius classes on the ends
+      const isFirstCode = i === firstContentLineNum;
+      const isLastCode = i === lastContentLineNum;
 
       let cls = 'cm-md-code-line';
-      if (isFirstCode && totalLines > 2) cls += ' cm-md-code-block-start';
-      if (isLastCode && totalLines > 2) cls += ' cm-md-code-block-end';
-      // Single-line code block (only content between fences)
-      if (totalLines === 3 && isFirstCode) cls = 'cm-md-code-line cm-md-code-block-start cm-md-code-block-end';
+      if (isFirstCode) cls += ' cm-md-code-block-start';
+      if (isLastCode) cls += ' cm-md-code-block-end';
 
       // Line decoration FIRST (lower startSide), then widget
       builder.add(line.from, line.from, Decoration.line({ class: cls }));

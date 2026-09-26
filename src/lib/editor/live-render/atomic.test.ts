@@ -168,6 +168,15 @@ describe('hiddenMarkRanges — nested and adjacent formatting', () => {
     ]);
   });
 
+  it('a quote inside a list item leaves the continuation indent visible, not atomic', () => {
+    // "- > x\n  > y": bullet [0,1), `> ` [2,4); line 2 hides only `> ` at [8,10).
+    expect(spans('- > x\n  > y\n')).toEqual([
+      [0, 1],
+      [2, 4],
+      [8, 10],
+    ]);
+  });
+
   it('inline markers inside a quote are hidden like anywhere else', () => {
     // "> a **b** `c`" — the quote prefix, then the pairs of the paragraph.
     expect(spans('> a **b** `c`\n')).toEqual([

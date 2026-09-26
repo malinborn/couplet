@@ -216,8 +216,33 @@ describe('computeQuotedCodeNewline — Enter in a code block inside a quote', ()
     expect(enter(nested, at(nested, 2, 7))).toBe(['> > ```', '> > > x', '> > |', '> > ```'].join('\n'));
   });
 
-  it('declines on the fence lines and outside quotes', () => {
+  // In live-render the line start is a legal caret stop (Home, or ArrowLeft
+  // over the hidden prefix). A bare newline there ended the quote.
+  it('at the line start, before the hidden prefix, adds a prefixed line above', () => {
+    expect(enter(doc, at(doc, 2, 0))).toBe(
+      ['> ```js', '>', '|> a1', '>   b2', '> ```', '> after'].join('\n')
+    );
+    expect(enter(doc, at(doc, 2, 1))).toBe(
+      ['> ```js', '>', '>| a1', '>   b2', '> ```', '> after'].join('\n')
+    );
+    expect(enter(doc, at(doc, 4, 0))).toBe(
+      ['> ```js', '> a1', '>   b2', '>', '|> ```', '> after'].join('\n')
+    );
+    const nested = ['> > ```', '> > x', '> > ```'].join('\n');
+    expect(enter(nested, at(nested, 2, 0))).toBe(['> > ```', '> >', '|> > x', '> > ```'].join('\n'));
+  });
+
+  it('continues the prefix when the opening fence line is split', () => {
+    expect(enter(doc, at(doc, 1, 6))).toBe(['> ```j', '> |s', '> a1', '>   b2', '> ```', '> after'].join('\n'));
+  });
+
+  it('leaves the end of the opening fence line to the fence auto-close', () => {
     expect(enter(doc, at(doc, 1, 7))).toBeNull();
+    const open = '> ```js';
+    expect(enter(open, open.length)).toBeNull();
+  });
+
+  it('declines on the fence lines and outside quotes', () => {
     expect(enter(doc, at(doc, 4, 5))).toBeNull();
     const plain = ['```js', 'a1', '```'].join('\n');
     expect(enter(plain, at(plain, 2, 2))).toBeNull();

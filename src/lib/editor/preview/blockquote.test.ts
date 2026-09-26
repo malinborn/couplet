@@ -104,6 +104,43 @@ describe('blockquote contents are rendered', () => {
         expect(hiddenText(tight, decorations(tight, flavour, AWAY))).toEqual(['>> ', '>\t']);
       });
 
+      it('keeps the list indent of a quote inside a list item, hiding only `> `', () => {
+        // `- > x\n  > y`: the two spaces are the list item's continuation
+        // indent. Hiding them put `y` at the line edge while `x` sat after
+        // the bullet.
+        const inList = 'p\n\n- > x\n  > y';
+        expect(hiddenText(inList, decorations(inList, flavour, AWAY)).filter((t) => t.includes('>'))).toEqual([
+          '> ',
+          '> ',
+        ]);
+        const second = decorations(inList, flavour, AWAY).filter(
+          (r) => r.kind === 'replace' && r.from > inList.indexOf('x')
+        );
+        expect(second.map((r) => r.from)).toEqual([inList.lastIndexOf('>')]);
+      });
+
+      // The first line lays out as [marker box][space][text]; the continuation
+      // line gets the same box over the indent under the marker, so its text
+      // starts on the same column.
+      it('boxes the continuation indent like the marker, so the quote text aligns', () => {
+        const inList = 'p\n\n- > x\n  > y';
+        const line2 = inList.indexOf('  > y');
+        const rows = decorations(inList, flavour, AWAY).filter((r) => r.from >= line2);
+        expect(rows).toContainEqual({ from: line2, to: line2 + 1, kind: 'mark:cm-md-list-mark cm-md-list-mark-w2' });
+
+        const nested = 'p\n\n- a\n  - > x\n    > y';
+        const n2 = nested.indexOf('    > y');
+        const nestedRows = decorations(nested, flavour, AWAY).filter((r) => r.from >= n2);
+        expect(nestedRows).toContainEqual({ from: n2, to: n2, kind: 'line:cm-md-list-d2' });
+        expect(nestedRows).toContainEqual({ from: n2, to: n2 + 2, kind: 'mark:cm-md-list-indent' });
+        expect(nestedRows).toContainEqual({ from: n2 + 2, to: n2 + 3, kind: 'mark:cm-md-list-mark cm-md-list-mark-w2' });
+      });
+
+      it('still hides the indentation before a top-level quote marker', () => {
+        const indented = 'p\n\n  > x';
+        expect(hiddenText(indented, decorations(indented, flavour, AWAY))).toEqual(['  > ']);
+      });
+
       it('gives a lazy continuation line the quote style', () => {
         const lazy = 'p\n\n> a\nlazy';
         expect(quoteLines(lazy, decorations(lazy, flavour, AWAY))).toEqual({
@@ -187,6 +224,26 @@ describe('a fenced code block inside a quote', () => {
     expect(kinds.some((k) => k.includes('cm-md-code-line'))).toBe(true);
     expect(kinds).toContain('widget:CodeBlockHeaderWidget');
     expect(hiddenText(doc, rows)).toEqual(['> ', '> ', '> ']);
+  });
+
+  // An unterminated fence runs to the end of the quote: it has no closing
+  // line, and the last line is the one being typed. Inside a quote that is
+  // the normal state while writing the block.
+  it('does not hide the last content line of an unterminated fence', () => {
+    const open = 'p\n\n> ```js\n> typed';
+    const rows = decorations(open, LIVE_RENDER, AWAY);
+    const fenceHidden = rows.filter((r) => r.kind.includes('cm-md-code-fence-hidden'));
+    expect(fenceHidden.map((r) => open.slice(r.from, open.indexOf('\n', r.from) + 1 || undefined))).toEqual([
+      '> ```js\n',
+    ]);
+    expect(rows.some((r) => r.kind.includes('cm-md-code-line') && r.from === open.indexOf('> typed'))).toBe(true);
+  });
+
+  it('does not hide the last line of an unterminated fence outside a quote either', () => {
+    const open = 'p\n\n```js\ntyped';
+    const rows = decorations(open, LIVE_RENDER, AWAY);
+    expect(rows.filter((r) => r.kind.includes('cm-md-code-fence-hidden'))).toHaveLength(1);
+    expect(rows.some((r) => r.kind.includes('cm-md-code-line') && r.from === open.indexOf('typed'))).toBe(true);
   });
 
   it('never becomes a mermaid diagram — its source would carry the prefixes', () => {

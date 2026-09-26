@@ -9,6 +9,7 @@ import {
 } from '@codemirror/state';
 import { keymap, type Command, type EditorView } from '@codemirror/view';
 import type { SyntaxNode } from '@lezer/common';
+import { computeFenceAutoClose } from './autocomplete';
 
 /**
  * Getting *out* of a fenced code block with the keyboard (#52).
@@ -189,9 +190,10 @@ export const exitCodeBlockOnEnter: Command = (view) => {
  * one — invisible as a cause once the quote and the fences are rendered.
  *
  * The prefix is the current line's own, exactly one level per enclosing quote
- * (a deeper `>` is the code's text), plus the code's indentation. Returns null
- * everywhere else, including on either fence line, so the default Enter keeps
- * every other case.
+ * (a deeper `>` is the code's text), plus the code's indentation. With the
+ * caret at or before the end of the prefix, a prefixed line is opened above
+ * instead. Returns null on the closing fence line and at the end of the opening
+ * one (the fence auto-close owns that), so the default Enter keeps those.
  *
  * The two-Enter exit above does not fire inside a quote: a blank quoted line is
  * `> `, not blank. ArrowDown still leaves the block.
@@ -210,11 +212,6 @@ export function computeQuotedCodeNewline(state: EditorState): CodeBlockExit | nu
 
   const doc = state.doc;
   const line = doc.lineAt(sel.head);
-  if (line.number === doc.lineAt(node.from).number) return null;
-  const marks = node.getChildren('CodeMark');
-  if (marks.length >= 2 && line.number >= doc.lineAt(marks[marks.length - 1].from).number) {
-    return null;
-  }
 
   const level = /^[ \t]*>[ \t]?/;
   let prefixLength = 0;
@@ -223,11 +220,31 @@ export function computeQuotedCodeNewline(state: EditorState): CodeBlockExit | nu
     if (!m) break;
     prefixLength += m[0].length;
   }
-  if (prefixLength === 0 || sel.head < line.from + prefixLength) return null;
+  if (prefixLength === 0) return null;
+  const head = sel.head;
+
+  // At or inside the prefix — the line start is a legal caret stop in
+  // live-render (Home, ArrowLeft over the hidden `> `). A bare newline there
+  // leaves a line without `>`, which ends the quote and the fence with it, so
+  // open a prefixed line above instead and keep the caret where it was.
+  if (head <= line.from + prefixLength) {
+    const insert = `${line.text.slice(0, prefixLength).trimEnd()}\n`;
+    return { changes: [{ from: line.from, insert }], caret: head + insert.length };
+  }
+
+  const opening = line.number === doc.lineAt(node.from).number;
+  // The end of the opening fence line belongs to the fence auto-close
+  // (`autocomplete.ts`), which knows about the quote prefix too.
+  if (opening && computeFenceAutoClose(line.text, head - line.from)) return null;
+  const marks = node.getChildren('CodeMark');
+  if (marks.length >= 2 && line.number >= doc.lineAt(marks[marks.length - 1].from).number) {
+    return null;
+  }
 
   let prefix = line.text.slice(0, prefixLength);
   if (!/[ \t]$/.test(prefix)) prefix += ' ';
-  const indent = /^[ \t]*/.exec(line.text.slice(prefixLength))![0];
+  // The code's indentation carries over; the fence line's does not.
+  const indent = opening ? '' : /^[ \t]*/.exec(line.text.slice(prefixLength))![0];
   const insert = `\n${prefix}${indent}`;
   return {
     changes: [{ from: sel.head, insert }],

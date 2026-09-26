@@ -64,6 +64,20 @@ checkboxes, headings, HR, fenced code. Four facts that are easy to break:
   an ordinary code block). The quote markers on those lines are still hidden.
   A quoted code block's language is read from the fence, not the line, and
   Copy strips exactly one `>` level per enclosing quote (`stripQuotePrefix`).
+  `table-selection.ts` skips quoted tables too — their rows are visible text,
+  and snapping the caret off them made the body uneditable.
+- **A quote inside a list item keeps the item's indent.** On `  > y` the two
+  spaces are the item's continuation indent: only `> ` is hidden, and
+  `alignQuoteContinuation` (`lists.ts`) boxes the indent the way the first
+  line boxes the marker, so both lines start on one column. A plain paragraph
+  continuation (`- a` / `  b`) is not aligned — that is a separate decision.
+- **An unterminated fence has no closing line.** The closing fence is the line
+  of the *second* `CodeMark`; with one, the last line is content (usually the
+  one being typed — inside a quote a fence is unterminated until it is closed).
+- **Enter in a quoted fence keeps the `> `** (`code-block-exit.ts`
+  `computeQuotedCodeNewline`, including at the line start, which live-render
+  reaches with Home), and the fence auto-close carries the prefix onto both
+  lines it adds (`autocomplete.ts` `computeFenceAutoClose`).
 
 CSS: the first bar is the line's border, deeper bars are one `::before`
 repeated with `box-shadow`, not a `background-image` — a heading in a quote
