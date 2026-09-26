@@ -142,8 +142,9 @@ kbd { font-family: var(--ui); font-size: 10.5px; color: var(--text-muted); lette
   box-shadow: 0 0 0 0.5px rgba(0,0,0,.28), 0 28px 70px rgba(var(--shadow-rgb), calc(var(--shadow-a) * 2.4)), 0 6px 18px rgba(var(--shadow-rgb), var(--shadow-a));
 }
 :root[data-theme$='dark'] .win { box-shadow: 0 0 0 0.5px rgba(0,0,0,.6), inset 0 0 0 0.5px rgba(255,255,255,.07), 0 28px 70px rgba(0,0,0,.55); }
-#win1 { left: 40px; top: 48px; width: min(1180px, calc(100vw - 380px)); height: min(760px, calc(100vh - 88px)); z-index: 10; transition: width .4s var(--ease); }
+#win1 { left: 40px; top: 48px; width: min(1180px, calc(100vw - 380px)); height: min(760px, calc(100vh - 88px)); z-index: 10; transition: width .4s var(--ease), left .4s var(--ease); }
 #win1.narrow-demo { width: 720px; }
+#win1.xnarrow-demo { width: 560px; }
 .titlebar {
   flex: 0 0 38px; position: relative; display: flex; align-items: center; padding: 0 14px;
   background: var(--bg-base); border-bottom: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
@@ -723,27 +724,29 @@ body.compact .card-path { display: none; }
 .stash-open .drawer:not(.focused) .drawer-title .type-hint, .stash-open .drawer:not(.focused) .drawer-title .sel-hint { display: none; }
 .stash-open .drawer:not(.focused) .drawer-title .focus-hint { display: block; }
 
-/* Narrow window (content < 960px, see NARROW_AT): the stash is a second layer
-   over the tabs drawer. Focus on the stash → it covers the tabs drawer, which
-   peeks 56px at the left; focus on the tabs → the stash slides back to a 44px
-   strip on the right edge. */
-.drawer-cover { position: absolute; inset: 0; z-index: 7; display: none; border-radius: inherit; cursor: pointer; background: color-mix(in oklab, var(--bg-surface) 35%, transparent); }
-.narrow.stash-open.focus-stash .drawer-cover { display: block; }
-.drawer-cover.drop-hot { background: color-mix(in oklab, var(--brand-a) 16%, transparent); }
-.narrow .stash-wrap { width: calc(100% - 56px); }
-.narrow .drawer-title b { white-space: nowrap; }
-.narrow.stash-open.focus-tabs .stash-wrap { transform: translateX(calc(100% - 44px)); }
-.stash-peek {
-  position: absolute; left: 0; top: 0; bottom: 0; width: 44px; z-index: 9; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
-  cursor: pointer; border-radius: 14px 0 0 14px; opacity: 0; pointer-events: none; transition: opacity .2s;
+/* Narrow window (content < 960px, see NARROW_AT): the drawers never overlap — they
+   squeeze together. With the stash open each takes (100% − 40px) / 2, capped at its
+   normal width and never under 320px; the 40px gap keeps the tabs notch visible between
+   them. Both switch to compact cards (the View → Tabs → Compact look). If even 2 × 320 +
+   40 = 680px does not fit, the window itself widens while the stash is open (MIN_BOTH). */
+.drawer-wrap { transition: transform .34s var(--ease), width .34s var(--ease); }
+.narrow.stash-open {
+  --dw: min(420px, max(320px, calc((100% - 40px) / 2)));
+  --sw: min(400px, max(320px, calc((100% - 40px) / 2)));
 }
-.stash-peek svg { width: 16px; height: 16px; color: var(--stash); }
-.stash-peek span { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 11.5px; color: var(--text-subtle); white-space: nowrap; }
-.stash-peek span b { color: var(--text-primary); font-weight: 600; }
-.narrow.stash-open.focus-tabs .stash-peek { opacity: 1; pointer-events: auto; }
-.stash-drawer > .drawer-head, .stash-drawer > .search, .stash-drawer > .tab-list, .stash-drawer > .st-foot { transition: opacity .2s; }
-.narrow.stash-open.focus-tabs .stash-drawer > .drawer-head, .narrow.stash-open.focus-tabs .stash-drawer > .search,
-.narrow.stash-open.focus-tabs .stash-drawer > .tab-list, .narrow.stash-open.focus-tabs .stash-drawer > .st-foot { opacity: 0 !important; pointer-events: none; }
+.narrow .drawer-title b { white-space: nowrap; }
+.narrow.stash-open .sorts .lbl, .narrow.stash-open .sorts kbd { display: none; }
+.narrow.stash-open .card { padding: 7px 10px 7px 16px; margin-bottom: 4px; border-radius: 9px; }
+.narrow.stash-open .card::before { top: 8px; bottom: 8px; }
+.narrow.stash-open .card-meta, .narrow.stash-open .card-path { display: none; }
+.narrow.stash-open .card-name { flex: 0 1 auto; max-width: 68%; font-size: 13px; }
+.narrow.stash-open .card-imeta { display: block; flex: 1 1 0; min-width: 0; font-size: 11.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.narrow.stash-open .card-imeta .br { font-family: var(--font-code); font-size: 10.5px; }
+.narrow.stash-open .card-preview, .narrow.stash-open .card.expanded .card-preview { margin-top: 1px; max-height: 1.55em; -webkit-mask-image: none; mask-image: none; }
+.narrow.stash-open .card-preview > div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.narrow.stash-open .card-preview .hit-l { display: none; }
+.narrow.stash-open .card.expanded { transform: none; }
+.narrow.stash-open .card-tags { margin-top: 4px; }
 
 /* Drag ghost: out of the stash / into the stash. */
 .ghost.from-stash { border-color: var(--stash-line); }
@@ -816,7 +819,6 @@ body.compact .card-path { display: none; }
           </div>
           <div class="drop" aria-hidden="true"><span data-ico="tray"></span>Отложить в стэш<span class="dn" id="stashDropN"></span><span class="dk">⌃T</span></div>
         </div>
-        <div class="drawer-cover" id="drawerCover" title="Вкладки — ← или клик"></div>
       </aside>
       <div class="notch" id="notch" role="button" tabindex="0" aria-label="Вкладки окна #22">
         <span class="shape" aria-hidden="true"><span class="glow"></span></span>
@@ -825,7 +827,6 @@ body.compact .card-path { display: none; }
     </div>
     <div class="stash-wrap" id="stashWrap">
       <aside class="drawer stash-drawer" id="stashDrawer" aria-label="Стэш">
-        <div class="stash-peek" id="stashPeek" title="Стэш — → или клик"><span data-ico="tray"></span><span>Стэш · <b id="peekCnt"></b></span></div>
         <div class="drawer-head">
           <div class="drawer-title"><b><span class="st-g" data-ico="tray"></span>Стэш <span class="cnt">· <span id="stCount"></span></span></b><small class="type-hint" id="stTypeHint"><svg class="mag" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.8" cy="6.8" r="4.8" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M10.4 10.4 14.2 14.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>печатайте · #тег</small><small class="focus-hint">стэш <kbd>→</kbd></small></div>
           <div class="st-filter" id="stFilter"></div>
@@ -858,13 +859,14 @@ body.compact .card-path { display: none; }
 <div class="demo-panel">
   <h3>Демо-управление</h3>
   <div class="theme-switch seg" role="group" aria-label="Ширина окна">
-    <button data-width="wide" aria-pressed="true">Широкое окно</button>
-    <button data-width="narrow" aria-pressed="false">Узкое окно</button>
+    <button data-width="wide" aria-pressed="true" title="1180px: ящики рядом, между ними страница">Широкое</button>
+    <button data-width="narrow" aria-pressed="false" title="720px: ящики рядом, компактные карточки">Узкое</button>
+    <button data-width="xnarrow" aria-pressed="false" title="560px: при открытии стэша окно раздвигается">Очень узкое</button>
   </div>
   <div class="row">
     <button class="demo-btn" id="demoToggle"><span>Ящик вкладок: открыть / закрыть</span><kbd>⌘J</kbd></button>
     <button class="demo-btn stash" id="demoStash"><span>Стэш: открыть / закрыть</span><kbd>→</kbd></button>
-    <button class="demo-btn stash" id="demoDedup"><span>Окно #12 откладывает report.md с #review — дубль</span></button>
+    <button class="demo-btn stash" id="demoDedup"><span>Окно #12 откладывает tabs-02-model.md с #review — дубль</span></button>
     <button class="demo-btn" id="demoNew"><span>Новая пустая заметка</span><kbd>⌘T</kbd></button>
     <button class="demo-btn" id="demoType"><span>Набрать текст в новой заметке</span></button>
     <button class="demo-btn ai" id="demoAi"><span>✦ ИИ открыл вкладку в фоне</span></button>
@@ -877,12 +879,14 @@ body.compact .card-path { display: none; }
   </div>
   <ul>
     <li><b>Внизу ящика вкладок</b> — стэш: кнопка и сводка. Потяните карточку — низ станет зоной «Отложить в стэш»; на страницу — по-прежнему карусель окон</li>
-    <li><b>Стэш справа</b> (кнопка или <kbd>→</kbd>): тяните карточку в ящик вкладок — откроется вкладкой; если уже открыта — подсветится. Вкладку в стэш — тоже можно</li>
+    <li><b>Стэш справа</b> (кнопка или <kbd>→</kbd>): тяните карточку в ящик вкладок — она переедет туда вкладкой. Вкладку в стэш — так же обратно</li>
     <li>Окно #22 привязано к <b>shelf-design</b> — стэш открывается с этим фильтром, × снимает (или ⌫ в пустом поиске)</li>
     <li><kbd>←</kbd> <kbd>→</kbd> — фокус между ящиками; печать фильтрует ящик в фокусе; <b>#тег</b> — по тегу; клик по тегу на карточке — тоже</li>
     <li><b>Esc</b>: сначала сбрасывает поиск, потом закрывает ящик в фокусе. Стэш закрывается один; ящик вкладок закрывает оба</li>
     <li>Отложить: ⌃T, «В стэш» у выделения, ⌘W на заметке. Уже лежащее в стэше не дублируется — карточка поднимается и мигает</li>
     <li>Заметка во вкладке и в заголовке окна — со значком стэша вместо «Untitled». Пустая заметка при закрытии просто исчезает</li>
+    <li>Узкое окно: ящики не перекрываются — сжимаются рядом и переходят на компактные карточки. Очень узкое: при открытии стэша окно само раздвигается, при закрытии — возвращается</li>
+    <li>Что открыто вкладкой в этом окне, в стэше не показано: ящики работают как перенос. Открытое в другом окне видно с пометкой «открыта в #N»</li>
     <li>Остальное как в макете ящика: ⇧ — выделение, ⌘ клик — закрыть, ↑↓ Enter, ⌘1…⌘9, ⌘L ⌘R ⌘U</li>
   </ul>
 </div>
@@ -1133,6 +1137,7 @@ const drawerKey = { code: 'KeyJ', alt: false, label: '⌘J' };
 let query = '', view = [];
 let compact = false;
 const T = id => tabs.get(id);
+const isCompact = () => compact || (stash.open && $('#content1').classList.contains('narrow'));
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 /* Icons: the stash glyph is a tray; a note is a sheet couplet owns; a file reference is a sheet with an arrow out. */
 const ICONS = {
@@ -1200,6 +1205,12 @@ const itemKey = it => it.kind === 'note' ? it.id : `${it.repo}/${it.dir || ''}${
 const tabKey = t => t.kind === 'note' ? t.noteId : t.kind === 'draft' ? `draft:${t.id}` : `${t.proj}/${t.dir || ''}${t.name}`;
 const inStash = t => t.kind === 'note' || (t.kind === 'file' && stash.items.some(it => itemKey(it) === tabKey(t)));
 const openTabFor = it => { const k = itemKey(it); const id = W.order.find(x => tabKey(T(x)) === k && !closing.has(x)); return id ?? null; };
+/* Window (other than #22) where this stash item is open as a tab, or null. */
+function openElsewhere(it) {
+  const k = itemKey(it);
+  const w = [...extras, ...offscreen].find(x => x.order.some(id => tabKey(T(id)) === k));
+  return w ? w.id : null;
+}
 const itemTags = it => [...(it.repo ? [it.repo] : []), ...it.tags];
 function when(m) {
   if (m <= 0) return 'только что';
@@ -1268,7 +1279,7 @@ function cardHTML(t, i, mm) {
   const mark = t.kind === 'file' && inStash(t) ? `<span class="in-stash" title="Есть в стэше">${icon('tray')}</span>` : '';
   let preview;
   if (mm && mm.rank === 2) preview = `<div class="hit-l">в тексте:</div><div class="hit">${hitLine(mm.line, query)}</div>`;
-  else if (compact) { const f = firstLine(isNote ? dropFirstLine(t.md) : t.md); preview = f ? `<div>${esc(f)}</div>` : ''; }
+  else if (isCompact()) { const f = firstLine(isNote ? dropFirstLine(t.md) : t.md); preview = f ? `<div>${esc(f)}</div>` : ''; }
   else preview = renderPreview(isNote ? dropFirstLine(t.md) : t.md);
   const closeTitle = isNote ? 'Закрыть — заметка останется в стэше (⌘-клик)' : isDraft ? 'Закрыть — пустая заметка исчезнет' : 'Закрыть (⌘-клик)';
   return `<span class="ring"></span><span class="wash"></span>
@@ -1303,7 +1314,7 @@ function renderList() {
     const t = T(id); let el = cardEls.get(id);
     if (!el) { el = document.createElement('div'); el.className = 'card'; el.dataset.id = id; wireCard(el); cardEls.set(id, el); }
     const vis = shown.has(id), i = vis ? pos : 99, mm = m.get(id);
-    const sig = `${i < 9 ? i : 9}|${t.kind}|${t.name}|${t.md.length}|${inStash(t) ? 1 : 0}|${compact ? 1 : 0}|${mm ? query + '|' + mm.rank : ''}`;
+    const sig = `${i < 9 ? i : 9}|${t.kind}|${t.name}|${t.md.length}|${inStash(t) ? 1 : 0}|${isCompact() ? 1 : 0}|${mm ? query + '|' + mm.rank : ''}`;
     if (el.dataset.sig !== sig) { el.innerHTML = cardHTML(t, i, mm); el.dataset.sig = sig; }
     el.classList.toggle('active', id === W.active);
     el.classList.toggle('selected', selected.has(id));
@@ -1372,26 +1383,28 @@ const STASH_SORTS = {
 function computeStashView() {
   const pq = parseStashQuery(stash.query), m = new Map();
   for (const it of stash.items) { const r = matchItem(it, pq); if (r) m.set(it.id, r); }
-  const hit = stash.items.filter(it => m.has(it.id));
+  // What is open as a tab in THIS window is not shown here: the two drawers are a move, not two views of one document.
+  const openHere = stash.items.filter(it => m.has(it.id) && openTabFor(it) != null).length;
+  const hit = stash.items.filter(it => m.has(it.id) && openTabFor(it) == null);
   const cmp = STASH_SORTS[stash.sort];
   const byRank = (a, b) => (pq.text ? m.get(a.id).rank - m.get(b.id).rank : 0);
   const away = hit.filter(it => it.away != null).sort((a, b) => byRank(a, b) || a.away - b.away);   // put away: newest first
   const rest = hit.filter(it => it.away == null).sort((a, b) => byRank(a, b) || cmp(a, b));
-  return { away, rest, m, text: pq.text };
+  return { away, rest, m, text: pq.text, openHere };
 }
 const secAway = Object.assign(document.createElement('div'), { className: 'st-sec away' });
 const secRest = Object.assign(document.createElement('div'), { className: 'st-sec' });
 function stCardHTML(it, mm, text) {
   const isNote = it.kind === 'note';
   const nameQ = mm && mm.rank < 2 ? text : '';
-  const openHere = openTabFor(it) != null;
+  const elsewhere = openElsewhere(it);
   const meta = [];
   if (it.away != null) meta.push(`<span class="aw">отложено ${when(it.away)}</span>`);
   if (isNote) meta.push(`<span>заметка · ${when(it.edited)}</span>`);
   else meta.push(`<span>${esc(it.repo)}</span><span class="br">⎇ ${esc(it.br)}</span>`);
   let preview;
   if (mm && mm.rank === 2) preview = `<div class="hit-l">в тексте:</div><div class="hit">${hitLine(mm.line, text)}</div>`;
-  else if (compact) { const f = firstLine(isNote ? dropFirstLine(it.md) : it.md); preview = f ? `<div>${esc(f)}</div>` : ''; }
+  else if (isCompact()) { const f = firstLine(isNote ? dropFirstLine(it.md) : it.md); preview = f ? `<div>${esc(f)}</div>` : ''; }
   else preview = renderPreview(isNote ? dropFirstLine(it.md) : it.md);
   const tags = [
     ...(it.repo ? [`<span class="tag repo" data-tag="${esc(it.repo)}" title="Тег репо — ставится сам">${icon('repo', 'ico', 1.4)}${esc(it.repo)}</span>`] : []),
@@ -1399,7 +1412,7 @@ function stCardHTML(it, mm, text) {
   ].join('');
   return `<div class="card-head"><span class="kind-ico" title="${isNote ? 'Заметка — текст хранит couplet' : 'Ссылка на файл — сам файл лежит на своём месте'}">${icon(isNote ? 'note' : 'fref', 'ico', 1.4)}</span>
       <span class="card-name">${hl(itemTitle(it), nameQ)}</span>
-      ${openHere ? '<span class="open-mark" title="Открыт вкладкой в этом окне">вкладка</span>' : ''}
+      ${elsewhere != null ? `<span class="open-mark" title="Открыт вкладкой в другом окне — откроется здесь, переехав оттуда">${isNote ? 'открыта' : 'открыт'} в #${elsewhere}</span>` : ''}
       <button class="card-rm" type="button" title="${isNote ? 'Заметка уйдёт в корзину на 30 дней' : 'Файл останется на месте — уберётся только ссылка'}">${isNote ? 'удалить' : 'убрать из стэша'}</button></div>
     <div class="card-meta">${meta.join('')}</div>
     ${isNote ? '' : `<div class="card-path" title="${esc(it.repo + '/' + it.dir + it.name)}">${esc(it.dir + it.name)}</div>`}
@@ -1409,20 +1422,20 @@ function stCardHTML(it, mm, text) {
 function stCard(it, mm, text) {
   let el = stEls.get(it.id);
   if (!el) { el = document.createElement('div'); el.className = 'card'; el.dataset.sid = it.id; wireCard(el); stEls.set(it.id, el); }
-  const openHere = openTabFor(it) != null;
-  const sig = [itemTitle(it), it.tags.join(','), it.away, it.edited, openHere, compact, mm ? text + mm.rank : '', it.newTags ? [...it.newTags].join(',') : ''].join('|');
+  const sig = [itemTitle(it), it.tags.join(','), it.away, it.edited, openElsewhere(it), isCompact(), mm ? text + mm.rank : '', it.newTags ? [...it.newTags].join(',') : ''].join('|');
   if (el.dataset.sig !== sig) { el.innerHTML = stCardHTML(it, mm, text); el.dataset.sig = sig; }
   el.classList.toggle('note', it.kind === 'note');
   el.classList.toggle('file', it.kind === 'file');
   el.classList.toggle('away', it.away != null);
   el.classList.toggle('kb', stash.open && focus === 'stash' && stView[stash.kb] === it.id);
+  if (!el.isConnected) { el.classList.remove('closing'); el.style.height = ''; }   // back after a move out
   if (stArriving.has(it.id)) { stArriving.delete(it.id); restart(el, 'arriving', 520); }
   if (stPulse.has(it.id)) { stPulse.delete(it.id); restart(el, 'pulse', 1150, 260); }
   return el;
 }
 function renderStash() {
   const box = $('#stCards');
-  const { away, rest, m, text } = computeStashView();
+  const { away, rest, m, text, openHere } = computeStashView();
   stView = [...away, ...rest].map(it => it.id);
   const seq = [];
   const secs = away.length > 0;
@@ -1436,17 +1449,16 @@ function renderStash() {
   for (const [id, el] of stEls) if (!SI(id)) { el.remove(); stEls.delete(id); }
   const total = stash.items.length;
   $('#stCount').textContent = total;
-  $('#peekCnt').textContent = total;
   $('#stSearch').classList.toggle('on', !!stash.query);
   $('#stTypeHint').classList.toggle('off', !!stash.query);
   $('#stQ').textContent = stash.query;
   $('#stN').textContent = stash.query ? (stView.length ? `${stView.length} из ${total}` : '') + ' · esc — сброс' : '';
   $('#stEmpty').classList.toggle('on', !stView.length);
-  $('#stEmpty').textContent = stash.query ? 'Ничего не найдено' : `С тегом #${stash.repoChip} в стэше пусто`;
+  $('#stEmpty').textContent = stash.query ? 'Ничего не найдено' : openHere ? 'Всё с этим тегом уже открыто вкладками' : `С тегом #${stash.repoChip} в стэше пусто`;
   const fr = $('#stFilter');
   const html = stash.repoChip
-    ? `<span class="fchip" title="Окно #22 привязано к репо ${esc(stash.repoChip)} — стэш открыт с этим фильтром">${icon('repo', 'ico', 1.4)}${esc(stash.repoChip)}<button class="fchip-x" type="button" aria-label="Снять фильтр по репо" title="Показать весь стэш (⌫ в пустом поиске)">×</button></span><span class="f-note">репо окна · ${stView.length} из ${total}</span>`
-    : `<button class="f-add" type="button" title="Вернуть фильтр по репо окна">+ ${icon('repo', 'ico', 1.4)}${esc(WIN_PROJECT)}</button><span class="f-note">весь стэш · ${stView.length} из ${total}</span>`;
+    ? `<span class="fchip" title="Окно #22 привязано к репо ${esc(stash.repoChip)} — стэш открыт с этим фильтром">${icon('repo', 'ico', 1.4)}${esc(stash.repoChip)}<button class="fchip-x" type="button" aria-label="Снять фильтр по репо" title="Показать весь стэш (⌫ в пустом поиске)">×</button></span><span class="f-note">репо окна · ${stView.length} из ${total}${openHere ? ` · ${openHere} во вкладках` : ''}</span>`
+    : `<button class="f-add" type="button" title="Вернуть фильтр по репо окна">+ ${icon('repo', 'ico', 1.4)}${esc(WIN_PROJECT)}</button><span class="f-note">весь стэш · ${stView.length} из ${total}${openHere ? ` · ${openHere} во вкладках` : ''}</span>`;
   if (fr.dataset.html !== html) { fr.innerHTML = html; fr.dataset.html = html; }
   document.querySelectorAll('.st-sort').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.ssort === stash.sort)));
   renderStashBar();
@@ -1517,6 +1529,7 @@ function openStash() {
   $('#content1').classList.add('stash-open');
   $('#stList').scrollTop = 0;
   setFocus('stash');
+  ensureRoom();
 }
 function closeStash() {
   if (!stash.open) return;
@@ -1524,13 +1537,12 @@ function closeStash() {
   $('#content1').classList.remove('stash-open');
   stEls.forEach(el => { el.classList.remove('expanded'); clearTimeout(el._hold); });
   setFocus('tabs');
+  restoreRoom();
 }
 const toggleStash = () => stash.open ? closeStash() : openStash();
 $('#stashBtn').addEventListener('click', e => { e.currentTarget.blur(); toggleStash(); });
-$('#stashPeek').addEventListener('click', () => setFocus('stash'));
-$('#drawerCover').addEventListener('click', () => setFocus('tabs'));
-wrap.addEventListener('pointerdown', e => { if (stash.open && !e.target.closest('#drawerCover')) setFocus('tabs'); }, true);
-$('#stashWrap').addEventListener('pointerdown', e => { if (stash.open && !e.target.closest('#stashPeek')) setFocus('stash'); }, true);
+wrap.addEventListener('pointerdown', () => { if (stash.open) setFocus('tabs'); }, true);
+$('#stashWrap').addEventListener('pointerdown', () => { if (stash.open) setFocus('stash'); }, true);
 $('#stashWrap').addEventListener('pointerenter', () => clearTimeout(hoverCloseTimer));
 $('#stFilter').addEventListener('click', e => {
   if (e.target.closest('.fchip-x')) setRepoChip(null);
@@ -1571,6 +1583,8 @@ function removeTabs(ids, { toStack = false } = {}) {
   for (const id of ids) {
     closing.add(id); selected.delete(id);
     if (toStack) closedStack.push({ id, index: W.order.indexOf(id) });
+    const it = stash.items.find(x => itemKey(x) === tabKey(T(id)));
+    if (it && !it.removing) stArriving.add(it.id);
     const el = cardEls.get(id);
     if (el && drawer.open) { clearTimeout(el._hold); el.classList.remove('expanded'); el.style.height = el.offsetHeight + 'px'; void el.offsetHeight; el.classList.add('closing'); el.style.height = '0px'; }
   }
@@ -1634,9 +1648,11 @@ function sortBy(kind) {
 document.querySelectorAll('.sort-btn[data-sort]').forEach(b => b.addEventListener('click', () => sortBy(b.dataset.sort)));
 
 /* ═════════════════════════ Stash actions ═════════════════════════ */
-/* Tabs → stash, one transaction. A note is already in the stash: it gets the «отложено»
-   mark. A file gets a reference — unless one exists (dedup by path): then the existing
-   card jumps to the top and pulses, tags merge, no second card. */
+/* Tabs → stash, one transaction — a move: the tab leaves, the card arrives on top of the
+   stash (it was hidden there while open here). A note is already in the stash: it gets the
+   «отложено» mark. A file gets a reference — unless one exists (dedup by path): then that
+   record is reused, no second card. A second stash of something already visible in the
+   stash (from another window) makes the card jump to the top and pulse — see demoDedup. */
 function stashTabs(ids) {
   ids = ids.filter(id => W.order.includes(id) && !closing.has(id)).sort((a, b) => W.order.indexOf(a) - W.order.indexOf(b));
   if (!ids.length) return;
@@ -1654,8 +1670,7 @@ function stashTabs(ids) {
   }
   removeTabs(ids);
   if (stash.open) { stash.query = ''; }
-  added.forEach(it => stArriving.add(it.id));
-  bumped.forEach(it => stPulse.add(it.id));
+  [...added, ...bumped].forEach(it => stArriving.add(it.id));
   flipStash();
   if (stash.open) $('#stList').scrollTo({ top: 0, behavior: 'smooth' });
   bumpStashBar();
@@ -1665,12 +1680,12 @@ function stashTabs(ids) {
   if (!n) msg = 'Пустая заметка закрыта <span>· хранить нечего</span>';
   else if (n === 1 && bumped.length) {
     const it = bumped[0];
-    msg = it.kind === 'note' ? `Заметка <b>${esc(itemTitle(it))}</b> отложена <span>· она и так в стэше — поднята наверх</span>`
-      : `<b>${esc(itemTitle(it))}</b> уже в стэше <span>· поднят наверх, второй карточки нет</span>`;
+    msg = it.kind === 'note' ? `Заметка <b>${esc(itemTitle(it))}</b> → стэш <span>· отложена</span>`
+      : `<b>${esc(itemTitle(it))}</b> → стэш <span>· запись уже была — вторая не создана</span>`;
   } else if (n === 1) msg = `<b>${esc(itemTitle(added[0]))}</b> → стэш <span>· отложено</span>`;
   else {
     const dup = bumped.filter(it => it.kind === 'file').length;
-    msg = `Отложено в стэш: ${n}${dup ? ` <span>· ${dup} уже ${dup === 1 ? 'был' : 'были'} там — ${dup === 1 ? 'поднят' : 'подняты'} наверх</span>` : ''}`;
+    msg = `Отложено в стэш: ${n}${dup ? ` <span>· для ${dup} запись уже была — дублей нет</span>` : ''}`;
   }
   if (hidden) msg += ` <span>· ${hidden === 1 ? 'скрыт' : 'скрыты'} фильтром #${esc(stash.repoChip)}</span>`;
   if (n && drafts.length) msg += ' <span>· пустая заметка просто закрыта</span>';
@@ -1689,6 +1704,18 @@ function openFromStash(itemId, { before } = {}) {
     toast(`<b>${esc(itemTitle(it))}</b> уже открыт <span>· показали его вкладку</span>`);
     return ex;
   }
+  const from = openElsewhere(it);
+  if (from != null) {                                       // one document = one tab app-wide: it moves here
+    const w = [...extras, ...offscreen].find(x => x.id === from), k = itemKey(it);
+    w.order = w.order.filter(x => tabKey(T(x)) !== k);
+    if (!w.order.length) { if (w.el) { w.el.remove(); extras.splice(extras.indexOf(w), 1); } else offscreen.splice(offscreen.indexOf(w), 1); }
+    else { if (!w.order.includes(w.active)) w.active = w.order[0]; if (w.el) renderMini(w); }
+  }
+  const sel = stEls.get(itemId);
+  if (sel && sel.isConnected && stash.open) {
+    clearTimeout(sel._hold); sel.classList.remove('expanded');
+    sel.style.height = sel.offsetHeight + 'px'; void sel.offsetHeight; sel.classList.add('closing'); sel.style.height = '0px';
+  }
   const id = nextTabId++;
   const t = it.kind === 'note' ? makeNoteTab(id, it.id)
     : { id, kind: 'file', name: it.name, proj: it.repo, br: it.br, dir: it.dir, md: it.md, openedAt: ++clock, viewedAt: 0, aiUnread: false, aiAt: 0 };
@@ -1696,14 +1723,17 @@ function openFromStash(itemId, { before } = {}) {
   const idx = before === null ? W.order.length : before != null && W.order.includes(before) ? W.order.indexOf(before) : W.order.indexOf(W.active) + 1;
   W.order.splice(idx, 0, id); arriving.add(id);
   W.active = id; t.viewedAt = ++clock;
-  flip(renderList); renderEditor(); flipStash();
+  flip(renderList); renderEditor();
+  setTimeout(flipStash, sel && stash.open ? 230 : 0);
   requestAnimationFrame(() => { const el = cardEls.get(id); if (el && drawer.open) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); });
-  toast(`<b>${esc(itemTitle(it))}</b> открыт вкладкой <span>· из стэша</span>`);
+  const fem = it.kind === 'note';
+  toast(`<b>${esc(itemTitle(it))}</b> ${fem ? 'открыта' : 'открыт'} вкладкой <span>· ${from != null ? `${fem ? 'переехала' : 'переехал'} из #${from}` : 'из стэша'}</span>`);
   return id;
 }
 function removeFromStash(itemId) {
   const it = SI(itemId); if (!it) return;
   const isNote = it.kind === 'note';
+  it.removing = true;
   const tid = isNote ? openTabFor(it) : null;
   if (tid != null) removeTabs([tid]);                      // a deleted note leaves the window too
   const el = stEls.get(itemId);
@@ -1824,7 +1854,7 @@ function hitTarget(x, y) {
   if (drag?.src === 'stash') {
     if (el && drawer.open && el.closest('#drawer, #notch')) {
       const overList = !!el.closest('#tabList') && !query;
-      return { kind: 'open', existing: openTabFor(SI(drag.ids[0])), overList, cover: !!el.closest('#drawerCover') };
+      return { kind: 'open', existing: openTabFor(SI(drag.ids[0])), overList };
     }
     return { kind: 'none' };
   }
@@ -1869,7 +1899,6 @@ function dragAt(x, y) {
     (tgt.kind === 'thumb' && el.dataset.w === String(tgt.win.id)) || (tgt.kind === 'newwin' && el.hasAttribute('data-new'))));
   $('#stashBar').classList.toggle('hot', tgt.kind === 'stashzone');
   $('#stashDrawer').classList.toggle('drop-hot', tgt.kind === 'stash');
-  $('#drawerCover').classList.toggle('drop-hot', tgt.kind === 'open' && tgt.cover);
   cardEls.forEach((el, id) => el.classList.toggle('drop-hilite', tgt.kind === 'open' && tgt.existing === id));
   const ind = $('#dropInd');
   const rest = W.order.filter(id => !drag.ids.includes(id) && !closing.has(id));
@@ -1888,7 +1917,6 @@ function clearDragVisuals() {
   ids.forEach(x => { cardEls.get(x)?.classList.remove('dragging'); stEls.get(x)?.classList.remove('dragging'); });
   $('#stashBar').classList.remove('dropmode', 'hot');
   $('#stashDrawer').classList.remove('drop-hot', 'drop-ready');
-  $('#drawerCover').classList.remove('drop-hot');
   cardEls.forEach(el => el.classList.remove('drop-hilite'));
   ghost.style.opacity = '0'; setTimeout(() => ghost.remove(), 200);
 }
@@ -1906,7 +1934,6 @@ function dragEnd(ev) {
     carouselOff(); drag = null; gesture = null;
     if (target?.kind === 'open') {
       openFromStash(ids[0], { before: target.overList && target.existing == null ? before : undefined });
-      if ($('#content1').classList.contains('narrow')) setFocus('tabs');   // narrow: show the tabs layer the card went into
     }
     return;
   }
@@ -2180,16 +2207,45 @@ document.addEventListener('keyup', e => { if (e.key === 'Shift') { shiftHeld = f
 window.addEventListener('blur', () => { shiftHeld = false; document.body.classList.remove('shift'); renderHint(); });
 
 /* ═════════════════════════ Narrow window ═════════════════════════
-   NARROW_AT = 960px of window content. Wide: tabs drawer (min(420px, 52%)) + stash drawer
-   (min(400px, 36%)) side by side, which leaves at least ~200px of page between them for the
-   window carousel. Below 960px that gap drops under ~190px, so the stash becomes a second
-   layer over the tabs drawer instead. */
-const NARROW_AT = 960;
+   The two drawers never overlap.
+   · Content ≥ NARROW_AT (960px): normal widths — tabs min(420px, 52%), stash min(400px, 36%) —
+     with the page (and the window carousel) between them.
+   · Content < 960px: with the stash open both squeeze side by side, each (100% − 40px) / 2
+     (capped at the normal width, never under 320px), and switch to compact cards. The 40px
+     gap is the tabs notch. There is no page left between them, so no carousel here.
+   · Content < MIN_BOTH = 2 × 320 + 40 = 680px: the window itself widens to 680px while the
+     stash is open (shifting left if it would cross the screen's right edge) and goes back
+     to its previous size and place when the stash closes. */
+const NARROW_AT = 960, MIN_BOTH = 680;
 const content1 = $('#content1');
-new ResizeObserver(() => content1.classList.toggle('narrow', content1.clientWidth < NARROW_AT)).observe(content1);
+new ResizeObserver(() => {
+  const n = content1.clientWidth < NARROW_AT;
+  if (n === content1.classList.contains('narrow')) return;
+  content1.classList.toggle('narrow', n); renderList(); renderStash();
+}).observe(content1);
+let widened = null;                  // the window's inline width/left before it widened for the stash
+function ensureRoom() {
+  if (!stash.open || widened) return;
+  const win = $('#win1'), short = MIN_BOTH - content1.clientWidth;
+  if (short <= 0) return;
+  const r = win.getBoundingClientRect(), need = Math.ceil(r.width + short);
+  widened = { width: win.style.width, left: win.style.left };
+  let left = r.left;
+  if (left + need > innerWidth - 12) left = Math.max(8, innerWidth - 12 - need);
+  win.style.width = need + 'px'; win.style.left = left + 'px';
+  toast('Окно раздвинулось, чтобы стэш встал рядом <span>· вернётся, когда стэш закроется</span>');
+}
+function restoreRoom() {
+  if (!widened) return;
+  const win = $('#win1');
+  win.style.width = widened.width; win.style.left = widened.left; widened = null;
+}
 function setWidth(w) {
+  if (widened) { const win = $('#win1'); win.style.width = widened.width; win.style.left = widened.left; widened = null; }
   $('#win1').classList.toggle('narrow-demo', w === 'narrow');
+  $('#win1').classList.toggle('xnarrow-demo', w === 'xnarrow');
   document.querySelectorAll('[data-width]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.width === w)));
+  if (stash.open) setTimeout(ensureRoom, 450);          // after the width transition
 }
 document.querySelectorAll('[data-width]').forEach(b => b.addEventListener('click', () => setWidth(b.dataset.width)));
 
@@ -2201,8 +2257,9 @@ $('#demoReopen').addEventListener('click', reopen);
 $('#demoReset').addEventListener('click', () => location.reload());
 /* Dedup from another window: the same file, stashed from window #12 with a tag. */
 $('#demoDedup').addEventListener('click', () => {
-  const it = stash.items.find(x => x.kind === 'file' && x.name === 'report.md');
-  if (!it) { toast('report.md уже убран из стэша <span>· сбросьте макет</span>'); return; }
+  const it = stash.items.find(x => x.id === 'f2');       // in the stash, not open in this window → visible
+  if (!it) { toast('tabs-02-model.md уже убран из стэша <span>· сбросьте макет</span>'); return; }
+  if (openTabFor(it) != null) { toast('tabs-02-model.md сейчас открыт здесь вкладкой — в стэше его не видно <span>· отложите его сначала</span>'); return; }
   const wasOpen = stash.open;
   openStash(); stash.query = ''; stash.repoChip = WIN_PROJECT;
   setTimeout(() => {
@@ -2210,7 +2267,7 @@ $('#demoDedup').addEventListener('click', () => {
     it.tags.push(...add); it.newTags = new Set(add); it.away = stamp();
     stPulse.add(it.id);
     flipStash(); $('#stList').scrollTo({ top: 0, behavior: 'smooth' }); bumpStashBar();
-    toast(`Окно <b>#12</b> отложило <b>report.md</b>${add.length ? ' с тегом #review' : ''} <span>· карточка одна: поднята наверх, теги объединены</span>`);
+    toast(`Окно <b>#12</b> отложило <b>${esc(it.name)}</b>${add.length ? ' с тегом #review' : ''} <span>· карточка одна: поднята наверх, теги объединены</span>`);
   }, wasOpen ? 0 : 420);
 });
 /* Owner's note #1: an empty new note is not kept. */
@@ -2241,7 +2298,7 @@ const tglCompact = $('#tglCompact');
 function applyCompact(on) { flip(() => { compact = on; document.body.classList.toggle('compact', on); tglCompact.checked = on; renderList(); renderStash(); }); }
 tglCompact.addEventListener('change', () => applyCompact(tglCompact.checked));
 compact = params.get('compact') === '1'; document.body.classList.toggle('compact', compact); tglCompact.checked = compact;
-if (params.get('width') === 'narrow') setWidth('narrow');
+if (['narrow', 'xnarrow'].includes(params.get('width'))) setWidth(params.get('width'));
 /* Align the AI button's resting protrusion with the notch's visible depth (the reference). */
 function syncNotchDepth() {
   const shape = notch.querySelector('.shape'), host = $('#content1');
