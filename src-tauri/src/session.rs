@@ -798,18 +798,24 @@ const DRAFTS_TRASH_DIR: &str = ".trash";
 /// old mtime, so the name is the only record of when it was thrown away.
 const TRASHED_MARK: &str = ".trashed-";
 
-/// A free path in `trash` for `stem` thrown away at `now_secs`:
-/// `<stem>.trashed-<secs>.md`, then `<stem>.trashed-<secs>-1.md`, …
-fn trash_path_for(trash: &Path, stem: &str, now_secs: u64) -> Result<PathBuf, String> {
+/// Hard-link `src` into `trash` under the first free name for `stem` thrown
+/// away at `now_secs`: `<stem>.trashed-<secs>.md`, then `…-<secs>-1.md`, …
+///
+/// The link is the free-name check: `hard_link` refuses a name that exists
+/// (`AlreadyExists`, next name), where a check followed by `rename` would
+/// replace a file that appeared in between. `src` is never touched.
+fn link_into_trash(src: &Path, trash: &Path, stem: &str, now_secs: u64) -> Result<PathBuf, String> {
     for n in 0..1000u32 {
         let name = if n == 0 {
             format!("{stem}{TRASHED_MARK}{now_secs}.md")
         } else {
             format!("{stem}{TRASHED_MARK}{now_secs}-{n}.md")
         };
-        let path = trash.join(name);
-        if fs::symlink_metadata(&path).is_err() {
-            return Ok(path);
+        let dest = trash.join(name);
+        match fs::hard_link(src, &dest) {
+            Ok(()) => return Ok(dest),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("link {} into the trash: {e}", src.display())),
         }
     }
     Err(format!("no free trash name for {stem}"))
@@ -817,7 +823,7 @@ fn trash_path_for(trash: &Path, stem: &str, now_secs: u64) -> Result<PathBuf, St
 
 /// When a trash file was thrown away, read back from its name. `None` for
 /// any name this module did not make — the purge never touches those. The
-/// tail is exactly what `trash_path_for` writes: `<secs>` or `<secs>-<n>`.
+/// tail is exactly what `link_into_trash` writes: `<secs>` or `<secs>-<n>`.
 fn trashed_at(name: &str) -> Option<u64> {
     let rest = name.strip_suffix(".md")?;
     let at = rest.rfind(TRASHED_MARK)?;
@@ -833,8 +839,10 @@ fn trashed_at(name: &str) -> Option<u64> {
     secs.parse().ok()
 }
 
-/// Move one sidecar into `trash` by `rename`: same volume, so there is never
-/// a moment without a copy. On any failure the file stays where it was.
+/// Move one sidecar into `trash`: link it in (`link_into_trash`), then
+/// unlink the original — at every moment at least one name holds the text.
+/// When the link fails the file stays where it was; when only the unlink
+/// fails both names remain, which the next pass retries.
 fn move_to_trash(src: &Path, trash: &Path, now_secs: u64) -> Result<PathBuf, String> {
     let name = src
         .file_name()
@@ -842,8 +850,8 @@ fn move_to_trash(src: &Path, trash: &Path, now_secs: u64) -> Result<PathBuf, Str
         .ok_or_else(|| format!("not a UTF-8 file name: {}", src.display()))?;
     let stem = name.strip_suffix(".md").unwrap_or(name);
     fs::create_dir_all(trash).map_err(|e| format!("create {}: {e}", trash.display()))?;
-    let dest = trash_path_for(trash, stem, now_secs)?;
-    fs::rename(src, &dest).map_err(|e| format!("move {name} to the trash: {e}"))?;
+    let dest = link_into_trash(src, trash, stem, now_secs)?;
+    fs::remove_file(src).map_err(|e| format!("{name} is in the trash but still in session/: {e}"))?;
     Ok(dest)
 }
 
@@ -921,14 +929,13 @@ fn rescue_untitled_in(trash: &Path, tab_id: &str, text: &str, now_secs: u64) -> 
         return Err(format!("invalid tab id: {tab_id:?}"));
     }
     fs::create_dir_all(trash).map_err(|e| format!("create {}: {e}", trash.display()))?;
-    let dest = trash_path_for(trash, &format!("closed-{tab_id}"), now_secs)?;
     let tmp = trash.join(format!(".closed-{tab_id}.tmp"));
     fs::write(&tmp, text).map_err(|e| format!("write the rescue copy: {e}"))?;
-    fs::rename(&tmp, &dest).map_err(|e| {
-        let _ = fs::remove_file(&tmp);
-        format!("save the rescue copy: {e}")
-    })?;
-    Ok(dest)
+    // Linked, not renamed, so an earlier trash file of the same name is never
+    // replaced. The temp is only a second name for what the link now holds.
+    let linked = link_into_trash(&tmp, trash, &format!("closed-{tab_id}"), now_secs);
+    let _ = fs::remove_file(&tmp);
+    linked.map_err(|e| format!("save the rescue copy: {e}"))
 }
 
 /// A window's position and size in **logical** pixels.
@@ -1699,6 +1706,63 @@ mod tests {
         assert_eq!(std::fs::read_to_string(trash.join("draft-b.trashed-1000.md")).unwrap(), "first");
         assert_eq!(std::fs::read_to_string(trash.join("draft-b.trashed-1000-1.md")).unwrap(), "second");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn linking_into_the_trash_never_replaces_an_occupied_name() {
+        // Review M2: a free-name check followed by `rename` could replace a
+        // file that appeared in between. The link itself refuses a taken name.
+        let dir = scratch_dir("link-occupied");
+        let trash = dir.join(".trash");
+        std::fs::create_dir_all(&trash).unwrap();
+        std::fs::write(trash.join("draft-b.trashed-1000.md"), "first").unwrap();
+        std::fs::write(trash.join("draft-b.trashed-1000-1.md"), "second").unwrap();
+        let src = dir.join("draft-b.md");
+        std::fs::write(&src, "third").unwrap();
+
+        let dest = link_into_trash(&src, &trash, "draft-b", 1000).unwrap();
+
+        assert_eq!(dest, trash.join("draft-b.trashed-1000-2.md"));
+        assert_eq!(std::fs::read_to_string(trash.join("draft-b.trashed-1000.md")).unwrap(), "first");
+        assert_eq!(std::fs::read_to_string(trash.join("draft-b.trashed-1000-1.md")).unwrap(), "second");
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "third");
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), "third", "a link removes nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_move_the_trash_refuses_leaves_the_draft_in_place() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch_dir("move-refused");
+        let trash = dir.join(".trash");
+        std::fs::create_dir_all(&trash).unwrap();
+        std::fs::set_permissions(&trash, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let src = dir.join("draft-b.md");
+        std::fs::write(&src, "keep me").unwrap();
+
+        let moved = move_to_trash(&src, &trash, 1000);
+
+        std::fs::set_permissions(&trash, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(moved.is_err());
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), "keep me");
+        assert!(files_in(&trash).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rescue_never_replaces_an_existing_trash_file() {
+        let root = scratch_dir("rescue-occupied");
+        let trash = root.join(".trash");
+        std::fs::create_dir_all(&trash).unwrap();
+        std::fs::write(trash.join("closed-1-2-3.trashed-500.md"), "earlier").unwrap();
+
+        let path = rescue_untitled_in(&trash, "1-2-3", "later", 500).unwrap();
+
+        assert_eq!(path, trash.join("closed-1-2-3.trashed-500-1.md"));
+        assert_eq!(std::fs::read_to_string(trash.join("closed-1-2-3.trashed-500.md")).unwrap(), "earlier");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "later");
+        assert_eq!(files_in(&trash).len(), 2, "no temp file left");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
