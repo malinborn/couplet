@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -729,26 +729,68 @@ pub fn write_untitled(file_name: &str, content: &str) -> Result<(), String> {
     })
 }
 
-/// Delete untitled sidecars nothing refers to any more.
+/// Folder inside `session/` that receives every draft the session lets go of.
+/// A dot-name: `is_untitled_sidecar` never matches it, so the GC never
+/// treats the folder itself as something to move.
+const DRAFTS_TRASH_DIR: &str = ".trash";
+
+/// Marks when a file entered the trash, inside its name: `rename` keeps the
+/// old mtime, so the name is the only record of when it was thrown away.
+const TRASHED_MARK: &str = ".trashed-";
+
+/// A free path in `trash` for `stem` thrown away at `now_secs`:
+/// `<stem>.trashed-<secs>.md`, then `<stem>.trashed-<secs>-1.md`, …
+fn trash_path_for(trash: &Path, stem: &str, now_secs: u64) -> Result<PathBuf, String> {
+    for n in 0..1000u32 {
+        let name = if n == 0 {
+            format!("{stem}{TRASHED_MARK}{now_secs}.md")
+        } else {
+            format!("{stem}{TRASHED_MARK}{now_secs}-{n}.md")
+        };
+        let path = trash.join(name);
+        if fs::symlink_metadata(&path).is_err() {
+            return Ok(path);
+        }
+    }
+    Err(format!("no free trash name for {stem}"))
+}
+
+/// Move one sidecar into `trash` by `rename`: same volume, so there is never
+/// a moment without a copy. On any failure the file stays where it was.
+fn move_to_trash(src: &Path, trash: &Path, now_secs: u64) -> Result<PathBuf, String> {
+    let name = src
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("not a UTF-8 file name: {}", src.display()))?;
+    let stem = name.strip_suffix(".md").unwrap_or(name);
+    fs::create_dir_all(trash).map_err(|e| format!("create {}: {e}", trash.display()))?;
+    let dest = trash_path_for(trash, stem, now_secs)?;
+    fs::rename(src, &dest).map_err(|e| format!("move {name} to the trash: {e}"))?;
+    Ok(dest)
+}
+
+/// Move untitled sidecars nothing refers to any more into `session/.trash/`.
+/// Never deletes: a draft leaves the session only with a copy kept.
 ///
 /// Take the names from `SessionState::referenced_untitled`, never from the live
 /// snapshot alone — see that method for why.
 pub fn prune_untitled_files(referenced: &HashSet<String>) {
     let Ok(dir) = session_dir() else { return };
-    prune_untitled_files_in(&dir, referenced);
+    prune_untitled_files_in(&dir, referenced, now_secs());
 }
 
 /// `prune_untitled_files` in `dir`: both sidecar prefixes (`is_untitled_sidecar`).
-fn prune_untitled_files_in(dir: &std::path::Path, referenced: &HashSet<String>) {
+fn prune_untitled_files_in(dir: &Path, referenced: &HashSet<String>, now_secs: u64) {
     let Ok(entries) = fs::read_dir(dir) else { return };
+    let trash = dir.join(DRAFTS_TRASH_DIR);
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if !is_untitled_sidecar(name) {
+        if !is_untitled_sidecar(name) || referenced.contains(name) {
             continue;
         }
-        if !referenced.contains(name) {
-            let _ = fs::remove_file(entry.path());
+        if let Err(e) = move_to_trash(&entry.path(), &trash, now_secs) {
+            eprintln!("session: kept an unreferenced draft in place: {e}");
         }
     }
 }
@@ -1046,6 +1088,26 @@ mod tests {
         }
     }
 
+    fn scratch_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("couplet-{tag}-{}", new_tab_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Names of the regular files directly in `dir`, sorted; empty when `dir` is missing.
+    fn files_in(dir: &std::path::Path) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
     #[test]
     fn json_roundtrip_uses_camel_case() {
         let s = Session {
@@ -1340,19 +1402,54 @@ mod tests {
 
     #[test]
     fn the_prune_keeps_referenced_sidecars_of_both_prefixes() {
-        let dir = std::env::temp_dir().join(format!("couplet-prune-{}", new_tab_id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch_dir("prune");
         for name in ["draft-a.md", "draft-b.md", "untitled-c.md", "untitled-d.md", "notes.md"] {
             std::fs::write(dir.join(name), "x").unwrap();
         }
         let referenced: HashSet<String> = ["draft-a.md", "untitled-c.md"].map(String::from).into();
-        prune_untitled_files_in(&dir, &referenced);
-        let mut left: Vec<String> = std::fs::read_dir(&dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        left.sort();
-        assert_eq!(left, vec!["draft-a.md", "notes.md", "untitled-c.md"]);
+        prune_untitled_files_in(&dir, &referenced, 1_000);
+        assert_eq!(files_in(&dir), vec!["draft-a.md", "notes.md", "untitled-c.md"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_prune_moves_unreferenced_drafts_to_the_trash_and_deletes_nothing() {
+        let dir = scratch_dir("prune-trash");
+        std::fs::write(dir.join("draft-b.md"), "b text").unwrap();
+        std::fs::write(dir.join("untitled-editor-1.md"), "legacy text").unwrap();
+        prune_untitled_files_in(&dir, &HashSet::new(), 1_000);
+
+        assert!(files_in(&dir).is_empty(), "no sidecar left in session/");
+        let trash = dir.join(".trash");
+        assert_eq!(
+            files_in(&trash),
+            vec!["draft-b.trashed-1000.md", "untitled-editor-1.trashed-1000.md"]
+        );
+        assert_eq!(std::fs::read_to_string(trash.join("draft-b.trashed-1000.md")).unwrap(), "b text");
+        assert_eq!(
+            std::fs::read_to_string(trash.join("untitled-editor-1.trashed-1000.md")).unwrap(),
+            "legacy text"
+        );
+
+        // The trash folder itself is never prey for the next pass.
+        prune_untitled_files_in(&dir, &HashSet::new(), 2_000);
+        assert_eq!(files_in(&trash).len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_same_name_thrown_away_in_the_same_second_gets_its_own_trash_name() {
+        let dir = scratch_dir("prune-clash");
+        let trash = dir.join(".trash");
+        std::fs::create_dir_all(&trash).unwrap();
+        std::fs::write(trash.join("draft-b.trashed-1000.md"), "first").unwrap();
+        std::fs::write(dir.join("draft-b.md"), "second").unwrap();
+
+        prune_untitled_files_in(&dir, &HashSet::new(), 1_000);
+
+        assert_eq!(files_in(&trash), vec!["draft-b.trashed-1000-1.md", "draft-b.trashed-1000.md"]);
+        assert_eq!(std::fs::read_to_string(trash.join("draft-b.trashed-1000.md")).unwrap(), "first");
+        assert_eq!(std::fs::read_to_string(trash.join("draft-b.trashed-1000-1.md")).unwrap(), "second");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
