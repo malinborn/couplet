@@ -16,6 +16,7 @@
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
 
 use serde::Serialize;
 
@@ -115,10 +116,8 @@ fn is_acceptable(file: &Path) -> bool {
     file.is_absolute() && !file.components().any(|c| c == Component::ParentDir)
 }
 
-/// `git_info` only for a file inside a repository. The stash's repo tag for a
-/// file reference is "the git toplevel"; a loose file has none — unlike a
-/// drawer card, whose grey line falls back to the file's folder.
-pub fn repo_info(file: &Path) -> Option<GitInfo> {
+/// The repository `file` is in: its toplevel directory and what it shows.
+fn find_repo(file: &Path) -> Option<(PathBuf, GitInfo)> {
     if !is_acceptable(file) {
         return None;
     }
@@ -126,15 +125,43 @@ pub fn repo_info(file: &Path) -> Option<GitInfo> {
     let branch = resolve_git_dir(&toplevel, &dot_git)
         .and_then(|dir| read_small(&dir.join("HEAD")))
         .and_then(|head| branch_from_head(&head));
-    Some(GitInfo { project: dir_name(&toplevel), branch })
+    let info = GitInfo { project: dir_name(&toplevel), branch };
+    Some((toplevel, info))
 }
 
+/// The home folder in `path_norm`'s spelling — the one the stash's paths use.
+fn normalized_home() -> Option<&'static Path> {
+    static HOME: OnceLock<Option<PathBuf>> = OnceLock::new();
+    HOME.get_or_init(|| dirs::home_dir().map(|h| crate::path_norm::normalize_path(&h)))
+        .as_deref()
+}
+
+/// `git_info` only for a file inside a repository. The stash's repo tag for a
+/// file reference is "the git toplevel"; a loose file has none — unlike a
+/// drawer card, whose grey line falls back to the file's folder. A toplevel
+/// that is the home folder itself (a dotfiles repository) is no repo tag
+/// either: every loose file under `~` would carry the login name.
+pub fn repo_info(file: &Path) -> Option<GitInfo> {
+    repo_info_in(file, normalized_home())
+}
+
+/// `repo_info` with the home folder passed in, spelled the way `file` is
+/// (the stash passes normalized paths; `repo_info` a normalized home).
+fn repo_info_in(file: &Path, home: Option<&Path>) -> Option<GitInfo> {
+    let (toplevel, info) = find_repo(file)?;
+    (home != Some(toplevel.as_path())).then_some(info)
+}
+
+/// The drawer's grey line. Built on `find_repo`, not `repo_info`: a file
+/// under a dotfiles home still shows that repository, as it always has.
 pub fn git_info(file: &Path) -> Option<GitInfo> {
     if !is_acceptable(file) {
         return None;
     }
     let parent = file.parent().filter(|p| !p.as_os_str().is_empty())?;
-    repo_info(file).or_else(|| Some(GitInfo { project: dir_name(parent), branch: None }))
+    find_repo(file)
+        .map(|(_, info)| info)
+        .or_else(|| Some(GitInfo { project: dir_name(parent), branch: None }))
 }
 
 /// The project `file` belongs to (spec §2): the directory holding the nearest
@@ -393,6 +420,38 @@ mod tests {
         assert_eq!(
             repo_info(&root.join("docs/plan.md")),
             Some(GitInfo { project: "couplet".into(), branch: Some("feat/stash".into()) })
+        );
+    }
+
+    #[test]
+    fn a_dotfiles_repository_in_home_is_not_a_repo_tag() {
+        // `~/.git` (a bare-dotfiles setup) would otherwise tag every loose
+        // file under the home folder with the user's login name.
+        let home = scratch("repo-info-home").join("u");
+        fs::create_dir_all(home.join(".git")).unwrap();
+        fs::write(home.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let loose = home.join("Downloads/a.md");
+        assert_eq!(repo_info_in(&loose, Some(&home)), None);
+        assert_eq!(repo_info_in(&home.join("a.md"), Some(&home)), None);
+        assert_eq!(
+            repo_info_in(&loose, None),
+            Some(GitInfo { project: "u".into(), branch: Some("main".into()) }),
+            "only the home folder itself is ignored"
+        );
+
+        let proj = home.join("src/proj");
+        fs::create_dir_all(proj.join(".git")).unwrap();
+        fs::write(proj.join(".git/HEAD"), "ref: refs/heads/dev\n").unwrap();
+        assert_eq!(
+            repo_info_in(&proj.join("a.md"), Some(&home)),
+            Some(GitInfo { project: "proj".into(), branch: Some("dev".into()) }),
+            "a real repository inside home still is one"
+        );
+
+        assert_eq!(
+            git_info(&loose),
+            Some(GitInfo { project: "u".into(), branch: Some("main".into()) }),
+            "the drawer's grey line is unchanged"
         );
     }
 
