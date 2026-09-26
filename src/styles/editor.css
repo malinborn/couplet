@@ -161,6 +161,47 @@
   cursor: pointer;
 }
 
+/* Formatting inside a quote is muted: every accent is mixed ~30% towards the
+ * quote's own grey text, so `**bold**` in a quote reads a shade apart from
+ * `**bold**` in the body. A mix rather than `filter: saturate()` because a
+ * filter would also dull the bar, and does nothing to a near-black bold —
+ * there is no saturation to take away from grey.
+ *
+ * Placed before the ticked-task rule below on purpose: same specificity, so a
+ * done task inside a quote still turns fully grey. */
+.cm-md-blockquote {
+  --quote-keep: 70%;
+  --quote-veil-amount: 30%;
+}
+.cm-md-blockquote .cm-md-bold { color: color-mix(in oklab, var(--color-bold) var(--quote-keep), var(--text-subtle)); }
+.cm-md-blockquote .cm-md-italic { color: color-mix(in oklab, var(--color-italic) var(--quote-keep), var(--text-subtle)); }
+.cm-md-blockquote .cm-md-strikethrough { color: color-mix(in oklab, var(--color-strikethrough) var(--quote-keep), var(--text-subtle)); }
+.cm-md-blockquote .cm-md-link {
+  color: color-mix(in oklab, var(--color-link) var(--quote-keep), var(--text-subtle));
+  text-decoration-color: currentColor;
+}
+.cm-md-blockquote .cm-md-inline-code {
+  background: color-mix(in oklab, var(--color-code-bg) var(--quote-keep), transparent);
+}
+.cm-md-blockquote .cm-md-bullet { color: color-mix(in oklab, var(--color-list-marker) var(--quote-keep), var(--text-subtle)); }
+.cm-md-blockquote .cm-md-checkbox { filter: saturate(0.7); }
+
+/* A heading's colour is a background clipped to its glyphs, often a gradient,
+ * which `color-mix` cannot reach. A translucent layer of the quote grey on top
+ * of it does the same mix, and follows the gradient wherever it goes. */
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .cm-content .cm-line.cm-md-blockquote:is(.cm-md-h1, .cm-md-h2, .cm-md-h3, .cm-md-h4, .cm-md-h5, .cm-md-h6) {
+    --quote-veil: color-mix(in srgb, var(--text-subtle) var(--quote-veil-amount), transparent);
+    background-size: 100% 100%, var(--heading-grad-span, 18em) 100%;
+  }
+  .cm-content .cm-line.cm-md-blockquote.cm-md-h1 { background-image: linear-gradient(var(--quote-veil), var(--quote-veil)), var(--heading-grad-1, none); }
+  .cm-content .cm-line.cm-md-blockquote.cm-md-h2 { background-image: linear-gradient(var(--quote-veil), var(--quote-veil)), var(--heading-grad-2, none); }
+  .cm-content .cm-line.cm-md-blockquote.cm-md-h3 { background-image: linear-gradient(var(--quote-veil), var(--quote-veil)), var(--heading-grad-3, none); }
+  .cm-content .cm-line.cm-md-blockquote.cm-md-h4 { background-image: linear-gradient(var(--quote-veil), var(--quote-veil)), var(--heading-grad-4, none); }
+  .cm-content .cm-line.cm-md-blockquote.cm-md-h5 { background-image: linear-gradient(var(--quote-veil), var(--quote-veil)), var(--heading-grad-5, none); }
+  .cm-content .cm-line.cm-md-blockquote.cm-md-h6 { background-image: linear-gradient(var(--quote-veil), var(--quote-veil)), var(--heading-grad-6, none); }
+}
+
 /* Lists
  *
  * Nesting indent. One depth is one step of `--list-indent-step`, and nothing
