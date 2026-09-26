@@ -571,12 +571,20 @@ impl Stash {
 
     /// One page of the stash, or of the trash with `deleted` (plan D6).
     pub fn list(&self, q: &ListQuery) -> Result<ListResult, String> {
-        let tag = match q.tag.as_deref() {
-            Some(t) => normalize_tag(t)?,
-            None => None,
+        let after = q.cursor.as_deref().map(decode_cursor).transpose()?;
+        let tag = match q.tag.as_deref().map(normalize_tag).transpose()? {
+            // Given but empty once normalized (`#`): a tag no entry can carry,
+            // so nothing matches — not the whole stash, as no filter would.
+            Some(None) => {
+                return Ok(ListResult {
+                    entries: Vec::new(),
+                    total: 0,
+                    next_cursor: None,
+                })
+            }
+            given => given.flatten(),
         };
         let repo = normalize_repo(q.repo.as_deref());
-        let after = q.cursor.as_deref().map(decode_cursor).transpose()?;
         let limit = q.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
         let key = |row: &EntryRow| sort_key(row, q.sort, q.deleted);
 
@@ -1518,6 +1526,24 @@ mod tests {
             vec![s.b.clone(), s.a.clone()]
         );
         assert_eq!(list(query(|q| q.deleted = true)), vec![s.e.clone()]);
+    }
+
+    #[test]
+    fn a_tag_filter_that_normalizes_to_nothing_matches_nothing() {
+        // `#` is a filter for a tag no entry can have — not "no filter".
+        let (mut stash, root) = stash_in("list-empty-tag");
+        seed(&mut stash, &root);
+        for tag in ["#", "", "  ", "##"] {
+            let r = stash.list(&query(|q| q.tag = Some(tag.into()))).unwrap();
+            assert_eq!((r.entries.len(), r.total), (0, 0), "{tag:?}");
+            assert_eq!(r.next_cursor, None);
+        }
+        assert!(
+            stash
+                .list(&query(|q| q.tag = Some("two words".into())))
+                .is_err(),
+            "an invalid tag is still an error"
+        );
     }
 
     #[test]
