@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { EditorState } from '@codemirror/state';
 import {
+  computeFenceAutoClose,
   computeOrderedListRenumberChanges,
   computeListIndentChanges,
   indentStepFor,
@@ -285,5 +286,31 @@ describe('selectedLineNumbers', () => {
         { from: doc.line(2).from, to: doc.line(3).to },
       ])
     ).toEqual([1, 2, 3]);
+  });
+});
+
+describe('computeFenceAutoClose', () => {
+  /** The line after Enter at its end, with `|` at the caret. */
+  function close(text: string): string | null {
+    const r = computeFenceAutoClose(text, text.length);
+    if (!r) return null;
+    const out = text + r.insert;
+    return out.slice(0, r.caret) + '|' + out.slice(r.caret);
+  }
+
+  it('closes an unquoted fence exactly as before', () => {
+    expect(close('```js')).toBe('```js\n|\n```');
+    expect(close('  ````')).toBe('  ````\n  |\n  ````');
+  });
+
+  it('carries the quote prefix onto both new lines', () => {
+    expect(close('> ```js')).toBe('> ```js\n> |\n> ```');
+    expect(close('> > ```')).toBe('> > ```\n> > |\n> > ```');
+    expect(close('>```')).toBe('>```\n> |\n> ```');
+  });
+
+  it('declines anywhere but the end of a fence line', () => {
+    expect(computeFenceAutoClose('```js', 3)).toBeNull();
+    expect(computeFenceAutoClose('> text', 6)).toBeNull();
   });
 });

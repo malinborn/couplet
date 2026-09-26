@@ -94,6 +94,13 @@ describe('computeBlockFormatRemoval — bullet lists', () => {
   });
 });
 
+describe('computeBlockFormatRemoval — item starting with a hidden marker', () => {
+  it('SoleItemStartingWithBold_CaretPastOpeningMarker_BecomesParagraph', () => {
+    // "- **b**" caret at "b" (pos 4): the start of the item on screen.
+    expect(apply('- **b**\n', 4)).toEqual({ doc: '**b**\n', caret: 2 });
+  });
+});
+
 describe('computeBlockFormatRemoval — ordered lists', () => {
   it('MiddleItem_ThreeItems_SplitsListSameAsBullet', () => {
     // "1. a\n2. b\n3. c\n" caret at "b" (pos 8) -> "1. a\n\nb\n\n3. c\n"
@@ -135,9 +142,62 @@ describe('computeBlockFormatRemoval — blockquotes', () => {
     expect(apply('> a\n> b\n> c\n', 6)).toEqual({ doc: '> a\n\nb\n\n> c\n', caret: 5 });
   });
 
+  it('LineStartingWithBold_CaretPastHiddenOpeningMarker_StillStrips', () => {
+    // "> **bold** x" caret at "b" (pos 4) — visually the start of the line's
+    // content, because `**` is hidden. Without this the Backspace would fall
+    // through and delete the hidden space after ">".
+    expect(apply('> **bold** x\n', 4)).toEqual({ doc: '**bold** x\n', caret: 2 });
+    expect(apply('> > *i*\n', 5)).toEqual({ doc: '> *i*\n', caret: 3 });
+  });
+
   it('NestedBlockquote_LosesOneLevelOnly', () => {
     // "> > nested\n" caret at "nested" (pos 4) -> "> nested\n"
     expect(apply('> > nested\n', 4)).toEqual({ doc: '> nested\n', caret: 2 });
+  });
+});
+
+describe('computeBlockFormatRemoval — lists inside a blockquote', () => {
+  // Rendered since quotes are descended into: the bullet is hidden, so a
+  // default Backspace here would eat the visible space and leave `-a` behind.
+  it('QuotedSoleItem_BecomesQuoteParagraph', () => {
+    expect(apply('> - a\n', 4)).toEqual({ doc: '> a\n', caret: 2 });
+  });
+
+  it('QuotedOrderedItem_BecomesQuoteParagraph', () => {
+    expect(apply('> 1. a\n', 5)).toEqual({ doc: '> a\n', caret: 2 });
+  });
+
+  it('QuotedFirstItem_TwoItems_SeparatedByBlankQuoteLine', () => {
+    // A bare "> a" directly above "> - b" is fine, but the blank quote line
+    // keeps the ejected paragraph symmetric with the unquoted case.
+    expect(apply('> - a\n> - b\n', 4)).toEqual({ doc: '> a\n>\n> - b\n', caret: 2 });
+  });
+
+  it('QuotedLastItem_TwoItems_BlankQuoteLineKeepsItOutOfTheItemAbove', () => {
+    // Without the blank "> " line, "> b" is a lazy continuation of item "a".
+    expect(apply('> - a\n> - b\n', 10)).toEqual({ doc: '> - a\n>\n> b\n', caret: 10 });
+  });
+
+  it('QuotedNestedItem_OutdentsOneLevel_KeepingTheQuote', () => {
+    expect(apply('> - a\n>   - b\n', 12)).toEqual({ doc: '> - a\n> - b\n', caret: 10 });
+  });
+
+  it('QuotedItemStartingWithBold_CaretPastHiddenOpeningMarker_StillStrips', () => {
+    // "> - **b**": the caret the user sees at the start of "b" is at 6, past
+    // the hidden `**`. It stays inside the bold after the strip.
+    expect(apply('> - **b**\n', 6)).toEqual({ doc: '> **b**\n', caret: 4 });
+  });
+
+  it('QuoteInsideListItem_SeparatorUsesTheContinuationPrefix_NotTheOuterMarker', () => {
+    // "- > - a\n  > - b": the quote sits in an outer list item. The blank
+    // quote line must continue that item ("  >"), not repeat "- >", which
+    // would open a new outer item.
+    expect(apply('- > - a\n  > - b\n', 6)).toEqual({ doc: '- > a\n  >\n  > - b\n', caret: 4 });
+    expect(apply('1. > - a\n   > - b\n', 7)).toEqual({ doc: '1. > a\n   >\n   > - b\n', caret: 5 });
+  });
+
+  it('ItemInsideNestedQuote_KeepsBothQuoteLevels', () => {
+    expect(apply('> > - a\n', 6)).toEqual({ doc: '> > a\n', caret: 4 });
   });
 });
 

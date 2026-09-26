@@ -3,8 +3,12 @@ import { EditorSelection } from '@codemirror/state';
 import type { EditorState, Extension, TransactionSpec } from '@codemirror/state';
 import { isLiveRenderActive } from './inline-continuation';
 
-/** A run of one to six `#` and nothing else — an ATX heading marker so far. */
-const HEADING_RUN = /^#{1,6}$/;
+/**
+ * A run of one to six `#` and nothing else — an ATX heading marker so far —
+ * optionally behind a blockquote prefix, since a heading inside a quote is
+ * rendered too (`> ## h`).
+ */
+const HEADING_RUN = /^(?:[ \t]*>[ \t]?)*#{1,6}$/;
 
 /**
  * `#` alone is not a heading: CommonMark needs whitespace after the run, so

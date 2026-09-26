@@ -5,6 +5,7 @@ import { languages } from '@codemirror/language-data';
 import { Strikethrough, Table } from '@lezer/markdown';
 import {
   computeCodeBlockExit,
+  computeQuotedCodeNewline,
   computeFenceArrowTarget,
   fenceGeometryAt,
 } from './code-block-exit';
@@ -181,5 +182,69 @@ describe('computeFenceArrowTarget', () => {
 
   it('passes outside a code block', () => {
     expect(computeFenceArrowTarget(makeState(doc, 2), true)).toBe('pass');
+  });
+});
+
+describe('computeQuotedCodeNewline — Enter in a code block inside a quote', () => {
+  function enter(doc: string, pos: number): string | null {
+    const state = makeState(doc, pos);
+    const result = computeQuotedCodeNewline(state);
+    if (!result) return null;
+    const next = state.update({
+      changes: result.changes,
+      selection: EditorSelection.cursor(result.caret),
+    }).state;
+    return rendered({ doc: next.doc.toString(), caret: next.selection.main.head });
+  }
+
+  const doc = ['> ```js', '> a1', '>   b2', '> ```', '> after'].join('\n');
+
+  it('continues the quote prefix, so the fence is not closed early', () => {
+    expect(enter(doc, at(doc, 2, 4))).toBe(
+      ['> ```js', '> a1', '> |', '>   b2', '> ```', '> after'].join('\n')
+    );
+  });
+
+  it("keeps the code's own indentation", () => {
+    expect(enter(doc, at(doc, 3, 6))).toBe(
+      ['> ```js', '> a1', '>   b2', '>   |', '> ```', '> after'].join('\n')
+    );
+  });
+
+  it('adds one level per enclosing quote and no more', () => {
+    const nested = ['> > ```', '> > > x', '> > ```'].join('\n');
+    expect(enter(nested, at(nested, 2, 7))).toBe(['> > ```', '> > > x', '> > |', '> > ```'].join('\n'));
+  });
+
+  // In live-render the line start is a legal caret stop (Home, or ArrowLeft
+  // over the hidden prefix). A bare newline there ended the quote.
+  it('at the line start, before the hidden prefix, adds a prefixed line above', () => {
+    expect(enter(doc, at(doc, 2, 0))).toBe(
+      ['> ```js', '>', '|> a1', '>   b2', '> ```', '> after'].join('\n')
+    );
+    expect(enter(doc, at(doc, 2, 1))).toBe(
+      ['> ```js', '>', '>| a1', '>   b2', '> ```', '> after'].join('\n')
+    );
+    expect(enter(doc, at(doc, 4, 0))).toBe(
+      ['> ```js', '> a1', '>   b2', '>', '|> ```', '> after'].join('\n')
+    );
+    const nested = ['> > ```', '> > x', '> > ```'].join('\n');
+    expect(enter(nested, at(nested, 2, 0))).toBe(['> > ```', '> >', '|> > x', '> > ```'].join('\n'));
+  });
+
+  it('continues the prefix when the opening fence line is split', () => {
+    expect(enter(doc, at(doc, 1, 6))).toBe(['> ```j', '> |s', '> a1', '>   b2', '> ```', '> after'].join('\n'));
+  });
+
+  it('leaves the end of the opening fence line to the fence auto-close', () => {
+    expect(enter(doc, at(doc, 1, 7))).toBeNull();
+    const open = '> ```js';
+    expect(enter(open, open.length)).toBeNull();
+  });
+
+  it('declines on the fence lines and outside quotes', () => {
+    expect(enter(doc, at(doc, 4, 5))).toBeNull();
+    const plain = ['```js', 'a1', '```'].join('\n');
+    expect(enter(plain, at(plain, 2, 2))).toBeNull();
   });
 });
