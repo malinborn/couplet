@@ -363,17 +363,20 @@ impl Stash {
     /// are raised (`stashed_at = now`), re-tagged (union) and re-positioned.
     /// Paths are normalized here — the dedup key is `path_norm`'s spelling —
     /// and the whole request is one transaction (plan D4): a trashed entry
-    /// among the paths refuses all of it (roadmap A8).
+    /// among the paths refuses all of it (roadmap A8). A file named twice —
+    /// in any two spellings — is put away once, at its first place: a second
+    /// pass would report it `created: false` and emit its id twice.
     pub fn put_away(&mut self, req: &PutAway, now: i64) -> Result<Vec<PutAwayResult>, String> {
-        if req.paths.len() > 1 && (req.caret.is_some() || req.top_line.is_some()) {
+        let mut paths: Vec<String> = Vec::with_capacity(req.paths.len());
+        for path in req.paths.iter().map(|p| crate::path_norm::normalize_str(p)) {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+        if paths.len() > 1 && (req.caret.is_some() || req.top_line.is_some()) {
             return Err("caret and topLine belong to a single path".to_string());
         }
         let tags = normalize_tags(&req.tags)?;
-        let paths: Vec<String> = req
-            .paths
-            .iter()
-            .map(|p| crate::path_norm::normalize_str(p))
-            .collect();
         let notes_dir = self.notes_dir_spelling();
         let tx = self
             .conn
@@ -920,6 +923,37 @@ mod tests {
         assert!(first[0].created && !second[0].created);
         assert_eq!(first[0].entry.id, second[0].entry.id);
         assert_eq!(rows(&stash, "entries"), 1);
+    }
+
+    #[test]
+    fn a_path_given_twice_in_one_request_is_one_entry() {
+        let (mut stash, root) = stash_in("put-twice");
+        let a = user_file(&root, "a.md", "a");
+        let b = user_file(&root, "b.md", "b");
+        let r = stash
+            .put_away(&put(vec![a.clone(), a.clone()]), T0)
+            .unwrap();
+        assert_eq!(r.len(), 1);
+        assert!(r[0].created);
+        assert_eq!(rows(&stash, "entries"), 1);
+
+        // Two spellings of one file, order of first appearance kept.
+        let a_dots = root.join("work/./a.md").to_string_lossy().into_owned();
+        let r = stash
+            .put_away(&put(vec![b.clone(), a_dots, a.clone()]), T0 + 1)
+            .unwrap();
+        let paths: Vec<&str> = r.iter().map(|x| x.entry.path.as_str()).collect();
+        assert_eq!(paths, vec![b.as_str(), a.as_str()]);
+        assert_eq!(rows(&stash, "entries"), 2);
+
+        // Still a single path, so a caret belongs to it.
+        let req = PutAway {
+            paths: vec![a.clone(), a],
+            caret: Some(5),
+            ..PutAway::default()
+        };
+        let r = stash.put_away(&req, T0 + 2).unwrap();
+        assert_eq!((r.len(), r[0].entry.caret), (1, 5));
     }
 
     #[test]
