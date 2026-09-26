@@ -29,6 +29,7 @@ mod recent;
 mod recovery;
 mod routing;
 mod session;
+mod stash;
 mod tab_commands;
 mod tabs;
 mod typing;

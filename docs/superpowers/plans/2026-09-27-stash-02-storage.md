@@ -3502,12 +3502,21 @@ Then, per the roadmap's stage conventions: `code-reviewer` over the stage diff (
 
 Filled in by the implementer (Task 1 Step 1, Task 1 Step 5, Task 14 Step 4).
 
-**Before** (Task 1, before adding `rusqlite`):
-- cargo test: … passed / … ignored
-- clippy warnings: …
-- release `md-mini` binary: … bytes
+**Before** (Task 1, before adding `rusqlite`; branch `feat/stash` at `1c4ecfe`, 2026-09-27):
+- cargo test: 666 passed / 3 ignored (lib; the two other test targets 0/0)
+- clippy warnings: 50 (`warning: \`md-mini\` (lib) generated 50 warnings`)
+- release `md-mini` binary: 17128976 bytes
 
-**FTS5 source check** (Task 1 Step 5): paste the two `grep` outputs with their crate versions.
+**FTS5 source check** (Task 1 Step 5), resolved `rusqlite 0.37.0` / `libsqlite3-sys 0.35.0` (bundled SQLite 3.50.2), built offline (`CARGO_NET_OFFLINE=true`):
+
+```
+~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusqlite-0.37.0/Cargo.toml:74:backup = []
+~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusqlite-0.37.0/Cargo.toml:77:bundled = [
+~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusqlite-0.37.0/Cargo.toml:102:functions = []
+~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libsqlite3-sys-0.35.0/build.rs:132:            .flag("-DSQLITE_ENABLE_FTS5")
+```
+
+`Cargo.lock` gained six packages and changed none: `rusqlite 0.37.0`, `libsqlite3-sys 0.35.0` and their dependencies `fallible-iterator 0.3.0`, `fallible-streaming-iterator 0.1.9`, `hashlink 0.10.0`, `vcpkg 0.2.15`. The probe's Cyrillic case assertion (`"ТАЙНИК"`) passes as written.
 
 **After** (Task 14):
 - cargo test: … passed / … ignored
