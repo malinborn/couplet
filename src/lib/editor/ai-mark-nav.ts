@@ -1,4 +1,10 @@
-import { EditorSelection, type EditorState, type StateEffect, type TransactionSpec } from '@codemirror/state';
+import {
+  EditorSelection,
+  type EditorState,
+  type StateEffect,
+  type Text,
+  type TransactionSpec,
+} from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { foldedRanges, unfoldEffect } from '@codemirror/language';
 import { aiHighlightRanges } from './ai-highlight';
@@ -11,9 +17,10 @@ export type AiMarkDirection = 1 | -1;
 /**
  * Starts of the highlighted edits, one per run of spans.
  *
- * A single `couplet edit` often arrives as several spans that touch or overlap
- * — a changed word followed by a changed word. Reading them as one mark means
- * one ⌘' per edit, not one per fragment of it.
+ * `couplet edit` already hands over whole-line spans with neighbouring lines
+ * joined (`computeChangedLineRanges`), so two spans are normally a line apart.
+ * The merge here is defensive: spans mapped through later typing can end up
+ * touching, and they should still cost one ⌘', not two.
  */
 function highlightStarts(state: EditorState): number[] {
   const ranges = aiHighlightRanges(state).sort((a, b) => a.from - b.from);
@@ -85,13 +92,16 @@ export function aiMarkPositions(state: EditorState): number[] {
  * Strictly after (or before) the head, so a caret sitting on a mark moves on
  * to the next one instead of staying put. `null` when there are no marks.
  */
-export function nextAiMark(state: EditorState, dir: AiMarkDirection): number | null {
+export function nextAiMark(
+  state: EditorState,
+  dir: AiMarkDirection,
+  from: number = state.selection.main.head
+): number | null {
   const marks = aiMarkPositions(state);
   if (marks.length === 0) return null;
-  const head = state.selection.main.head;
-  if (dir === 1) return marks.find((pos) => pos > head) ?? marks[0];
+  if (dir === 1) return marks.find((pos) => pos > from) ?? marks[0];
   // No `findLast`: the tsconfig lib is ES2020.
-  for (let i = marks.length - 1; i >= 0; i--) if (marks[i] < head) return marks[i];
+  for (let i = marks.length - 1; i >= 0; i--) if (marks[i] < from) return marks[i];
   return marks[marks.length - 1];
 }
 
@@ -104,9 +114,17 @@ export function nextAiMark(state: EditorState, dir: AiMarkDirection): number | n
  * side effect of a selection change; unfolding explicitly keeps "the caret
  * never lands in hidden text" from resting on that detail.
  */
-export function aiMarkJump(state: EditorState, dir: AiMarkDirection): TransactionSpec | null {
-  const pos = nextAiMark(state, dir);
-  if (pos === null) return null;
+export function aiMarkJump(
+  state: EditorState,
+  dir: AiMarkDirection,
+  from: number = state.selection.main.head
+): TransactionSpec | null {
+  const pos = nextAiMark(state, dir, from);
+  return pos === null ? null : jumpTo(state, pos);
+}
+
+/** The jump transaction for an already chosen mark — see `aiMarkJump`. */
+function jumpTo(state: EditorState, pos: number): TransactionSpec {
   const effects: StateEffect<unknown>[] = [];
   foldedRanges(state).between(pos, pos, (from, to) => {
     if (from < pos && pos < to) effects.push(unfoldEffect.of({ from, to }));
@@ -123,9 +141,39 @@ export function aiMarkJump(state: EditorState, dir: AiMarkDirection): Transactio
  * says nothing, when there are no marks.
  */
 export function gotoAiMark(view: EditorView, dir: AiMarkDirection): boolean {
-  const spec = aiMarkJump(view.state, dir);
-  if (!spec) return false;
-  view.dispatch(spec);
+  const state = view.state;
+  const last = lastJump.get(view);
+  const target = nextAiMark(state, dir, searchFrom(state, last));
+  if (target === null) return false;
+  view.dispatch(jumpTo(state, target));
   view.focus();
+  lastJump.set(view, { doc: view.state.doc, target, landed: view.state.selection.main.head });
   return true;
+}
+
+/**
+ * Where the last jump aimed, and where the caret actually ended up.
+ *
+ * They differ in live-render: `caretNormalizeFilter` pushes a caret out of a
+ * hidden marker, so a comment anchored between the two `*` of `**bold**`
+ * lands the caret one step before the mark. Searching from that caret finds
+ * the same mark again, and ⌘' would never get past it.
+ */
+export interface LastJump {
+  doc: Text;
+  target: number;
+  landed: number;
+}
+
+const lastJump = new WeakMap<EditorView, LastJump>();
+
+/**
+ * The caret head, unless the caret has not moved since a jump that the
+ * editor nudged off its mark — then the mark itself, so the next search
+ * starts past it. Any edit (new `doc`) or caret motion drops the memory.
+ */
+export function searchFrom(state: EditorState, last: LastJump | undefined): number {
+  const head = state.selection.main.head;
+  if (last && last.doc === state.doc && last.landed === head) return last.target;
+  return head;
 }

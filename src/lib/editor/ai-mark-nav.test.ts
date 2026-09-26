@@ -4,7 +4,7 @@ import { codeFolding, foldEffect, foldedRanges } from '@codemirror/language';
 import { aiHighlightField, setAiHighlights, type AiHighlightRange } from './ai-highlight';
 import { aiCommentField, addAiComment, type CommentActions } from './ai-comment';
 import { aiAskField, addAiAsk, type AskSpec } from './ai-ask';
-import { aiMarkJump, aiMarkPositions, nextAiMark } from './ai-mark-nav';
+import { aiMarkJump, aiMarkPositions, nextAiMark, searchFrom } from './ai-mark-nav';
 import type { CommentThread } from '../comment-format';
 
 // Line starts: 0, 6, 12, 18, 24. Every line is five letters and a newline.
@@ -206,9 +206,14 @@ describe('aiMarkJump', () => {
       return n;
     };
     expect(count(state)).toBe(1);
-    const next = state.update(aiMarkJump(state, 1)!).state;
+    const spec = aiMarkJump(state, 1)!;
+    const next = state.update(spec).state;
     expect(count(next)).toBe(0);
     expect(next.selection.main.head).toBe(14);
+    // Without the selection, so CM6's own "caret landed in a fold" cleanup
+    // cannot be what opened it.
+    const effectsOnly = state.update({ effects: spec.effects }).state;
+    expect(count(effectsOnly)).toBe(0);
   });
 
   it('leaves a fold that does not contain the target alone', () => {
@@ -220,5 +225,37 @@ describe('aiMarkJump', () => {
       n++;
     });
     expect(n).toBe(1);
+  });
+});
+
+describe('searchFrom', () => {
+  it('is the caret head with no previous jump', () => {
+    expect(searchFrom(makeState(DOC, 7), undefined)).toBe(7);
+  });
+
+  it('resumes from the mark when the caret was nudged off it and has not moved', () => {
+    // live-render pushed the caret from 14 back to 13; the next search must
+    // start past 14, not find it again.
+    const state = withEffects(makeState(DOC, 13), [
+      highlight([
+        { from: 14, to: 16 },
+        { from: 26, to: 28 },
+      ]),
+    ]);
+    const from = searchFrom(state, { doc: state.doc, target: 14, landed: 13 });
+    expect(from).toBe(14);
+    expect(nextAiMark(state, 1, from)).toBe(26);
+  });
+
+  it('forgets the jump once the caret moved', () => {
+    const state = makeState(DOC, 20);
+    expect(searchFrom(state, { doc: state.doc, target: 14, landed: 13 })).toBe(20);
+  });
+
+  it('forgets the jump once the document changed', () => {
+    const before = makeState(DOC, 13);
+    const after = before.update({ changes: { from: 28, insert: 'x' } }).state;
+    expect(after.selection.main.head).toBe(13);
+    expect(searchFrom(after, { doc: before.doc, target: 14, landed: 13 })).toBe(13);
   });
 });
