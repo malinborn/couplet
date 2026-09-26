@@ -8,6 +8,7 @@
 
 mod clock;
 mod ids;
+mod notes;
 
 #[cfg(test)]
 mod fts_probe {
