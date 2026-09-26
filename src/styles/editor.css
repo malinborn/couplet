@@ -161,7 +161,7 @@
   cursor: pointer;
 }
 
-/* Formatting inside a quote is muted: every accent is mixed ~30% towards the
+/* Formatting inside a quote is muted: every accent is pulled 80% of the way to the
  * quote's own grey text, so `**bold**` in a quote reads a shade apart from
  * `**bold**` in the body. A mix rather than `filter: saturate()` because a
  * filter would also dull the bar, and does nothing to a near-black bold —
@@ -170,8 +170,8 @@
  * Placed before the ticked-task rule below on purpose: same specificity, so a
  * done task inside a quote still turns fully grey. */
 .cm-md-blockquote {
-  --quote-keep: 70%;
-  --quote-veil-amount: 30%;
+  --quote-keep: 20%;
+  --quote-veil-amount: 80%;
 }
 .cm-md-blockquote .cm-md-bold { color: color-mix(in oklab, var(--color-bold) var(--quote-keep), var(--text-subtle)); }
 .cm-md-blockquote .cm-md-italic { color: color-mix(in oklab, var(--color-italic) var(--quote-keep), var(--text-subtle)); }
@@ -184,7 +184,7 @@
   background: color-mix(in oklab, var(--color-code-bg) var(--quote-keep), transparent);
 }
 .cm-md-blockquote .cm-md-bullet { color: color-mix(in oklab, var(--color-list-marker) var(--quote-keep), var(--text-subtle)); }
-.cm-md-blockquote .cm-md-checkbox { filter: saturate(0.7); }
+.cm-md-blockquote .cm-md-checkbox { filter: saturate(0.2); }
 
 /* A heading's colour is a background clipped to its glyphs, often a gradient,
  * which `color-mix` cannot reach. A translucent layer of the quote grey on top
