@@ -136,7 +136,8 @@ pub async fn broadcast_theme(
 
 /// Theme families this build ships — the one Rust list; `dock_icon`'s tests
 /// read it too, so a family added here without a Dock variant fails a test.
-pub(crate) const VALID_FAMILIES: [&str; 6] = ["classic", "aurora", "blueprint", "phosphor", "paper", "ink"];
+pub(crate) const VALID_FAMILIES: [&str; 7] =
+    ["classic", "aurora", "blueprint", "phosphor", "paper", "ink", "autumn"];
 
 /// The `menu-event` ids `broadcast_theme` emits, pulled out as a pure
 /// function so the validation and id-building are unit-testable without an

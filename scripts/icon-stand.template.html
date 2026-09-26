@@ -161,7 +161,11 @@ var K = {
   'paper-light':     { bg:'#f3ede2', amp:'#1f1b2e', a:'#e8563f', solid:true, t:'backlog-paper', src:'--color-cursor' },
   'paper-dark':      { bg:'#1d1a16', amp:'#f3ede2', a:'#e8563f', solid:true, t:'backlog-ink', src:'--color-cursor' },
   'ink-light':       { bg:'#efedf4', amp:'#1f1b2e', a:'#ff8a6a', m:'#e8563f', b:'#c13e7b', t:'backlog-paper', src:'--color-caret-top → #e8563f → --color-caret-bottom', glow:[.45,0], glowA:'#e8563f' },
-  'ink-dark':        { bg:'#1f1b2e', amp:'#f3ede2', a:'#ff8a6a', m:'#e8563f', b:'#c13e7b', t:'backlog-ink', src:'--color-caret-top → #e8563f → --color-caret-bottom', glow:[.55,0], glowA:'#e8563f' }
+  'ink-dark':        { bg:'#1f1b2e', amp:'#f3ede2', a:'#ff8a6a', m:'#e8563f', b:'#c13e7b', t:'backlog-ink', src:'--color-caret-top → #e8563f → --color-caret-bottom', glow:[.55,0], glowA:'#e8563f' },
+  // Autumn: знак = --text-primary, каретка = --color-caret-top → --color-caret-bottom,
+  // одно мягкое свечение без второго кольца. Кольцо/тень — от тёплых backlog-плиток.
+  'autumn-light':    { bg:'#f4e5d1', amp:'#3b1d36', a:'#cc6218', b:'#b3302a', t:'backlog-paper', src:'--color-caret-top → --color-caret-bottom', glow:[.45,0] },
+  'autumn-dark':     { bg:'#2c1934', amp:'#f2e1cd', a:'#ffa45c', b:'#ec6a55', t:'backlog-ink', src:'--color-caret-top → --color-caret-bottom', glow:[.55,0] }
 };
 // caret geometry in the 824 squircle, before the ×1.25 group scale
 var CARET = { 0:[134, 595], 1:[134, 570], 2:[134, 555], 3:[134, 535] };

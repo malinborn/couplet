@@ -117,6 +117,7 @@
   import './lib/theme/phosphor.css';
   import './lib/theme/paper.css';
   import './lib/theme/ink.css';
+  import './lib/theme/autumn.css';
   import './styles/global.css';
   import './styles/editor.css';
   import './styles/tabs.css';
@@ -2209,6 +2210,9 @@
           break;
         case 'theme_family_ink':
           theme.setFamily('ink');
+          break;
+        case 'theme_family_autumn':
+          theme.setFamily('autumn');
           break;
         case 'theme_half_light':
           theme.setHalf('light');
