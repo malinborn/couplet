@@ -1,12 +1,12 @@
-# Willkommen bei md-mini
+# Willkommen bei couplet
 
 Ein Markdown-Editor, der schon beim Tippen rendert — und den dein KI-Agent selbst bedienen kann.
 
 ## Hier anfangen: gib es deinem Agenten
 
-1. Öffne **KI → Bring deiner KI mdmini bei**.
+1. Öffne **KI → Bring deiner KI couplet bei**.
 2. Kopiere den Prompt aus diesem Dokument und gib ihn deinem Agenten.
-3. Das ist die ganze Einrichtung. Der Agent meldet md-mini als MCP-Server an, schreibt sich dafür eine eigene Skill und trägt sich selbst einen kurzen Hinweis in seine Konfiguration ein, wann er darauf zurückgreifen soll.
+3. Das ist die ganze Einrichtung. Der Agent meldet couplet als MCP-Server an, schreibt sich dafür eine eigene Skill und trägt sich selbst einen kurzen Hinweis in seine Konfiguration ein, wann er darauf zurückgreifen soll.
 
 Danach kann er:
 
@@ -21,7 +21,7 @@ Nichts läuft hinter deinem Rücken: **⌘Z** macht eine KI-Änderung genauso r�
 
 ## Mach es dir passend
 
-**Designs** — Menü **Design**. Vier Familien — Classic, Aurora, Blueprint, Phosphor —, jede mit einer hellen und einer dunklen Hälfte. Familie und Hälfte werden getrennt eingestellt: Änderst du die eine, bleibt die andere wie sie war. Aktiviere **Systemeinstellung folgen**, und die Hälfte wechselt automatisch mit deinem Mac — hell am Tag, dunkel in der Nacht —, ohne die Familie zu verlassen.
+**Designs** — Menü **Design**. Sechs Familien — Classic, Aurora, Blueprint, Phosphor, Paper, Ink —, jede mit einer hellen und einer dunklen Hälfte. Familie und Hälfte werden getrennt eingestellt: Änderst du die eine, bleibt die andere wie sie war. Aktiviere **Systemeinstellung folgen**, und die Hälfte wechselt automatisch mit deinem Mac — hell am Tag, dunkel in der Nacht —, ohne die Familie zu verlassen.
 
 **Editor-Engine** — **Ansicht → Editor-Engine**. *Live-Rendering* blendet die Markdown-Syntax vollständig aus; *Vorschau* gestaltet den Text, lässt die Markierungen aber stehen; *Roh* zeigt genau das, was im Quelltext steht. **⌘E** wechselt zwischen Quelltext und der gewählten Darstellung — nie von einer Darstellung zur anderen.
 
@@ -31,4 +31,4 @@ Nichts läuft hinter deinem Rücken: **⌘Z** macht eine KI-Änderung genauso r�
 
 - Fenster, Cursorposition und ungespeicherte Entwürfe kommen nach einem Neustart zurück.
 - **⇧⌘M** kommentiert die Auswahl, **⌘=** und **⌘−** zoomen, **⌘E** zeigt den Quelltext.
-- `mdmini` funktioniert auch im Terminal — `mdmini help` listet alles auf, was es kann.
+- `couplet` funktioniert auch im Terminal — `couplet help` listet alles auf, was es kann.

@@ -44,6 +44,16 @@ pub async fn sync_theme_menu(
     Ok(())
 }
 
+/// Sets the Dock icon for the committed theme (see `dock_icon`). Separate from
+/// `sync_theme_menu` on purpose: the menu follows a `/theme` preview, the Dock
+/// must not — a window closed with the picker open never clears its preview,
+/// and the Dock would keep a theme no window shows.
+#[command]
+pub async fn sync_dock_icon(app: AppHandle, theme: String) -> Result<(), String> {
+    crate::dock_icon::apply(&app, &theme);
+    Ok(())
+}
+
 /// Sets the Editor Engine submenu checkmarks ("raw" | "live-preview" |
 /// "live-render") to match the frontend's persisted engine. Same pattern as
 /// `sync_theme_menu`: called on startup and on every engine change, since
@@ -135,6 +145,10 @@ pub async fn broadcast_theme(
     Ok(())
 }
 
+/// Theme families this build ships — the one Rust list; `dock_icon`'s tests
+/// read it too, so a family added here without a Dock variant fails a test.
+pub(crate) const VALID_FAMILIES: [&str; 6] = ["classic", "aurora", "blueprint", "phosphor", "paper", "ink"];
+
 /// The `menu-event` ids `broadcast_theme` emits, pulled out as a pure
 /// function so the validation and id-building are unit-testable without an
 /// `AppHandle` (which needs a running app to construct).
@@ -143,7 +157,6 @@ fn theme_event_ids(
     half: Option<String>,
     follow_system: Option<bool>,
 ) -> Result<Vec<String>, String> {
-    const VALID_FAMILIES: [&str; 4] = ["classic", "aurora", "blueprint", "phosphor"];
     const VALID_HALVES: [&str; 2] = ["light", "dark"];
 
     if let Some(f) = &family {
@@ -191,7 +204,7 @@ pub async fn comment_threads(path: String) -> Result<Vec<crate::comments::Thread
 ///
 /// `append_reply` sets `answered`, which is right for an agent but wrong here:
 /// the user replying again means they are waiting once more, and `open` is
-/// exactly what `mdmini watch` emits an event for — so this is what wakes the
+/// exactly what `couplet watch` emits an event for — so this is what wakes the
 /// agent for a follow-up question.
 #[command]
 pub async fn comment_reply(path: String, id: String, text: String) -> Result<(), String> {
@@ -282,6 +295,14 @@ mod tests {
             theme_event_ids(None, None, Some(false)).unwrap(),
             vec!["theme_system:off"]
         );
+    }
+
+    #[test]
+    fn theme_event_ids_accepts_every_shipped_family() {
+        for family in VALID_FAMILIES {
+            let ids = theme_event_ids(Some(family.into()), None, None).unwrap();
+            assert_eq!(ids, vec![format!("theme_family_{family}")]);
+        }
     }
 
     #[test]

@@ -8,7 +8,7 @@
  */
 
 /**
- * `paused` means a human is still typing in this thread: `mdmini watch` skips
+ * `paused` means a human is still typing in this thread: `couplet watch` skips
  * it, and the marker line carries the moment the pause runs out. See
  * {@link isAwaiting} and `Status` in `src-tauri/src/comments.rs`.
  */
@@ -61,7 +61,7 @@ export const COMMENT_PAUSE_SECONDS = 20;
  * and a card claiming "waiting" over a thread no agent will be told about is
  * worse than no card at all.
  *
- * An expired pause counts as waiting. md-mini can be closed — or killed — in
+ * An expired pause counts as waiting. couplet can be closed — or killed — in
  * the seconds before it would have committed the pause itself, and a thread
  * nobody ever un-pauses is a comment that never arrives.
  */
@@ -88,7 +88,7 @@ export function countdownLabel(msLeft: number): string {
 const THREAD_MARKER = '<!-- mdmini:c ';
 
 /**
- * The author md-mini writes for the person using it. Mirrors `SELF_AUTHOR` in
+ * The author couplet writes for the person using it. Mirrors `SELF_AUTHOR` in
  * `src-tauri/src/comments.rs`, and decides which reply the comment box edits
  * in place rather than showing as finished.
  */
@@ -436,16 +436,16 @@ export function buildWatchPrompt(docPath: string): string {
     `Watch for my comments under ${dir} and answer them.`,
     ``,
     `If you can react to an event stream (Claude Code: the Monitor tool):`,
-    `Monitor({command: "mdmini watch ${dir}", description: "new mdmini comments", persistent: true})`,
+    `Monitor({command: "couplet watch ${dir}", description: "new couplet comments", persistent: true})`,
     `persistent: true is not optional — without it the monitor dies after five`,
     `minutes and its silence is indistinguishable from "no comments".`,
     ``,
-    `If you cannot, check \`mdmini question ${dir}\` at natural points: before`,
+    `If you cannot, check \`couplet question ${dir}\` at natural points: before`,
     `asking me something in chat, and before reporting that you are done.`,
     ``,
-    `To answer: \`mdmini answer <file> --id <id>\` with the text on stdin. If a`,
+    `To answer: \`couplet answer <file> --id <id>\` with the text on stdin. If a`,
     `comment asks for a change rather than an answer, make it with`,
-    `\`mdmini edit\`, then close the thread with an answer.`,
+    `\`couplet edit\`, then close the thread with an answer.`,
   ].join('\n');
 }
 
@@ -458,6 +458,6 @@ export function buildHandoffPrompt(docPath: string, id: string): string {
     `There is an open comment ${id} on ${docPath}, in ${sidecarPath(docPath)}.`,
     `Read the thread and answer it: append a reply under it and set status to answered.`,
     `If it asks for a change to the document itself, make the change, then answer in the thread.`,
-    `With md-mini over MCP: the question and answer tools. From a shell: mdmini answer ${docPath} --id ${id} (text on stdin).`,
+    `With couplet over MCP: the question and answer tools. From a shell: couplet answer ${docPath} --id ${id} (text on stdin).`,
   ].join('\n');
 }

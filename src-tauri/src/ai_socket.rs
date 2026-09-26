@@ -1,4 +1,4 @@
-//! Command socket for driving the running app from the CLI (`mdmini show`/`edit`).
+//! Command socket for driving the running app from the CLI (`couplet show`/`edit`).
 //!
 //! A small JSON-lines protocol over a Unix domain socket: one request per line,
 //! one response per line, connection stays usable across malformed lines. See
@@ -80,7 +80,7 @@ pub enum AiRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         window_binding: Option<u32>,
     },
-    /// Open a file as a tab — `mdmini <file>` from an agent, or with
+    /// Open a file as a tab — `couplet <file>` from an agent, or with
     /// `-t`/`-b`/`-f` (spec §4). Routed like `show`.
     Open {
         #[allow(dead_code)] // protocol version, reserved for the future MCP wrapper
@@ -98,7 +98,7 @@ pub enum AiRequest {
         v: u32,
         path: String,
     },
-    /// The window listing — `mdmini ls`, MCP `windows`.
+    /// The window listing — `couplet ls`, MCP `windows`.
     Windows {
         #[allow(dead_code)] // protocol version, reserved for the future MCP wrapper
         v: u32,
@@ -242,10 +242,10 @@ pub struct AiResponse {
     /// landed in the background (the tab shimmers until it is seen).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focused: Option<bool>,
-    /// The window listing — `windows` / `mdmini ls --json` only.
+    /// The window listing — `windows` / `couplet ls --json` only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub windows: Option<Vec<WindowListing>>,
-    /// Every tab a multi-file `mdmini <files>` opened — that CLI call only.
+    /// Every tab a multi-file `couplet <files>` opened — that CLI call only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub opened: Option<Vec<OpenedTab>>,
 }
@@ -273,7 +273,7 @@ pub struct ListedTab {
     pub active: bool,
 }
 
-/// One window as `mdmini ls --json` and MCP `windows` report it.
+/// One window as `couplet ls --json` and MCP `windows` report it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WindowListing {
     /// `#N`; `None` only when all 99 numbers were taken.
@@ -287,7 +287,7 @@ pub struct WindowListing {
     pub tabs: Vec<ListedTab>,
 }
 
-/// One tab a routed `mdmini <files>` opened.
+/// One tab a routed `couplet <files>` opened.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OpenedTab {
     pub path: String,
@@ -295,8 +295,8 @@ pub struct OpenedTab {
     pub focused: bool,
 }
 
-/// Command socket path for a product name: release `/tmp/md_mini_cmd.sock`, dev
-/// build `/tmp/md_mini_dev_cmd.sock`. Mirrors the dev/release isolation rule in
+/// Command socket path for a product name: release `/tmp/couplet_cmd.sock`, dev
+/// build `/tmp/couplet_dev_cmd.sock`. Mirrors the dev/release isolation rule in
 /// `paths::dir_name`, applied to a flat filename since the socket lives in
 /// `/tmp`, not the app data directory.
 pub fn socket_path(product_name: &str) -> PathBuf {
@@ -320,7 +320,7 @@ pub fn remove_socket(app: &AppHandle) {
         .config()
         .product_name
         .clone()
-        .unwrap_or_else(|| "md-mini".to_string());
+        .unwrap_or_else(|| crate::paths::FALLBACK_PRODUCT_NAME.to_string());
     let _ = std::fs::remove_file(socket_path(&product_name));
 }
 
@@ -335,7 +335,7 @@ pub fn start(app: &AppHandle) {
         .config()
         .product_name
         .clone()
-        .unwrap_or_else(|| "md-mini".to_string());
+        .unwrap_or_else(|| crate::paths::FALLBACK_PRODUCT_NAME.to_string());
     let path = socket_path(&product_name);
 
     let _ = std::fs::remove_file(&path);
@@ -1195,13 +1195,17 @@ pub async fn ai_forward(
 }
 
 // ---------------------------------------------------------------------------
-// CLI client (`mdmini ai show|edit ...`) — std only, never touches Tauri.
+// CLI client (`couplet ai show|edit ...`) — std only, never touches Tauri.
 // ---------------------------------------------------------------------------
 
 /// Default command socket path, overridable with `--socket` for dev builds
-/// and tests (the dev app binds `/tmp/md_mini_dev_cmd.sock` instead — see
-/// `socket_path`).
-const DEFAULT_SOCKET_PATH: &str = "/tmp/md_mini_cmd.sock";
+/// and tests (the dev app binds `/tmp/couplet_dev_cmd.sock` instead — see
+/// `socket_path`). Derived from the release product name, never spelled out:
+/// the app binds by its live `productName`, and a literal here is what would
+/// leave the CLI dialling a dead socket after a rename.
+fn default_socket_path() -> PathBuf {
+    socket_path(crate::paths::RELEASE_PRODUCT_NAME)
+}
 
 /// Parsed `ai <verb> <file> [flags]` arguments, verb-specific flags in `verb`.
 #[derive(Debug, PartialEq)]
@@ -1236,15 +1240,15 @@ enum CliVerb {
         free_text: bool,
         window: Option<u32>,
     },
-    /// `mdmini <files> [-t N] [-b | -f]` routed through the socket (spec §4).
+    /// `couplet <files> [-t N] [-b | -f]` routed through the socket (spec §4).
     Open {
         paths: Vec<String>,
         window: Option<u32>,
         focus: Option<bool>,
     },
-    /// `mdmini ls [--json]`.
+    /// `couplet ls [--json]`.
     Ls { json: bool },
-    /// `mdmini close <file>`.
+    /// `couplet close <file>`.
     Close,
     /// Local, offline: prints the full CLI reference. No file arg, no flags.
     Help,
@@ -1262,7 +1266,7 @@ enum CliVerb {
     Watch,
 }
 
-const USAGE: &str = "usage: mdmini ai show <file> [--line N | --find TEXT] [-t N] [-b | -f] [--transient] [--socket PATH]\n       mdmini ai edit <file> [--show] [--allow-empty] [-t N] [--socket PATH]\n       mdmini ai ask <file> --question TEXT --option TEXT [--option TEXT ...] [--multi] [--free-text] [--at-line N | --at-find TEXT] [--timeout SECS] [-t N] [--socket PATH]\n       mdmini ai open <file>... [-t N] [-b | -f] [--socket PATH]\n       mdmini ai ls [--json] [--socket PATH]\n       mdmini ai close <file> [--socket PATH]\n       mdmini ai help\n       mdmini ai agent [--mcp]\n       mdmini ai question [<file>]\n       mdmini ai answer <file> --id ID\n       mdmini ai watch [<dir>]";
+const USAGE: &str = "usage: couplet ai show <file> [--line N | --find TEXT] [-t N] [-b | -f] [--transient] [--socket PATH]\n       couplet ai edit <file> [--show] [--allow-empty] [-t N] [--socket PATH]\n       couplet ai ask <file> --question TEXT --option TEXT [--option TEXT ...] [--multi] [--free-text] [--at-line N | --at-find TEXT] [--timeout SECS] [-t N] [--socket PATH]\n       couplet ai open <file>... [-t N] [-b | -f] [--socket PATH]\n       couplet ai ls [--json] [--socket PATH]\n       couplet ai close <file> [--socket PATH]\n       couplet ai help\n       couplet ai agent [--mcp]\n       couplet ai question [<file>]\n       couplet ai answer <file> --id ID\n       couplet ai watch [<dir>]";
 
 /// `-t N` / `--window N`: a window number, plain digits from 1 (spec §3: the
 /// CLI has no `#`).
@@ -1537,7 +1541,7 @@ fn parse_cli_args(args: &[String]) -> Result<CliArgs, String> {
 
 /// Whether an `edit` with this stdin content should be refused before ever
 /// touching the socket: empty content without `--allow-empty` is almost
-/// always a shell mistake (`cat /dev/null | mdmini edit file.md`, a failed
+/// always a shell mistake (`cat /dev/null | couplet edit file.md`, a failed
 /// upstream command whose empty output got piped in) that would otherwise
 /// silently truncate the live buffer to nothing.
 fn refuse_empty_edit(content: &str, allow_empty: bool) -> Option<AiResponse> {
@@ -1565,42 +1569,43 @@ fn print_response_and_exit_code(response_json: &str) -> i32 {
     exit_code_for(response_json)
 }
 
-/// Full reference for every `mdmini` verb — printed by `mdmini help`. Single
+/// Full reference for every `couplet` verb — printed by `couplet help`. Single
 /// source of truth: keep in sync with `docs/ai-interface.md` by hand (the doc
-/// says as much). Local and offline — works whether or not md-mini is
+/// says as much). Local and offline — works whether or not couplet is
 /// installed or running.
 fn help_text() -> String {
     // Uses `###`-delimited raw string, not `#` — the body contains a literal
     // `"##` sequence (`--find "## Deploy"`) that would otherwise terminate a
     // single-hash raw string early.
-    r###"mdmini — minimalist live-preview markdown editor for macOS
+    r###"couplet — minimalist live-preview markdown editor for macOS
+(formerly md-mini: the `mdmini` command still works and does the same thing)
 
 USAGE
-  mdmini <file>... [-t N] [-b | -f]         Open files as tabs (see "Opening files")
-  mdmini show <file> [--line N | --find TEXT] [-t N] [-b | -f] [--transient] [--socket PATH]
-  mdmini edit <file> [--show] [--allow-empty] [-t N] [--socket PATH] < new-content
-  mdmini ask <file> --question TEXT --option TEXT [--option TEXT ...] [--multi] [--free-text] [--at-line N | --at-find TEXT] [--timeout SECS] [-t N] [--socket PATH]
-  mdmini ls [--json]
-  mdmini close <file>
-  mdmini question [<file>]
-  mdmini answer <file> --id ID < reply-text
-  mdmini watch [<dir>]
-  mdmini mcp [--socket PATH]
-  mdmini help
-  mdmini agent [--mcp]
+  couplet <file>... [-t N] [-b | -f]         Open files as tabs (see "Opening files")
+  couplet show <file> [--line N | --find TEXT] [-t N] [-b | -f] [--transient] [--socket PATH]
+  couplet edit <file> [--show] [--allow-empty] [-t N] [--socket PATH] < new-content
+  couplet ask <file> --question TEXT --option TEXT [--option TEXT ...] [--multi] [--free-text] [--at-line N | --at-find TEXT] [--timeout SECS] [-t N] [--socket PATH]
+  couplet ls [--json]
+  couplet close <file>
+  couplet question [<file>]
+  couplet answer <file> --id ID < reply-text
+  couplet watch [<dir>]
+  couplet mcp [--socket PATH]
+  couplet help
+  couplet agent [--mcp]
 
 OPENING FILES
-  mdmini notes.md report.md
+  couplet notes.md report.md
       Opens the files as tabs of one new window; a file already open is
       focused where it is. Relative paths are resolved against the current
-      directory. If md-mini isn't running, it is launched via `open`; an
+      directory. If couplet isn't running, it is launched via `open`; an
       already-running instance receives the file list over a single-instance
       socket.
-  mdmini notes.md -t 7        A tab in window #7, focused.
-  mdmini notes.md -t 7 -b     The same in the background: the tab shimmers,
+  couplet notes.md -t 7        A tab in window #7, focused.
+  couplet notes.md -t 7 -b     The same in the background: the tab shimmers,
                               focus stays where it was.
-  mdmini notes.md -b          In the background, routed (see "Windows").
-  With CLAUDECODE set (an agent), `mdmini <file>` is routed and opens in the
+  couplet notes.md -b          In the background, routed (see "Windows").
+  With CLAUDECODE set (an agent), `couplet <file>` is routed and opens in the
   background by default; -f opens it in focus. A routed open prints one line
   of JSON: {"ok":true,"window":7,"focused":false,"opened":[...]}.
 
@@ -1608,10 +1613,10 @@ WINDOWS
   Every window has a number (#7 in its title) and a project: the git
   toplevel of the first file it held (a worktree is its own project), or
   that file's directory outside git.
-  mdmini ls [--json]
+  couplet ls [--json]
       The open windows: number, project, tabs. --json prints
-      {"ok":true,"windows":[{"window":7,"project":"md-mini",...}]}.
-  mdmini close <file>
+      {"ok":true,"windows":[{"window":7,"project":"couplet",...}]}.
+  couplet close <file>
       Closes the tab holding <file>, saved first. Refused while it has
       unsaved changes, or while the user is typing in it.
   Routing, for show, edit, ask and routed opens:
@@ -1622,7 +1627,7 @@ WINDOWS
   "window" in every answer is the #N to pass back with -t.
 
 SHOW — point at a location in an already-open (or newly opened) window
-  mdmini show <file> [--line N | --find "text"] [--socket PATH]
+  couplet show <file> [--line N | --find "text"] [--socket PATH]
 
   Opens <file> (or focuses its window if already open) and scrolls the
   target into view with a ~1.6s pulse highlight.
@@ -1637,42 +1642,42 @@ SHOW — point at a location in an already-open (or newly opened) window
     --transient       A quick look: the tab asks the user "Close / Keep" by
                       itself; nothing comes back to you.
   The tab the user is typing in is never taken from them: while they type
-  (in any md-mini window), show lands in the background, brings no window
+  (in any couplet window), show lands in the background, brings no window
   forward, and answers "focused":false.
   Neither --line nor --find: just opens/focuses the file, no scroll.
 
   Examples:
-    mdmini show notes.md --line 42
-    mdmini show notes.md --find "## Deploy"
+    couplet show notes.md --line 42
+    couplet show notes.md --find "## Deploy"
 
 EDIT — replace the live buffer with new content, diffed and highlighted
-  cat new.md | mdmini edit <file> [--show] [--allow-empty] [--socket PATH]
+  cat new.md | couplet edit <file> [--show] [--allow-empty] [--socket PATH]
 
   Reads the COMPLETE new document from stdin, diffs it against what's
   currently in the live buffer, applies only the changed span, and marks it
-  with a persistent highlight. If the file isn't open yet, md-mini opens a
+  with a persistent highlight. If the file isn't open yet, couplet opens a
   window for it first, then applies the edit.
     --show          Also scroll the changed span into view.
     --allow-empty   Permit empty stdin (otherwise refused — see below).
     --socket PATH   Talk to a non-default command socket.
     -t N            Window #N (see "Windows").
 
-  Always send the FULL new document on stdin, never a diff/patch — md-mini
+  Always send the FULL new document on stdin, never a diff/patch — couplet
   computes the diff itself against the live buffer.
   An edit to a background tab is applied there and saved at once; the user
   sees it highlighted, with undo, when they open the tab.
 
   Empty stdin is refused by default:
     {"ok":false,"error":"refusing to apply empty content (use --allow-empty)"}
-  exit 2. This guards against a shell mistake (e.g. `cat /dev/null | mdmini
+  exit 2. This guards against a shell mistake (e.g. `cat /dev/null | couplet
   edit file.md`) silently truncating the buffer. Pass --allow-empty to
   intentionally clear a file.
 
   Example:
-    cat new.md | mdmini edit notes.md --show
+    cat new.md | couplet edit notes.md --show
 
 ASK — post a question with option buttons, block until the user answers
-  mdmini ask <file> --question TEXT --option TEXT [--option TEXT ...] \
+  couplet ask <file> --question TEXT --option TEXT [--option TEXT ...] \
     [--multi] [--free-text] [--at-line N | --at-find TEXT] [--timeout SECS] [--socket PATH]
 
   Renders the question and 2-6 option buttons inside the open (or newly
@@ -1701,16 +1706,16 @@ ASK — post a question with option buttons, block until the user answers
   Neither --at-line nor --at-find: the question appears at the current view.
 
   Examples:
-    mdmini ask notes.md --question "Ship it?" --option Yes --option No
-    mdmini ask notes.md --question "Which reviewers?" --option A --option B --option C --multi
-    mdmini ask notes.md --question "Ship it?" --option Yes --option No --free-text
+    couplet ask notes.md --question "Ship it?" --option Yes --option No
+    couplet ask notes.md --question "Which reviewers?" --option A --option B --option C --multi
+    couplet ask notes.md --question "Ship it?" --option Yes --option No --free-text
   An ask for a background tab waits there (the tab shimmers) and appears
   when the user opens it. The timeout still counts from now.
 
 COMMENTS — the reverse direction: the user comments, you answer
-  mdmini question [<file>]
-  mdmini answer <file> --id ID < reply-text
-  mdmini watch [<dir>]
+  couplet question [<file>]
+  couplet answer <file> --id ID < reply-text
+  couplet watch [<dir>]
 
   The user selects a fragment in a document and writes a comment. Threads live
   in `.mdmini_comments_<doc>.md` beside the document, as plain markdown — so
@@ -1735,13 +1740,13 @@ COMMENTS — the reverse direction: the user comments, you answer
   If a comment asks for a change rather than an answer, make the change with
   `edit`, then close the thread with `answer`.
 
-  No MCP and no md-mini? The file is readable markdown — read the sidecar and
+  No MCP and no couplet? The file is readable markdown — read the sidecar and
   append a reply with ordinary file tools. Same result.
 
   Examples:
-    mdmini question
-    mdmini question docs/spec.md
-    echo "Because nginx was broken on that host." | mdmini answer docs/spec.md --id c-7f3a2c
+    couplet question
+    couplet question docs/spec.md
+    echo "Because nginx was broken on that host." | couplet answer docs/spec.md --id c-7f3a2c
 
 JSON RESPONSE CONTRACT
   show, edit, ask, close, ls --json and a routed open each print exactly one
@@ -1765,85 +1770,85 @@ JSON RESPONSE CONTRACT
   them; a block that was rewritten wholesale is reported in full.
 
 EXIT CODES
-    0   Request reached md-mini and succeeded ("ok":true).
-    1   Request reached md-mini but was rejected ("ok":false), or the CLI's
+    0   Request reached couplet and succeeded ("ok":true).
+    1   Request reached couplet but was rejected ("ok":false), or the CLI's
         own wait for a reply timed out (10s for show/edit, the ask timeout
         plus 10s for ask).
     2   Usage error (bad flags, missing file, unknown verb), edit refused
         empty stdin without --allow-empty, ask given fewer than 2 or more
-        than 6 --option flags or no --question, or md-mini isn't running /
+        than 6 --option flags or no --question, or couplet isn't running /
         didn't start in time.
 
 MCP — stdio MCP server exposing show/edit/ask as tools, for agents that speak MCP
-  mdmini mcp [--socket PATH]
+  couplet mcp [--socket PATH]
       Runs a Model Context Protocol server on stdin/stdout instead of the CLI
       verbs above: same show/edit/ask operations, wrapped as MCP tools over
-      JSON-RPC 2.0. Launches md-mini via `open` if the command socket is down
+      JSON-RPC 2.0. Launches couplet via `open` if the command socket is down
       (skipped when --socket is given explicitly). Register once with:
-        claude mcp add --scope user mdmini -- mdmini mcp
+        claude mcp add --scope user couplet -- couplet mcp
       See docs/ai-interface.md ("MCP server") for the generic mcpServers JSON
       shape and the full method/tool reference.
 
 HELP
-  mdmini help
+  couplet help
       Prints this reference. Exit 0. Local and offline — works even if
-      md-mini isn't installed or running.
+      couplet isn't installed or running.
 
 AGENT
-  mdmini agent [--mcp]
+  couplet agent [--mcp]
       Prints a ready-to-paste instruction block for an AI agent's
       instruction file (CLAUDE.md, AGENTS.md, etc.). Without --mcp:
-      the CLI-syntax show/edit/ask reference, for agents driving mdmini
+      the CLI-syntax show/edit/ask reference, for agents driving couplet
       as a shell command. With --mcp: a shorter behavioral snippet for
-      agents already connected via `mdmini mcp` — the tools are
+      agents already connected via `couplet mcp` — the tools are
       self-describing there, so this covers usage culture instead
       (when to ask in the document vs. chat, reading multi-choice/
       free-text answers). Exit 0. Local and offline either way.
 
 DEV BUILDS
   Release and dev builds use different command sockets:
-    Release (md-mini)   /tmp/md_mini_cmd.sock
-    Dev (md-mini-dev)   /tmp/md_mini_dev_cmd.sock
+    Release (couplet)   /tmp/couplet_cmd.sock
+    Dev (couplet-dev)   /tmp/couplet_dev_cmd.sock
   Pass --socket explicitly to target a dev build's socket.
 
-See docs/ai-interface.md in the md-mini repository for the full protocol,
+See docs/ai-interface.md in the couplet repository for the full protocol,
 routing behavior, and troubleshooting."###
         .to_string()
 }
 
-/// The fenced instruction block reused verbatim by `mdmini agent` and by
+/// The fenced instruction block reused verbatim by `couplet agent` and by
 /// `docs/ai-interface.md`'s "Using this from an AI agent's CLAUDE.md"
 /// section. Keep both in sync by hand when this changes.
-pub(crate) const AGENT_SNIPPET: &str = r#"## md-mini AI interface
+pub(crate) const AGENT_SNIPPET: &str = r#"## couplet AI interface
 
-If `mdmini` is available, use it to point at things in the user's open editor and to push edits into the live buffer, instead of only writing files to disk:
+If `couplet` is available, use it to point at things in the user's open editor and to push edits into the live buffer, instead of only writing files to disk:
 
-- `mdmini show <file> --line N` — scroll to line N in the file's tab and pulse-highlight it.
-- `mdmini show <file> --find "some text"` — same, but locate the first match of the text instead of a line number.
-- `cat new-content.md | mdmini edit <file> [--show]` — replace the file's live buffer with the **complete** new content read from stdin. md-mini diffs it against what's on screen, applies only the changed span, and highlights it. `--show` also scrolls to the change.
-- `mdmini ask <file> --question "..." --option A --option B [--option ...]` — post a question with 2-6 option buttons inside the document and block until the user clicks one; prints `{"ok":true,"answer":"A"}` with the chosen option's text. Add `--multi` for checkbox mode (any number of options, including none, checked and confirmed) — prints `{"ok":true,"answers":["A","C"]}` instead. Add `--free-text` to also let the user type a custom answer — prints `{"ok":true,"custom":"..."}` (or alongside `answers` in `--multi` mode) when they do.
-- `mdmini <file>` — open a file as a tab. From you (an agent, `CLAUDECODE` set) it opens in the background: the tab shimmers until the user looks; `-f` brings it to the front. When the user should read something now, use `mdmini show <file>` (or `-f`).
-- `mdmini ls` — the open windows: number, project, tabs (`--json` for machine-readable output). `mdmini close <file>` — close a tab you opened and no longer need.
+- `couplet show <file> --line N` — scroll to line N in the file's tab and pulse-highlight it.
+- `couplet show <file> --find "some text"` — same, but locate the first match of the text instead of a line number.
+- `cat new-content.md | couplet edit <file> [--show]` — replace the file's live buffer with the **complete** new content read from stdin. couplet diffs it against what's on screen, applies only the changed span, and highlights it. `--show` also scrolls to the change.
+- `couplet ask <file> --question "..." --option A --option B [--option ...]` — post a question with 2-6 option buttons inside the document and block until the user clicks one; prints `{"ok":true,"answer":"A"}` with the chosen option's text. Add `--multi` for checkbox mode (any number of options, including none, checked and confirmed) — prints `{"ok":true,"answers":["A","C"]}` instead. Add `--free-text` to also let the user type a custom answer — prints `{"ok":true,"custom":"..."}` (or alongside `answers` in `--multi` mode) when they do.
+- `couplet <file>` — open a file as a tab. From you (an agent, `CLAUDECODE` set) it opens in the background: the tab shimmers until the user looks; `-f` brings it to the front. When the user should read something now, use `couplet show <file>` (or `-f`).
+- `couplet ls` — the open windows: number, project, tabs (`--json` for machine-readable output). `couplet close <file>` — close a tab you opened and no longer need.
 
-Windows: every answer names the window it landed in — `{"ok":true,"window":7,"focused":true}`. Pass `-t 7` to `show`/`edit`/`ask`/`mdmini <file>` to keep working in that window. Without `-t` a file goes to its own tab if it is open (wherever that is — the answer's `window` says where), else to a window of its project (the git toplevel), else to a new window. The tab the user is typing in is never taken from them, and while they type in one md-mini window no other window comes forward: `"focused":false` means your show landed in the background — tell them where to look instead of retrying. If they are typing in that very tab, the answer is `"focused":true` but nothing moves: the target only pulses, possibly off-screen. An `edit` of a background tab is applied and saved there; an `ask` for one waits there until they open it, and its timeout still counts from the call. Use `mdmini show <file> --transient` for a quick look: the tab asks them "Close / Keep" by itself.
+Windows: every answer names the window it landed in — `{"ok":true,"window":7,"focused":true}`. Pass `-t 7` to `show`/`edit`/`ask`/`couplet <file>` to keep working in that window. Without `-t` a file goes to its own tab if it is open (wherever that is — the answer's `window` says where), else to a window of its project (the git toplevel), else to a new window. The tab the user is typing in is never taken from them, and while they type in one couplet window no other window comes forward: `"focused":false` means your show landed in the background — tell them where to look instead of retrying. If they are typing in that very tab, the answer is `"focused":true` but nothing moves: the target only pulses, possibly off-screen. An `edit` of a background tab is applied and saved there; an `ask` for one waits there until they open it, and its timeout still counts from the call. Use `couplet show <file> --transient` for a quick look: the tab asks them "Close / Keep" by itself.
 
-All verbs print one line of JSON to stdout: `{"ok":true}` (plus `"window"`/`"focused"`, `"changed_lines":[[start,end]]` for `edit`, `"answer":"..."` for `ask`, `"answers":[...]` for `ask --multi`, or `"custom":"..."` for a typed `ask --free-text` answer) on success, `{"ok":false,"error":"..."}` on failure. Exit code 0 = success, 1 = md-mini rejected the request, 2 = md-mini isn't running or the command was malformed. If the target file isn't open yet, `edit`/`show` open it as a tab by the rule above — for `show` it must already exist on disk (`ask` requires the same: already open, or existing on disk). Always send the full document on stdin for `edit`, never a diff.
+All verbs print one line of JSON to stdout: `{"ok":true}` (plus `"window"`/`"focused"`, `"changed_lines":[[start,end]]` for `edit`, `"answer":"..."` for `ask`, `"answers":[...]` for `ask --multi`, or `"custom":"..."` for a typed `ask --free-text` answer) on success, `{"ok":false,"error":"..."}` on failure. Exit code 0 = success, 1 = couplet rejected the request, 2 = couplet isn't running or the command was malformed. If the target file isn't open yet, `edit`/`show` open it as a tab by the rule above — for `show` it must already exist on disk (`ask` requires the same: already open, or existing on disk). Always send the full document on stdin for `edit`, never a diff.
 
 ### Comments the user leaves for you
 
 The user can also comment on a fragment of a document and expect you to answer. Threads live in `.mdmini_comments_<doc>.md` beside the document as plain markdown, so these verbs need no running app:
 
-- `mdmini question [<file>]` — list open threads (id, status, anchor, quoted fragment, replies). Without a path, everything under the current directory.
-- `echo "reply" | mdmini answer <file> --id c-7f3a2c` — append your reply and mark the thread answered.
-- `mdmini watch [<dir>]` — long-running; prints one line per newly-open thread.
+- `couplet question [<file>]` — list open threads (id, status, anchor, quoted fragment, replies). Without a path, everything under the current directory.
+- `echo "reply" | couplet answer <file> --id c-7f3a2c` — append your reply and mark the thread answered.
+- `couplet watch [<dir>]` — long-running; prints one line per newly-open thread.
 
 A thread the user is still typing has `status=paused` and is deliberately invisible to both `question` and `watch` — you are told about it about twenty seconds after they stop typing, or the moment they press "send now". So a comment can exist for half a minute before you hear about it, and that is working as intended, not a delivery failure.
 
-If your harness can react to a stream (Claude Code: `Monitor({command: "mdmini watch", description: "new mdmini comments", persistent: true})`), arm it once per session and you get woken in this same session, with your context intact, instead of polling. `persistent: true` matters: without it the monitor dies after five minutes and its silence looks exactly like "no comments". Also add a `Stop` hook running `mdmini question` that blocks the turn while anything is open — a monitor that emits too much is stopped by the harness without telling you, and the hook is what stops comments piling up unseen.
+If your harness can react to a stream (Claude Code: `Monitor({command: "couplet watch", description: "new couplet comments", persistent: true})`), arm it once per session and you get woken in this same session, with your context intact, instead of polling. `persistent: true` matters: without it the monitor dies after five minutes and its silence looks exactly like "no comments". Also add a `Stop` hook running `couplet question` that blocks the turn while anything is open — a monitor that emits too much is stopped by the harness without telling you, and the hook is what stops comments piling up unseen.
 
-If your harness cannot do either, check `mdmini question` at natural points: before asking the user something in chat, and before reporting that you are done. A comment line is an interruption, not a user message — finish the current step cleanly, then answer. If a comment asks for a change rather than an answer, make it with `edit`, then close the thread with `answer`."#;
+If your harness cannot do either, check `couplet question` at natural points: before asking the user something in chat, and before reporting that you are done. A comment line is an interruption, not a user message — finish the current step cleanly, then answer. If a comment asks for a change rather than an answer, make it with `edit`, then close the thread with `answer`."#;
 
-/// Common instruction-file locations, shared by `mdmini agent`'s CLI-syntax
+/// Common instruction-file locations, shared by `couplet agent`'s CLI-syntax
 /// snippet and its `--mcp` behavioral-snippet counterpart below.
 pub(crate) const INSTRUCTION_FILE_LOCATIONS: &str = "\
 \x20 CLAUDE.md                         Claude Code — project root, or ~/.claude/CLAUDE.md for all projects\n\
@@ -1852,20 +1857,20 @@ pub(crate) const INSTRUCTION_FILE_LOCATIONS: &str = "\
 \x20 .cursor/rules or .cursorrules     Cursor\n\
 \x20 .github/copilot-instructions.md   GitHub Copilot";
 
-/// Text for `mdmini agent` — printed by `mdmini help` for
-/// `mdmini agent`. Local and offline.
+/// Text for `couplet agent` — printed by `couplet help` for
+/// `couplet agent`. Local and offline.
 fn agent_text() -> String {
     format!(
         "Paste the block below into your AI agent's instruction file. Common locations:\n\n\
         {}\n\n\
         --- copy from here ---\n\
         {}\n\n\
-        Prefer MCP? `claude mcp add --scope user mdmini -- mdmini mcp` registers md-mini's show/edit/ask tools directly — then no instruction-file snippet is needed; run `mdmini agent --mcp` for a short usage-culture snippet worth pasting alongside it.",
+        Prefer MCP? `claude mcp add --scope user couplet -- couplet mcp` registers couplet's show/edit/ask tools directly — then no instruction-file snippet is needed; run `couplet agent --mcp` for a short usage-culture snippet worth pasting alongside it.",
         INSTRUCTION_FILE_LOCATIONS, AGENT_SNIPPET
     )
 }
 
-/// The fenced instruction block reused verbatim by `mdmini agent --mcp` and by
+/// The fenced instruction block reused verbatim by `couplet agent --mcp` and by
 /// `docs/ai-interface.md`'s "MCP server" section. Keep both in sync by hand
 /// when this changes — same discipline as `AGENT_SNIPPET`.
 ///
@@ -1874,14 +1879,14 @@ fn agent_text() -> String {
 /// What it needs instead is usage culture: when to reach for `ask` over
 /// chatting, how to read multi-choice/free-text answers, and how to be
 /// considerate of the user's attention.
-pub(crate) const MCP_AGENT_SNIPPET: &str = r#"## md-mini via MCP — how to use it well
+pub(crate) const MCP_AGENT_SNIPPET: &str = r#"## couplet via MCP — how to use it well
 
 - Before asking the user something about a document, use `show` (line or find) so they're looking at the relevant part when the question arrives — or anchor the `ask` itself there with line/find.
 - Prefer `ask` in the document over asking in chat when the question is about the document the user has open: single choice for decisions, `multi` for pick-several, `free_text` when their own words matter. An empty `answers` array means "none of these", not an error.
 - Chain questions: read each answer and build the next ask from it. Answers arrive as `answer` (string), `answers` (array), and/or `custom` (their typed text).
 - After edits, the changed span stays highlighted until the user presses Esc or you edit again — use `show: true` on the edit when they should see the change immediately.
 - Respect their attention: batch related questions into one `ask` with options rather than many small ones; timeouts/dismissals mean "not now", not failure — fall back to chat.
-- `edit` takes the COMPLETE new document, never a diff; md-mini diffs internally and preserves their scroll position and undo history.
+- `edit` takes the COMPLETE new document, never a diff; couplet diffs internally and preserves their scroll position and undo history.
 - Windows: every answer names the `window` (#N) it landed in. Pass it back as `window_binding` to keep working in that window; call `windows` to see what is open (projects, tabs) and pick one. Without a binding a file goes to its own tab if it is open anywhere, else to a window of its project, else to a new window.
 - `show` switches to the tab by default; `focus: false` opens it in the background, where it shimmers until the user looks. A user who is typing always keeps their tab, and while they type in one window no other window comes forward — the answer then says `focused: false`: tell them where to look instead of retrying. If they are typing in that very tab, the answer is `focused: true` but nothing moves: the target only pulses.
 - `transient: true` is for a quick look — something they glance at once. The tab asks them «Close / Keep» by itself; leave it off for documents you will keep working in.
@@ -1890,17 +1895,17 @@ pub(crate) const MCP_AGENT_SNIPPET: &str = r#"## md-mini via MCP — how to use 
 
 ### Comments the user leaves for you
 
-- Arm this once at the start of a session: `Monitor({command: "mdmini watch", description: "new mdmini comments", persistent: true})`. Every line it prints is a new comment, delivered as an interruption in this session — so you answer with the context you already have. `persistent: true` is not optional: without it the monitor dies after five minutes and its silence is indistinguishable from "no comments".
+- Arm this once at the start of a session: `Monitor({command: "couplet watch", description: "new couplet comments", persistent: true})`. Every line it prints is a new comment, delivered as an interruption in this session — so you answer with the context you already have. `persistent: true` is not optional: without it the monitor dies after five minutes and its silence is indistinguishable from "no comments".
 - A monitor line is an interruption, not a message from the user. Bring the current step to a consistent state first, then answer at that checkpoint — abandoning a half-finished edit to reply is worse for them than replying a minute later.
 - Use the `question` tool to read open threads and `answer` to reply. Also check `question` before asking them something in chat and before reporting that you are done: they may have already answered you in the document.
 - If a comment asks for a change rather than an answer, make it with `edit`, then close the thread with `answer`.
-- Add a `Stop` hook that runs `mdmini question` and blocks the turn while anything is still open. This is the backstop that matters: a monitor emitting too much is stopped by the harness, and you will not necessarily notice — without the hook, comments pile up in silence."#;
+- Add a `Stop` hook that runs `couplet question` and blocks the turn while anything is still open. This is the backstop that matters: a monitor emitting too much is stopped by the harness, and you will not necessarily notice — without the hook, comments pile up in silence."#;
 
-/// Text for `mdmini agent --mcp` — printed by `mdmini help` for `mdmini agent
+/// Text for `couplet agent --mcp` — printed by `couplet help` for `couplet agent
 /// [--mcp]`. Local and offline.
 fn mcp_agent_text() -> String {
     format!(
-        "Paste the block below into your AI agent's instruction file if md-mini is connected via MCP (mdmini mcp). Common locations:\n\n\
+        "Paste the block below into your AI agent's instruction file if couplet is connected via MCP (couplet mcp). Common locations:\n\n\
         {}\n\n\
         --- copy from here ---\n\
         {}",
@@ -1919,7 +1924,7 @@ fn is_agent(claudecode: Option<&str>) -> bool {
 fn tell_human(response_line: &str) {
     if let Ok(resp) = serde_json::from_str::<AiResponse>(response_line) {
         if let Some(error) = resp.error {
-            eprintln!("mdmini: {error}");
+            eprintln!("couplet: {error}");
         }
     }
 }
@@ -1930,7 +1935,7 @@ fn tell_human(response_line: &str) {
 fn exchange(socket_path: &Path, request: &AiRequest) -> Result<String, (String, i32)> {
     let fail = |msg: String, code: i32| (serde_json::to_string(&AiResponse::error(msg)).unwrap(), code);
     let mut stream =
-        UnixStream::connect(socket_path).map_err(|_| fail("md-mini is not running".to_string(), 2))?;
+        UnixStream::connect(socket_path).map_err(|_| fail("couplet is not running".to_string(), 2))?;
     // `ask` blocks server-side on a human clicking a button, so the CLI's own
     // read timeout must cover that wait (plus 10s of margin) instead of the
     // fixed 10s used for everything else.
@@ -1943,7 +1948,7 @@ fn exchange(socket_path: &Path, request: &AiRequest) -> Result<String, (String, 
     line.push('\n');
     stream
         .write_all(line.as_bytes())
-        .map_err(|_| fail("md-mini is not running".to_string(), 2))?;
+        .map_err(|_| fail("couplet is not running".to_string(), 2))?;
     let mut reader = BufReader::new(stream);
     let mut response_line = String::new();
     match reader.read_line(&mut response_line) {
@@ -1964,7 +1969,7 @@ fn open_summary(opened: Vec<OpenedTab>, error: Option<String>) -> AiResponse {
     }
 }
 
-/// The most files one `mdmini <files>` opens: each is a round trip and a tab,
+/// The most files one `couplet <files>` opens: each is a round trip and a tab,
 /// and a stray glob should not fill the app.
 const MAX_OPEN_FILES: usize = 50;
 
@@ -2010,7 +2015,7 @@ fn open_all(
     (summary, code)
 }
 
-/// `mdmini <files>` routed: one `open` per file, one summary line.
+/// `couplet <files>` routed: one `open` per file, one summary line.
 fn run_open(socket_path: &Path, paths: &[String], window: Option<u32>, focus: bool, agent: bool) -> i32 {
     let (summary, code) = open_all(paths, window, focus, |request| exchange(socket_path, request));
     let line = serde_json::to_string(&summary).unwrap();
@@ -2021,7 +2026,7 @@ fn run_open(socket_path: &Path, paths: &[String], window: Option<u32>, focus: bo
     code
 }
 
-/// `mdmini ls`: the listing as text, or the JSON answer with `--json`.
+/// `couplet ls`: the listing as text, or the JSON answer with `--json`.
 fn run_ls(socket_path: &Path, json: bool) -> i32 {
     let line = match exchange(socket_path, &AiRequest::Windows { v: 1 }) {
         Ok(line) => line,
@@ -2055,7 +2060,7 @@ fn run_ls(socket_path: &Path, json: bool) -> i32 {
     }
 }
 
-/// Entry point for `mdmini ai <verb> ...`, called from `main.rs` before Tauri
+/// Entry point for `couplet ai <verb> ...`, called from `main.rs` before Tauri
 /// is touched. `args` is the full `std::env::args()` vector (`args[0]` is the
 /// binary path, `args[1]` is `"ai"`); everything from `args[2]` on is the verb
 /// and its flags. Returns the process exit code.
@@ -2133,7 +2138,7 @@ pub fn run_ai_cli(args: Vec<String>) -> i32 {
         .socket
         .clone()
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET_PATH));
+        .unwrap_or_else(default_socket_path);
     let agent = is_agent(std::env::var("CLAUDECODE").ok().as_deref());
     match &parsed.verb {
         // A human's `-t` focuses; an agent's open lands in the background (spec §4).
@@ -2231,12 +2236,12 @@ mod tests {
     #[test]
     fn socket_path_release_and_dev_differ() {
         assert_eq!(
-            socket_path("md-mini"),
-            PathBuf::from("/tmp/md_mini_cmd.sock")
+            socket_path("couplet"),
+            PathBuf::from("/tmp/couplet_cmd.sock")
         );
         assert_eq!(
-            socket_path("md-mini-dev"),
-            PathBuf::from("/tmp/md_mini_dev_cmd.sock")
+            socket_path("couplet-dev"),
+            PathBuf::from("/tmp/couplet_dev_cmd.sock")
         );
     }
 
@@ -3176,7 +3181,7 @@ mod tests {
         assert!(text.contains("\"custom\""));
         assert!(text.contains("--mcp"));
         assert!(text.contains("--id"));
-        for flag in ["-t N", "--background", "--focus", "--transient", "mdmini ls", "mdmini close", "CLAUDECODE", "\"window\""] {
+        for flag in ["-t N", "--background", "--focus", "--transient", "couplet ls", "couplet close", "CLAUDECODE", "\"window\""] {
             assert!(text.contains(flag), "help text missing {flag}");
         }
         // The three comment verbs are useless to an agent that doesn't learn
@@ -3191,9 +3196,9 @@ mod tests {
         let text = agent_text();
         assert!(text.contains("CLAUDE.md"));
         assert!(text.contains("AGENTS.md"));
-        assert!(text.contains("## md-mini AI interface"));
+        assert!(text.contains("## couplet AI interface"));
         assert!(text.contains("--mcp"), "should point at agent --mcp for MCP setups");
-        for needle in ["-t 7", "mdmini ls", "mdmini close", "--transient", "\"focused\":false"] {
+        for needle in ["-t 7", "couplet ls", "couplet close", "--transient", "\"focused\":false"] {
             assert!(text.contains(needle), "agent snippet missing {needle}");
         }
     }
@@ -3203,7 +3208,7 @@ mod tests {
         let text = mcp_agent_text();
         assert!(text.contains("CLAUDE.md"));
         assert!(text.contains("AGENTS.md"));
-        assert!(text.contains("## md-mini via MCP"));
+        assert!(text.contains("## couplet via MCP"));
         assert!(text.contains("MCP"));
         assert!(text.contains("`show`"));
         assert!(text.contains("`ask`"));
@@ -3211,8 +3216,8 @@ mod tests {
         assert!(text.contains("multi"));
         assert!(text.contains("free_text"));
         // This is a behavioral snippet, not CLI syntax — it should not carry
-        // the `mdmini ask <file> --question ...` shell-command shape.
-        assert!(!text.contains("mdmini ask <file>"));
+        // the `couplet ask <file> --question ...` shell-command shape.
+        assert!(!text.contains("couplet ask <file>"));
         for needle in ["window_binding", "`windows`", "`close`", "transient", "focused: false"] {
             assert!(text.contains(needle), "MCP snippet missing {needle}");
         }
@@ -3462,12 +3467,12 @@ mod tests {
             calls += 1;
             match calls {
                 1 => opened_in_7(),
-                _ => Err((r#"{"ok":false,"error":"md-mini is not running"}"#.to_string(), 2)),
+                _ => Err((r#"{"ok":false,"error":"couplet is not running"}"#.to_string(), 2)),
             }
         });
         assert_eq!((calls, code), (2, 2), "stops at the failure, exits with the transport's code");
         assert!(!summary.ok);
-        assert_eq!(summary.error.as_deref(), Some("md-mini is not running"));
+        assert_eq!(summary.error.as_deref(), Some("couplet is not running"));
         assert_eq!(summary.opened.unwrap().iter().map(|t| t.path.as_str()).collect::<Vec<_>>(), vec!["/nope-open/0.md"]);
         assert_eq!(summary.window, Some(7));
     }
@@ -3525,9 +3530,9 @@ mod tests {
 
     #[test]
     fn a_stale_socket_file_is_not_running_exit_2() {
-        // What `scripts/mdmini` probes with `ai ls --json` after a crash: the
+        // What `scripts/couplet` probes with `ai ls --json` after a crash: the
         // file is there, nobody accepts on it.
-        let path = std::env::temp_dir().join(format!("mdmini-stale-{}.sock", crate::session::new_tab_id()));
+        let path = std::env::temp_dir().join(format!("couplet-stale-{}.sock", crate::session::new_tab_id()));
         drop(UnixListener::bind(&path).unwrap());
         assert!(path.exists());
         let (_, code) = exchange(&path, &AiRequest::Windows { v: 1 }).unwrap_err();
@@ -3537,9 +3542,9 @@ mod tests {
 
     #[test]
     fn exchange_reports_a_socket_nobody_listens_on_as_not_running() {
-        let (line, code) = exchange(Path::new("/tmp/mdmini_test_nobody_listens.sock"), &AiRequest::Windows { v: 1 })
+        let (line, code) = exchange(Path::new("/tmp/couplet_test_nobody_listens.sock"), &AiRequest::Windows { v: 1 })
             .unwrap_err();
         assert_eq!(code, 2);
-        assert_eq!(line, r#"{"ok":false,"error":"md-mini is not running"}"#);
+        assert_eq!(line, r#"{"ok":false,"error":"couplet is not running"}"#);
     }
 }

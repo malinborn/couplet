@@ -182,6 +182,6 @@ describe('isAnchor', () => {
     for (const url of ['./notes.md', '../readme.md', 'notes.md', 'mailto:a@b.c', 'example.com']) {
       expect(isAnchor(url), url).toBe(false);
     }
-    expect(isAnchor('https://md-mini.com')).toBe(false);
+    expect(isAnchor('https://couplet.pro')).toBe(false);
   });
 });

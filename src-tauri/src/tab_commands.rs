@@ -645,7 +645,7 @@ mod tests {
 
     #[test]
     fn a_thumbnail_reads_only_the_start_of_a_file_and_nothing_of_a_missing_one() {
-        let path = std::env::temp_dir().join(format!("mdmini-head-{}.md", crate::session::new_tab_id()));
+        let path = std::env::temp_dir().join(format!("couplet-head-{}.md", crate::session::new_tab_id()));
         std::fs::write(&path, "line\n".repeat(1000)).unwrap();
         assert_eq!(read_start(&path).len(), HEAD_BYTES + 4);
         std::fs::remove_file(&path).unwrap();
@@ -807,7 +807,7 @@ mod tests {
 
     /// `<tmp>/<unique>/real/a.md` and `<tmp>/<unique>/link -> real`.
     fn linked_file() -> (std::path::PathBuf, std::path::PathBuf) {
-        let base = std::env::temp_dir().join(format!("mdmini-tabcmd-{}", crate::session::new_tab_id()));
+        let base = std::env::temp_dir().join(format!("couplet-tabcmd-{}", crate::session::new_tab_id()));
         let real = base.join("real");
         std::fs::create_dir_all(&real).unwrap();
         std::fs::write(real.join("a.md"), "x").unwrap();
@@ -838,7 +838,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn slash_tmp_and_slash_private_tmp_name_one_tab() {
-        let name = format!("mdmini-tabcmd-{}.md", crate::session::new_tab_id());
+        let name = format!("couplet-tabcmd-{}.md", crate::session::new_tab_id());
         let file = format!("/tmp/{name}");
         std::fs::write(&file, "x").unwrap();
         let mut reg = TabRegistry::new();

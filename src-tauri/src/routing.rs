@@ -114,7 +114,7 @@ const MAIN: &str = "main";
 /// The window the app starts with, still as it started: live, registered
 /// (numbered at setup, so a command for it can be queued until it mounts),
 /// no project and no file tab. Step 4 fills it instead of building a second
-/// window beside an empty "Untitled" — what a cold-start `mdmini -b file`
+/// window beside an empty "Untitled" — what a cold-start `couplet -b file`
 /// otherwise left in front. The rule `window::route_opened_file` uses for
 /// `UseMain`, plus the project: a main whose file was closed stays bound and
 /// is a window like any other.
@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn a_file_outside_any_repository_belongs_to_its_directory() {
         let dir = std::env::temp_dir()
-            .join(format!("mdmini-routing-{}", crate::session::new_tab_id()))
+            .join(format!("couplet-routing-{}", crate::session::new_tab_id()))
             .join("notes");
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("a.md");
@@ -500,7 +500,7 @@ mod tests {
 
     fn sample() -> Vec<WindowListing> {
         vec![
-            listed(3, "md-mini", &[Some("/r/README.md"), Some("/r/CLAUDE.md"), Some("/r/docs/tabs-design.md"), Some("/r/x.md")]),
+            listed(3, "couplet", &[Some("/r/README.md"), Some("/r/CLAUDE.md"), Some("/r/docs/tabs-design.md"), Some("/r/x.md")]),
             listed(12, "infra", &[Some("/i/deploy-plan.md"), None]),
         ]
     }
@@ -509,12 +509,12 @@ mod tests {
     fn the_listing_is_sorted_by_number_and_marks_the_active_tab_and_the_last_window() {
         let reg = reg(&[
             ("main", 12, Some("/r/infra"), &["/i/deploy-plan.md"]),
-            ("editor-2", 3, Some("/r/md-mini"), &["/r/README.md", "/r/CLAUDE.md"]),
+            ("editor-2", 3, Some("/r/couplet"), &["/r/README.md", "/r/CLAUDE.md"]),
         ]);
         let got = list_windows(&reg, &["main".to_string()], live);
         assert_eq!(got.iter().map(|w| w.window).collect::<Vec<_>>(), vec![Some(3), Some(12)]);
-        assert_eq!(got[0].project.as_deref(), Some("md-mini"));
-        assert_eq!(got[0].project_path.as_deref(), Some("/r/md-mini"));
+        assert_eq!(got[0].project.as_deref(), Some("couplet"));
+        assert_eq!(got[0].project_path.as_deref(), Some("/r/couplet"));
         assert_eq!(got[0].tabs.iter().map(|t| t.active).collect::<Vec<_>>(), vec![true, false]);
         assert_eq!((got[0].last_focused, got[1].last_focused), (false, true));
         assert!(list_windows(&reg, &[], |l| l != "main").iter().all(|w| w.window == Some(3)), "closed windows are left out");
@@ -524,11 +524,11 @@ mod tests {
     fn the_text_listing_aligns_columns_and_can_cut_each_line_short() {
         assert_eq!(
             format_listing(&sample(), None, ""),
-            "#3   md-mini  README.md, CLAUDE.md, tabs-design.md, x.md\n#12  infra    deploy-plan.md, Untitled"
+            "#3   couplet  README.md, CLAUDE.md, tabs-design.md, x.md\n#12  infra    deploy-plan.md, Untitled"
         );
         assert_eq!(
             format_listing(&sample(), Some(3), "  "),
-            "  #3   md-mini  README.md, CLAUDE.md, tabs-design.md …\n  #12  infra    deploy-plan.md, Untitled"
+            "  #3   couplet  README.md, CLAUDE.md, tabs-design.md …\n  #12  infra    deploy-plan.md, Untitled"
         );
     }
 
@@ -536,7 +536,7 @@ mod tests {
     fn a_dead_number_error_lists_the_live_windows() {
         assert_eq!(
             dead_number_error(9, &sample()),
-            "no window #9. Open windows:\n  #3   md-mini  README.md, CLAUDE.md, tabs-design.md …\n  #12  infra    deploy-plan.md, Untitled"
+            "no window #9. Open windows:\n  #3   couplet  README.md, CLAUDE.md, tabs-design.md …\n  #12  infra    deploy-plan.md, Untitled"
         );
         assert_eq!(dead_number_error(9, &[]), "no window #9; no windows are open");
     }

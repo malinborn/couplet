@@ -4,7 +4,8 @@
  * монтирует приложение, поэтому видно ровно то, что получится, а не макет.
  * Кандидат кладётся сюда отдельным файлом в том же формате, что и боевые
  * палитры в `src/lib/theme/`, и переезжает туда как есть, если понравился;
- * так уехали «Блюпринт» и «Фосфор», и сейчас стенд смотрит прямо на них.
+ * так уехали «Блюпринт», «Фосфор», Paper и Ink, и сейчас стенд смотрит прямо
+ * на них.
  *
  * Страницу собирает dev-сервер vite (`/theme-lab.html`). В прод-сборку она не
  * попадает: rollup берёт только `index.html`.
@@ -13,14 +14,16 @@
 import '../src/styles/editor.css';
 import '../src/styles/editor-metrics.css';
 
-// Все четыре выпущенные семьи; кандидатов сейчас нет, но стенд остаётся —
-// следующую тему проще сначала увидеть здесь, чем сразу собирать приложение.
+// Все шесть выпущенных семей плюс кандидаты из `candidates/`.
 import '../src/lib/theme/light.css';
 import '../src/lib/theme/dark.css';
 import '../src/lib/theme/aurora-light.css';
 import '../src/lib/theme/aurora-dark.css';
 import '../src/lib/theme/blueprint.css';
 import '../src/lib/theme/phosphor.css';
+import '../src/lib/theme/paper.css';
+import '../src/lib/theme/ink.css';
+import './candidates/coral.css';
 
 import './lab.css';
 
@@ -67,6 +70,26 @@ const FAMILIES: Family[] = [
     light: 'phosphor-light',
     dark: 'phosphor-dark',
     shipped: true,
+  },
+  {
+    name: 'Paper',
+    note: 'Иконка backlog-paper: тушь по бумаге / та же бумага ночью, сепия. Коралл — только правка: каретка, чекбоксы, линия выполненного.',
+    light: 'paper-light',
+    dark: 'paper-dark',
+    shipped: true,
+  },
+  {
+    name: 'Ink',
+    note: 'Иконка backlog-ink: крем по туши, каретка-градиент со свечением / тушь по холодному светлому листу с тем же градиентом.',
+    light: 'ink-light',
+    dark: 'ink-dark',
+    shipped: true,
+  },
+  {
+    name: 'Coral',
+    note: 'Иконка backlog-coral: коралловая заря в подложке и заголовках. Светлая — крем с тушевой кареткой, тёмная — терракота.',
+    light: 'coral-light',
+    dark: 'coral-dark',
   },
 ];
 

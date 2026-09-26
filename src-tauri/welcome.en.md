@@ -1,12 +1,12 @@
-# Welcome to md-mini
+# Welcome to couplet
 
 A markdown editor that renders while you type — and that your AI agent can drive.
 
 ## Start here: hand it to your agent
 
-1. Open **AI → Teach Your AI mdmini**.
+1. Open **AI → Teach Your AI couplet**.
 2. Copy the prompt in that document and give it to your agent.
-3. That is the whole setup. The agent registers md-mini as an MCP server, writes itself a skill on how to use it well, and adds a short note to its own config so it knows when to reach for it.
+3. That is the whole setup. The agent registers couplet as an MCP server, writes itself a skill on how to use it well, and adds a short note to its own config so it knows when to reach for it.
 
 From then on it can:
 
@@ -21,7 +21,7 @@ Nothing happens behind your back: **⌘Z** undoes an AI edit exactly like your o
 
 ## Make it yours
 
-**Themes** — the **Theme** menu. Four families, each with a light and a dark half: Classic, Aurora, Blueprint, Phosphor. Family and half are separate choices, so changing one keeps the other. Tick **Follow System** and the half follows your Mac from day into night, staying in the family you picked.
+**Themes** — the **Theme** menu. Six families, each with a light and a dark half: Classic, Aurora, Blueprint, Phosphor, Paper, Ink. Family and half are separate choices, so changing one keeps the other. Tick **Follow System** and the half follows your Mac from day into night, staying in the family you picked.
 
 **Editor engine** — **View → Editor Engine**. *Live Render* hides markdown syntax entirely; *Preview* styles the text but leaves the markers in place; *Raw* is the source exactly as written. **⌘E** flips between the source and whichever renderer you chose — it never swaps one renderer for the other.
 
@@ -31,4 +31,4 @@ Nothing happens behind your back: **⌘Z** undoes an AI edit exactly like your o
 
 - Windows, caret positions and unsaved drafts all come back after a restart.
 - **⇧⌘M** comments on the selection, **⌘=** and **⌘−** zoom, **⌘E** shows the source.
-- `mdmini` works from a terminal as well — `mdmini help` lists everything it can do.
+- `couplet` works from a terminal as well — `couplet help` lists everything it can do.

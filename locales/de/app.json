@@ -25,7 +25,7 @@
   "toast.reload_error.headline": "{fileName} konnte nicht neu geladen werden",
   "toast.reload_error.instruction": "Automatisches Speichern ist pausiert, bis die Datei wieder lesbar ist. Um Ihre Fassung zu behalten, drücken",
 
-  "toast.update.headline": "mdmini {latest} verfügbar",
+  "toast.update.headline": "couplet {latest} verfügbar",
   "toast.update.current": "Sie haben v{current}",
   "toast.update.copy_title": "Zum Kopieren klicken",
   "toast.update.copied": "Kopiert!",
@@ -39,10 +39,10 @@
   "toast.session.windows.other": "{count} Fenster aus Ihrer letzten Sitzung",
   "toast.session.restore_action": "Wiederherstellen",
 
-  "toast.ai_nudge.message": "<strong>Ihre KI kann md-mini steuern</strong> <span class=\"md-toast-dim\">— siehe das Menü <strong>KI</strong></span>",
+  "toast.ai_nudge.message": "<strong>Ihre KI kann couplet steuern</strong> <span class=\"md-toast-dim\">— siehe das Menü <strong>KI</strong></span>",
   "toast.ai_nudge.action": "Erste Schritte",
 
-  "toast.themes_nudge.message": "<strong>md-mini hat Designs</strong> <span class=\"md-toast-dim\">— vier davon im Menü <strong>Design</strong></span>",
+  "toast.themes_nudge.message": "<strong>couplet hat Designs</strong> <span class=\"md-toast-dim\">— sechs davon im Menü <strong>Design</strong></span>",
 
   "toast.json_offer.message": "<strong>Das sieht nach JSON aus</strong> <span class=\"md-toast-dim\">— erweitern?</span>",
   "toast.json_offer.action": "Formatieren",
@@ -54,7 +54,7 @@
   "toast.ai_watch_copied.saved": "<strong>Watch-Befehl kopiert</strong> <span class=\"md-toast-dim\">— fügen Sie ihn in die Sitzung Ihres Agenten ein</span>",
   "toast.ai_watch_copied.unsaved": "<strong>Speichern Sie die Datei zuerst</strong> <span class=\"md-toast-dim\">— ein ungespeichertes Dokument hat keinen Pfad zum Beobachten</span>",
 
-  "toast.ai_first_use.message": "<strong>Das war Ihre KI</strong> <span class=\"md-toast-dim\">— md-mini ist verbunden</span>",
+  "toast.ai_first_use.message": "<strong>Das war Ihre KI</strong> <span class=\"md-toast-dim\">— couplet ist verbunden</span>",
   "toast.ai_first_use.more": "Mehr im Menü <strong>KI</strong> → Erste Schritte",
 
   "editor.ai_comment.status.open": "wartet auf Agent",

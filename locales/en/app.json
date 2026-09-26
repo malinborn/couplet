@@ -25,7 +25,7 @@
   "toast.reload_error.headline": "Could not reload {fileName}",
   "toast.reload_error.instruction": "Autosave is paused until the file can be read again. To keep your version, press",
 
-  "toast.update.headline": "mdmini {latest} available",
+  "toast.update.headline": "couplet {latest} available",
   "toast.update.current": "you have v{current}",
   "toast.update.copy_title": "Click to copy",
   "toast.update.copied": "Copied!",
@@ -39,10 +39,10 @@
   "toast.session.windows.other": "{count} windows from your last session",
   "toast.session.restore_action": "Restore",
 
-  "toast.ai_nudge.message": "<strong>Your AI can drive md-mini</strong> <span class=\"md-toast-dim\">— see the <strong>AI</strong> menu</span>",
+  "toast.ai_nudge.message": "<strong>Your AI can drive couplet</strong> <span class=\"md-toast-dim\">— see the <strong>AI</strong> menu</span>",
   "toast.ai_nudge.action": "Getting Started",
 
-  "toast.themes_nudge.message": "<strong>md-mini has themes</strong> <span class=\"md-toast-dim\">— four of them in the <strong>Theme</strong> menu</span>",
+  "toast.themes_nudge.message": "<strong>couplet has themes</strong> <span class=\"md-toast-dim\">— six of them in the <strong>Theme</strong> menu</span>",
 
   "toast.json_offer.message": "<strong>That looks like JSON</strong> <span class=\"md-toast-dim\">— expand it?</span>",
   "toast.json_offer.action": "Format",
@@ -54,7 +54,7 @@
   "toast.ai_watch_copied.saved": "<strong>Watch command copied</strong> <span class=\"md-toast-dim\">— paste it into your agent's session</span>",
   "toast.ai_watch_copied.unsaved": "<strong>Save the file first</strong> <span class=\"md-toast-dim\">— an unsaved document has no path to watch</span>",
 
-  "toast.ai_first_use.message": "<strong>That was your AI</strong> <span class=\"md-toast-dim\">— md-mini is connected</span>",
+  "toast.ai_first_use.message": "<strong>That was your AI</strong> <span class=\"md-toast-dim\">— couplet is connected</span>",
   "toast.ai_first_use.more": "More in the <strong>AI</strong> menu → Getting Started",
 
   "editor.ai_comment.status.open": "waiting for agent",

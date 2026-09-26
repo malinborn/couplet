@@ -167,7 +167,7 @@ describe('isMarkdownBuffer', () => {
       expect(isMarkdownBuffer('/Users/me/notes.markdown')).toBe(true);
     });
 
-    it('.txt, which md-mini also opens with live preview', () => {
+    it('.txt, which couplet also opens with live preview', () => {
       expect(isMarkdownBuffer('/Users/me/notes.txt')).toBe(true);
     });
 

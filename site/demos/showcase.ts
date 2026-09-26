@@ -67,7 +67,7 @@ Confirm the build is **reproducible** and matches the tag in \`CHANGELOG.md\`. A
 | Notarize | CI | pending |
 
 \`\`\`bash
-npm run build:dev && open dist/md-mini-dev.app
+npm run build:dev && open dist/couplet-dev.app
 \`\`\`
 
 ---

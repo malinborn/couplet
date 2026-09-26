@@ -2,7 +2,7 @@
 //!
 //! The directory name is derived from the product name so that a dev build never
 //! shares state with an installed release one. They differ only by config
-//! (`tauri.dev.conf.json` renames the product to `md-mini-dev`), so a hardcoded
+//! (`tauri.dev.conf.json` renames the product to `couplet-dev`), so a hardcoded
 //! name would put `recovery/` — which holds the user's unsaved work — and
 //! `session.json` in the same place for both, and running `npm run dev:app` would
 //! quietly overwrite the real app's files.
@@ -21,15 +21,23 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+/// The release build's product name, as `tauri.conf.json` spells it — the
+/// one copy of it available to code that runs WITHOUT a Tauri context: the
+/// `couplet ai …` CLI client and `couplet mcp`, which `main.rs` dispatches to
+/// before any context exists, and which find the running app's command
+/// socket by name (`ai_socket::socket_path`). The app binds that socket from
+/// the live `productName`; before this constant the clients spelled the name
+/// out as a literal, which would have left them dialling the old socket
+/// after a rename. A test below pins it to `tauri.conf.json`.
+pub const RELEASE_PRODUCT_NAME: &str = "couplet";
+
 /// The name every callsite falls back to when `tauri.conf.json`'s
 /// `product_name` is somehow absent — `Option<String>` on the config type,
-/// even though this app always sets it. Also the release build's actual
-/// product name today, which is why the two callers of this constant outside
-/// this module (`lib.rs`, deciding what `context.config().product_name`
-/// defaults to before `paths::init`/`migration::migrate_app_data_dir_real`
-/// ever run) and `dir_name`'s own error path all share the exact same
-/// literal instead of each spelling `"md-mini"` out separately.
-pub(crate) const FALLBACK_PRODUCT_NAME: &str = "md-mini";
+/// even though this app always sets it. The release name, NOT the previous
+/// one: falling back onto the legacy `md-mini` directory would put this
+/// process in the one directory an installed md-mini may still be using —
+/// the collision `migration.rs` exists to prevent.
+pub(crate) const FALLBACK_PRODUCT_NAME: &str = RELEASE_PRODUCT_NAME;
 const FALLBACK_DIR: &str = FALLBACK_PRODUCT_NAME;
 
 static APP_DIR_NAME: OnceLock<String> = OnceLock::new();
@@ -51,9 +59,19 @@ pub fn init(product_name: &str) {
 }
 
 /// `~/Library/Application Support/<product name>/`, created if missing.
+///
+/// Refuses before `init` instead of guessing a name. A guess is a directory
+/// created — and one file written into a freshly created `couplet/` before the
+/// first real launch makes `migration.rs` see `NewAlreadyPopulated` and leave
+/// md-mini's data behind for good. An error here costs one write; the guess
+/// could cost the user's drafts.
 pub fn app_data_dir() -> Result<PathBuf, String> {
     let base = dirs::data_dir().ok_or("Cannot determine application data directory")?;
-    let name = APP_DIR_NAME.get().map(String::as_str).unwrap_or(FALLBACK_DIR);
+    data_dir_under(&base, APP_DIR_NAME.get().map(String::as_str))
+}
+
+fn data_dir_under(base: &std::path::Path, name: Option<&str>) -> Result<PathBuf, String> {
+    let name = name.ok_or("paths::init has not run")?;
     let dir = base.join(name);
     if !dir.exists() {
         fs::create_dir_all(&dir).map_err(|e| format!("Failed to create data dir: {}", e))?;
@@ -67,9 +85,26 @@ mod tests {
 
     #[test]
     fn dev_and_release_names_differ() {
-        assert_eq!(dir_name("md-mini"), "md-mini");
-        assert_eq!(dir_name("md-mini-dev"), "md-mini-dev");
-        assert_ne!(dir_name("md-mini"), dir_name("md-mini-dev"));
+        assert_eq!(dir_name("couplet"), "couplet");
+        assert_eq!(dir_name("couplet-dev"), "couplet-dev");
+        assert_ne!(dir_name("couplet"), dir_name("couplet-dev"));
+    }
+
+    fn product_name_in(config: &str) -> String {
+        let value: serde_json::Value = serde_json::from_str(config).expect("config is JSON");
+        value["productName"].as_str().expect("productName is set").to_string()
+    }
+
+    #[test]
+    fn release_product_name_matches_the_config() {
+        // The CLI clients reach the app's socket by this constant, the app
+        // binds it by the config — renaming one without the other makes
+        // `couplet mcp` wait for a socket that never appears.
+        assert_eq!(product_name_in(include_str!("../tauri.conf.json")), RELEASE_PRODUCT_NAME);
+        assert_eq!(
+            product_name_in(include_str!("../tauri.dev.conf.json")),
+            format!("{RELEASE_PRODUCT_NAME}-dev")
+        );
     }
 
     #[test]
@@ -88,6 +123,21 @@ mod tests {
             crate::migration::known_legacy_product_names().any(|n| n == "md-mini"),
             "\"md-mini\" must stay listed in migration.rs so existing installs are not stranded by a rename"
         );
+    }
+
+    #[test]
+    fn nothing_is_created_before_init() {
+        let base = std::env::temp_dir().join(format!("couplet-paths-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+
+        assert_eq!(data_dir_under(&base, None), Err("paths::init has not run".to_string()));
+        assert_eq!(fs::read_dir(&base).unwrap().count(), 0, "a refused call must not create a directory");
+
+        let dir = data_dir_under(&base, Some("couplet")).unwrap();
+        assert_eq!(dir, base.join("couplet"));
+        assert!(dir.is_dir());
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

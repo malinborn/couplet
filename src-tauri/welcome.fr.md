@@ -1,12 +1,12 @@
-# Bienvenue sur md-mini
+# Bienvenue sur couplet
 
 Un éditeur markdown qui s'affiche à mesure que tu écris — et que ton agent IA peut piloter directement.
 
 ## Commence ici : donne-le à ton agent
 
-1. Ouvre **IA → Apprends mdmini à ton IA**.
+1. Ouvre **IA → Apprends couplet à ton IA**.
 2. Copie le prompt de ce document et donne-le à ton agent.
-3. C'est tout ce qu'il faut faire. L'agent enregistre md-mini comme serveur MCP, s'écrit une skill sur la bonne façon de l'utiliser, et ajoute une courte note à sa propre configuration pour savoir quand y recourir.
+3. C'est tout ce qu'il faut faire. L'agent enregistre couplet comme serveur MCP, s'écrit une skill sur la bonne façon de l'utiliser, et ajoute une courte note à sa propre configuration pour savoir quand y recourir.
 
 À partir de là, il sait :
 
@@ -21,7 +21,7 @@ Rien ne se passe dans ton dos : **⌘Z** annule une modification de l'IA exactem
 
 ## Personnalise-le
 
-**Thèmes** — le menu **Thème**. Quatre familles — Classic, Aurora, Blueprint, Phosphor —, chacune avec sa moitié claire et sa moitié sombre. Famille et moitié se choisissent séparément : changer l'une laisse l'autre intacte. Coche **Suivre le système**, et la moitié suivra ton Mac du jour à la nuit, sans jamais sortir de la famille choisie.
+**Thèmes** — le menu **Thème**. Six familles — Classic, Aurora, Blueprint, Phosphor, Paper, Ink —, chacune avec sa moitié claire et sa moitié sombre. Famille et moitié se choisissent séparément : changer l'une laisse l'autre intacte. Coche **Suivre le système**, et la moitié suivra ton Mac du jour à la nuit, sans jamais sortir de la famille choisie.
 
 **Moteur de l'éditeur** — **Affichage → Moteur de l'éditeur**. *Rendu en direct* masque entièrement la syntaxe markdown ; *Aperçu* met le texte en forme mais laisse les marqueurs en place ; *Brut* montre le fichier exactement comme il est écrit. **⌘E** bascule entre la source et le moteur choisi — jamais d'un moteur à l'autre.
 
@@ -31,4 +31,4 @@ Rien ne se passe dans ton dos : **⌘Z** annule une modification de l'IA exactem
 
 - Fenêtres, position du curseur et brouillons non enregistrés reviennent tels quels après un redémarrage.
 - **⇧⌘M** commente la sélection, **⌘=** et **⌘−** zooment, **⌘E** affiche la source.
-- `mdmini` fonctionne aussi depuis un terminal — `mdmini help` liste tout ce qu'il sait faire.
+- `couplet` fonctionne aussi depuis un terminal — `couplet help` liste tout ce qu'il sait faire.

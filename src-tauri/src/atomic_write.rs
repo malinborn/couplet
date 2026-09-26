@@ -207,7 +207,7 @@ fn parent_dir(target: &Path) -> &Path {
 /// sidecar temp name (`path.with_extension("tmp")`) produced
 /// `.mdmini_comments_note.tmp`, which still matched that prefix — so
 /// `collect_open` could parse a half-written temp as a real sidecar, and
-/// `mdmini watch` could fire on one. The extra dot makes the temp unmatchable,
+/// `couplet watch` could fire on one. The extra dot makes the temp unmatchable,
 /// which is what `watch.rs` already claimed was true.
 fn temp_path_for(target: &Path) -> Result<PathBuf, String> {
     let name = target
@@ -410,7 +410,7 @@ pub(crate) mod testkit {
     /// test fails — the evidence is the file itself.
     pub(crate) fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "md-mini-save-{}-{}-{}",
+            "couplet-save-{}-{}-{}",
             tag,
             std::process::id(),
             TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
@@ -576,12 +576,12 @@ mod tests {
     fn preserves_a_custom_xattr() {
         let dir = scratch("xattr");
         let doc = doc_with_mode(&dir, "note.md", 0o644);
-        set_xattr(&doc, "com.mdmini.test", b"keepme");
+        set_xattr(&doc, "com.couplet.test", b"keepme");
 
         save_doc(&doc, NEW).unwrap();
 
         assert_eq!(
-            get_xattr(&doc, "com.mdmini.test").as_deref(),
+            get_xattr(&doc, "com.couplet.test").as_deref(),
             Some(&b"keepme"[..]),
             "custom xattr was lost"
         );
@@ -593,13 +593,13 @@ mod tests {
         // path should not be able to change a security decision.
         let dir = scratch("quarantine");
         let doc = doc_with_mode(&dir, "note.md", 0o644);
-        set_xattr(&doc, "com.apple.quarantine", b"0081;00000000;mdmini;");
+        set_xattr(&doc, "com.apple.quarantine", b"0081;00000000;couplet;");
 
         save_doc(&doc, NEW).unwrap();
 
         assert_eq!(
             get_xattr(&doc, "com.apple.quarantine").as_deref(),
-            Some(&b"0081;00000000;mdmini;"[..]),
+            Some(&b"0081;00000000;couplet;"[..]),
             "com.apple.quarantine was lost"
         );
     }
@@ -1019,7 +1019,7 @@ mod tests {
     fn a_real_sigkill_mid_save_leaves_the_document_intact() {
         let dir = scratch("sigkill");
         let doc = doc_with_mode(&dir, "note.md", 0o600);
-        set_xattr(&doc, "com.mdmini.test", b"keepme");
+        set_xattr(&doc, "com.couplet.test", b"keepme");
         let before = fs::metadata(&doc).unwrap();
         let ready = dir.join("ready");
 
@@ -1063,7 +1063,7 @@ mod tests {
         assert_eq!(mode_of(&doc), 0o600, "the crash changed the mode");
         assert_eq!(fs::metadata(&doc).unwrap().ino(), before.ino());
         assert_eq!(
-            get_xattr(&doc, "com.mdmini.test").as_deref(),
+            get_xattr(&doc, "com.couplet.test").as_deref(),
             Some(&b"keepme"[..])
         );
 

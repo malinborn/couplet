@@ -165,7 +165,7 @@ mod tests {
 
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "mdmini-git-info-{}-{}",
+            "couplet-git-info-{}-{}",
             tag,
             crate::session::new_tab_id()
         ));
@@ -175,13 +175,13 @@ mod tests {
 
     #[test]
     fn a_file_in_a_repository_reports_its_toplevel_and_branch() {
-        let root = scratch("repo").join("md-mini");
+        let root = scratch("repo").join("couplet");
         fs::create_dir_all(root.join(".git")).unwrap();
         fs::create_dir_all(root.join("docs/deep")).unwrap();
         fs::write(root.join(".git/HEAD"), "ref: refs/heads/feat/tabs\n").unwrap();
         assert_eq!(
             git_info(&root.join("docs/deep/plan.md")),
-            Some(GitInfo { project: "md-mini".into(), branch: Some("feat/tabs".into()) })
+            Some(GitInfo { project: "couplet".into(), branch: Some("feat/tabs".into()) })
         );
     }
 
@@ -213,9 +213,9 @@ mod tests {
     #[test]
     fn a_worktree_is_its_own_project_with_its_own_branch() {
         let base = scratch("wt");
-        let gitdir = base.join("md-mini/.git/worktrees/tabs-impl");
+        let gitdir = base.join("couplet/.git/worktrees/tabs-impl");
         fs::create_dir_all(&gitdir).unwrap();
-        fs::write(base.join("md-mini/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::write(base.join("couplet/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
         fs::write(gitdir.join("HEAD"), "ref: refs/heads/feat/tabs\n").unwrap();
         let wt = base.join("tabs-impl");
         fs::create_dir_all(&wt).unwrap();
@@ -356,7 +356,7 @@ mod tests {
 
     #[test]
     fn the_project_root_is_the_repository_toplevel() {
-        let root = scratch("proot").join("md-mini");
+        let root = scratch("proot").join("couplet");
         fs::create_dir_all(root.join(".git")).unwrap();
         fs::create_dir_all(root.join("docs/deep")).unwrap();
         assert_eq!(project_root(&root.join("docs/deep/a.md")), Some(root));

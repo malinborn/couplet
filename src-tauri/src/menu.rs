@@ -341,14 +341,19 @@ pub fn build_menu(
         .item(&tabs_compact)
         .item(&tabs_dates)
         .separator()
+        // ⌘⇧] / ⌘⇧[, as in Safari and Terminal. Not ⌃Tab: a Ctrl-only key
+        // equivalent never fires from the keyboard while a window is key —
+        // the WKWebView takes the key and the menu never sees it (measured
+        // 2026-09-25). ⌃Tab / ⌃⇧Tab are caught in the page instead
+        // (`src/lib/tabs/tab-cycle-keys.ts`).
         .item(
             &MenuItemBuilder::with_id("next_tab", t("menu.view.next_tab"))
-                .accelerator("Ctrl+Tab")
+                .accelerator("CmdOrCtrl+Shift+BracketRight")
                 .build(app)?,
         )
         .item(
             &MenuItemBuilder::with_id("prev_tab", t("menu.view.prev_tab"))
-                .accelerator("Ctrl+Shift+Tab")
+                .accelerator("CmdOrCtrl+Shift+BracketLeft")
                 .build(app)?,
         )
         .separator()
@@ -406,14 +411,16 @@ pub fn build_menu(
     // «Classic» здесь — то же имя, которым эта семья зовётся в коде с самого
     // начала (`ThemeFamily`), просто раньше в меню она была «Default».
     //
-    // Названия семей — Classic / Aurora / Blueprint / Phosphor — имена
-    // собственные и не переводятся.
+    // Названия семей — Classic / Aurora / Blueprint / Phosphor / Paper / Ink —
+    // имена собственные и не переводятся.
     let theme_family_classic = CheckMenuItemBuilder::with_id("theme_family_classic", "Classic").build(app)?;
     let theme_family_aurora = CheckMenuItemBuilder::with_id("theme_family_aurora", "Aurora").build(app)?;
     let theme_family_blueprint =
         CheckMenuItemBuilder::with_id("theme_family_blueprint", "Blueprint").build(app)?;
     let theme_family_phosphor =
         CheckMenuItemBuilder::with_id("theme_family_phosphor", "Phosphor").build(app)?;
+    let theme_family_paper = CheckMenuItemBuilder::with_id("theme_family_paper", "Paper").build(app)?;
+    let theme_family_ink = CheckMenuItemBuilder::with_id("theme_family_ink", "Ink").build(app)?;
     let theme_half_light =
         CheckMenuItemBuilder::with_id("theme_half_light", t("menu.theme.half_light")).build(app)?;
     let theme_half_dark =
@@ -426,6 +433,8 @@ pub fn build_menu(
         .item(&theme_family_aurora)
         .item(&theme_family_blueprint)
         .item(&theme_family_phosphor)
+        .item(&theme_family_paper)
+        .item(&theme_family_ink)
         .separator()
         .item(&theme_half_light)
         .item(&theme_half_dark)
@@ -475,9 +484,15 @@ pub fn build_menu(
         .item(&language_zh)
         .build()?;
 
-    // Заголовок подменю приложения — «md-mini» — не переводится: macOS сама
-    // подставляет туда имя бандла.
-    let app_menu = SubmenuBuilder::new(app, "md-mini")
+    // Заголовок подменю приложения не переводится: macOS сама подставляет туда
+    // имя бандла. Берём его из `productName`, а не литералом, чтобы голый
+    // бинарь `tauri dev` (у него бандла нет) не показывал прежнее имя.
+    let product_name = app
+        .config()
+        .product_name
+        .clone()
+        .unwrap_or_else(|| crate::paths::FALLBACK_PRODUCT_NAME.to_string());
+    let app_menu = SubmenuBuilder::new(app, product_name)
         .about(None)
         .separator()
         .item(&MenuItemBuilder::with_id("check_updates", t("menu.app.check_updates")).build(app)?)
@@ -550,6 +565,8 @@ pub fn build_menu(
             ("aurora", theme_family_aurora),
             ("blueprint", theme_family_blueprint),
             ("phosphor", theme_family_phosphor),
+            ("paper", theme_family_paper),
+            ("ink", theme_family_ink),
         ],
         half_light: theme_half_light,
         half_dark: theme_half_dark,

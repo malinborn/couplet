@@ -29,7 +29,31 @@ const WELCOME_FR: &str = include_str!("../welcome.fr.md");
 const WELCOME_RU: &str = include_str!("../welcome.ru.md");
 const WELCOME_ZH: &str = include_str!("../welcome.zh.md");
 
+const RENAMED_EN: &str = include_str!("../renamed.en.md");
+const RENAMED_ES: &str = include_str!("../renamed.es.md");
+const RENAMED_DE: &str = include_str!("../renamed.de.md");
+const RENAMED_FR: &str = include_str!("../renamed.fr.md");
+const RENAMED_RU: &str = include_str!("../renamed.ru.md");
+const RENAMED_ZH: &str = include_str!("../renamed.zh.md");
+
 const PLAYBOOK_MD: &str = include_str!("../playbook.md");
+
+/// Left in the data directory by `migration.rs` on the launch that actually
+/// carried md-mini's data across, and removed once the rename letter has been
+/// shown. A fresh install never gets it, so it never sees the letter.
+pub(crate) const RENAME_LETTER_FLAG: &str = "rename-letter-pending";
+
+/// The "md-mini is now couplet" letter for `lang`.
+fn renamed_doc(lang: &str) -> &'static str {
+    match lang {
+        "es" => RENAMED_ES,
+        "de" => RENAMED_DE,
+        "fr" => RENAMED_FR,
+        "ru" => RENAMED_RU,
+        "zh" => RENAMED_ZH,
+        _ => RENAMED_EN,
+    }
+}
 
 /// The welcome document for `lang`. `playbook.md` has no per-language
 /// equivalent — it is a prompt for an agent, written with CLI syntax, and
@@ -137,26 +161,71 @@ pub fn maybe_show(app: &AppHandle) {
     };
 
     let lang = crate::i18n::active_language();
-
-    let stored = read_marker(&base_dir);
-    if !should_show(stored.as_deref(), &version, lang) {
-        return;
+    let shown = show_startup_doc(&base_dir, &version, lang, |filename, content| {
+        open_bundled_doc(app, filename, content)
+    });
+    if shown {
+        WELCOME_SHOWN_THIS_LAUNCH.store(true, Ordering::SeqCst);
     }
+}
 
-    // The filename already carries `lang` (see `should_show`'s doc comment on
-    // why a language switch reaches this point), so writing it never
-    // overwrites a different language's welcome doc — each language gets its
-    // own file, and any previous one is simply left on disk.
-    let filename = format!("welcome-{}-{}.md", version, lang);
-    if let Err(e) = open_bundled_doc(app, &filename, welcome_doc(lang)) {
+/// Which document a launch opens, if any.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupDoc {
+    RenameLetter,
+    Welcome,
+    Nothing,
+}
+
+/// The rename letter stands in for the welcome window on the launch it
+/// shows: two windows at once would bury one of them, and someone who used
+/// md-mini needs to hear about the name, not about the setup they already
+/// did. Pure, so every branch is directly testable.
+fn startup_doc(letter_pending: bool, stored: Option<&str>, version: &str, lang: &str) -> StartupDoc {
+    if letter_pending {
+        StartupDoc::RenameLetter
+    } else if should_show(stored, version, lang) {
+        StartupDoc::Welcome
+    } else {
+        StartupDoc::Nothing
+    }
+}
+
+/// Opens this launch's document through `open` and records it in `base_dir`:
+/// the letter's flag is removed, and the onboarding marker is written either
+/// way — after the letter too, so the welcome does not follow on the next
+/// launch. Returns whether a document opened. Split from `maybe_show` so the
+/// bookkeeping is testable without an `AppHandle`.
+fn show_startup_doc(
+    base_dir: &Path,
+    version: &str,
+    lang: &str,
+    mut open: impl FnMut(&str, &str) -> Result<(), String>,
+) -> bool {
+    let letter_pending = base_dir.join(RENAME_LETTER_FLAG).exists();
+    let stored = read_marker(base_dir);
+    let (filename, content) = match startup_doc(letter_pending, stored.as_deref(), version, lang) {
+        StartupDoc::Nothing => return false,
+        StartupDoc::RenameLetter => (format!("couplet-renamed-{}.md", lang), renamed_doc(lang)),
+        // The filename already carries `lang` (see `should_show`'s doc comment
+        // on why a language switch reaches this point), so writing it never
+        // overwrites a different language's welcome doc — each language gets
+        // its own file, and any previous one is simply left on disk.
+        StartupDoc::Welcome => (format!("welcome-{}-{}.md", version, lang), welcome_doc(lang)),
+    };
+    if let Err(e) = open(&filename, content) {
         eprintln!("onboarding: {}", e);
-        return;
+        return false;
     }
-    WELCOME_SHOWN_THIS_LAUNCH.store(true, Ordering::SeqCst);
-
-    if let Err(e) = write_marker(&base_dir, &version, lang) {
+    if letter_pending {
+        if let Err(e) = fs::remove_file(base_dir.join(RENAME_LETTER_FLAG)) {
+            eprintln!("onboarding: failed to remove {}: {}", RENAME_LETTER_FLAG, e);
+        }
+    }
+    if let Err(e) = write_marker(base_dir, version, lang) {
         eprintln!("onboarding: failed to write marker: {}", e);
     }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -317,7 +386,7 @@ fn slugify(text: &str) -> String {
     out
 }
 
-/// Content for the "Teach Your AI mdmini" menu item, in the process-wide
+/// Content for the "Teach Your AI couplet" menu item, in the process-wide
 /// active language.
 pub(crate) fn connect_doc() -> String {
     connect_doc_for(crate::i18n::active_language())
@@ -329,9 +398,10 @@ pub(crate) fn connect_doc() -> String {
 /// only set once per process.
 ///
 /// Внешний забор — четыре бэктика: внутри промпта есть свои тройные блоки.
-/// `PROMPT_INTRO`, `PROMPT_VERIFY`, `CONFIG_BLOCK` и сниппеты `ai_socket`
+/// `PROMPT_OPENING`, шаг 0 (`migration_step`), `PROMPT_INTRO`, `PROMPT_VERIFY`,
+/// `CONFIG_BLOCK` и сниппеты `ai_socket`
 /// остаются английскими в любом языке — это промпт для агента и он должен
-/// совпадать байт в байт с тем, что печатает `mdmini agent`.
+/// совпадать байт в байт с тем, что печатает `couplet agent`.
 pub(crate) fn connect_doc_for(lang: &str) -> String {
     let t = |key: &str| crate::i18n::t_for(lang, key);
     let mut d = String::new();
@@ -365,6 +435,8 @@ pub(crate) fn connect_doc_for(lang: &str) -> String {
 
     d.push_str(&format!("## {}\n\n", heading_prompt));
     d.push_str(&format!("{}\n\n````\n", t("doc.connect.copy_instruction")));
+    d.push_str(PROMPT_OPENING);
+    d.push_str(&migration_step(MIGRATION_CONFIG_REPLACE));
     d.push_str(PROMPT_INTRO);
     d.push_str(
         r#"
@@ -387,6 +459,8 @@ pub(crate) fn connect_doc_for(lang: &str) -> String {
         t("doc.connect.back_to_it"),
         slug_prompt,
     ));
+    d.push_str(PROMPT_OPENING);
+    d.push_str(&migration_step(MIGRATION_CONFIG_REPORT));
     d.push_str(PROMPT_INTRO);
     d.push_str(
         r#"
@@ -405,24 +479,71 @@ pub(crate) fn connect_doc_for(lang: &str) -> String {
     d
 }
 
-/// Первые два шага обоих промптов — они одинаковы; различается только третий.
-/// Остаётся английским во всех языках: это текст промпта для агента.
-const PROMPT_INTRO: &str = r#"Set up md-mini (`mdmini`) for me. Do the steps in order, then tell me in one
+/// Первая фраза обоих промптов. Остаётся английской во всех языках.
+const PROMPT_OPENING: &str = r#"Set up couplet for me. Do the steps in order, then tell me in one
 short paragraph what you changed and what you skipped.
 
-1. Register md-mini over MCP, if your harness supports MCP at all.
-   Claude Code: `claude mcp add --scope user mdmini -- mdmini mcp`
-   Other clients: add `"mdmini": {"command": "mdmini", "args": ["mcp"]}` to
+"#;
+
+// ВРЕМЕННО: шаг 0 обоих промптов — убрать установку, оставшуюся от md-mini.
+// Удалить (четыре константы ниже и `migration_step`) в релизе после того,
+// как переименование уляжется — см. фоллоу-ап в
+// `docs/superpowers/plans/2026-09-22-couplet-rebrand.md`. Текст утверждён
+// владельцем дословно. Шаг собирается из общих кусков, чтобы два варианта не
+// разошлись: различается только пункт Config — промпт «только скилл» обещает
+// не трогать главный конфиг, поэтому там секция не правится, а называется.
+// Пункт MCP одинаков в обоих: шаг 1 (`PROMPT_INTRO`, общий) в обоих
+// регистрирует `couplet`, так что снимать `mdmini` безопасно и там.
+
+/// Заголовок, пункты MCP и Skill.
+const MIGRATION_STEP_HEAD: &str = r#"0. Migrating from md-mini (temporary — remove after the rename has settled).
+   This app used to be called md-mini; its CLI, MCP server and skill were named
+   `mdmini`. Replace leftovers of that setup instead of adding a second copy:
+   - MCP: if an `mdmini` server is registered (`claude mcp list`), remove it
+     with `claude mcp remove mdmini` (use its scope). Step 1 registers `couplet`.
+     Same for an `mdmini` entry in another client's `mcpServers`.
+   - Skill: once step 2 has written ~/.claude/skills/couplet/SKILL.md, delete
+     ~/.claude/skills/mdmini/ — unless it holds anything besides the generated
+     md-mini text (personal notes, edits); then keep it and tell me.
+"#;
+
+/// Пункт Config основного промпта: секция заменяется блоком из шага 3.
+const MIGRATION_CONFIG_REPLACE: &str = r#"   - Config: in CLAUDE.md / AGENTS.md / your main config, replace an existing
+     `## md-mini` / `## mdmini` section with the block from step 3.
+"#;
+
+/// Пункт Config промпта «только скилл»: его шаг 3 запрещает трогать конфиг.
+const MIGRATION_CONFIG_REPORT: &str = r#"   - Config: if CLAUDE.md / AGENTS.md / your main config has a `## md-mini` /
+     `## mdmini` section, tell me — don't edit it.
+"#;
+
+/// Последний пункт и требование отчёта.
+const MIGRATION_STEP_TAIL: &str = r#"   - Anything else that calls `mdmini` (hooks, scripts, Monitor filters on
+     `[mdmini]`): list it, do not change it — `mdmini` keeps working as an alias.
+   Report every change from this step in your summary.
+
+"#;
+
+/// Шаг 0 с заданным пунктом Config.
+fn migration_step(config_bullet: &str) -> String {
+    format!("{MIGRATION_STEP_HEAD}{config_bullet}{MIGRATION_STEP_TAIL}")
+}
+
+/// Шаги 1–2 обоих промптов — они одинаковы; различается только третий.
+/// Остаётся английским во всех языках: это текст промпта для агента.
+const PROMPT_INTRO: &str = r#"1. Register couplet over MCP, if your harness supports MCP at all.
+   Claude Code: `claude mcp add --scope user couplet -- couplet mcp`
+   Other clients: add `"couplet": {"command": "couplet", "args": ["mcp"]}` to
    their `mcpServers` config.
    If your harness has no MCP support, skip this step and say so — everything
    below still works through the CLI.
 
-2. Create the skill file `~/.claude/skills/mdmini/SKILL.md` (create the
+2. Create the skill file `~/.claude/skills/couplet/SKILL.md` (create the
    directories if needed; for a non-Claude harness use its own skill location).
    Its frontmatter is exactly:
 
    ---
-   name: mdmini
+   name: couplet
    description: Use when the user should read something with their own eyes, when a file or report needs to be shown, when asking a question about a document they already have open, or when replying to comments they left in one. Covers the MCP tools (show/edit/ask/question/answer) and the CLI fallback.
    ---
 
@@ -431,17 +552,17 @@ short paragraph what you changed and what you skipped.
 
 /// Последний шаг обоих промптов. Остаётся английским.
 const PROMPT_VERIFY: &str = r#"
-4. Check your work: `mdmini --version` prints a version, and the skill file
-   exists. If `mdmini` is not on PATH, stop and tell me — do not install
+4. Check your work: `couplet --version` prints a version, and the skill file
+   exists. If `couplet` is not on PATH, stop and tell me — do not install
    anything yourself and do not guess a path.
 
 Rule to carry into the skill and the config: prefer the MCP tools when they
-are available, and fall back to the `mdmini` CLI when MCP is not registered,
+are available, and fall back to the `couplet` CLI when MCP is not registered,
 not supported, or a call fails. Same capabilities either way.
 "#;
 
 /// Тело скилла — оба сниппета дословно, поэтому промпт не может разойтись с
-/// тем, что печатает `mdmini agent` и `mdmini agent --mcp`. Остаётся
+/// тем, что печатает `couplet agent` и `couplet agent --mcp`. Остаётся
 /// английским во всех языках.
 fn prompt_payload() -> String {
     format!(
@@ -456,17 +577,17 @@ fn prompt_payload() -> String {
 /// повод его загрузить. Остаётся английским во всех языках — это текст для
 /// агента, а не для человека.
 const CONFIG_BLOCK: &str = r#"
-## md-mini
+## couplet
 
-`mdmini` is the local editor the user reads in. Reach for it when they should
+`couplet` is the local editor the user reads in. Reach for it when they should
 see something with their own eyes — a report, plan, spec or review you just
 wrote; when they say "show me"; when the question is about a document they
 already have open; when a mermaid diagram is involved; or when they left
-comments in a document for you. Load the `mdmini` skill before using it.
+comments in a document for you. Load the `couplet` skill before using it.
 
 Prefer the MCP tools (`show`, `edit`, `ask`, `question`, `answer`). If MCP is
 not registered, not supported by this harness, or a call fails, use the
-`mdmini` CLI instead — the skill documents both. Skip it for short answers and
+`couplet` CLI instead — the skill documents both. Skip it for short answers and
 throwaway files.
 "#;
 
@@ -523,7 +644,7 @@ mod tests {
 
     fn temp_base_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "md-mini-onboarding-test-{}-{}",
+            "couplet-onboarding-test-{}-{}",
             tag,
             std::process::id()
         ));
@@ -621,7 +742,7 @@ mod tests {
         }
     }
 
-    // --- Teach Your AI mdmini ------------------------------------------------
+    // --- Teach Your AI couplet ------------------------------------------------
 
     #[test]
     fn connect_doc_carries_both_snippets_verbatim() {
@@ -671,11 +792,58 @@ mod tests {
     fn connect_doc_tells_the_agent_mcp_first_then_cli() {
         // Agent-facing prompt text (`PROMPT_VERIFY`) stays English in every
         // language — this is the part that must be byte-identical to
-        // `mdmini agent`'s own output regardless of who is reading the doc.
+        // `couplet agent`'s own output regardless of who is reading the doc.
         for lang in crate::i18n::SUPPORTED_LANGUAGES {
             let doc = connect_doc_for(lang);
             assert!(doc.contains("prefer the MCP tools"), "lang {lang}");
-            assert!(doc.contains("fall back to the `mdmini` CLI"), "lang {lang}");
+            assert!(doc.contains("fall back to the `couplet` CLI"), "lang {lang}");
+        }
+    }
+
+    /// The doc split at the skill-only heading: (main prompt, skill-only prompt).
+    fn split_prompts(lang: &str) -> (String, String) {
+        let doc = connect_doc_for(lang);
+        let heading = format!("## {}", crate::i18n::t_for(lang, "doc.connect.heading_skill_only"));
+        let at = doc.find(&heading).expect("skill-only heading");
+        (doc[..at].to_string(), doc[at..].to_string())
+    }
+
+    #[test]
+    fn the_main_prompt_starts_with_the_md_mini_migration_step() {
+        let step0 = migration_step(MIGRATION_CONFIG_REPLACE);
+        for lang in crate::i18n::SUPPORTED_LANGUAGES {
+            let (main, skill_only) = split_prompts(lang);
+            assert_eq!(main.matches(step0.as_str()).count(), 1, "lang {lang}");
+            assert!(
+                main.contains(&format!("{PROMPT_OPENING}{step0}{PROMPT_INTRO}")),
+                "lang {lang}: opening, step 0, steps 1–2 must be contiguous"
+            );
+            assert!(main.contains("claude mcp remove mdmini"), "lang {lang}");
+            assert!(!skill_only.contains(step0.as_str()), "lang {lang}: the main variant leaked");
+            assert!(!connect_doc_for(lang).contains("removing it is my call"), "lang {lang}: the old paragraph is gone");
+        }
+    }
+
+    #[test]
+    fn the_skill_only_prompt_has_its_own_migration_step() {
+        let step0 = migration_step(MIGRATION_CONFIG_REPORT);
+        for lang in crate::i18n::SUPPORTED_LANGUAGES {
+            let (main, skill_only) = split_prompts(lang);
+            assert_eq!(skill_only.matches(step0.as_str()).count(), 1, "lang {lang}");
+            assert!(
+                skill_only.contains(&format!("{PROMPT_OPENING}{step0}{PROMPT_INTRO}")),
+                "lang {lang}: opening, step 0, steps 1–2 must be contiguous"
+            );
+            // Its step 3 promises not to touch the main config, so the
+            // section-replacing sentence must not be there — only the report.
+            assert!(!skill_only.contains(MIGRATION_CONFIG_REPLACE), "lang {lang}");
+            assert!(!skill_only.contains("with the block from step 3"), "lang {lang}");
+            assert!(skill_only.contains("tell me — don't edit it"), "lang {lang}");
+            // Step 1 is shared and registers `couplet` in this prompt too, so
+            // replacing an `mdmini` registration cannot leave the user without MCP.
+            assert!(skill_only.contains("claude mcp add --scope user couplet -- couplet mcp"), "lang {lang}");
+            assert!(skill_only.contains("claude mcp remove mdmini"), "lang {lang}");
+            assert!(!main.contains(step0.as_str()), "lang {lang}: the skill-only variant leaked");
         }
     }
 
@@ -759,6 +927,84 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn every_language_has_its_own_rename_letter() {
+        // Each letter is a separate translation, not a fallback to English:
+        // the only language allowed to get RENAMED_EN is English itself.
+        for lang in crate::i18n::SUPPORTED_LANGUAGES {
+            let doc = renamed_doc(lang);
+            assert!(doc.starts_with("# "), "renamed.{lang}.md has no title");
+            if lang != "en" {
+                assert_ne!(doc, RENAMED_EN, "renamed.{lang}.md falls back to English");
+            }
+        }
+    }
+
+    #[test]
+    fn rename_letter_names_the_menu_item_it_sends_people_to() {
+        // Step 2 of the letter is "open AI → Teach…" — the same trap as the
+        // welcome: rename the menu item and the step becomes impossible. Each
+        // letter must quote its own locale's menu path exactly.
+        for lang in crate::i18n::SUPPORTED_LANGUAGES {
+            let path = format!(
+                "**{} → {}**",
+                crate::i18n::t_for(lang, "menu.ai.title"),
+                crate::i18n::t_for(lang, "menu.ai.connect")
+            );
+            assert!(
+                renamed_doc(lang).contains(&path),
+                "renamed.{lang}.md does not name {path:?}, the menu item it tells people to open"
+            );
+        }
+    }
+
+    #[test]
+    fn the_letter_wins_over_the_welcome_and_only_while_flagged() {
+        assert_eq!(startup_doc(true, None, "1.4.0", "en"), StartupDoc::RenameLetter);
+        assert_eq!(startup_doc(true, Some("1.4.0:en"), "1.4.0", "en"), StartupDoc::RenameLetter);
+        assert_eq!(startup_doc(false, Some("1.3.0:en"), "1.4.0", "en"), StartupDoc::Welcome);
+        assert_eq!(startup_doc(false, Some("1.4.0:en"), "1.4.0", "en"), StartupDoc::Nothing);
+    }
+
+    #[test]
+    fn the_letter_shows_once_and_the_welcome_does_not_follow() {
+        let dir = temp_base_dir("letter");
+        // A migrated install: the old marker came across, the flag was left
+        // by migration.rs.
+        fs::write(dir.join(MARKER_FILE), "1.3.0:ru").unwrap();
+        fs::write(dir.join(RENAME_LETTER_FLAG), "").unwrap();
+
+        let mut opened: Vec<(String, String)> = Vec::new();
+        let mut open = |name: &str, content: &str| {
+            opened.push((name.to_string(), content.to_string()));
+            Ok(())
+        };
+
+        assert!(show_startup_doc(&dir, "1.4.0", "ru", &mut open));
+        assert!(!dir.join(RENAME_LETTER_FLAG).exists(), "the flag must be gone once the letter opened");
+        assert_eq!(read_marker(&dir).as_deref(), Some("1.4.0:ru"));
+
+        // The next launch: nothing — neither the letter again nor the welcome
+        // for the version the letter already covered.
+        assert!(!show_startup_doc(&dir, "1.4.0", "ru", &mut open));
+
+        assert_eq!(opened.len(), 1);
+        assert_eq!(opened[0].0, "couplet-renamed-ru.md");
+        assert_eq!(opened[0].1, RENAMED_RU);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_letter_that_failed_to_open_stays_pending() {
+        let dir = temp_base_dir("letter-failed");
+        fs::write(dir.join(RENAME_LETTER_FLAG), "").unwrap();
+
+        assert!(!show_startup_doc(&dir, "1.4.0", "en", |_, _| Err("no window".into())));
+        assert!(dir.join(RENAME_LETTER_FLAG).exists(), "a letter nobody saw must be offered again");
+        assert_eq!(read_marker(&dir), None);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     // --- Startup nudge ------------------------------------------------------

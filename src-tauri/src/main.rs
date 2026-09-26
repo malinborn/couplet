@@ -12,7 +12,7 @@ fn main() {
         let args = match std::env::args_os().map(|a| a.into_string()).collect::<Result<Vec<_>, _>>() {
             Ok(args) => args,
             Err(bad) => {
-                eprintln!("mdmini: argument is not valid UTF-8: {}", bad.to_string_lossy());
+                eprintln!("couplet: argument is not valid UTF-8: {}", bad.to_string_lossy());
                 std::process::exit(2);
             }
         };

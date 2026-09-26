@@ -25,7 +25,7 @@
   "toast.reload_error.headline": "Impossible de recharger {fileName}",
   "toast.reload_error.instruction": "L'enregistrement automatique est suspendu jusqu'à ce que le fichier soit de nouveau lisible. Pour garder votre version, appuyez sur",
 
-  "toast.update.headline": "mdmini {latest} disponible",
+  "toast.update.headline": "couplet {latest} disponible",
   "toast.update.current": "vous avez la v{current}",
   "toast.update.copy_title": "Cliquer pour copier",
   "toast.update.copied": "Copié !",
@@ -39,10 +39,10 @@
   "toast.session.windows.other": "{count} fenêtres de votre dernière session",
   "toast.session.restore_action": "Restaurer",
 
-  "toast.ai_nudge.message": "<strong>Votre IA peut piloter md-mini</strong> <span class=\"md-toast-dim\">— voir le menu <strong>IA</strong></span>",
+  "toast.ai_nudge.message": "<strong>Votre IA peut piloter couplet</strong> <span class=\"md-toast-dim\">— voir le menu <strong>IA</strong></span>",
   "toast.ai_nudge.action": "Prise en main",
 
-  "toast.themes_nudge.message": "<strong>md-mini a des thèmes</strong> <span class=\"md-toast-dim\">— quatre dans le menu <strong>Thème</strong></span>",
+  "toast.themes_nudge.message": "<strong>couplet a des thèmes</strong> <span class=\"md-toast-dim\">— six dans le menu <strong>Thème</strong></span>",
 
   "toast.json_offer.message": "<strong>Cela ressemble à du JSON</strong> <span class=\"md-toast-dim\">— le développer ?</span>",
   "toast.json_offer.action": "Formater",
@@ -54,7 +54,7 @@
   "toast.ai_watch_copied.saved": "<strong>Commande watch copiée</strong> <span class=\"md-toast-dim\">— collez-la dans la session de votre agent</span>",
   "toast.ai_watch_copied.unsaved": "<strong>Enregistrez d'abord le fichier</strong> <span class=\"md-toast-dim\">— un document non enregistré n'a pas de chemin à surveiller</span>",
 
-  "toast.ai_first_use.message": "<strong>C'était votre IA</strong> <span class=\"md-toast-dim\">— md-mini est connecté</span>",
+  "toast.ai_first_use.message": "<strong>C'était votre IA</strong> <span class=\"md-toast-dim\">— couplet est connecté</span>",
   "toast.ai_first_use.more": "Plus dans le menu <strong>IA</strong> → Prise en main",
 
   "editor.ai_comment.status.open": "en attente de l'agent",

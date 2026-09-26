@@ -25,7 +25,7 @@
   "toast.reload_error.headline": "No se pudo recargar {fileName}",
   "toast.reload_error.instruction": "El guardado automático está en pausa hasta que el archivo vuelva a poder leerse. Para conservar tu versión, pulsa",
 
-  "toast.update.headline": "mdmini {latest} disponible",
+  "toast.update.headline": "couplet {latest} disponible",
   "toast.update.current": "tienes la v{current}",
   "toast.update.copy_title": "Haz clic para copiar",
   "toast.update.copied": "¡Copiado!",
@@ -39,10 +39,10 @@
   "toast.session.windows.other": "{count} ventanas de tu última sesión",
   "toast.session.restore_action": "Restaurar",
 
-  "toast.ai_nudge.message": "<strong>Tu IA puede manejar md-mini</strong> <span class=\"md-toast-dim\">— mira el menú <strong>IA</strong></span>",
+  "toast.ai_nudge.message": "<strong>Tu IA puede manejar couplet</strong> <span class=\"md-toast-dim\">— mira el menú <strong>IA</strong></span>",
   "toast.ai_nudge.action": "Primeros pasos",
 
-  "toast.themes_nudge.message": "<strong>md-mini tiene temas</strong> <span class=\"md-toast-dim\">— cuatro en el menú <strong>Tema</strong></span>",
+  "toast.themes_nudge.message": "<strong>couplet tiene temas</strong> <span class=\"md-toast-dim\">— seis en el menú <strong>Tema</strong></span>",
 
   "toast.json_offer.message": "<strong>Eso parece JSON</strong> <span class=\"md-toast-dim\">— ¿lo expandimos?</span>",
   "toast.json_offer.action": "Formatear",
@@ -54,7 +54,7 @@
   "toast.ai_watch_copied.saved": "<strong>Comando watch copiado</strong> <span class=\"md-toast-dim\">— pégalo en la sesión de tu agente</span>",
   "toast.ai_watch_copied.unsaved": "<strong>Guarda el archivo primero</strong> <span class=\"md-toast-dim\">— un documento sin guardar no tiene ruta que vigilar</span>",
 
-  "toast.ai_first_use.message": "<strong>Eso era tu IA</strong> <span class=\"md-toast-dim\">— md-mini está conectado</span>",
+  "toast.ai_first_use.message": "<strong>Eso era tu IA</strong> <span class=\"md-toast-dim\">— couplet está conectado</span>",
   "toast.ai_first_use.more": "Más en el menú <strong>IA</strong> → Primeros pasos",
 
   "editor.ai_comment.status.open": "esperando al agente",

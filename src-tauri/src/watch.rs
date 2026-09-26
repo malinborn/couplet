@@ -1,4 +1,4 @@
-//! `mdmini watch` — a stream of events about new comments, meant to be handed
+//! `couplet watch` — a stream of events about new comments, meant to be handed
 //! to a Claude Code Monitor: every line of stdout wakes the agent's live
 //! session.
 //!
@@ -54,7 +54,7 @@ pub fn event_line(located: &Located) -> String {
         .map(|r| r.text.replace('\n', " ⏎ "))
         .unwrap_or_default();
     format!(
-        "[mdmini] {} {} · «{}» · {}",
+        "[couplet] {} {} · «{}» · {}",
         located.doc.display(),
         located.thread.id,
         located.thread.quote.replace('\n', " "),
@@ -196,7 +196,7 @@ mod tests {
         use crate::comments::{self, Context, Status, SELF_AUTHOR};
 
         let dir = std::env::temp_dir().join(format!(
-            "mdmini-watch-pause-{}-{}",
+            "couplet-watch-pause-{}-{}",
             std::process::id(),
             comments::now_epoch()
         ));

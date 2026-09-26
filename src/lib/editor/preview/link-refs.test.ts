@@ -44,7 +44,7 @@ function rendered(doc: string): string[] {
 }
 
 describe('the bug: @lezer/markdown calls every bracket pair a Link', () => {
-  it('is not md-mini inventing them — the parser really does emit these', () => {
+  it('is not couplet inventing them — the parser really does emit these', () => {
     // Recorded so the fix is understood as "do not trust the node name",
     // not "the parser was fixed". All three are Link nodes in the tree.
     expect(linkNodes(makeState('see [1] and [2] refs')).length).toBe(2);

@@ -145,7 +145,7 @@ export function tabByIndex(s: TabListState, n: number): TabMeta | undefined {
   return n >= 1 ? s.tabs[n - 1] : undefined;
 }
 
-/** ⌃Tab / ⌃⇧Tab: the next or previous tab in order, wrapping. */
+/** ⌘⇧] / ⌘⇧[ (and ⌃Tab / ⌃⇧Tab): the next or previous tab in order, wrapping. */
 export function neighbour(s: TabListState, delta: 1 | -1): TabMeta | undefined {
   if (s.tabs.length < 2) return undefined;
   const at = s.tabs.findIndex((t) => t.id === s.activeId);

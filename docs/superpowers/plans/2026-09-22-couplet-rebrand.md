@@ -584,6 +584,88 @@ debug-сборки на prod-identity. Тесты 308 и 40/40 release.
 
 **Ждёт живой проверки. Владелец добро не дал. Конфиг не переименовывать.**
 
+## Состояние на 2026-09-25 — PR переименования (ветка `rebrand-couplet`)
+
+Решение владельца: полный ребрендинг сейчас. Фаза 2 (шаги 7–10), мосты Фазы 3 внутри
+репозитория и видимый текст — в этой ветке. Релизных действий в ней нет.
+
+**Живая проверка миграции пройдена** до переименования конфига, на третьей паре
+имён (`couplet-migtest-a` → `-b`, `tauri build --debug --bundles app`), чтобы не
+двигать настоящий `md-mini-dev/`, которым пользуются другие worktree. Перенеслись
+байт в байт: безымянный черновик, `recovery/`, `onboarding-version`, `ai-connected`;
+сессия восстановила обе вкладки; localStorage (тема и ключ-проба) пережил копию
+профиля WebKit, `salt` совпал, старый профиль остался на месте; письмо открылось
+один раз. При запущенном «старом» приложении появился системный алерт и ничего не
+было создано. Кнопку «Quit md-mini and Continue» нажать вживую не удалось — харнесс
+не кликает системные диалоги; ветку покрывают тесты `orchestrate`. Подробности —
+в шапке `migration.rs`.
+
+| Что | Как сделано |
+|---|---|
+| Имена | `couplet` / `pro.couplet.app`, dev `couplet-dev` / `pro.couplet.dev`; `mainBinaryName: couplet` — исполняемый файл бандла `Contents/MacOS/couplet`. Cargo-пакет остался `md-mini` |
+| Сокеты | single-instance `/tmp/pro_couplet_app_si.sock`, командный `/tmp/couplet_cmd.sock`, pending `/tmp/couplet-pending-files` |
+| Расшивка `mcp_server.rs:62` | клиенты (`couplet ai`, `couplet mcp`) берут имя из `paths::RELEASE_PRODUCT_NAME`; тест прибивает константу к `tauri.conf.json` |
+| CLI | `scripts/couplet` — основной; `scripts/mdmini` — шим: `exec` в `couplet`, один раз и только человеку в терминале пишет в stderr о новом имени (метка в `~/Library/Caches/couplet/`, НЕ в Application Support — иначе миграция увидела бы заселённый каталог); `scripts/coup` — симлинк на шим. В бандле все три: `bin/couplet`, `bin/mdmini`, `bin/coup` |
+| MCP | `serverInfo.name: couplet`, имена инструментов прежние, `mdmini -- mdmini mcp` работает через шим |
+| Письмо | `src-tauri/renamed.<lang>.md` (перенесены из `drafts/`). Миграция оставляет флаг `rename-letter-pending` в новом каталоге; `onboarding::maybe_show` показывает письмо вместо приветствия и снимает флаг |
+| `FALLBACK_PRODUCT_NAME` | теперь `couplet`: откат на `md-mini` посадил бы процесс в каталог живого md-mini |
+
+### Release-day checklist
+
+Всё ниже — вне этой ветки или обязано работать до публикации cask `couplet`. Менять
+**в день релиза**, не раньше.
+
+- [ ] **Homebrew tap** `malinborn/homebrew-mdmini` (вне репо): `cask_renames.json` → `{"mdmini": "couplet"}`; `Casks/couplet.rb` c `app "couplet.app"`, `binary ".../couplet.app/Contents/Resources/bin/couplet"` и `binary ".../bin/mdmini"`; `zap` на `~/Library/Application Support/couplet`, `~/Library/WebKit/pro.couplet.app`, `~/Library/Logs/couplet`, `~/Library/Caches/couplet`. Прогнать на тестовом tap.
+- [ ] **`coup` линкуется в cask** — `binary "#{appdir}/couplet.app/Contents/Resources/bin/coup"` в `Casks/couplet.rb`. Решение владельца: риск коллизии имени (занятый `coup` у пользователя роняет установку целиком) принят. Прогнать на тестовом tap.
+- [ ] **README** `README.md:20-22` (`brew tap/trust/install --cask mdmini`) и `README.md:30` (`brew update && brew upgrade --cask mdmini`) → `couplet`.
+- [ ] **Лендинг** `site/main.ts:32` (`INSTALL_CMD`), `site/index.html:118`, `:442`, `:445` (`claude mcp add … mdmini -- mdmini mcp`), `:446`, и примечание `:449` («Until the renamed release ships…») — по чек-листу PR #86; затем `npm run build:site` в `docs/`.
+- [ ] **301** `md-mini.com` → `couplet.pro` (Caddy, у владельца); `.github/workflows/deploy-site.yml:34` всё ещё деплоит в `/var/www/md-mini.com/`.
+- [ ] **Скиллы репозитория** `.claude/skills/brew-release/SKILL.md` (имена бандла, `md-mini_<version>_universal.dmg`, путь `Contents/MacOS/md-mini` в `lipo`, cask `mdmini.rb`) и `.claude/skills/md-mini-install/SKILL.md` (`/usr/local/bin/mdmini`, `md-mini.app`) — переписать под `couplet` перед первым релизом.
+- [ ] **Машина владельца:** после установки `couplet.app` перезапустить `scripts/install.sh` — нынешний `/usr/local/bin/mdmini` это копия старого скрипта с `APP=/Applications/md-mini.app`; перезапустить сессии агентов — уже запущенные `md-mini mcp` стучатся в старый `/tmp/md_mini_cmd.sock`.
+- [ ] **Только по прямому слову владельца и после релиза:** `~/.claude/skills/mdmini` и абзац про mdmini в `~/.claude/CLAUDE.md` (пункт 20).
+- [ ] Релиз-ноты: что поменялось, что `mdmini` работает, «перезапустите агентов».
+- [ ] **MCP по абсолютному пути ломается.** Регистрации вида
+  `/Applications/md-mini.app/Contents/MacOS/md-mini mcp` или
+  `…/md-mini.app/Contents/Resources/bin/mdmini mcp` указывают в бандл, которого после
+  апгрейда нет; шим их не спасает. Письмо отправляет к промпту Teach Your AI (шаг 2, его
+  шаг 0 снимает старую регистрацию); в релиз-нотах — то же или
+  `claude mcp add --scope user couplet -- couplet mcp`.
+- [ ] **Пользователи DMG сохраняют `/Applications/md-mini.app`.** Старый `md-mini mcp`
+  (или `allow_launch` старого клиента) может поднять его — он стартует на каталоге с одним
+  `MOVED_TO`, то есть пустым, и два редактора автосохраняют один документ. Письмо это уже
+  говорит (шаг 3 «Что сделать»), релиз-ноты должны повторить.
+  У brew-пользователей `brew upgrade` после переименования cask должен снять старые
+  артефакты по сохранённому caskfile (`app "md-mini.app"`) — **проверить на тестовом tap**,
+  а не полагаться.
+- [ ] **Мажорная версия.** В ветке `feat!` поверх 1.3.0: поднять `version` в
+  `tauri.conf.json`/`package.json` до 2.0.0 (или решение владельца).
+- [ ] **`zap` дополнить:** `~/Library/Caches/pro.couplet.app` и
+  `~/Library/Saved Application State/pro.couplet.app.savedState`.
+- [ ] **Префикс `couplet watch` сменился** `[mdmini]` → `[couplet]` — упомянуть в
+  релиз-нотах (чей-то Monitor-фильтр мог на него опираться).
+- [ ] **301 с md-mini.com должен работать до релиза:** письмо (`renamed.*.md:30`)
+  утверждает, что md-mini.com редиректит.
+- [ ] **README не должен попасть на GitHub раньше cask `couplet`:** в нём уже
+  `couplet` как команда. Мёржить эту ветку вместе с релизом, не раньше.
+
+### Для владельца — строки письма, которые зависят от решений
+
+Осталась одна: `renamed.*.md:30` — «md-mini.com ведёт на couplet.pro» — верна только
+после 301 (пункт выше). `coup` решён (линкуем), строка про Homebrew снята новой
+таблицей письма.
+
+### Фоллоу-апы (найдено при проверке, не входит в переименование)
+
+- **Убрать временный шаг 0 из обоих промптов Teach Your AI** (основного и «только
+  скилл»: `MIGRATION_STEP_HEAD`, `MIGRATION_CONFIG_REPLACE`, `MIGRATION_CONFIG_REPORT`,
+  `MIGRATION_STEP_TAIL` и `migration_step` в `onboarding.rs`) в релизе после того, как переименование уляжется.
+- `couplet question <file>` возвращает `[]`: путь считается корнем обхода каталога,
+  а по файлу `read_dir` ничего не находит. Без аргумента (текущий каталог) работает.
+- `serverInfo.version` MCP — `CARGO_PKG_VERSION` (1.0.0 из `Cargo.toml`), а не версия
+  приложения (1.3.0).
+- Системный алерт миграции остаётся на экране, если процесс, который его показал,
+  убит (сирота из `UserNotificationCenter`, кнопки ни на что не влияют).
+
 ## Что уже сделано
 
 Ветка `worktree-rebrand-couplet-preview`, отпочкована **от `origin/main`**, который был

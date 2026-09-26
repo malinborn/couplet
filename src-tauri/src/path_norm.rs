@@ -63,7 +63,7 @@ mod tests {
 
     /// `<tmp>/<unique>/real` and `<tmp>/<unique>/link -> real`.
     fn linked_dirs() -> (PathBuf, PathBuf) {
-        let base = std::env::temp_dir().join(format!("mdmini-norm-{}", crate::session::new_tab_id()));
+        let base = std::env::temp_dir().join(format!("couplet-norm-{}", crate::session::new_tab_id()));
         let real = base.join("real");
         std::fs::create_dir_all(&real).unwrap();
         let link = base.join("link");
@@ -83,7 +83,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn slash_tmp_and_slash_private_tmp_are_one_file() {
-        let name = format!("mdmini-norm-{}.md", crate::session::new_tab_id());
+        let name = format!("couplet-norm-{}.md", crate::session::new_tab_id());
         let file = Path::new("/tmp").join(&name);
         std::fs::write(&file, "x").unwrap();
         let a = normalize_path(&file);

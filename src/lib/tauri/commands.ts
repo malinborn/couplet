@@ -42,6 +42,14 @@ export function syncThemeMenu(resolved: ConcreteTheme, followSystem: boolean): v
 }
 
 /**
+ * Sets the Dock icon; harmless no-op outside Tauri. Takes the committed theme
+ * (`theme.committed`), never a `/theme` preview — see `sync_dock_icon`.
+ */
+export function syncDockIcon(theme: ConcreteTheme): void {
+  invoke('sync_dock_icon', { theme }).catch(() => {});
+}
+
+/**
  * Broadcasts a `/theme` commit to every window over the same `menu-event`
  * path a native Theme-menu click already uses (`broadcast_theme` in
  * commands.rs) — so `App.svelte`'s `menu-event` handler needs no changes at
@@ -169,7 +177,7 @@ export interface StartedComment {
  * typing it (#36).
  *
  * The pause is part of the creating write, not a second one after it: a thread
- * that exists as `open` for even a moment is a thread `mdmini watch` can wake
+ * that exists as `open` for even a moment is a thread `couplet watch` can wake
  * an agent on, with one word of a question in it.
  */
 export async function commentStart(
@@ -197,7 +205,7 @@ export async function commentStart(
  *
  * The status matters: an agent's reply means "answered", but the user replying
  * again means they are waiting once more — and `open` is exactly what
- * `mdmini watch` emits an event for, so the agent gets woken by it.
+ * `couplet watch` emits an event for, so the agent gets woken by it.
  */
 export async function commentReply(path: string, id: string, text: string): Promise<void> {
   return invoke('comment_reply', { path, id, text });

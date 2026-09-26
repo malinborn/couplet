@@ -1,12 +1,12 @@
-# Bienvenido a md-mini
+# Bienvenido a couplet
 
 Un editor de markdown que se renderiza mientras escribes, y que tu agente de IA puede manejar directamente.
 
 ## Empieza aquí: dáselo a tu agente
 
-1. Abre **IA → Enseña mdmini a tu IA**.
+1. Abre **IA → Enseña couplet a tu IA**.
 2. Copia el prompt de ese documento y pásaselo a tu agente.
-3. Con eso basta. El agente registra md-mini como servidor MCP, se escribe una skill sobre cómo usarlo bien, y añade una nota breve a su propia configuración para saber cuándo recurrir a él.
+3. Con eso basta. El agente registra couplet como servidor MCP, se escribe una skill sobre cómo usarlo bien, y añade una nota breve a su propia configuración para saber cuándo recurrir a él.
 
 Desde ese momento puede:
 
@@ -21,7 +21,7 @@ Nada ocurre a tus espaldas: **⌘Z** deshace una edición de la IA igual que des
 
 ## Hazlo tuyo
 
-**Temas** — el menú **Tema**. Cuatro familias — Classic, Aurora, Blueprint, Phosphor —, cada una con su mitad clara y su mitad oscura. Familia y mitad se eligen por separado: cambiar una no toca la otra. Activa **Seguir al sistema** y la mitad cambiará sola con tu Mac, clara de día y oscura de noche, sin salir de la familia que elegiste.
+**Temas** — el menú **Tema**. Seis familias — Classic, Aurora, Blueprint, Phosphor, Paper, Ink —, cada una con su mitad clara y su mitad oscura. Familia y mitad se eligen por separado: cambiar una no toca la otra. Activa **Seguir al sistema** y la mitad cambiará sola con tu Mac, clara de día y oscura de noche, sin salir de la familia que elegiste.
 
 **Motor del editor** — **Ver → Motor del editor**. *Renderizado en vivo* esconde del todo la sintaxis de markdown; *Vista previa* da estilo al texto pero deja los símbolos donde están; *Sin formato* muestra el archivo tal cual está escrito. **⌘E** alterna entre el código fuente y el motor que tengas elegido — nunca cambia un motor por otro.
 
@@ -31,4 +31,4 @@ Nada ocurre a tus espaldas: **⌘Z** deshace una edición de la IA igual que des
 
 - Ventanas, posición del cursor y borradores sin guardar vuelven tal cual tras reiniciar.
 - **⇧⌘M** comenta la selección, **⌘=** y **⌘−** hacen zoom, **⌘E** muestra el código fuente.
-- `mdmini` también funciona desde la terminal — `mdmini help` te lista todo lo que sabe hacer.
+- `couplet` también funciona desde la terminal — `couplet help` te lista todo lo que sabe hacer.

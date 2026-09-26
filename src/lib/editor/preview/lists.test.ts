@@ -70,7 +70,7 @@ describe('listItemDepth', () => {
     expect(depthsByLine(doc).map(([, d]) => d)).toEqual([1, 2]);
   });
 
-  // #44: md-mini's own Tab used to insert two spaces whatever the marker was,
+  // #44: couplet's own Tab used to insert two spaces whatever the marker was,
   // which never reaches an ordered item's content column. The sub-item then
   // parses as a *sibling*, which is why the rendered indent "danced": two
   // levels at the same depth, then a jump where four spaces finally nested.

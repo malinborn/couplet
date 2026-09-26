@@ -13,6 +13,7 @@ mod closed;
 pub mod comment_pause;
 pub mod comments;
 mod commands;
+mod dock_icon;
 mod git_info;
 mod i18n;
 mod locale;
@@ -86,9 +87,10 @@ pub fn run() {
     // re-generated at the `.build()` call below, so both this and `.build()`
     // see the exact same identifier/product name.
     //
-    // No-op today: `migration.rs`'s rename table only matches a renamed
-    // product/identifier, not the current one. It activates on its own the
-    // moment `tauri.conf.json` / `tauri.dev.conf.json` are renamed.
+    // Live since the couplet rename: `tauri.conf.json` / `tauri.dev.conf.json`
+    // carry the `to_*` names of `migration.rs`'s rename table, so the first
+    // launch of each flavour carries md-mini's data across, and every later
+    // one is an `AlreadyDone` no-op that never takes the lock.
     //
     // `migrate_all_real` may block on a native dialog (a matching-generation
     // legacy build is running, or a migration failed) and can
@@ -203,6 +205,7 @@ pub fn run() {
             onboarding::ai_nudge_dismiss,
             onboarding::ai_open_getting_started,
             commands::sync_theme_menu,
+            commands::sync_dock_icon,
             commands::sync_engine_menu,
             commands::sync_ocd_alignment_menu,
             commands::sync_tabs_compact_menu,
@@ -218,8 +221,8 @@ pub fn run() {
             paths::init(app.config().product_name.as_deref().unwrap_or(paths::FALLBACK_PRODUCT_NAME));
 
             // Managed here, not on the builder: `RecentFiles::load()` reads
-            // `recent.json`, and before `paths::init` `app_data_dir()` answers the
-            // release directory — a dev build would load the installed app's list.
+            // `recent.json`, and before `paths::init` `app_data_dir()` refuses — the
+            // list would silently load empty.
             // No IPC reaches a command before `setup` returns.
             app.manage(recent::RecentFiles::load());
             // Before anything can register a file to `main` (CLI args, the
@@ -420,7 +423,7 @@ pub fn run() {
                 }
             });
 
-            // Command socket for the `mdmini show`/`edit` CLI verbs. Started last —
+            // Command socket for the `couplet show`/`edit` CLI verbs. Started last —
             // it can dispatch to windows created earlier in setup, but nothing
             // earlier in setup depends on it.
             ai_socket::start(app.handle());
@@ -555,7 +558,7 @@ fn apply_language_change(app: &tauri::AppHandle, language: Option<String>) -> Re
     // process and then exits the parent — `tauri::process::restart` — so the two
     // briefly overlap. If the child's single-instance handshake reaches the parent's
     // listening socket before the parent has torn it down, the child reads that as
-    // "an instance is already running" and exits as a duplicate, and md-mini never
+    // "an instance is already running" and exits as a duplicate, and couplet never
     // comes back. Removing the socket ourselves, here, closes that window.
     tauri_plugin_single_instance::destroy(app);
     app.restart();
@@ -736,10 +739,15 @@ pub(crate) fn resolve_path(path: &str, cwd: Option<&str>) -> String {
     path_norm::normalize_path(&joined).to_string_lossy().into_owned()
 }
 
+/// Where `scripts/couplet` leaves the file list when it has to launch the app
+/// with `open` (which passes no arguments). Spelled out in the script too —
+/// `cli_script_tests` pins the two together.
+pub(crate) const PENDING_FILES_PATH: &str = "/tmp/couplet-pending-files";
+
 /// Open pending files when app is already running (Reopen event): one new
 /// window, the files as its tabs.
 fn open_pending_files(app: &tauri::AppHandle) {
-    let path = std::path::Path::new("/tmp/md-mini-pending-files");
+    let path = std::path::Path::new(PENDING_FILES_PATH);
     if !path.exists() {
         return;
     }
@@ -760,10 +768,10 @@ fn open_pending_files(app: &tauri::AppHandle) {
     }
 }
 
-/// Load files written by the CLI wrapper script to /tmp/md-mini-pending-files:
+/// Load files written by the CLI wrapper script to `PENDING_FILES_PATH`:
 /// each becomes a tab of "main", as CLI args do.
 fn load_pending_open_files(app: &tauri::AppHandle) {
-    let path = std::path::Path::new("/tmp/md-mini-pending-files");
+    let path = std::path::Path::new(PENDING_FILES_PATH);
     if !path.exists() {
         return;
     }
@@ -799,5 +807,120 @@ fn handle_cli_args(app: &tauri::AppHandle) {
                 }
             }
         }
+    }
+}
+
+/// `scripts/couplet` is bash, so it cannot read the config: it spells out the
+/// bundle path, both sockets and the pending-files path by hand. Each value
+/// has a Rust-side owner, and a mismatch fails silently — files not opened,
+/// commands waiting on a socket nobody binds. These tests read the script and
+/// hold every value to the thing it has to agree with.
+#[cfg(test)]
+mod cli_script_tests {
+    const SCRIPT: &str = include_str!("../../scripts/couplet");
+
+    fn config_str(key: &str) -> String {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("config is JSON");
+        config[key].as_str().unwrap_or_else(|| panic!("{key} is set")).to_string()
+    }
+
+    /// The value of a top-level `NAME="…"` assignment, as written.
+    fn raw(name: &str) -> String {
+        let prefix = format!("{name}=\"");
+        let line = SCRIPT
+            .lines()
+            .find(|l| l.starts_with(&prefix))
+            .unwrap_or_else(|| panic!("scripts/couplet assigns {name}"));
+        line[prefix.len()..].trim_end().trim_end_matches('"').to_string()
+    }
+
+    /// The same, with `$APP` expanded the way bash would.
+    fn var(name: &str) -> String {
+        raw(name).replace("$APP", &raw("APP"))
+    }
+
+    #[test]
+    fn app_and_binary_follow_the_bundle() {
+        let app = format!("/Applications/{}.app", config_str("productName"));
+        assert_eq!(var("APP"), app);
+        assert_eq!(var("BIN"), format!("{app}/Contents/MacOS/{}", config_str("mainBinaryName")));
+    }
+
+    #[test]
+    fn single_instance_socket_follows_the_identifier() {
+        // tauri-plugin-single-instance on macOS: `/tmp/{identifier, `.`/`-` as `_`}_si.sock`.
+        let identifier = config_str("identifier").replace(['.', '-'], "_");
+        assert_eq!(var("SOCK"), format!("/tmp/{identifier}_si.sock"));
+    }
+
+    #[test]
+    fn command_socket_is_the_one_the_app_binds() {
+        let expected = crate::ai_socket::socket_path(crate::paths::RELEASE_PRODUCT_NAME);
+        assert_eq!(var("CMD_SOCK"), expected.to_string_lossy());
+    }
+
+    #[test]
+    fn pending_files_path_is_the_one_the_app_reads() {
+        assert_eq!(var("PENDING"), super::PENDING_FILES_PATH);
+    }
+
+    /// Runs a copy of the script whose `APP` points at a fake bundle under a
+    /// scratch dir. The fake binary leaves a file behind if anything runs it.
+    #[cfg(target_os = "macos")]
+    fn run_against_fake_bundle(tag: &str, version: Option<&str>, arg: &str) -> (std::process::Output, bool) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("couplet-cli-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let app = dir.join("couplet.app");
+        let macos = app.join("Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        if let Some(version) = version {
+            std::fs::write(
+                app.join("Contents/Info.plist"),
+                format!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
+                     <key>CFBundleShortVersionString</key><string>{version}</string></dict></plist>\n"
+                ),
+            )
+            .unwrap();
+        }
+        let ran = dir.join("binary-ran");
+        let bin = macos.join("couplet");
+        std::fs::write(&bin, format!("#!/bin/sh\ntouch '{}'\n", ran.display())).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let script: String = SCRIPT
+            .lines()
+            .map(|l| if l.starts_with("APP=\"") { format!("APP=\"{}\"", app.display()) } else { l.to_string() })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let script_path = dir.join("couplet");
+        std::fs::write(&script_path, script).unwrap();
+
+        let out = std::process::Command::new("bash").arg(&script_path).arg(arg).output().unwrap();
+        let binary_ran = ran.exists();
+        let _ = std::fs::remove_dir_all(&dir);
+        (out, binary_ran)
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn version_is_read_from_the_bundle_and_never_launches_the_app() {
+        for arg in ["--version", "-V"] {
+            let (out, binary_ran) = run_against_fake_bundle("version", Some("9.8.7"), arg);
+            assert!(out.status.success(), "{arg}: {out:?}");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "couplet 9.8.7\n", "{arg}");
+            assert!(!binary_ran, "{arg} must not run the app binary");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn version_without_a_bundle_fails_instead_of_launching() {
+        let (out, binary_ran) = run_against_fake_bundle("no-plist", None, "--version");
+        assert_eq!(out.status.code(), Some(1));
+        assert!(out.stdout.is_empty());
+        assert!(!binary_ran);
     }
 }

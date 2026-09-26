@@ -10,8 +10,8 @@
 #   scripts/check-no-mcp-bridge.sh [path-to-binary]
 #
 # With no argument it checks, in order of preference, whichever exists:
-#   src-tauri/target/release/bundle/macos/md-mini.app/Contents/MacOS/md-mini
-#   src-tauri/target/release/md-mini
+#   src-tauri/target/release/bundle/macos/couplet.app/Contents/MacOS/couplet
+#   src-tauri/target/release/couplet
 #
 # Wire this into the release pipeline as a BLOCKING gate, not as a one-off command.
 set -u
@@ -29,13 +29,13 @@ else
         --manifest-path "$ROOT/src-tauri/Cargo.toml" 2>/dev/null \
         | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
     CANDIDATES=(
-        "$ROOT/src-tauri/target/release/bundle/macos/md-mini.app/Contents/MacOS/md-mini"
-        "$ROOT/src-tauri/target/release/md-mini"
+        "$ROOT/src-tauri/target/release/bundle/macos/couplet.app/Contents/MacOS/couplet"
+        "$ROOT/src-tauri/target/release/couplet"
     )
     if [ -n "${TARGET_DIR:-}" ]; then
         CANDIDATES+=(
-            "$TARGET_DIR/release/bundle/macos/md-mini.app/Contents/MacOS/md-mini"
-            "$TARGET_DIR/release/md-mini"
+            "$TARGET_DIR/release/bundle/macos/couplet.app/Contents/MacOS/couplet"
+            "$TARGET_DIR/release/couplet"
         )
     fi
 fi

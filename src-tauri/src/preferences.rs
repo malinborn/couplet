@@ -81,7 +81,7 @@ mod tests {
 
     fn temp_base_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "md-mini-preferences-test-{}-{}",
+            "couplet-preferences-test-{}-{}",
             tag,
             std::process::id()
         ));

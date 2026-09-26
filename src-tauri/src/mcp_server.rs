@@ -1,4 +1,4 @@
-//! `mdmini mcp` — a stdio MCP (Model Context Protocol) server wrapping the
+//! `couplet mcp` — a stdio MCP (Model Context Protocol) server wrapping the
 //! existing command socket protocol (`ai_socket.rs`). One socket command maps
 //! to one MCP tool; this module adds no new capability, only a JSON-RPC 2.0
 //! transport in front of the same `show`/`edit` verbs. See
@@ -23,8 +23,8 @@ use crate::ai_socket::{self, AiRequest, AiResponse};
 const PROTOCOL_VERSION_DEFAULT: &str = "2025-06-18";
 
 /// App bundle launched on `tools/call` when the command socket is down —
-/// mirrors `scripts/mdmini`'s launch step.
-const APP_BUNDLE_PATH: &str = "/Applications/md-mini.app";
+/// mirrors `scripts/couplet`'s launch step.
+const APP_BUNDLE_PATH: &str = "/Applications/couplet.app";
 
 /// How long to poll for the socket to appear after launching the app.
 const LAUNCH_WAIT: Duration = Duration::from_secs(5);
@@ -32,7 +32,7 @@ const LAUNCH_WAIT: Duration = Duration::from_secs(5);
 /// How long to wait for a response line once a request has been sent.
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Resolved server configuration for one `mdmini mcp` run.
+/// Resolved server configuration for one `couplet mcp` run.
 pub struct McpConfig {
     socket_path: PathBuf,
     /// Whether a down socket should trigger an `open`-launch-and-wait. False
@@ -43,7 +43,7 @@ pub struct McpConfig {
 }
 
 impl McpConfig {
-    /// Parse `mdmini mcp [--socket PATH]` flags (`args` is the slice after
+    /// Parse `couplet mcp [--socket PATH]` flags (`args` is the slice after
     /// the `mcp` verb).
     fn from_flags(args: &[String]) -> Self {
         let mut socket: Option<String> = None;
@@ -59,14 +59,14 @@ impl McpConfig {
                 allow_launch: false,
             },
             None => McpConfig {
-                socket_path: ai_socket::socket_path("md-mini"),
+                socket_path: ai_socket::socket_path(crate::paths::RELEASE_PRODUCT_NAME),
                 allow_launch: true,
             },
         }
     }
 }
 
-/// Entry point for `mdmini mcp ...`, called from `main.rs` before Tauri is
+/// Entry point for `couplet mcp ...`, called from `main.rs` before Tauri is
 /// touched. `args` is the full `std::env::args()` vector (`args[0]` binary,
 /// `args[1]` `"mcp"`); everything from `args[2]` on is flags. Reads
 /// newline-delimited JSON-RPC requests from stdin until EOF, writing one
@@ -123,7 +123,7 @@ fn handle_message(line: &str, config: &McpConfig) -> Option<String> {
                 json!({
                     "protocolVersion": protocol_version,
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "mdmini", "version": env!("CARGO_PKG_VERSION")}
+                    "serverInfo": {"name": "couplet", "version": env!("CARGO_PKG_VERSION")}
                 }),
             ))
         }
@@ -139,7 +139,7 @@ fn tools_list() -> Value {
     json!([
         {
             "name": "show",
-            "description": "Open a file in md-mini (the user's markdown editor) as a tab and optionally scroll to a location with a pulse highlight — use it to point the user at a specific place. `line` and `find` are mutually exclusive. The answer names the `window` (#N) it landed in: pass it back as `window_binding` in later calls. `focus` (default true) makes the tab active and brings its window forward; `focus: false` opens it in the background, where it shimmers until the user looks. The tab the user is typing in is never taken from them, and no other window comes forward while they type — then the answer says `focused: false`. With `transient` the tab asks the user «Close / Keep» by itself. Reuse the returned window; use transient for quick looks.",
+            "description": "Open a file in couplet (the user's markdown editor) as a tab and optionally scroll to a location with a pulse highlight — use it to point the user at a specific place. `line` and `find` are mutually exclusive. The answer names the `window` (#N) it landed in: pass it back as `window_binding` in later calls. `focus` (default true) makes the tab active and brings its window forward; `focus: false` opens it in the background, where it shimmers until the user looks. The tab the user is typing in is never taken from them, and no other window comes forward while they type — then the answer says `focused: false`. With `transient` the tab asks the user «Close / Keep» by itself. Reuse the returned window; use transient for quick looks.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -175,7 +175,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "edit",
-            "description": "Replace the content of a document open in md-mini with new content. md-mini diffs against the live buffer, applies only the changed span, highlights it for the user, and autosaves. Send the COMPLETE new document, never a diff. Opens the file if not already open (must exist on disk).",
+            "description": "Replace the content of a document open in couplet with new content. couplet diffs against the live buffer, applies only the changed span, highlights it for the user, and autosaves. Send the COMPLETE new document, never a diff. Opens the file if not already open (must exist on disk).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -201,13 +201,13 @@ fn tools_list() -> Value {
         },
         {
             "name": "ask",
-            "description": "Ask the user a question with buttons rendered inside their open md-mini document; blocks until they answer. By default single-choice: returns the chosen option as `answer`. Set `multi: true` for checkbox mode — the user may check any number of options (including none) and confirms, and the response carries `answers` (an array) instead. Set `free_text: true` to also offer a free-text field — a typed answer comes back as `custom` (alongside `answers` in multi mode). Use for quick decisions while working on that document. Note: long timeout_secs values may exceed the calling MCP client's own request timeout — pick a value the client can actually wait for.",
+            "description": "Ask the user a question with buttons rendered inside their open couplet document; blocks until they answer. By default single-choice: returns the chosen option as `answer`. Set `multi: true` for checkbox mode — the user may check any number of options (including none) and confirms, and the response carries `answers` (an array) instead. Set `free_text: true` to also offer a free-text field — a typed answer comes back as `custom` (alongside `answers` in multi mode). Use for quick decisions while working on that document. Note: long timeout_secs values may exceed the calling MCP client's own request timeout — pick a value the client can actually wait for.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Absolute path to the file. Must already be open in md-mini, or exist on disk."
+                        "description": "Absolute path to the file. Must already be open in couplet, or exist on disk."
                     },
                     "question": {
                         "type": "string",
@@ -253,7 +253,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "question",
-            "description": "List open comment threads the user left in documents. Reads .mdmini_comments_*.md files directly — works even when md-mini is not running.",
+            "description": "List open comment threads the user left in documents. Reads .mdmini_comments_*.md files directly — works even when couplet is not running.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -280,7 +280,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "close",
-            "description": "Close the tab holding a file in md-mini — saved first, the way ⌘W closes it; ⌘⇧T brings it back. Refused while it has unsaved changes or while the user is typing in it. A file that is not open is an error.",
+            "description": "Close the tab holding a file in couplet — saved first, the way ⌘W closes it; ⌘⇧T brings it back. Refused while it has unsaved changes or while the user is typing in it. A file that is not open is an error.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -291,7 +291,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "windows",
-            "description": "List md-mini's windows: number (#N), project (git toplevel, or the directory outside git), their tabs and which one is active, and the window the user was in last. The same as `mdmini ls --json`. Use it to choose a `window_binding`.",
+            "description": "List couplet's windows: number (#N), project (git toplevel, or the directory outside git), their tabs and which one is active, and the window the user was in last. The same as `couplet ls --json`. Use it to choose a `window_binding`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {},
@@ -502,9 +502,9 @@ fn send_request(request: &AiRequest, config: &McpConfig) -> Result<AiResponse, S
         Err(_) if config.allow_launch => {
             launch_and_wait(&config.socket_path)?;
             UnixStream::connect(&config.socket_path)
-                .map_err(|_| "md-mini is not running".to_string())?
+                .map_err(|_| "couplet is not running".to_string())?
         }
-        Err(_) => return Err("md-mini is not running".to_string()),
+        Err(_) => return Err("couplet is not running".to_string()),
     };
 
     // `ask` blocks server-side on a human clicking a button, so the read
@@ -524,7 +524,7 @@ fn send_request(request: &AiRequest, config: &McpConfig) -> Result<AiResponse, S
     request_line.push('\n');
     writer
         .write_all(request_line.as_bytes())
-        .map_err(|_| "md-mini is not running".to_string())?;
+        .map_err(|_| "couplet is not running".to_string())?;
 
     let mut reader = io::BufReader::new(stream);
     let mut response_line = String::new();
@@ -536,7 +536,7 @@ fn send_request(request: &AiRequest, config: &McpConfig) -> Result<AiResponse, S
 }
 
 /// `open`-launch the release app and poll for the command socket to appear,
-/// mirroring `scripts/mdmini`'s launch step. Only called when
+/// mirroring `scripts/couplet`'s launch step. Only called when
 /// `McpConfig::allow_launch` is true, i.e. `--socket` was not passed.
 fn launch_and_wait(socket_path: &Path) -> Result<(), String> {
     let _ = std::process::Command::new("open")
@@ -550,7 +550,7 @@ fn launch_and_wait(socket_path: &Path) -> Result<(), String> {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    Err("md-mini is not running".to_string())
+    Err("couplet is not running".to_string())
 }
 
 fn tool_result_response(id: Value, response: &AiResponse, is_error: bool) -> String {
@@ -587,7 +587,7 @@ mod tests {
 
     fn test_config() -> McpConfig {
         McpConfig {
-            socket_path: PathBuf::from("/tmp/mdmini_mcp_test_unused.sock"),
+            socket_path: PathBuf::from("/tmp/couplet_mcp_test_unused.sock"),
             allow_launch: false,
         }
     }
@@ -598,7 +598,7 @@ mod tests {
     /// process and call so parallel `cargo test` runs don't collide.
     fn unique_temp_socket() -> PathBuf {
         let n = SOCK_COUNTER.fetch_add(1, Ordering::SeqCst);
-        std::env::temp_dir().join(format!("mdmini_mcp_test_{}_{}.sock", std::process::id(), n))
+        std::env::temp_dir().join(format!("couplet_mcp_test_{}_{}.sock", std::process::id(), n))
     }
 
     /// Bind a Unix socket that accepts exactly one connection, reads one
@@ -633,7 +633,7 @@ mod tests {
         let v: Value = serde_json::from_str(&response).unwrap();
         assert_eq!(v["id"], json!(1));
         assert_eq!(v["result"]["protocolVersion"], json!("2024-11-05"));
-        assert_eq!(v["result"]["serverInfo"]["name"], json!("mdmini"));
+        assert_eq!(v["result"]["serverInfo"]["name"], json!("couplet"));
         assert_eq!(v["result"]["capabilities"], json!({"tools": {}}));
     }
 
@@ -729,7 +729,7 @@ mod tests {
         // than the refusal text, so the assertion below also proves the
         // refusal happens before any socket I/O.
         let config = McpConfig {
-            socket_path: PathBuf::from("/tmp/mdmini_mcp_test_should_not_be_dialed.sock"),
+            socket_path: PathBuf::from("/tmp/couplet_mcp_test_should_not_be_dialed.sock"),
             allow_launch: false,
         };
         let request = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"edit","arguments":{"path":"/tmp/a.md","content":""}}}"#;
@@ -743,7 +743,7 @@ mod tests {
     #[test]
     fn tools_call_socket_down_without_launch_is_error() {
         let config = McpConfig {
-            socket_path: PathBuf::from("/tmp/mdmini_mcp_test_definitely_not_bound.sock"),
+            socket_path: PathBuf::from("/tmp/couplet_mcp_test_definitely_not_bound.sock"),
             allow_launch: false,
         };
         let request = r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"show","arguments":{"path":"/tmp/a.md"}}}"#;
@@ -751,7 +751,7 @@ mod tests {
         let v: Value = serde_json::from_str(&response).unwrap();
         assert_eq!(v["result"]["isError"], json!(true));
         let text = v["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("md-mini is not running"));
+        assert!(text.contains("couplet is not running"));
     }
 
     #[test]
@@ -897,7 +897,10 @@ mod tests {
     #[test]
     fn from_flags_defaults_to_release_socket_and_allows_launch() {
         let config = McpConfig::from_flags(&[]);
-        assert_eq!(config.socket_path, ai_socket::socket_path("md-mini"));
+        // The literal, not RELEASE_PRODUCT_NAME: this is what the app binds
+        // (`/tmp/<productName>_cmd.sock`), and `paths.rs` pins the constant
+        // to `tauri.conf.json`.
+        assert_eq!(config.socket_path, PathBuf::from("/tmp/couplet_cmd.sock"));
         assert!(config.allow_launch);
     }
 
@@ -921,7 +924,7 @@ mod tests {
     fn temp_doc(name: &str) -> PathBuf {
         let n = COMMENT_TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
         let dir = std::env::temp_dir().join(format!(
-            "mdmini-mcp-comments-test-{}-{}",
+            "couplet-mcp-comments-test-{}-{}",
             std::process::id(),
             n
         ));
@@ -1119,15 +1122,15 @@ mod tests {
     fn windows_returns_the_listing() {
         let listing = ai_socket::WindowListing {
             window: Some(3),
-            project: Some("md-mini".to_string()),
-            project_path: Some("/r/md-mini".to_string()),
+            project: Some("couplet".to_string()),
+            project_path: Some("/r/couplet".to_string()),
             last_focused: true,
             tabs: vec![ai_socket::ListedTab { path: Some("/r/a.md".to_string()), active: true }],
         };
         let (config, rx, path) = fake(AiResponse { ok: true, windows: Some(vec![listing]), ..Default::default() });
         let v = call("windows", json!({}), &config);
         let text = v["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.starts_with(r#"{"ok":true,"windows":[{"window":3,"project":"md-mini""#), "{text}");
+        assert!(text.starts_with(r#"{"ok":true,"windows":[{"window":3,"project":"couplet""#), "{text}");
         assert_eq!(sent(&rx)["cmd"], json!("windows"));
         let _ = std::fs::remove_file(&path);
     }

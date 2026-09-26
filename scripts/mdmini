@@ -1,143 +1,32 @@
 #!/usr/bin/env bash
-# CLI wrapper for md-mini (`coup` once the product is renamed)
-APP="/Applications/md-mini.app"
-BIN="$APP/Contents/MacOS/md-mini"
-SOCK="/tmp/com_md_mini_app_si.sock"
-PENDING="/tmp/md-mini-pending-files"
-CMD_SOCK="/tmp/md_mini_cmd.sock"
+# `mdmini` is couplet's former name. It stays a working command — people have
+# it in MCP configs (`mdmini -- mdmini mcp`), scripts and $EDITOR — so this
+# only hands over to `couplet`, arguments and stdin untouched.
+#
+# The one thing it adds: once, and only to a human at a terminal, a line on
+# stderr saying the command has a new name. Never on stdout — every verb
+# answers in JSON there and `mdmini mcp` speaks JSON-RPC over it — and never
+# for an agent (CLAUDECODE set). The "once" marker lives under Caches, NOT in
+# ~/Library/Application Support/couplet: a CLI write there before the app's
+# first launch would make the data migration see a populated directory and
+# leave md-mini's data behind.
 
-# Make sure the running app's command socket is up, launching the app if it
-# is not (no pending-files handoff needed — the request itself carries the
-# file). Exits the script with an error line if it never comes up.
-# `ensure_running background` launches without activating the app (`open -g`,
-# spec §4): a command that lands in the background must not bring md-mini to
-# the front just because it was not running yet.
-ensure_running() {
-  if [ -S "$CMD_SOCK" ]; then
-    # Socket file survived a crash/kill-9 of the process that owned it — a
-    # stale socket makes every command below hang until its own read times
-    # out. Treat it as absent so the launch path below rebinds it. Asked of
-    # the socket itself, not of the process list: `md-mini mcp` and
-    # `md-mini ai watch` run the same binary, and a pgrep for it would call
-    # a dead app alive. Exit 2 means nobody accepted the connection.
-    "$BIN" ai ls --json --socket "$CMD_SOCK" >/dev/null 2>&1
-    if [ $? -eq 2 ]; then
-      rm -f "$CMD_SOCK"
-    fi
-  fi
-  if [ ! -S "$CMD_SOCK" ]; then
-    if [ "${1:-}" = "background" ]; then
-      open -g "$APP"
-    else
-      open "$APP"
-    fi
-    waited=0
-    while [ ! -S "$CMD_SOCK" ]; do
-      sleep 0.1
-      waited=$((waited + 1))
-      if [ "$waited" -ge 50 ]; then
-        echo '{"ok":false,"error":"md-mini did not start in time"}'
-        exit 2
-      fi
-    done
-  fi
-}
-
-# `mdmini help` / `agent` / `question` / `answer` / `watch` are local and
-# offline (no socket, no running app required) — hand off straight to the
-# binary's `ai` client without the launch-wait logic below. Comments live in
-# files beside the document, so question/answer/watch don't depend on
-# whether md-mini is open.
-if [ "$1" = "help" ] || [ "$1" = "agent" ] || [ "$1" = "question" ] || [ "$1" = "answer" ] || [ "$1" = "watch" ]; then
-  exec "$BIN" ai "$@"
+# Beside this file first: inside the bundle (and in a Homebrew bin dir that
+# links both names) `couplet` sits next to `mdmini`.
+target="$(dirname "$0")/couplet"
+if [ ! -x "$target" ]; then
+  target="/Applications/couplet.app/Contents/Resources/bin/couplet"
 fi
 
-# `mdmini mcp` is a stdio MCP server (see docs/ai-interface.md) — the binary
-# itself owns socket resolution and the launch-if-not-running retry
-# (mcp_server::run), so this is a plain pass-through, not a rewrite into the
-# `ai` verb like help/agent above. "$@" already starts with "mcp" (that's
-# $1), so exec it unchanged rather than prefixing another "mcp".
-if [ "$1" = "mcp" ]; then
-  exec "$BIN" "$@"
-fi
-
-# `ls` and `close` only mean something to a running app: never launch it just
-# to list or close windows — the binary answers "md-mini is not running".
-if [ "$1" = "ls" ] || [ "$1" = "close" ]; then
-  exec "$BIN" ai "$@"
-fi
-
-# The focus flag given on the command line: "background" for -b, "focus"
-# for -f, empty for neither (the binary rejects both at once).
-focus_flag() {
-  for arg in "$@"; do
-    case "$arg" in
-      -b|--background) echo background; return ;;
-      -f|--focus) echo focus; return ;;
-    esac
-  done
-}
-
-# AI interface: `mdmini show|edit|ask <file> ...` talk to the running app's
-# command socket instead of the file-open path below. stdin passes through
-# untouched for `edit`. `edit` never switches tabs and `show -b` stays behind,
-# so neither activates an app it has to launch. `ask` does (tabs-questions
-# Q7): an app that was not running has no window to type in, and its question
-# would otherwise wait unseen behind the terminal while its timeout runs.
-if [ "$1" = "show" ] || [ "$1" = "edit" ] || [ "$1" = "ask" ]; then
-  if [ "$1" = "edit" ] || { [ "$1" = "show" ] && [ "$(focus_flag "$@")" = "background" ]; }; then
-    ensure_running background
-  else
-    ensure_running
+if [ "$(basename "$0")" = "mdmini" ] && [ -t 2 ] && [ -z "${CLAUDECODE:-}" ]; then
+  notice_dir="$HOME/Library/Caches/couplet"
+  notice="$notice_dir/mdmini-renamed-notice"
+  # Record first, print only if that worked: an unwritable Caches must not
+  # turn "once" into "every time". The group puts 2>/dev/null around the
+  # `>` itself — a trailing 2>/dev/null is applied after `>` has failed.
+  if [ ! -e "$notice" ] && { mkdir -p "$notice_dir" && : > "$notice"; } 2>/dev/null; then
+    echo "mdmini is now couplet. This command keeps working; \`couplet\` is the new name." >&2
   fi
-  exec "$BIN" ai "$@"
 fi
 
-# A routed open (spec §4) — an agent (CLAUDECODE set), or a window/focus
-# flag — goes through the command socket and prints the window it landed in.
-# The plain human open below needs no answer and keeps the single-instance
-# path, which also works before the app is running.
-routed=0
-if [ -n "${CLAUDECODE:-}" ]; then routed=1; fi
-for arg in "$@"; do
-  case "$arg" in
-    -t|--window|-b|--background|-f|--focus) routed=1 ;;
-  esac
-done
-case "${1:-}" in
-  ""|--version|-V|--help|-h) routed=0 ;;
-esac
-if [ "$routed" = 1 ]; then
-  # The binary's default, decided the same way: -b / -f win, else an agent's
-  # open is background and a human's (-t N) is focused.
-  flag="$(focus_flag "$@")"
-  if [ "$flag" = "background" ] || { [ -z "$flag" ] && [ -n "${CLAUDECODE:-}" ]; }; then
-    ensure_running background
-  else
-    ensure_running
-  fi
-  exec "$BIN" ai open "$@"
-fi
-
-# Resolve relative paths to absolute. `pwd -P`, the physical directory: the
-# app spells a path with its symlinks resolved (`/private/tmp`, not `/tmp`),
-# and a second spelling of one file would open it in a second tab.
-args=()
-for arg in "$@"; do
-  if [[ "$arg" != -* && "$arg" != /* ]]; then
-    arg="$(cd "$(dirname "$arg")" 2>/dev/null && pwd -P)/$(basename "$arg")"
-  fi
-  args+=("$arg")
-done
-
-if [ -S "$SOCK" ]; then
-  # App is running (socket exists) — send files via single-instance IPC
-  # Second instance connects, sends argv, exits instantly (no blocking)
-  "$BIN" "${args[@]}" 2>/dev/null
-else
-  # App not running — write pending files, launch via open
-  if [ ${#args[@]} -gt 0 ]; then
-    printf '%s\n' "${args[@]}" > "$PENDING"
-  fi
-  open "$APP"
-fi
+exec "$target" "$@"

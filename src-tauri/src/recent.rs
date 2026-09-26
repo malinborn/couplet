@@ -162,9 +162,9 @@ impl RecentState {
 /// The live list, shared by every window in this process.
 ///
 /// Built only by `load()`, inside `setup` after `paths::init`: loading reads
-/// `recent.json`, and before `init` `app_data_dir()` answers the release
-/// directory name, so a dev build would load the installed app's list. There
-/// is deliberately no `Default`, so it cannot be `.manage`d on the builder.
+/// `recent.json`, and before `init` `app_data_dir()` refuses, so the list
+/// would silently load empty. There is deliberately no `Default`, so it
+/// cannot be `.manage`d on the builder.
 pub struct RecentFiles(Mutex<RecentState>);
 
 impl RecentFiles {

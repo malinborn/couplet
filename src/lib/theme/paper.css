@@ -1,0 +1,109 @@
+/* «Paper» — кандидат из backlog-иконки couplet `backlog-paper`
+ * (фон #F3EDE2 / курсор #E8563F / знак #1F1B2E).
+ *
+ * Светлая — иконка один в один: тушь по бумаге, коралл только у того, что
+ * меняют: каретка, чекбоксы, линия выполненной задачи. Заголовки без
+ * градиентов, как в Classic/Блюпринте.
+ *
+ * Тёмная — та же бумага ночью: тёплая сепия вместо холодной туши (чтобы не
+ * совпасть с «Ink»), кремовый текст, та же сплошная коралловая каретка.
+ */
+
+:root[data-theme='paper-light'] {
+  --bg-base: #f3ede2;
+  --bg-surface: #ebe3d5;
+  --text-primary: #1f1b2e;
+  --text-subtle: #5c5566;
+  --text-muted: #9a9187;
+  --highlight: #e6dccb;
+  --color-heading: #1f1b2e;
+  --color-bold: #1f1b2e;
+  --color-italic: #4a4358;
+  --color-link: #c24632;
+  --color-code-bg: #ebe3d5;
+  --color-code-text: #1f1b2e;
+  --color-selection: #f3cdbf;
+  --color-border: #ddd3c2;
+  --color-cursor: #e8563f;
+  --color-line-highlight: #eee7da;
+  --color-strikethrough: #9a9187;
+  --color-task-done: #9a9187;
+  --color-task-done-line: #e8563f;
+  --color-blockquote-border: #e8563f;
+  --color-hr: #ddd3c2;
+  --color-list-marker: #8a7f76;
+  --color-checkbox: #e8563f;
+  --color-table-border: #ddd3c2;
+  --color-table-even-bg: #efe8dc;
+  --table-header-grad: linear-gradient(135deg, #e6dccb 0%, #ebe3d5 50%, #e3d8c6 100%);
+  --table-header-text: #1f1b2e;
+  --color-glow: 232, 86, 63;
+  --ai-edit-bg: rgba(232, 86, 63, 0.12);
+  --ai-edit-shimmer: rgba(232, 86, 63, 0.26);
+  --ai-ask-bg: rgba(31, 27, 46, 0.05);
+  --ai-ask-border: rgba(31, 27, 46, 0.22);
+  --ai-ask-chip-bg: #f7f2ea;
+  --ai-ask-chip-hover-bg: rgba(232, 86, 63, 0.12);
+  --ai-ask-accent: #1f1b2e;
+  --ai-ask-accent-text: #f3ede2;
+  --bg-overlay: rgba(243, 237, 226, 0.75);
+  --border: #ddd3c2;
+  /* Строгая: только тон, --heading-grad-N не объявлены. */
+  --heading-tone-1: #1f1b2e;
+  --heading-tone-2: #2a2538;
+  --heading-tone-3: #373143;
+  --heading-tone-4: #463f50;
+  --heading-tone-5: #5a525f;
+  --heading-tone-6: #6b6268;
+  --font-text: 'Merriweather', Georgia, serif;
+  --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+}
+
+:root[data-theme='paper-dark'] {
+  --bg-base: #1d1a16;
+  --bg-surface: #26221d;
+  --text-primary: #f3ede2;
+  --text-subtle: #b5aa9a;
+  --text-muted: #7d7466;
+  --highlight: #3a332b;
+  --color-heading: #f3ede2;
+  --color-bold: #ffffff;
+  --color-italic: #d9cdb8;
+  --color-link: #f07a62;
+  --color-code-bg: #26221d;
+  --color-code-text: #f3ede2;
+  --color-selection: #4a3229;
+  --color-border: #342e27;
+  --color-cursor: #e8563f;
+  --color-line-highlight: #221e1a;
+  --color-strikethrough: #7d7466;
+  --color-task-done: #7d7466;
+  --color-task-done-line: #e8563f;
+  --color-blockquote-border: #e8563f;
+  --color-hr: #342e27;
+  --color-list-marker: #9a8f80;
+  --color-checkbox: #e8563f;
+  --color-table-border: #342e27;
+  --color-table-even-bg: #211d19;
+  --table-header-grad: linear-gradient(135deg, #2e2821 0%, #26221d 50%, #2b251f 100%);
+  --table-header-text: #f3ede2;
+  --color-glow: 232, 86, 63;
+  --ai-edit-bg: rgba(232, 86, 63, 0.16);
+  --ai-edit-shimmer: rgba(240, 122, 98, 0.36);
+  --ai-ask-bg: rgba(243, 237, 226, 0.05);
+  --ai-ask-border: rgba(243, 237, 226, 0.2);
+  --ai-ask-chip-bg: rgba(255, 255, 255, 0.04);
+  --ai-ask-chip-hover-bg: rgba(232, 86, 63, 0.16);
+  --ai-ask-accent: #f3ede2;
+  --ai-ask-accent-text: #1d1a16;
+  --bg-overlay: rgba(29, 26, 22, 0.75);
+  --border: #342e27;
+  --heading-tone-1: #f3ede2;
+  --heading-tone-2: #ebe3d6;
+  --heading-tone-3: #e0d7c8;
+  --heading-tone-4: #d2c8b8;
+  --heading-tone-5: #c2b8a8;
+  --heading-tone-6: #b0a698;
+  --font-text: 'Merriweather', Georgia, serif;
+  --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+}

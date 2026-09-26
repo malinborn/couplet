@@ -117,9 +117,9 @@ describe('createDrawerData', () => {
     h.data.refresh([meta('a', '/a.md'), meta('u', null), meta('b', '/b.md')]);
     expect(h.gits.map((g) => g.paths)).toEqual([['/a.md', '/b.md']]);
     expect(h.data.git('/a.md')).toBeUndefined();
-    h.gits[0].d.resolve([{ project: 'md-mini', branch: 'main' }, null]);
+    h.gits[0].d.resolve([{ project: 'couplet', branch: 'main' }, null]);
     await flush();
-    expect(h.data.git('/a.md')).toEqual({ project: 'md-mini', branch: 'main' });
+    expect(h.data.git('/a.md')).toEqual({ project: 'couplet', branch: 'main' });
     expect(h.data.git('/b.md')).toBeNull();
     h.data.ensure([meta('a', '/a.md'), meta('b', '/b.md'), meta('c', '/c.md')]);
     expect(h.gits.map((g) => g.paths)).toEqual([['/a.md', '/b.md'], ['/c.md']]);
@@ -165,23 +165,23 @@ describe('createDrawerData', () => {
     const h = harness({ a: 'A' });
     h.data.refresh([meta('a', '/a.md')]);
     h.data.refresh([meta('a', '/a.md')]);
-    h.gits[1].d.resolve([{ project: 'md-mini', branch: 'feat' }]);
+    h.gits[1].d.resolve([{ project: 'couplet', branch: 'feat' }]);
     await flush();
-    h.gits[0].d.resolve([{ project: 'md-mini', branch: 'main' }]);
+    h.gits[0].d.resolve([{ project: 'couplet', branch: 'main' }]);
     await flush();
-    expect(h.data.git('/a.md')).toEqual({ project: 'md-mini', branch: 'feat' });
+    expect(h.data.git('/a.md')).toEqual({ project: 'couplet', branch: 'feat' });
   });
 
   it('AFailedGitCallAnswersNull_WithoutLosingAnEarlierAnswer', async () => {
     const h = harness({ a: 'A', b: 'B' });
     h.data.refresh([meta('a', '/a.md')]);
-    h.gits[0].d.resolve([{ project: 'md-mini', branch: 'main' }]);
+    h.gits[0].d.resolve([{ project: 'couplet', branch: 'main' }]);
     await flush();
     h.data.refresh([meta('a', '/a.md'), meta('b', '/b.md')]);
     h.onChange.mockClear();
     h.gits[1].d.reject(new Error('ipc'));
     await flush();
-    expect(h.data.git('/a.md')).toEqual({ project: 'md-mini', branch: 'main' });
+    expect(h.data.git('/a.md')).toEqual({ project: 'couplet', branch: 'main' });
     expect(h.data.git('/b.md')).toBeNull();
     expect(h.onChange).toHaveBeenCalled();
   });
@@ -205,11 +205,11 @@ describe('createDrawerData', () => {
     h.data.refresh([meta('a', '/a.md'), meta('b', '/b.md')]);
     h.data.ensure([meta('a', '/a.md')]);
     h.gits[0].d.resolve([
-      { project: 'md-mini', branch: 'main' },
+      { project: 'couplet', branch: 'main' },
       { project: 'other', branch: 'dev' },
     ]);
     await flush();
-    expect(h.data.git('/a.md')).toEqual({ project: 'md-mini', branch: 'main' });
+    expect(h.data.git('/a.md')).toEqual({ project: 'couplet', branch: 'main' });
     expect(h.data.git('/b.md')).toBeUndefined();
   });
 

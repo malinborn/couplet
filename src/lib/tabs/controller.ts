@@ -1407,7 +1407,7 @@ export function createTabController(deps: TabControllerDeps) {
     /**
      * Spec §7: ignored quick looks, by the File-menu policy. Called on a
      * timer. The active tab never expires, whether its window has focus or
-     * not (team-lead decision on the Task 10 review, reversible): md-mini
+     * not (team-lead decision on the Task 10 review, reversible): couplet
      * usually sits unfocused beside the agent's terminal while the human
      * reads it, and closing that document — failing a live ask there with
      * `tab closed` — is worse than a quick look that stays while it is in

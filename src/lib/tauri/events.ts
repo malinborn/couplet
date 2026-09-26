@@ -28,6 +28,8 @@ export type MenuAction =
   | 'theme_family_aurora'
   | 'theme_family_blueprint'
   | 'theme_family_phosphor'
+  | 'theme_family_paper'
+  | 'theme_family_ink'
   | 'theme_half_light'
   | 'theme_half_dark'
   | 'theme_system:on'
@@ -194,7 +196,7 @@ export function onCheckUpdatesRequested(handler: () => void): Promise<() => void
 }
 
 /**
- * One `mdmini ai show`/`edit`/`ask` request, routed by Rust to the window
+ * One `couplet ai show`/`edit`/`ask` request, routed by Rust to the window
  * that owns `path`. Mirrors the camelCase `AiCommandPayload` serialized by
  * `src-tauri/src/ai_socket.rs` — field names and optionality must match.
  * `question`/`options`/`multi`/`freeText`/`timeoutSecs` are only meaningful

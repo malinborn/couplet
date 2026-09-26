@@ -25,7 +25,7 @@
   "toast.reload_error.headline": "Не удалось перечитать {fileName}",
   "toast.reload_error.instruction": "Автосохранение приостановлено, пока файл снова не прочитается. Чтобы сохранить свою версию, нажмите",
 
-  "toast.update.headline": "Доступна версия mdmini {latest}",
+  "toast.update.headline": "Доступна версия couplet {latest}",
   "toast.update.current": "у вас установлена v{current}",
   "toast.update.copy_title": "Нажмите, чтобы скопировать",
   "toast.update.copied": "Скопировано!",
@@ -39,10 +39,10 @@
   "toast.session.windows.other": "{count} окон из прошлой сессии",
   "toast.session.restore_action": "Восстановить",
 
-  "toast.ai_nudge.message": "<strong>Ваш AI умеет управлять md-mini</strong> <span class=\"md-toast-dim\">— смотрите меню <strong>AI</strong></span>",
+  "toast.ai_nudge.message": "<strong>Ваш AI умеет управлять couplet</strong> <span class=\"md-toast-dim\">— смотрите меню <strong>AI</strong></span>",
   "toast.ai_nudge.action": "Начало работы",
 
-  "toast.themes_nudge.message": "<strong>В md-mini есть темы</strong> <span class=\"md-toast-dim\">— четыре штуки в меню <strong>Тема</strong></span>",
+  "toast.themes_nudge.message": "<strong>В couplet есть темы</strong> <span class=\"md-toast-dim\">— шесть штук в меню <strong>Тема</strong></span>",
 
   "toast.json_offer.message": "<strong>Похоже, это JSON</strong> <span class=\"md-toast-dim\">— развернуть?</span>",
   "toast.json_offer.action": "Форматировать",
@@ -54,7 +54,7 @@
   "toast.ai_watch_copied.saved": "<strong>Команда watch скопирована</strong> <span class=\"md-toast-dim\">— вставьте её в сессию своего агента</span>",
   "toast.ai_watch_copied.unsaved": "<strong>Сначала сохраните файл</strong> <span class=\"md-toast-dim\">— у несохранённого документа нет пути для отслеживания</span>",
 
-  "toast.ai_first_use.message": "<strong>Это был ваш AI</strong> <span class=\"md-toast-dim\">— md-mini подключён</span>",
+  "toast.ai_first_use.message": "<strong>Это был ваш AI</strong> <span class=\"md-toast-dim\">— couplet подключён</span>",
   "toast.ai_first_use.more": "Подробнее в меню <strong>AI</strong> → Начало работы",
 
   "editor.ai_comment.status.open": "ожидает агента",

@@ -6,7 +6,7 @@
   import { isHumanEdit } from './lib/editor/human-edit';
   import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createTabsCompactStore, createTabsDatesStore, createTransientPolicyStore, createFileState, createRecentFilesStore, setProductName, setWindowNumber, getWindowNumber } from './lib/stores.svelte';
   import { getName } from '@tauri-apps/api/app';
-  import { readDocument, writeDocument, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncEngineMenu, syncOcdAlignmentMenu, broadcastTheme, syncTabsCompactMenu, syncTabsDatesMenu, syncTransientMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type TabClaim, type WindowInit } from './lib/tauri/commands';
+  import { readDocument, writeDocument, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncDockIcon, syncEngineMenu, syncOcdAlignmentMenu, broadcastTheme, syncTabsCompactMenu, syncTabsDatesMenu, syncTransientMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type TabClaim, type WindowInit } from './lib/tauri/commands';
   import { concreteTheme, halfOf, type ThemeFamily } from './lib/theme-resolve';
   import type { ThemeControl } from './lib/editor/slash-theme';
   import {
@@ -46,6 +46,7 @@
     type RenumberResult,
     type RevealResult,
   } from './lib/tabs/window-number';
+  import { ctrlTabHandler } from './lib/tabs/tab-cycle-keys';
   import { shouldShowHint, nextCheckDelay } from './lib/ai-hint';
   import { previewCompartment, lineGlowCompartment } from './lib/editor/setup';
   import { stashAndUnfoldAll, restoreStashedFolds } from './lib/editor/fold-memory';
@@ -114,6 +115,8 @@
   // Обе половины в одном файле — семья описана целиком в одном месте.
   import './lib/theme/blueprint.css';
   import './lib/theme/phosphor.css';
+  import './lib/theme/paper.css';
+  import './lib/theme/ink.css';
   import './styles/global.css';
   import './styles/editor.css';
   import './styles/tabs.css';
@@ -1187,7 +1190,7 @@
    *
    * The order is the point. Committing first would open the thread with the
    * text as of the last autosave — up to `COMMENT_AUTOSAVE_MS` behind what is
-   * on screen — and `mdmini watch` would wake an agent on a sentence that is
+   * on screen — and `couplet watch` would wake an agent on a sentence that is
    * already stale.
    */
   async function fireCommentCountdown(id: string): Promise<void> {
@@ -1239,7 +1242,7 @@
    *
    * Runs after every rebuild of the cards. Three cases, and the third is the
    * one that matters: a thread that is `paused` with a deadline already behind
-   * it was left that way by an md-mini that did not survive to commit it, and
+   * it was left that way by a couplet that did not survive to commit it, and
    * committing it here is how the app heals the file it just opened. The same
    * state also reaches agents on its own — `awaiting` in `comments.rs` reads an
    * expired pause as waiting — this only makes it prompt.
@@ -1603,7 +1606,7 @@
       // accept, and Cmd+Z is how they take it back.
       //
       // Highlighted like any other AI edit. Text arriving from an agent looks
-      // the same whether it came through `mdmini edit` or through a comment
+      // the same whether it came through `couplet edit` or through a comment
       // thread, so it gets the same wash and the same Escape to dismiss —
       // without it, a paragraph the user did not write appears in their
       // document with nothing marking it as not theirs.
@@ -1729,7 +1732,7 @@
     });
   }
 
-  // --- AI commands (`mdmini show`/`edit`/`ask`, routed opens, `close`) ---
+  // --- AI commands (`couplet show`/`edit`/`ask`, routed opens, `close`) ---
   //
   // Where a command lands, and what it does to a tab in the background, is
   // `lib/tabs/agent-commands.ts`. What stays here is the live view.
@@ -1756,6 +1759,18 @@
     reveal: (number) => invoke<RevealResult>('window_reveal_number', { number }),
     toast: quietToast,
   });
+
+  /** Show Next / Previous Tab: the menu's ⌘⇧] / ⌘⇧[ and the page's ⌃Tab / ⌃⇧Tab. */
+  function cycleTab(delta: 1 | -1): void {
+    void tabSourcesReady.then(() => tabs.cycle(delta));
+  }
+
+  /**
+   * ⌃Tab / ⌃⇧Tab: a Ctrl-only menu accelerator never fires from the keyboard
+   * (the webview takes the key), so these are caught here, like ⌃1…⌃9, and
+   * registered right after `onWindowDigit`, before the drawer's listener.
+   */
+  const onWindowCtrlTab = ctrlTabHandler(cycleTab);
 
   function liveAskShown(): boolean {
     const view = editorHandle?.view;
@@ -1986,7 +2001,7 @@
     if (canAutoSave(saveGate())) {
       performSave();
     }
-    // Leaving md-mini ends every running comment pause on the spot.
+    // Leaving couplet ends every running comment pause on the spot.
     //
     // Two reasons, and the second is the load-bearing one. Someone who switches
     // away from a comment they were writing has almost always switched to the
@@ -2113,10 +2128,10 @@
           void tabSourcesReady.then(() => tabs.closeActive());
           break;
         case 'next_tab':
-          void tabSourcesReady.then(() => tabs.cycle(1));
+          cycleTab(1);
           break;
         case 'prev_tab':
-          void tabSourcesReady.then(() => tabs.cycle(-1));
+          cycleTab(-1);
           break;
         case 'toggle_drawer':
           drawerHandle?.toggle();
@@ -2197,6 +2212,12 @@
           break;
         case 'theme_family_phosphor':
           theme.setFamily('phosphor');
+          break;
+        case 'theme_family_paper':
+          theme.setFamily('paper');
+          break;
+        case 'theme_family_ink':
+          theme.setFamily('ink');
           break;
         case 'theme_half_light':
           theme.setHalf('light');
@@ -2301,6 +2322,7 @@
     window.addEventListener('blur', handleWindowBlur);
     window.addEventListener('keydown', noteTyping, true);
     window.addEventListener('keydown', onWindowDigit, true);
+    window.addEventListener('keydown', onWindowCtrlTab, true);
     window.addEventListener('focus', handleWindowFocus);
 
     // Start recovery interval
@@ -2420,6 +2442,7 @@
       window.removeEventListener('blur', handleWindowBlur);
       window.removeEventListener('keydown', noteTyping, true);
       window.removeEventListener('keydown', onWindowDigit, true);
+      window.removeEventListener('keydown', onWindowCtrlTab, true);
       window.removeEventListener('focus', handleWindowFocus);
       autoSave.cancel();
       if (recoveryInterval !== null) clearInterval(recoveryInterval);
@@ -2440,6 +2463,13 @@
   // is the startup sync.
   $effect(() => {
     syncThemeMenu(theme.resolved, theme.followSystem);
+  });
+
+  // The Dock follows the committed theme, not a `/theme` preview: a window
+  // closed with the picker open never clears its preview. First run is the
+  // startup sync, like the menu's.
+  $effect(() => {
+    syncDockIcon(theme.committed);
   });
 
   // Startup sync for the Editor Engine submenu and the OCD checkbox,

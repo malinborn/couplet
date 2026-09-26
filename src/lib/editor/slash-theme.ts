@@ -15,7 +15,7 @@ import {
 /**
  * Everything the editor needs from the app's theme store, without importing
  * it directly. `createExtensions()` is called by both `Editor.svelte` and
- * `site/demos/editor-demo.ts` (the md-mini.com landing's demo cards) — a
+ * `site/demos/editor-demo.ts` (the couplet.pro landing's demo cards) — a
  * direct import of the store would pull `localStorage`/`matchMedia` onto the
  * landing at module load time and let the demo editor repaint the whole page.
  *
@@ -55,9 +55,9 @@ export interface ThemeControl {
 const THEME_FAMILY_PICKER_TYPE = 'md-theme-family';
 
 // Deliberately NOT translated — `menu.rs`'s native Theme submenu makes the
-// same call for the identical four values ("Названия семей ... имена
-// собственные и не переводятся"): Classic/Aurora/Blueprint/Phosphor are the
-// families' proper names, not descriptive words, and are the same literal
+// same call for the identical six values ("Названия семей ... имена
+// собственные и не переводятся"): Classic/Aurora/Blueprint/Phosphor/Paper/Ink
+// are the families' proper names, not descriptive words, and are the same literal
 // strings `ThemeFamily` has used since this menu was "Default" rather than
 // "Classic". A capitalized `family` also stays a safe, stable reverse-lookup
 // key built once at module load — routing it through `t()` here would tie
@@ -95,6 +95,12 @@ const SWATCH_COLORS: Record<ConcreteTheme, { bg: string; accent: string }> = {
   'blueprint-dark': { bg: '#0c2b52', accent: '#ff7a59' },
   'phosphor-light': { bg: '#e9f0e4', accent: '#9a5b00' },
   'phosphor-dark': { bg: '#061008', accent: '#ffcf6b' },
+  // Paper's headings are plain ink, so both halves take the coral caret —
+  // the one colour its CSS reserves for what is being changed.
+  'paper-light': { bg: '#f3ede2', accent: '#e8563f' },
+  'paper-dark': { bg: '#1d1a16', accent: '#e8563f' },
+  'ink-light': { bg: '#efedf4', accent: '#c13e7b' },
+  'ink-dark': { bg: '#1f1b2e', accent: '#ff8a6a' },
 };
 
 /**

@@ -1590,7 +1590,7 @@ describe('quick looks', () => {
     await h.controller.expireTransients('close');
     expect(h.ids(), 'unseen t1 and the active, focused t2 stay').toEqual(['a', 't2', 't1']);
     // Team-lead decision (Task 10 review): the human often reads an unfocused
-    // md-mini beside the agent's terminal — the active tab never expires.
+    // couplet beside the agent's terminal — the active tab never expires.
     h.clock.focused = false;
     await h.controller.expireTransients('close');
     expect(h.ids(), 'the active t2 of an unfocused window stays too').toEqual(['a', 't2', 't1']);
