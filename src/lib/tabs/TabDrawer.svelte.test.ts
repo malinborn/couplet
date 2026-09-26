@@ -32,6 +32,8 @@ function initialList(): TabListState {
 interface Props {
   list: TabListState;
   handle: TabDrawerHandle | undefined;
+  compact: boolean;
+  showTime: boolean;
 }
 
 interface Harness {
@@ -80,7 +82,7 @@ function setup(list: TabListState = initialList()): Harness {
 
   const target = document.createElement('div');
   document.body.appendChild(target);
-  const props = $state<Props>({ list, handle: undefined });
+  const props = $state<Props>({ list, handle: undefined, compact: false, showTime: true });
   const onreorder = vi.fn();
   const onactivate = vi.fn();
   const onrestorefocus = vi.fn();
@@ -96,7 +98,12 @@ function setup(list: TabListState = initialList()): Harness {
         return props.list;
       },
       windowNumber: 3,
-      compact: false,
+      get compact() {
+        return props.compact;
+      },
+      get showTime() {
+        return props.showTime;
+      },
       source: {
         held: () => '',
         read: () => Promise.resolve(''),
@@ -1332,5 +1339,76 @@ describe('TabDrawer — ⌦ / ⌫ close the ⇧-selection (spec §6)', () => {
     const button = [...el('.sel-bar').querySelectorAll('button')].find((b) => b.textContent?.includes('Close selected'));
     expect(button?.getAttribute('aria-keyshortcuts')).toBe('Delete Backspace');
     expect(button?.getAttribute('title'), 'says ⌫ needs an empty search').toBe('⌦, or ⌫ when the search is empty');
+  });
+});
+
+describe('TabDrawer — when each tab was last touched', () => {
+  // Local wall-clock time, as the cards read it.
+  const T = new Date(2026, 8, 26, 14, 5).getTime();
+  const MIN = 60_000;
+
+  function aged(): TabListState {
+    return {
+      tabs: [
+        { ...tab('a', '/p/alpha.md'), openedAt: T - 60 * MIN },
+        { ...tab('b', '/p/beta.md'), openedAt: T - 60 * MIN, viewedAt: T - 30_000 },
+        { ...tab('c', '/p/gamma.md'), openedAt: T - 300 * MIN, viewedAt: T - 180 * MIN, editedAt: T - 120 * MIN },
+        { ...tab('d', null), openedAt: T - 3 * 24 * 60 * MIN },
+      ],
+      activeId: 'a',
+    };
+  }
+
+  function timeOf(id: string, where = '.card-meta'): HTMLElement | null {
+    return card(id).querySelector<HTMLElement>(`${where} .card-time`);
+  }
+
+  async function openAged(): Promise<void> {
+    vi.useFakeTimers();
+    vi.setSystemTime(T);
+    h.props.list = aged();
+    h.handle().toggle();
+    await settle();
+  }
+
+  it('each card says it at the end of its grey line — the active tab is just now', async () => {
+    await openAged();
+    expect(timeOf('a')?.textContent).toBe('just now');
+    expect(timeOf('b')?.textContent).toBe('just now');
+    expect(timeOf('c')?.textContent, 'the edit is later than the view').toBe('2 hours ago');
+    expect(timeOf('d')?.textContent).toBe('23.09 at 14:05');
+    expect(timeOf('c')?.getAttribute('title')).toBe('26.09.2026, 12:05');
+    expect(timeOf('c')?.getAttribute('datetime')).toBe(new Date(T - 120 * MIN).toISOString());
+  });
+
+  it('one clock ticks every 30 s while the drawer is open, and not behind a closed one', async () => {
+    await openAged();
+    vi.advanceTimersByTime(30_000);
+    await settle();
+    expect(timeOf('b')?.textContent).toBe('1 minute ago');
+    h.handle().toggle();
+    await settle();
+    vi.advanceTimersByTime(10 * MIN);
+    await settle();
+    expect(timeOf('b')?.textContent, 'no tick while closed').toBe('1 minute ago');
+    h.handle().toggle();
+    await settle();
+    expect(timeOf('b')?.textContent, 'fresh the moment it opens').toBe('11 minutes ago');
+  });
+
+  it('View → Tabs → Show Dates off: no time on any card', async () => {
+    await openAged();
+    h.props.showTime = false;
+    await settle();
+    expect(h.root().querySelector('.card-time')).toBeNull();
+  });
+
+  it('Compact: in the head row, right before ⌘N', async () => {
+    await openAged();
+    h.props.compact = true;
+    await settle();
+    const head = timeOf('c', '.card-head');
+    expect(head?.textContent).toBe('2 hours ago');
+    expect(head?.nextElementSibling?.classList.contains('card-kbd')).toBe(true);
   });
 });

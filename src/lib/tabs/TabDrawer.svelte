@@ -85,6 +85,7 @@
     list,
     windowNumber,
     compact,
+    showTime = true,
     source,
     onactivate,
     onclose,
@@ -100,6 +101,8 @@
     list: TabListState;
     windowNumber: number | null;
     compact: boolean;
+    /** View → Tabs → Show Dates: each card's last-touched time. */
+    showTime?: boolean;
     source: DrawerDataDeps;
     onactivate: (tabId: string) => void;
     onclose: (tabIds: string[]) => void;
@@ -134,6 +137,9 @@
     before: string | null;
     inList: boolean;
   }
+
+  /** How often an open drawer refreshes the cards' relative times. */
+  const TIME_TICK_MS = 30_000;
 
   const mac = isMacPlatform();
   const drawerKey = acceleratorLabel(nativeAccelerator('toggle_drawer') ?? 'CmdOrCtrl+J');
@@ -207,6 +213,21 @@
   );
 
   const isOpen = $derived(ds.open);
+
+  /**
+   * One clock for every card's relative time: set when the drawer opens and
+   * ticking only while it stays open — no per-card timers, nothing running
+   * behind a closed drawer.
+   */
+  let now = $state(Date.now());
+  $effect(() => {
+    if (!isOpen || !showTime) return;
+    now = Date.now();
+    const timer = setInterval(() => {
+      now = Date.now();
+    }, TIME_TICK_MS);
+    return () => clearInterval(timer);
+  });
   const byId = $derived(new Map(list.tabs.map((tab) => [tab.id, tab])));
   const texts = $derived.by(() => {
     void dataVersion;
@@ -1101,6 +1122,8 @@
               expanded={tab.id === expandedId}
               dragging={drag?.ids.includes(tab.id) ?? false}
               {compact}
+              {showTime}
+              {now}
               query={ds.query}
               match={matches.get(tab.id)}
               text={texts.get(tab.id) ?? null}

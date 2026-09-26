@@ -111,6 +111,9 @@ pub struct ViewToggleItems {
     /// View → Tabs → Compact (spec §6): one-line drawer cards.
     pub tabs_compact: CheckMenuItem<Wry>,
     pub compact_enabled: Toggle,
+    /// View → Tabs → Show Dates: the time on each drawer card. On by default.
+    pub tabs_dates: CheckMenuItem<Wry>,
+    pub dates_enabled: Toggle,
 }
 
 /// Live handles to the two "Reopen…" items, so they follow the closed stack
@@ -175,6 +178,11 @@ impl ViewToggleItems {
     pub fn sync_tabs_compact(&self, enabled: bool) {
         let _ = self.tabs_compact.set_checked(enabled);
         self.compact_enabled.set(enabled);
+    }
+
+    pub fn sync_tabs_dates(&self, enabled: bool) {
+        let _ = self.tabs_dates.set_checked(enabled);
+        self.dates_enabled.set(enabled);
     }
 }
 
@@ -312,6 +320,11 @@ pub fn build_menu(
 
     let tabs_compact =
         CheckMenuItemBuilder::with_id("toggle_tabs_compact", t("menu.view.tabs_compact")).build(app)?;
+    // Checked from the start: the frontend's default is on, and its start-up
+    // `sync_tabs_dates_menu` corrects it either way.
+    let tabs_dates = CheckMenuItemBuilder::with_id("toggle_tabs_dates", t("menu.view.tabs_dates"))
+        .checked(true)
+        .build(app)?;
 
     // Nine literal builder chains, not a loop: the accelerator mirror test
     // (`native-menu-accelerators.test.ts`) reads each item id as a string
@@ -326,6 +339,7 @@ pub fn build_menu(
                 .build(app)?,
         )
         .item(&tabs_compact)
+        .item(&tabs_dates)
         .separator()
         // ⌘⇧] / ⌘⇧[, as in Safari and Terminal. Not ⌃Tab: a Ctrl-only key
         // equivalent never fires from the keyboard while a window is key —
@@ -575,6 +589,13 @@ pub fn build_menu(
         ocd_enabled: Toggle::default(),
         tabs_compact,
         compact_enabled: Toggle::default(),
+        tabs_dates,
+        // Agrees with the item's initial check until the frontend syncs it.
+        dates_enabled: {
+            let on = Toggle::default();
+            on.set(true);
+            on
+        },
     };
 
     let session_items = SessionMenuItems {

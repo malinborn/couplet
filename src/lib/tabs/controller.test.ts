@@ -942,6 +942,66 @@ describe('drawer stamps', () => {
       expect.objectContaining({ tabId: 'b', openedAt: 5, viewedAt: 6, unviewed: true }),
     ]);
   });
+
+  // The drawer card's time: the last change to the text, not the moment it was left.
+  it('TypingIsStampedWhenTheTabIsLeft_AtTheLastChange', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
+    h.clock.now = 2_000;
+    h.type('x');
+    h.controller.liveDocChanged();
+    h.clock.now = 3_000;
+    h.type('y');
+    h.controller.liveDocChanged();
+    expect(meta(h, 'a').editedAt, 'not published per keystroke').toBeUndefined();
+    h.clock.now = 9_000;
+    await h.controller.activate('b');
+    expect(meta(h, 'a').editedAt).toBe(3_000);
+  });
+
+  it('LeavingAnUnchangedTabDoesNotStampIt', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
+    h.type('x');
+    h.controller.liveDocChanged();
+    await h.controller.activate('b');
+    h.clock.now = 9_000;
+    await h.controller.activate('a');
+    expect(meta(h, 'b').editedAt, 'shown and left with no change').toBeUndefined();
+    expect(meta(h, 'a').editedAt).toBe(1_000);
+  });
+
+  it('TheHeartbeatCarriesTheActiveTabsUnstampedTyping', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), { ...fileTab('b', '/b.md'), editedAt: 42 }]);
+    expect(h.controller.report({ cursor: 0, topLine: 1, content: 'AAAA' }).tabs.map((t) => t.editedAt)).toEqual([0, 42]);
+    h.clock.now = 4_000;
+    h.type('x');
+    h.controller.liveDocChanged();
+    expect(h.controller.report({ cursor: 0, topLine: 1, content: 'AAAAx' }).tabs.map((t) => t.editedAt)).toEqual([
+      4_000, 42,
+    ]);
+  });
+
+  it('ARestoredEditStampIsKept', async () => {
+    const h = makeHarness(files);
+    await h.controller.init([fileTab('a', '/a.md'), { ...fileTab('b', '/b.md'), editedAt: 77 }], 'a');
+    expect(meta(h, 'b').editedAt).toBe(77);
+    expect(meta(h, 'a').editedAt).toBeUndefined();
+  });
+
+  it('AnAgentsBackgroundEditStampsTheTab', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
+    h.clock.now = 6_000;
+    const result = await h.controller.runExclusive(() =>
+      h.controller.applyToTabNow('b', (s) => ({ state: s.update({ changes: { from: 0, insert: 'X' } }).state, result: 1 }))
+    );
+    expect(result?.kind).toBe('applied');
+    expect(meta(h, 'b').editedAt).toBe(6_000);
+  });
+
+  it('AnAgentsBackgroundEditThatChangesNothingDoesNotStamp', async () => {
+    const h = await started(files, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
+    await h.controller.runExclusive(() => h.controller.applyToTabNow('b', () => null));
+    expect(meta(h, 'b').editedAt).toBeUndefined();
+  });
 });
 
 describe('drawer operations', () => {
@@ -1705,6 +1765,7 @@ describe('moving tabs to another window (plan 05)', () => {
       topLine: 2,
       openedAt: 50,
       viewedAt: 60,
+      editedAt: 65,
       unviewed: true,
       transient: true,
       transientSeenAt: 70,
@@ -1719,6 +1780,7 @@ describe('moving tabs to another window (plan 05)', () => {
         topLine: 2,
         openedAt: 50,
         viewedAt: 60,
+        editedAt: 65,
         unviewed: true,
         transient: true,
         transientSeenAt: 70,

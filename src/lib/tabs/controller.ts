@@ -58,6 +58,7 @@ export interface InitTab {
   /** Drawer stamps from the session; `0` or absent: unknown — stamped now. */
   openedAt?: number;
   viewedAt?: number;
+  editedAt?: number;
   unviewed?: boolean;
   /** A quick look carried by a move between windows (plan 05) or restored from the session (Q8). */
   transient?: boolean;
@@ -75,6 +76,8 @@ export interface TabReport {
   content: string | null;
   openedAt: number;
   viewedAt: number;
+  /** The active tab's includes typing not yet stamped into its meta. */
+  editedAt: number;
   unviewed: boolean;
   /** A quick look survives a restart with its clock (tabs-questions Q8). */
   transient: boolean;
@@ -90,6 +93,7 @@ export interface MovedTab {
   topLine: number;
   openedAt: number;
   viewedAt: number;
+  editedAt: number;
   unviewed: boolean;
   transient: boolean;
   transientSeenAt: number;
@@ -347,6 +351,14 @@ export function createTabController(deps: TabControllerDeps) {
    */
   let exclusive = false;
 
+  /**
+   * The last change to the live document since its tab was shown — typing,
+   * an agent's live edit, a reload from disk. Kept here rather than published
+   * per keystroke; `stashActive` folds it into the tab's `editedAt`, and the
+   * heartbeat reports it. `0`: unchanged since shown.
+   */
+  let liveEditedAt = 0;
+
   function requireExclusive(what: string): boolean {
     if (!exclusive) console.error(`${what} called outside runExclusive; ignored`);
     return exclusive;
@@ -381,6 +393,7 @@ export function createTabController(deps: TabControllerDeps) {
       dirty: t.path === null && (t.content ?? '') !== '',
       openedAt: t.openedAt || now,
       viewedAt: t.viewedAt ?? 0,
+      ...(t.editedAt ? { editedAt: t.editedAt } : {}),
       unviewed: t.unviewed ?? false,
       ...(t.transient ? { transient: true, transientSeenAt: t.transientSeenAt ?? 0 } : {}),
     };
@@ -508,10 +521,14 @@ export function createTabController(deps: TabControllerDeps) {
       lineEnding,
     });
     if (tab.path !== null) deps.comments.forget(tab.path);
+    const editedAt = liveEditedAt;
+    liveEditedAt = 0;
     publish(
       updateTab(list, tab.id, {
         dirty,
         ...(deps.windowFocused() ? { viewedAt: deps.now() } : {}),
+        // Only when its text changed while it was shown.
+        ...(editedAt > 0 ? { editedAt } : {}),
         // A question now waits there: it shimmers until the human goes back.
         ...(parked ? { unviewed: true } : {}),
       })
@@ -610,6 +627,8 @@ export function createTabController(deps: TabControllerDeps) {
     deps.editor.swap(entry.state, entry.swap);
     deps.doc.setActive(tab.path, entry.dirty, entry.baseline, entry.lineEnding);
     deps.editor.applyDocumentConfig(tab.path);
+    // A swap runs no update listeners: nothing typed into this tab yet.
+    liveEditedAt = 0;
     // The live view holds this tab now; its cache entry is rebuilt on leave.
     cache.delete(tab.id);
     publish(setActive(updateTab(list, tab.id, { dirty: deps.doc.dirty() }), tab.id));
@@ -970,6 +989,8 @@ export function createTabController(deps: TabControllerDeps) {
       topLine: at?.topLine ?? c?.topLine ?? 1,
       openedAt: tab.openedAt,
       viewedAt: tab.viewedAt,
+      // A leaving active tab was stashed first: its typing is in here already.
+      editedAt: tab.editedAt ?? 0,
       unviewed: tab.unviewed,
       transient: tab.transient === true,
       transientSeenAt: tab.transientSeenAt ?? 0,
@@ -1194,6 +1215,8 @@ export function createTabController(deps: TabControllerDeps) {
       enterAt: cached?.enterAt ?? null,
       lineEnding,
     });
+    // Looked up again: the list may have changed during the write.
+    if (findById(list, tabId)) publish(updateTab(list, tabId, { editedAt: deps.now() }));
     return { kind: 'applied', result: out.result };
   }
 
@@ -1223,9 +1246,12 @@ export function createTabController(deps: TabControllerDeps) {
     return {
       active: list.activeId,
       tabs: list.tabs.map((tab): TabReport => {
+        const edited = tab.editedAt ?? 0;
         const stamps = {
           openedAt: tab.openedAt,
           viewedAt: tab.viewedAt,
+          // The active tab's typing is not in its meta until it is left.
+          editedAt: tab.id === list.activeId ? Math.max(edited, liveEditedAt) : edited,
           unviewed: tab.unviewed,
           transient: tab.transient === true,
           transientSeenAt: tab.transientSeenAt ?? 0,
@@ -1363,6 +1389,15 @@ export function createTabController(deps: TabControllerDeps) {
      */
     humanEdited(): void {
       if (list.activeId !== null) keepNow(list.activeId);
+    },
+    /**
+     * The live document changed — by anyone: the human, an agent's live
+     * edit, a reload from disk. Synchronous, unqueued and unpublished — an
+     * EditorView update listener calls it on every keystroke; the stamp
+     * reaches the tab's `editedAt` when it is left, and the heartbeat.
+     */
+    liveDocChanged(): void {
+      if (list.activeId !== null) liveEditedAt = deps.now();
     },
     /** «Закрыть»: the ⌘W way — ⌘⇧T brings it back. An ordinary tab is left alone. */
     closeTransient: (tabId: string) =>

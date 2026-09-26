@@ -84,6 +84,11 @@ export function syncTabsCompactMenu(enabled: boolean): void {
   invoke('sync_tabs_compact_menu', { enabled }).catch(() => {});
 }
 
+/** Sets View → Tabs → Show Dates; harmless no-op outside Tauri. */
+export function syncTabsDatesMenu(enabled: boolean): void {
+  invoke('sync_tabs_dates_menu', { enabled }).catch(() => {});
+}
+
 /** Sets File → quick looks' radio pair; harmless no-op outside Tauri. */
 export function syncTransientMenu(policy: 'keep' | 'close'): void {
   invoke('sync_transient_menu', { policy }).catch(() => {});
@@ -124,6 +129,8 @@ export interface PendingTab {
   /** Drawer stamps, ms since the epoch; `0` / `false` for a new tab. */
   openedAt: number;
   viewedAt: number;
+  /** The last change to its text; `0` for none (or a session from before the stamp). */
+  editedAt: number;
   unviewed: boolean;
   /** A quick look carried by a move between windows (plan 05); `false` otherwise. */
   transient: boolean;

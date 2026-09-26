@@ -31,6 +31,8 @@ pub struct PendingTab {
     /// tab that is new — the frontend stamps it.
     pub opened_at: u64,
     pub viewed_at: u64,
+    /// The last change to its text — the drawer card's time. `0`: none.
+    pub edited_at: u64,
     pub unviewed: bool,
     /// A quick look (spec §7), carried by a move between windows (plan 05)
     /// and by a session restore (tabs-questions Q8); `false` for every other
@@ -59,6 +61,7 @@ pub fn pending_tab_from_snapshot(
         top_line: tab.top_line.max(1),
         opened_at: tab.opened_at,
         viewed_at: tab.viewed_at,
+        edited_at: tab.edited_at,
         unviewed: tab.unviewed,
         transient: tab.transient,
         transient_seen_at: tab.transient_seen_at,
@@ -1739,14 +1742,15 @@ mod tests {
             top_line: 0,
             opened_at: 11,
             viewed_at: 22,
+            edited_at: 33,
             unviewed: true,
             ..Default::default()
         };
         let tab = pending_tab_from_snapshot(&snapshot, None);
-        assert_eq!((tab.opened_at, tab.viewed_at, tab.unviewed), (11, 22, true));
+        assert_eq!((tab.opened_at, tab.viewed_at, tab.edited_at, tab.unviewed), (11, 22, 33, true));
         assert_eq!((tab.cursor, tab.top_line), (4, 1), "line numbers are 1-based");
         let json = serde_json::to_string(&tab).unwrap();
-        for key in [r#""openedAt":11"#, r#""viewedAt":22"#, r#""unviewed":true"#] {
+        for key in [r#""openedAt":11"#, r#""viewedAt":22"#, r#""editedAt":33"#, r#""unviewed":true"#] {
             assert!(json.contains(key), "{key} missing in {json}");
         }
         assert!(!tab.transient, "an ordinary tab stays one");

@@ -14,6 +14,7 @@ import {
   activeTab,
   reorderTabs,
   expiredTransients,
+  lastTouched,
   type TabListState,
   type TabMeta,
 } from './tab-model';
@@ -188,5 +189,21 @@ describe('removeTabs', () => {
 
   it('EverythingGoing_NothingIsActive', () => {
     expect(removeTabs(list(['a', 'b'], 'a'), ['b', 'a'])).toEqual({ state: list([], null), nextActiveId: null });
+  });
+});
+
+describe('lastTouched', () => {
+  const stamped = (patch: Partial<TabMeta>): TabMeta => ({ ...tab('a'), openedAt: 10, viewedAt: 20, ...patch });
+
+  it('TheActiveTab_IsNow', () => {
+    expect(lastTouched(stamped({ editedAt: 999 }), 'a', 50)).toBe(50);
+  });
+
+  it('ABackgroundTab_IsTheLatestOfViewedEditedOpened', () => {
+    expect(lastTouched(stamped({}), 'b', 50)).toBe(20);
+    expect(lastTouched(stamped({ editedAt: 30 }), 'b', 50)).toBe(30);
+    expect(lastTouched(stamped({ editedAt: 5 }), 'b', 50)).toBe(20);
+    expect(lastTouched(stamped({ viewedAt: 0 }), null, 50)).toBe(10);
+    expect(lastTouched(stamped({ viewedAt: 0, editedAt: 0 }), null, 50)).toBe(10);
   });
 });
