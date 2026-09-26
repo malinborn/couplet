@@ -798,6 +798,16 @@ const DRAFTS_TRASH_DIR: &str = ".trash";
 /// old mtime, so the name is the only record of when it was thrown away.
 const TRASHED_MARK: &str = ".trashed-";
 
+/// `Ok` only when `trash` is a real directory. A symlink there would send
+/// the drafts — and the purge's deletions — to wherever it points.
+fn require_real_trash_dir(trash: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(trash) {
+        Ok(meta) if meta.file_type().is_dir() => Ok(()),
+        Ok(_) => Err(format!("{} is not a real directory", trash.display())),
+        Err(e) => Err(format!("{}: {e}", trash.display())),
+    }
+}
+
 /// Hard-link `src` into `trash` under the first free name for `stem` thrown
 /// away at `now_secs`: `<stem>.trashed-<secs>.md`, then `…-<secs>-1.md`, …
 ///
@@ -850,6 +860,7 @@ fn move_to_trash(src: &Path, trash: &Path, now_secs: u64) -> Result<PathBuf, Str
         .ok_or_else(|| format!("not a UTF-8 file name: {}", src.display()))?;
     let stem = name.strip_suffix(".md").unwrap_or(name);
     fs::create_dir_all(trash).map_err(|e| format!("create {}: {e}", trash.display()))?;
+    require_real_trash_dir(trash)?;
     let dest = link_into_trash(src, trash, stem, now_secs)?;
     fs::remove_file(src).map_err(|e| format!("{name} is in the trash but still in session/: {e}"))?;
     Ok(dest)
@@ -904,8 +915,17 @@ pub fn purge_drafts_trash(now_secs: u64) {
 /// `purge_drafts_trash` in `trash`. Only regular files whose name carries a
 /// stamp this module wrote; anything else is left alone.
 fn purge_trash_in(trash: &Path, now_secs: u64) {
+    if fs::symlink_metadata(trash).is_err() {
+        return; // Nothing thrown away yet.
+    }
+    if let Err(e) = require_real_trash_dir(trash) {
+        eprintln!("session: not purging the draft trash: {e}");
+        return;
+    }
     let Ok(entries) = fs::read_dir(trash) else { return };
     for entry in entries.flatten() {
+        // `DirEntry::file_type` does not follow symlinks: a link is never
+        // "a file", so neither it nor its target is ever removed.
         if !entry.file_type().is_ok_and(|t| t.is_file()) {
             continue;
         }
@@ -929,6 +949,7 @@ fn rescue_untitled_in(trash: &Path, tab_id: &str, text: &str, now_secs: u64) -> 
         return Err(format!("invalid tab id: {tab_id:?}"));
     }
     fs::create_dir_all(trash).map_err(|e| format!("create {}: {e}", trash.display()))?;
+    require_real_trash_dir(trash)?;
     let tmp = trash.join(format!(".closed-{tab_id}.tmp"));
     fs::write(&tmp, text).map_err(|e| format!("write the rescue copy: {e}"))?;
     // Linked, not renamed, so an earlier trash file of the same name is never
@@ -1762,6 +1783,58 @@ mod tests {
         assert_eq!(std::fs::read_to_string(trash.join("closed-1-2-3.trashed-500.md")).unwrap(), "earlier");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "later");
         assert_eq!(files_in(&trash).len(), 2, "no temp file left");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_symlinked_trash_is_never_purged() {
+        let root = scratch_dir("purge-symlinked");
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("draft-old.trashed-1.md"), "not ours").unwrap();
+        let trash = root.join(".trash");
+        std::os::unix::fs::symlink(&elsewhere, &trash).unwrap();
+
+        purge_trash_in(&trash, u64::MAX);
+
+        assert_eq!(files_in(&elsewhere), vec!["draft-old.trashed-1.md"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_file_symlink_inside_the_trash_survives_the_purge() {
+        // `DirEntry::file_type` does not follow symlinks: an old-stamped link
+        // is not a regular file, so neither it nor its target is touched.
+        let root = scratch_dir("purge-file-link");
+        let target = root.join("target.md");
+        std::fs::write(&target, "outside").unwrap();
+        let trash = root.join(".trash");
+        std::fs::create_dir_all(&trash).unwrap();
+        let link = trash.join("old-link.trashed-1.md");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        purge_trash_in(&trash, u64::MAX);
+
+        assert!(std::fs::symlink_metadata(&link).is_ok(), "the link is still there");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "outside");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_symlinked_trash_is_never_written() {
+        let root = scratch_dir("move-symlinked");
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let trash = root.join(".trash");
+        std::os::unix::fs::symlink(&elsewhere, &trash).unwrap();
+        let src = root.join("draft-b.md");
+        std::fs::write(&src, "keep me").unwrap();
+
+        assert!(move_to_trash(&src, &trash, 1000).is_err());
+        assert!(rescue_untitled_in(&trash, "1-2-3", "text", 1000).is_err());
+
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), "keep me");
+        assert!(files_in(&elsewhere).is_empty(), "nothing lands through the link");
         let _ = std::fs::remove_dir_all(&root);
     }
 
