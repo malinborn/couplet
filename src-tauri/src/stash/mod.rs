@@ -6,6 +6,7 @@
 //! `docs/superpowers/specs/2026-09-26-stash-design.md`; contracts:
 //! `docs/superpowers/plans/2026-09-27-stash-00-roadmap.md`.
 
+mod backup;
 mod clock;
 mod db;
 mod entries;
