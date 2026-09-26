@@ -590,6 +590,15 @@ describe('close', () => {
     expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'one two');
   });
 
+  it('HandsARestoredNeverOpenedUntitledTabsTextToRust', async () => {
+    // Restored in the background and never shown: its cache has no editor
+    // state, only the text the session gave it.
+    const h = await started({ '/a.md': 'AAAA' }, [fileTab('a', '/a.md'), untitledTab('u', 'restored text')], 'a');
+    await h.controller.closeTabs(['u']);
+    expect(h.calls, 'never loaded into the editor').not.toContain('swap');
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'restored text');
+  });
+
   it('HandsNoTextForAFileTab', async () => {
     const h = await started({ '/a.md': 'AAAA', '/b.md': 'BBBB' }, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
     await h.controller.closeActive();
@@ -1079,7 +1088,7 @@ describe('drawer operations', () => {
     expect(h.ids()).toEqual(['a']);
     expect(h.active()).toBe('a');
     expect(h.deps.reportUnsaved).toHaveBeenCalledTimes(1);
-    expect(h.deps.rust.close).not.toHaveBeenCalledWith('a', expect.anything(), null);
+    expect(vi.mocked(h.deps.rust.close).mock.calls.some(([id]) => id === 'a')).toBe(false);
     expect(h.deps.rust.closeWindow).not.toHaveBeenCalled();
     expect(h.live().doc.toString()).toBe('AAAAunsaved');
   });
