@@ -72,6 +72,26 @@ pub struct StashEntry {
     pub preview: String,
 }
 
+/// `stash_put_away`'s arguments.
+#[derive(Clone, Debug, Default)]
+pub struct PutAway {
+    pub paths: Vec<String>,
+    /// Only with exactly one path.
+    pub caret: Option<i64>,
+    /// Only with exactly one path.
+    pub top_line: Option<i64>,
+    pub tags: Vec<String>,
+}
+
+/// One put-away path's outcome. `created == false`: it was already in the
+/// stash (dedup hit) and was raised, re-tagged and re-positioned instead.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PutAwayResult {
+    pub entry: StashEntry,
+    pub created: bool,
+}
+
 /// The stash: one database connection and where things live. Synchronous and
 /// clock-free — callers pass `now` — so every behaviour is a plain unit test.
 pub struct Stash {

@@ -5,17 +5,120 @@ use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use super::db::{self, EntryRow, ENTRY_COLUMNS};
-use super::{ids, notes, Stash, StashEntry, StashKind};
+use super::{ids, notes, PutAway, PutAwayResult, Stash, StashEntry, StashKind};
 
 /// Preview length in characters (roadmap: "first ~400 chars").
 pub(crate) const PREVIEW_CHARS: usize = 400;
 /// Bytes read for a preview: 400 characters of up to 4 UTF-8 bytes each.
 const PREVIEW_BYTES: u64 = (PREVIEW_CHARS * 4) as u64;
 const ID_ATTEMPTS: usize = 8;
+/// Longest tag, in characters.
+pub(crate) const TAG_MAX_CHARS: usize = 64;
+
+/// A tag as stored: trimmed, without leading `#`, lower-case. `Ok(None)` for
+/// nothing left; an error for whitespace inside (a `#tag` query could never
+/// find it) or an absurd length (plan D8).
+pub(crate) fn normalize_tag(raw: &str) -> Result<Option<String>, String> {
+    let tag = raw.trim().trim_start_matches('#').trim();
+    if tag.is_empty() {
+        return Ok(None);
+    }
+    if tag.chars().any(char::is_whitespace) {
+        return Err(format!("a tag cannot contain spaces: {raw:?}"));
+    }
+    if tag.chars().count() > TAG_MAX_CHARS {
+        return Err(format!(
+            "a tag is at most {TAG_MAX_CHARS} characters: {raw:?}"
+        ));
+    }
+    Ok(Some(tag.to_lowercase()))
+}
+
+/// `normalize_tag` over a list, empties dropped, duplicates collapsed in order.
+pub(crate) fn normalize_tags(raw: &[String]) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for r in raw {
+        if let Some(tag) = normalize_tag(r)? {
+            if !out.contains(&tag) {
+                out.push(tag);
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn file_title(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// A file reference's repo as stored (roadmap A3): the git toplevel's name,
+/// `None` outside a repository — the file's own folder is not a repo tag.
+fn file_repo(path: &str) -> Option<String> {
+    let info = crate::git_info::repo_info(Path::new(path))?;
+    normalize_repo(Some(&info.project))
+}
+
+/// A path not yet in the stash becomes an entry: a note when it lies in the
+/// notes folder, a file reference otherwise (plan D5, D18).
+fn insert_new(
+    tx: &Connection,
+    path: &str,
+    notes_dir: &Path,
+    req: &PutAway,
+    now: i64,
+) -> Result<String, String> {
+    let meta = fs::metadata(path).map_err(|e| format!("cannot put away {path}: {e}"))?;
+    if !meta.is_file() {
+        return Err(format!("cannot put away {path}: not a file"));
+    }
+    let kind = if Path::new(path).starts_with(notes_dir) {
+        StashKind::Note
+    } else {
+        StashKind::File
+    };
+    let (title, repo) = match kind {
+        StashKind::Note => (
+            fs::read_to_string(path)
+                .ok()
+                .and_then(|t| notes::title_of(&t))
+                .unwrap_or_default(),
+            None,
+        ),
+        StashKind::File => (file_title(path), file_repo(path)),
+    };
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+        .unwrap_or(now);
+    let id = unique_id(tx)?;
+    tx.execute(
+        "INSERT INTO entries (id, kind, path, title, repo, created_at, modified_at, stashed_at, caret, top_line) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?6, ?8, ?9)",
+        params![
+            id,
+            kind.as_str(),
+            path,
+            title,
+            repo,
+            now,
+            modified,
+            req.caret.unwrap_or(0),
+            req.top_line.unwrap_or(1)
+        ],
+    )
+    .map_err(db::err)?;
+    Ok(id)
+}
 
 /// The repo tag as the stash stores and filters it: a project's directory
 /// name. A window knows its project as an absolute root, `git_info` gives a
@@ -187,6 +290,81 @@ impl Stash {
         Ok(entry_from(row, tags, repo, branch, preview))
     }
 
+    /// Puts documents away: new ones become entries, ones already in the stash
+    /// are raised (`stashed_at = now`), re-tagged (union) and re-positioned.
+    /// Paths are normalized here — the dedup key is `path_norm`'s spelling —
+    /// and the whole request is one transaction (plan D4): a trashed entry
+    /// among the paths refuses all of it (roadmap A8).
+    pub fn put_away(&mut self, req: &PutAway, now: i64) -> Result<Vec<PutAwayResult>, String> {
+        if req.paths.len() > 1 && (req.caret.is_some() || req.top_line.is_some()) {
+            return Err("caret and topLine belong to a single path".to_string());
+        }
+        let tags = normalize_tags(&req.tags)?;
+        let paths: Vec<String> = req
+            .paths
+            .iter()
+            .map(|p| crate::path_norm::normalize_str(p))
+            .collect();
+        let notes_dir = self.notes_dir()?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db::err)?;
+        let mut done: Vec<(String, bool)> = Vec::with_capacity(paths.len());
+        for path in &paths {
+            if !Path::new(path).is_absolute() {
+                return Err(format!("path must be absolute: {path}"));
+            }
+            let existing: Option<(String, String, Option<i64>)> = tx
+                .query_row(
+                    "SELECT id, kind, deleted_at FROM entries WHERE path = ?1",
+                    [path],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()
+                .map_err(db::err)?;
+            let (id, created) = match existing {
+                Some((_, _, Some(_))) => return Err(format!("in the trash: {path}")),
+                Some((id, kind, None)) => {
+                    tx.execute(
+                        "UPDATE entries SET stashed_at = ?1, caret = COALESCE(?2, caret), \
+                         top_line = COALESCE(?3, top_line) WHERE id = ?4",
+                        params![now, req.caret, req.top_line, id],
+                    )
+                    .map_err(db::err)?;
+                    // A file's repo is re-derived at every put-away (roadmap A3);
+                    // a note keeps the project it was written in.
+                    if kind == StashKind::File.as_str() {
+                        tx.execute(
+                            "UPDATE entries SET repo = ?1 WHERE id = ?2",
+                            params![file_repo(path), id],
+                        )
+                        .map_err(db::err)?;
+                    }
+                    (id, false)
+                }
+                None => (insert_new(&tx, path, &notes_dir, req, now)?, true),
+            };
+            for tag in &tags {
+                tx.execute(
+                    "INSERT OR IGNORE INTO tags (entry_id, tag) VALUES (?1, ?2)",
+                    params![id, tag],
+                )
+                .map_err(db::err)?;
+            }
+            done.push((id, created));
+        }
+        tx.commit().map_err(db::err)?;
+        done.into_iter()
+            .map(|(id, created)| {
+                Ok(PutAwayResult {
+                    entry: self.get(&id)?,
+                    created,
+                })
+            })
+            .collect()
+    }
+
     fn tags_of(&self, id: &str) -> Result<Vec<String>, String> {
         let mut stmt = self
             .conn
@@ -206,6 +384,7 @@ mod tests {
     use super::*;
     use crate::atomic_write::testkit::scratch;
     use crate::stash::testkit::*;
+    use crate::stash::PutAway;
 
     #[test]
     fn creating_a_note_writes_its_file_and_its_entry() {
@@ -370,5 +549,256 @@ mod tests {
         assert_eq!(read_preview(&binary), "");
         assert_eq!(read_preview(&dir.join("missing.md")), "");
         assert_eq!(read_preview(&dir), "", "a directory");
+    }
+
+    fn put(paths: Vec<String>) -> PutAway {
+        PutAway {
+            paths,
+            ..PutAway::default()
+        }
+    }
+
+    /// The `repo` column itself, not the entry's derived `repo`.
+    fn stored_repo(stash: &Stash, id: &str) -> Option<String> {
+        stash
+            .conn
+            .query_row("SELECT repo FROM entries WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn putting_away_a_file_creates_a_reference() {
+        let (mut stash, root) = stash_in("put-file");
+        let file = user_file(&root, "plan.md", "# План\n");
+        let req = PutAway {
+            paths: vec![file.clone()],
+            caret: Some(7),
+            top_line: Some(3),
+            tags: vec!["#Infra".into(), "infra".into()],
+        };
+        let r = stash.put_away(&req, T0).unwrap();
+        assert_eq!(r.len(), 1);
+        assert!(r[0].created);
+        let e = &r[0].entry;
+        assert_eq!(
+            (e.kind, e.path.as_str(), e.title.as_deref()),
+            (StashKind::File, file.as_str(), Some("plan.md"))
+        );
+        assert_eq!((e.stashed_at, e.created_at), (Some(T0), T0));
+        assert_eq!((e.caret, e.top_line), (7, 3));
+        assert_eq!(e.tags, vec!["infra"]);
+        assert_eq!(e.repo, None, "a loose file has no repo tag");
+        assert_eq!(e.preview, "# План\n");
+    }
+
+    #[test]
+    fn putting_away_again_is_a_dedup_hit() {
+        let (mut stash, root) = stash_in("dedup");
+        let file = user_file(&root, "todo.md", "todo");
+        let first = stash
+            .put_away(
+                &PutAway {
+                    paths: vec![file.clone()],
+                    caret: Some(1),
+                    top_line: Some(3),
+                    tags: vec!["a".into()],
+                },
+                T0,
+            )
+            .unwrap();
+        let again = stash
+            .put_away(
+                &PutAway {
+                    paths: vec![file],
+                    caret: Some(9),
+                    top_line: None,
+                    tags: vec!["B".into()],
+                },
+                T0 + 60_000,
+            )
+            .unwrap();
+        assert!(!again[0].created, "a second put-away is a dedup hit");
+        let e = &again[0].entry;
+        assert_eq!(e.id, first[0].entry.id);
+        assert_eq!(e.stashed_at, Some(T0 + 60_000), "raised to the top");
+        assert_eq!(e.tags, vec!["a", "b"], "tags merged");
+        assert_eq!(
+            (e.caret, e.top_line),
+            (9, 3),
+            "caret updated, an absent topLine kept"
+        );
+        assert_eq!(e.created_at, T0);
+        assert_eq!(rows(&stash, "entries"), 1);
+    }
+
+    #[test]
+    fn two_spellings_of_one_file_are_one_entry() {
+        let (mut stash, root) = stash_in("alias");
+        let real = root.join("work/real");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("a.md"), "a").unwrap();
+        std::os::unix::fs::symlink(&real, root.join("work/link")).unwrap();
+        let via_link = root.join("work/link/a.md").to_string_lossy().into_owned();
+        let via_dots = root.join("work/real/./a.md").to_string_lossy().into_owned();
+        let first = stash.put_away(&put(vec![via_link]), T0).unwrap();
+        let second = stash.put_away(&put(vec![via_dots]), T0 + 1).unwrap();
+        assert!(first[0].created && !second[0].created);
+        assert_eq!(first[0].entry.id, second[0].entry.id);
+        assert_eq!(rows(&stash, "entries"), 1);
+    }
+
+    #[test]
+    fn putting_away_a_note_keeps_its_entry() {
+        let (mut stash, _root) = stash_in("put-note");
+        let note = stash
+            .create_note("# Идея", Some("couplet"), T0, MSK)
+            .unwrap();
+        let req = PutAway {
+            paths: vec![note.path.clone()],
+            caret: Some(4),
+            top_line: Some(1),
+            tags: vec![],
+        };
+        let r = stash.put_away(&req, T0 + 5).unwrap();
+        assert!(!r[0].created);
+        let e = &r[0].entry;
+        assert_eq!(
+            (e.id.as_str(), e.kind, e.repo.as_deref()),
+            (note.id.as_str(), StashKind::Note, Some("couplet"))
+        );
+        assert_eq!((e.stashed_at, e.caret), (Some(T0 + 5), 4));
+    }
+
+    #[test]
+    fn a_file_in_the_notes_folder_is_a_note() {
+        let (mut stash, _root) = stash_in("note-folder");
+        let path = stash.notes_dir().unwrap().join("hand-made.md");
+        fs::write(&path, "- [ ] позвонить\n").unwrap();
+        let r = stash
+            .put_away(&put(vec![path.to_string_lossy().into_owned()]), T0)
+            .unwrap();
+        assert_eq!(r[0].entry.kind, StashKind::Note);
+        assert_eq!(r[0].entry.title.as_deref(), Some("позвонить"));
+    }
+
+    #[test]
+    fn one_bad_path_rolls_the_whole_request_back() {
+        let (mut stash, root) = stash_in("rollback");
+        let good = user_file(&root, "good.md", "g");
+        let err = stash
+            .put_away(&put(vec![good.clone(), "relative.md".into()]), T0)
+            .unwrap_err();
+        assert!(err.contains("absolute"), "{err}");
+        let missing = root.join("work/missing.md").to_string_lossy().into_owned();
+        assert!(stash.put_away(&put(vec![good, missing]), T0).is_err());
+        assert_eq!(rows(&stash, "entries"), 0, "all or nothing");
+    }
+
+    #[test]
+    fn a_caret_with_several_paths_is_refused() {
+        let (mut stash, root) = stash_in("caret-many");
+        let a = user_file(&root, "a.md", "a");
+        let b = user_file(&root, "b.md", "b");
+        let req = PutAway {
+            paths: vec![a, b],
+            caret: Some(1),
+            ..PutAway::default()
+        };
+        assert!(stash.put_away(&req, T0).is_err());
+        assert_eq!(rows(&stash, "entries"), 0);
+    }
+
+    #[test]
+    fn a_directory_is_not_put_away() {
+        let (mut stash, root) = stash_in("dir");
+        let dir = root.join("work/folder");
+        fs::create_dir_all(&dir).unwrap();
+        let err = stash
+            .put_away(&put(vec![dir.to_string_lossy().into_owned()]), T0)
+            .unwrap_err();
+        assert!(err.contains("not a file"), "{err}");
+    }
+
+    #[test]
+    fn a_trashed_entry_refuses_the_whole_put_away() {
+        // Roadmap A8, stage 06 D18: a dedup hit on a trashed row must not stamp
+        // `stashed_at` on a row that stays deleted; the request is all or none.
+        let (mut stash, root) = stash_in("put-trashed");
+        let note = stash.create_note("# Удалённая", None, T0, MSK).unwrap();
+        set_columns(&stash, &note.id, &format!("deleted_at = {}", T0 + 1));
+        let good = user_file(&root, "good.md", "g");
+        let req = PutAway {
+            paths: vec![good, note.path.clone()],
+            tags: vec!["x".into()],
+            ..PutAway::default()
+        };
+        let err = stash.put_away(&req, T0 + 2).unwrap_err();
+        assert!(err.contains("in the trash"), "{err}");
+        let after = stash.get(&note.id).unwrap();
+        assert_eq!((after.stashed_at, after.deleted_at), (None, Some(T0 + 1)));
+        assert!(after.tags.is_empty());
+        assert_eq!(
+            rows(&stash, "entries"),
+            1,
+            "the good path was rolled back too"
+        );
+    }
+
+    #[test]
+    fn a_file_stores_its_repository_name_when_put_away() {
+        // Roadmap A3: stored at put-away time so SQL can filter by repo; NULL
+        // outside a repository (the file's own folder is not a repo tag).
+        let (mut stash, root) = stash_in("put-repo");
+        let repo = root.join("work/proj");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let inside = user_file(&root, "proj/docs/a.md", "a");
+        let loose = user_file(&root, "loose.md", "l");
+        let r = stash.put_away(&put(vec![inside, loose]), T0).unwrap();
+        assert_eq!(stored_repo(&stash, &r[0].entry.id).as_deref(), Some("proj"));
+        assert_eq!(stored_repo(&stash, &r[1].entry.id), None);
+        let e = &r[0].entry;
+        assert_eq!(
+            (e.repo.as_deref(), e.branch.as_deref()),
+            (Some("proj"), Some("main"))
+        );
+    }
+
+    #[test]
+    fn a_second_put_away_refreshes_a_files_repo_but_not_a_notes() {
+        let (mut stash, root) = stash_in("put-repo-again");
+        let file = user_file(&root, "later/a.md", "a");
+        let first = stash.put_away(&put(vec![file.clone()]), T0).unwrap();
+        assert_eq!(stored_repo(&stash, &first[0].entry.id), None);
+        fs::create_dir_all(root.join("work/later/.git")).unwrap();
+        fs::write(root.join("work/later/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        stash.put_away(&put(vec![file]), T0 + 1).unwrap();
+        assert_eq!(
+            stored_repo(&stash, &first[0].entry.id).as_deref(),
+            Some("later")
+        );
+
+        let note = stash
+            .create_note("# Заметка", Some("couplet"), T0, MSK)
+            .unwrap();
+        stash
+            .put_away(&put(vec![note.path.clone()]), T0 + 2)
+            .unwrap();
+        assert_eq!(stored_repo(&stash, &note.id).as_deref(), Some("couplet"));
+    }
+
+    #[test]
+    fn tags_have_one_spelling() {
+        assert_eq!(normalize_tag("#Infra").unwrap().as_deref(), Some("infra"));
+        assert_eq!(normalize_tag("  ИНФРА ").unwrap().as_deref(), Some("инфра"));
+        assert_eq!(normalize_tag("##x").unwrap().as_deref(), Some("x"));
+        assert_eq!(normalize_tag("#").unwrap(), None);
+        assert_eq!(normalize_tag("").unwrap(), None);
+        assert!(normalize_tag("two words").is_err());
+        assert!(normalize_tag(&"t".repeat(TAG_MAX_CHARS + 1)).is_err());
+        assert_eq!(
+            normalize_tags(&["A".into(), "#a".into(), "b".into()]).unwrap(),
+            vec!["a", "b"]
+        );
     }
 }
