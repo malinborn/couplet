@@ -349,11 +349,11 @@
   text-decoration-color: var(--color-task-done-line, var(--color-task-done, var(--color-strikethrough)));
 }
 
-/* …and in the aurora themes the grey is a gradient instead of a flat tone.
+/* …and in the aurora and autumn themes the grey is a gradient instead of a flat tone.
  *
  * Same mechanism as the headings above, including why it is one code path and
  * not a theme-scoped branch: `background-color` is the flat tone and stays
- * visible on its own, `--task-done-grad` is declared only by the aurora themes,
+ * visible on its own, `--task-done-grad` is declared only by aurora and autumn,
  * so a strict theme resolves `none` and renders exactly as it did before.
  *
  * What is NOT copied from the headings is their fixed `--heading-grad-span`.

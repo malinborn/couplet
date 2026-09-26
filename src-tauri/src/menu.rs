@@ -111,6 +111,9 @@ pub struct ViewToggleItems {
     /// View → Tabs → Compact (spec §6): one-line drawer cards.
     pub tabs_compact: CheckMenuItem<Wry>,
     pub compact_enabled: Toggle,
+    /// View → Tabs → Show Dates: the time on each drawer card. On by default.
+    pub tabs_dates: CheckMenuItem<Wry>,
+    pub dates_enabled: Toggle,
 }
 
 /// Live handles to the two "Reopen…" items, so they follow the closed stack
@@ -175,6 +178,11 @@ impl ViewToggleItems {
     pub fn sync_tabs_compact(&self, enabled: bool) {
         let _ = self.tabs_compact.set_checked(enabled);
         self.compact_enabled.set(enabled);
+    }
+
+    pub fn sync_tabs_dates(&self, enabled: bool) {
+        let _ = self.tabs_dates.set_checked(enabled);
+        self.dates_enabled.set(enabled);
     }
 }
 
@@ -312,6 +320,11 @@ pub fn build_menu(
 
     let tabs_compact =
         CheckMenuItemBuilder::with_id("toggle_tabs_compact", t("menu.view.tabs_compact")).build(app)?;
+    // Checked from the start: the frontend's default is on, and its start-up
+    // `sync_tabs_dates_menu` corrects it either way.
+    let tabs_dates = CheckMenuItemBuilder::with_id("toggle_tabs_dates", t("menu.view.tabs_dates"))
+        .checked(true)
+        .build(app)?;
 
     // Nine literal builder chains, not a loop: the accelerator mirror test
     // (`native-menu-accelerators.test.ts`) reads each item id as a string
@@ -326,6 +339,7 @@ pub fn build_menu(
                 .build(app)?,
         )
         .item(&tabs_compact)
+        .item(&tabs_dates)
         .separator()
         // ⌘⇧] / ⌘⇧[, as in Safari and Terminal. Not ⌃Tab: a Ctrl-only key
         // equivalent never fires from the keyboard while a window is key —
@@ -397,7 +411,7 @@ pub fn build_menu(
     // «Classic» здесь — то же имя, которым эта семья зовётся в коде с самого
     // начала (`ThemeFamily`), просто раньше в меню она была «Default».
     //
-    // Названия семей — Classic / Aurora / Blueprint / Phosphor / Paper / Ink —
+    // Названия семей — Classic / Aurora / Blueprint / Phosphor / Paper / Ink / Autumn —
     // имена собственные и не переводятся.
     let theme_family_classic = CheckMenuItemBuilder::with_id("theme_family_classic", "Classic").build(app)?;
     let theme_family_aurora = CheckMenuItemBuilder::with_id("theme_family_aurora", "Aurora").build(app)?;
@@ -407,6 +421,8 @@ pub fn build_menu(
         CheckMenuItemBuilder::with_id("theme_family_phosphor", "Phosphor").build(app)?;
     let theme_family_paper = CheckMenuItemBuilder::with_id("theme_family_paper", "Paper").build(app)?;
     let theme_family_ink = CheckMenuItemBuilder::with_id("theme_family_ink", "Ink").build(app)?;
+    let theme_family_autumn =
+        CheckMenuItemBuilder::with_id("theme_family_autumn", "Autumn").build(app)?;
     let theme_half_light =
         CheckMenuItemBuilder::with_id("theme_half_light", t("menu.theme.half_light")).build(app)?;
     let theme_half_dark =
@@ -421,6 +437,7 @@ pub fn build_menu(
         .item(&theme_family_phosphor)
         .item(&theme_family_paper)
         .item(&theme_family_ink)
+        .item(&theme_family_autumn)
         .separator()
         .item(&theme_half_light)
         .item(&theme_half_dark)
@@ -518,6 +535,19 @@ pub fn build_menu(
                 .accelerator("CmdOrCtrl+Shift+M")
                 .build(app)?,
         )
+        // Walk the places an AI left in the document — edits, comment
+        // threads, questions — in a cycle (`ai-mark-nav.ts`). Menu keys, not
+        // a CM6 keymap, so they also work with focus in a comment box.
+        .item(
+            &MenuItemBuilder::with_id("ai_next_mark", t("menu.ai.next_mark"))
+                .accelerator("CmdOrCtrl+Quote")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("ai_prev_mark", t("menu.ai.prev_mark"))
+                .accelerator("CmdOrCtrl+Shift+Quote")
+                .build(app)?,
+        )
         // Nothing in the app can make an agent watch for comments — that has
         // to happen in the agent's own session, which the editor cannot reach
         // into. So the discoverable surface is a command the user hands over,
@@ -553,6 +583,7 @@ pub fn build_menu(
             ("phosphor", theme_family_phosphor),
             ("paper", theme_family_paper),
             ("ink", theme_family_ink),
+            ("autumn", theme_family_autumn),
         ],
         half_light: theme_half_light,
         half_dark: theme_half_dark,
@@ -571,6 +602,13 @@ pub fn build_menu(
         ocd_enabled: Toggle::default(),
         tabs_compact,
         compact_enabled: Toggle::default(),
+        tabs_dates,
+        // Agrees with the item's initial check until the frontend syncs it.
+        dates_enabled: {
+            let on = Toggle::default();
+            on.set(true);
+            on
+        },
     };
 
     let session_items = SessionMenuItems {

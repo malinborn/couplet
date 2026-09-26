@@ -44,6 +44,7 @@
   "menu.view.select_tab": "标签页 {n}",
   "menu.view.show_tabs": "显示标签页",
   "menu.view.tabs_compact": "紧凑",
+  "menu.view.tabs_dates": "显示日期",
 
   "menu.theme.title": "主题",
   "menu.theme.half_light": "浅色",
@@ -54,6 +55,8 @@
   "menu.ai.title": "AI",
   "menu.ai.connect": "教你的 AI 使用 couplet",
   "menu.ai.comment": "评论所选内容",
+  "menu.ai.next_mark": "下一个 AI 标记",
+  "menu.ai.prev_mark": "上一个 AI 标记",
   "menu.ai.watch_command": "将代理连接到文档问题",
   "menu.ai.playbook": "AI Playbook",
 

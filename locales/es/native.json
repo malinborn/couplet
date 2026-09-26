@@ -44,6 +44,7 @@
   "menu.view.select_tab": "Pestaña {n}",
   "menu.view.show_tabs": "Mostrar pestañas",
   "menu.view.tabs_compact": "Compacto",
+  "menu.view.tabs_dates": "Mostrar fechas",
 
   "menu.theme.title": "Tema",
   "menu.theme.half_light": "Claro",
@@ -54,6 +55,8 @@
   "menu.ai.title": "IA",
   "menu.ai.connect": "Enseña couplet a tu IA",
   "menu.ai.comment": "Comentar la selección",
+  "menu.ai.next_mark": "Siguiente marca de IA",
+  "menu.ai.prev_mark": "Marca de IA anterior",
   "menu.ai.watch_command": "Conectar agente a preguntas del documento",
   "menu.ai.playbook": "Manual de IA",
 

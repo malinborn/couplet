@@ -44,6 +44,7 @@
   "menu.view.select_tab": "Вкладка {n}",
   "menu.view.show_tabs": "Показать вкладки",
   "menu.view.tabs_compact": "Компактно",
+  "menu.view.tabs_dates": "Показывать даты",
 
   "menu.theme.title": "Тема",
   "menu.theme.half_light": "Светлая",
@@ -54,6 +55,8 @@
   "menu.ai.title": "AI",
   "menu.ai.connect": "Научите свой AI работать с couplet",
   "menu.ai.comment": "Комментировать выделение",
+  "menu.ai.next_mark": "Следующая метка ИИ",
+  "menu.ai.prev_mark": "Предыдущая метка ИИ",
   "menu.ai.watch_command": "Подключить агента к вопросам в документе",
   "menu.ai.playbook": "AI Playbook",
 

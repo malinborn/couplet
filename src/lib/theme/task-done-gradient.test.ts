@@ -11,11 +11,28 @@ import { fileURLToPath } from 'node:url';
  * any rendering test would catch — a wrong gradient still renders.
  */
 
-const THEMES = ['light', 'dark', 'aurora-light', 'aurora-dark'] as const;
-const AURORA = ['aurora-light', 'aurora-dark'] as const;
+const THEMES = [
+  'light',
+  'dark',
+  'aurora-light',
+  'aurora-dark',
+  'autumn-light',
+  'autumn-dark',
+] as const;
+const GRADIENT = ['aurora-light', 'aurora-dark', 'autumn-light', 'autumn-dark'] as const;
+
+/** Families that keep both halves in one `<family>.css`, one block per half. */
+const SHARED_FILE = new Set(['autumn']);
 
 function css(theme: string): string {
-  return readFileSync(fileURLToPath(new URL(`./${theme}.css`, import.meta.url)), 'utf8');
+  const family = theme.replace(/-(light|dark)$/, '');
+  if (!SHARED_FILE.has(family)) {
+    return readFileSync(fileURLToPath(new URL(`./${theme}.css`, import.meta.url)), 'utf8');
+  }
+  const file = readFileSync(fileURLToPath(new URL(`./${family}.css`, import.meta.url)), 'utf8');
+  const block = file.match(new RegExp(`\\[data-theme='${theme}'\\]\\s*\\{([^}]*)\\}`));
+  if (!block) throw new Error(`${family}.css has no block for ${theme}`);
+  return block[1];
 }
 
 function variable(theme: string, name: string): string | null {
@@ -42,7 +59,7 @@ describe('the ticked-task gradient', () => {
   // The flat tone is `--color-task-done` where a theme separates a done task
   // from a correction, and `--color-strikethrough` where it does not — the
   // same fallback chain `editor.css` resolves.
-  it.each(AURORA)('%s ends its gradient on the flat tone', (theme) => {
+  it.each(GRADIENT)('%s ends its gradient on the flat tone', (theme) => {
     const grad = variable(theme, 'task-done-grad');
     expect(grad, `${theme} declares --task-done-grad`).not.toBeNull();
     const flat = variable(theme, 'color-task-done') ?? variable(theme, 'color-strikethrough');
@@ -51,7 +68,7 @@ describe('the ticked-task gradient', () => {
 
   // Declaring it in a strict theme is how it would get a gradient by accident:
   // the CSS has no theme selector, it just resolves the var.
-  it('is an aurora-only flourish', () => {
+  it('is never declared by a strict theme', () => {
     expect(variable('light', 'task-done-grad')).toBeNull();
     expect(variable('dark', 'task-done-grad')).toBeNull();
   });

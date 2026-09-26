@@ -4,9 +4,9 @@
   import type { EditorHandle } from './lib/editor/Editor.svelte';
   import type { ViewUpdate } from '@codemirror/view';
   import { isHumanEdit } from './lib/editor/human-edit';
-  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createTabsCompactStore, createTransientPolicyStore, createFileState, createRecentFilesStore, setProductName, setWindowNumber, getWindowNumber } from './lib/stores.svelte';
+  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createTabsCompactStore, createTabsDatesStore, createTransientPolicyStore, createFileState, createRecentFilesStore, setProductName, setWindowNumber, getWindowNumber } from './lib/stores.svelte';
   import { getName } from '@tauri-apps/api/app';
-  import { readDocument, writeDocument, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncDockIcon, syncEngineMenu, syncOcdAlignmentMenu, broadcastTheme, syncTabsCompactMenu, syncTransientMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type TabClaim, type WindowInit } from './lib/tauri/commands';
+  import { readDocument, writeDocument, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncDockIcon, syncEngineMenu, syncOcdAlignmentMenu, broadcastTheme, syncTabsCompactMenu, syncTabsDatesMenu, syncTransientMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type TabClaim, type WindowInit } from './lib/tauri/commands';
   import { concreteTheme, halfOf, type ThemeFamily } from './lib/theme-resolve';
   import type { ThemeControl } from './lib/editor/slash-theme';
   import {
@@ -71,6 +71,7 @@
     aiHighlightRanges,
   } from './lib/editor/ai-highlight';
   import { activeAskIds, addAiAsk, removeAiAsk } from './lib/editor/ai-ask';
+  import { gotoAiMark } from './lib/editor/ai-mark-nav';
   import type { TabOwner } from './lib/switch-document';
   import { activeCellEditSession } from './lib/editor/cell-edit-session';
   import { closeSearchPanel } from '@codemirror/search';
@@ -117,6 +118,7 @@
   import './lib/theme/phosphor.css';
   import './lib/theme/paper.css';
   import './lib/theme/ink.css';
+  import './lib/theme/autumn.css';
   import './styles/global.css';
   import './styles/editor.css';
   import './styles/tabs.css';
@@ -176,6 +178,7 @@
   const lineGlow = createLineGlowStore();
   const ocdAlignment = createOcdAlignmentStore();
   const tabsCompact = createTabsCompactStore();
+  const tabsDates = createTabsDatesStore();
   const transientPolicy = createTransientPolicyStore();
   const fileState = createFileState();
   const recentFiles = createRecentFilesStore();
@@ -338,6 +341,8 @@
   function handleChange(_doc: string, update: ViewUpdate) {
     fileState.isDirty = true;
     autoSave.schedule();
+    // The drawer card's time: any change to the text counts, not only a human's.
+    tabs.liveDocChanged();
     // Editing a quick look is working in it: «Оставить» (spec §7).
     if (isHumanEdit(update)) tabs.humanEdited();
   }
@@ -797,6 +802,8 @@
     'find',
     'recent_files',
     'ai_comment',
+    'ai_next_mark',
+    'ai_prev_mark',
     'select_all',
     'open',
     'save_as',
@@ -2139,6 +2146,12 @@
         case 'toggle_tabs_compact:off':
           tabsCompact.set(false);
           break;
+        case 'toggle_tabs_dates:on':
+          tabsDates.set(true);
+          break;
+        case 'toggle_tabs_dates:off':
+          tabsDates.set(false);
+          break;
         case 'transient_ignored_keep':
           transientPolicy.set('keep');
           break;
@@ -2210,6 +2223,9 @@
         case 'theme_family_ink':
           theme.setFamily('ink');
           break;
+        case 'theme_family_autumn':
+          theme.setFamily('autumn');
+          break;
         case 'theme_half_light':
           theme.setHalf('light');
           break;
@@ -2227,6 +2243,10 @@
           break;
         case 'ai_comment':
           createCommentFromSelection();
+          break;
+        case 'ai_next_mark':
+        case 'ai_prev_mark':
+          if (editorHandle?.view) gotoAiMark(editorHandle.view, action === 'ai_next_mark' ? 1 : -1);
           break;
         case 'ai_watch_command':
           copyWatchCommand();
@@ -2275,6 +2295,9 @@
       }
       if (action.startsWith('toggle_tabs_compact')) {
         syncTabsCompactMenu(tabsCompact.enabled);
+      }
+      if (action.startsWith('toggle_tabs_dates')) {
+        syncTabsDatesMenu(tabsDates.enabled);
       }
       // macOS flips the clicked radio item by itself, so the pair is always
       // re-set — the click that chose the current value included.
@@ -2472,6 +2495,9 @@
     syncTabsCompactMenu(tabsCompact.enabled);
   });
   $effect(() => {
+    syncTabsDatesMenu(tabsDates.enabled);
+  });
+  $effect(() => {
     syncTransientMenu(transientPolicy.value);
   });
 
@@ -2615,6 +2641,7 @@
   list={tabList}
   windowNumber={getWindowNumber()}
   compact={tabsCompact.enabled}
+  showTime={tabsDates.enabled}
   source={drawerSource}
   onactivate={(tabId) => void tabs.activate(tabId)}
   onclose={(tabIds) => void tabs.closeTabs(tabIds)}

@@ -1,0 +1,145 @@
+/* «Autumn» — тёплая осень: корица, тыква, красный клён и фиолетовый закат.
+ *
+ * Словарь один на обе половины, меняется только время суток.
+ *   корица  — заголовки и жирный: то, на чём держится текст;
+ *   тыква   — всё, что меняют руками: каретка, чекбоксы, маркеры;
+ *            (днём чекбоксы и маркеры — мягкий фиолетовый вечер #9b6b98);
+ *   клён    — цитаты и красная часть заката;
+ *   небо    — ссылки: синий отсвет, единственный холодный цвет в палитре;
+ *   вечер   — тёплый фиолетовый, текст днём и сам лист вечером.
+ *
+ * Светлая — осенний день: лист цвета молока с корицей, текст тёплым
+ * фиолетовым. Заголовки — листопад: у каждого уровня свой набор листьев.
+ * Тыква #cc6218 на этом фоне даёт 3.2:1 — ровно для не-текстовых меток,
+ * поэтому жирный и заголовки идут корицей (6:1), а не тыквой.
+ *
+ * Тёмная — фиолетовый вечер: лист — сам закатный фиолетовый, текст кремовый,
+ * заголовки горят закатом (тыква → клён → роза), ссылки — небо над ним.
+ */
+
+:root[data-theme='autumn-light'] {
+  --bg-base: #f4e5d1;
+  --bg-surface: #ebd8bf;
+  --text-primary: #3b1d36;
+  --text-subtle: #6b4a5e;
+  --text-muted: #9c8580;
+  --highlight: #edd3b8;
+  --color-heading: #8a3f22;
+  --color-bold: #8a3f22;
+  --color-italic: #6b3a66;
+  --color-link: #3b5c96;
+  --color-code-bg: #ebd8bf;
+  --color-code-text: #3b1d36;
+  --color-selection: #f3c8a2;
+  --color-border: #e0c8a9;
+  --color-cursor: #cc6218;
+  --color-caret-top: #cc6218;
+  --color-caret-bottom: #b3302a;
+  --color-line-highlight: #f0ddc6;
+  --color-strikethrough: #9c8580;
+  --color-task-done: #9c8580;
+  --color-task-done-line: #9b6b98;
+  /* Выполненное — листопад: клён, тыква, охра, вечер. Последний stop обязан
+   * совпадать с --color-task-done (см. task-done-gradient.test.ts). */
+  --task-done-grad: linear-gradient(100deg, #b3302a 0%, #cc6218 26%, #a8761a 50%, #9b6b98 76%, #9c8580 100%);
+  --color-blockquote-border: #b3302a;
+  --color-hr: #e0c8a9;
+  --color-list-marker: #9b6b98;
+  --color-checkbox: #9b6b98;
+  --color-table-border: #e0c8a9;
+  --color-table-even-bg: #f0dec8;
+  /* Шапка таблицы — полоса заката: тыква, клён, вечер. */
+  --table-header-grad: linear-gradient(135deg, #f3c9a2 0%, #efbfae 50%, #dcc1d6 100%);
+  --table-header-text: #3b1d36;
+  --color-glow: 204, 98, 24;
+  --ai-edit-bg: rgba(204, 98, 24, 0.13);
+  --ai-edit-shimmer: rgba(204, 98, 24, 0.28);
+  --ai-ask-bg: rgba(59, 29, 54, 0.06);
+  --ai-ask-border: rgba(59, 29, 54, 0.22);
+  --ai-ask-chip-bg: #f8eddf;
+  --ai-ask-chip-hover-bg: rgba(204, 98, 24, 0.15);
+  --ai-ask-accent: #3b1d36;
+  --ai-ask-accent-text: #f4e5d1;
+  --bg-overlay: rgba(244, 229, 209, 0.75);
+  --border: #e0c8a9;
+  --heading-tone-1: #8a3f22;
+  --heading-tone-2: #86402a;
+  --heading-tone-3: #7f4230;
+  --heading-tone-4: #764437;
+  --heading-tone-5: #6c463e;
+  --heading-tone-6: #624845;
+  /* Заголовки — листопад, но спокойный: внутри уровня цвет переходит в
+   * соседний (клён → тыква → охра), а разнообразие даёт то, что у каждого
+   * уровня своя гамма. Длинный проход (28em) — плавные переходы; дальше строка
+   * оседает в свой тон, он же последний stop. Все stop'ы ≥ 3.6:1 на фоне. */
+  --heading-grad-span: 28em;
+  --heading-grad-1: linear-gradient(100deg, #b3302a 0%, #c05a14 30%, #9c6e12 60%, #8a3f22 100%);
+  --heading-grad-2: linear-gradient(100deg, #9c6e12 0%, #6a6b1c 45%, #86402a 100%);
+  --heading-grad-3: linear-gradient(100deg, #6b3a66 0%, #7a2436 40%, #b3302a 70%, #7f4230 100%);
+  --heading-grad-4: linear-gradient(100deg, #a6441c 0%, #9c6e12 50%, #764437 100%);
+  --heading-grad-5: linear-gradient(100deg, #5c6a2a 0%, #9c6e12 50%, #6c463e 100%);
+  --heading-grad-6: linear-gradient(100deg, #8e5f8c 0%, #624845 100%);
+  --font-text: 'Inter', -apple-system, system-ui, sans-serif;
+  --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+}
+
+:root[data-theme='autumn-dark'] {
+  --bg-base: #2c1934;
+  --bg-surface: #382040;
+  --text-primary: #f2e1cd;
+  --text-subtle: #c7aab0;
+  --text-muted: #8f7688;
+  --highlight: #4a2a50;
+  --color-heading: #ffa45c;
+  --color-bold: #ffa45c;
+  --color-italic: #dcb6d8;
+  --color-link: #a3bdec;
+  --color-code-bg: #382040;
+  --color-code-text: #f2e1cd;
+  --color-selection: #5c2e4a;
+  --color-border: #472a4e;
+  --color-cursor: #ffa45c;
+  --color-caret-top: #ffa45c;
+  --color-caret-bottom: #ec6a55;
+  --color-line-highlight: #321d3a;
+  --color-strikethrough: #8f7688;
+  --color-task-done: #8f7688;
+  --color-task-done-line: #ffa45c;
+  --task-done-grad: linear-gradient(100deg, #ec6a55 0%, #ffa45c 26%, #e6bd62 50%, #dcb6d8 76%, #8f7688 100%);
+  --color-blockquote-border: #ec6a55;
+  --color-hr: #472a4e;
+  --color-list-marker: #ffa45c;
+  --color-checkbox: #ffa45c;
+  --color-table-border: #472a4e;
+  --color-table-even-bg: #321d3a;
+  /* Клён уходит в вечер, вечер — в синеву неба. */
+  --table-header-grad: linear-gradient(135deg, #5e2a3a 0%, #4a2548 50%, #33304f 100%);
+  --table-header-text: #f2e1cd;
+  --color-glow: 255, 164, 92;
+  --ai-edit-bg: rgba(255, 164, 92, 0.15);
+  --ai-edit-shimmer: rgba(255, 164, 92, 0.32);
+  --ai-ask-bg: rgba(163, 189, 236, 0.08);
+  --ai-ask-border: rgba(163, 189, 236, 0.26);
+  --ai-ask-chip-bg: rgba(242, 225, 205, 0.05);
+  --ai-ask-chip-hover-bg: rgba(255, 164, 92, 0.18);
+  --ai-ask-accent: #ffa45c;
+  --ai-ask-accent-text: #2c1934;
+  --bg-overlay: rgba(44, 25, 52, 0.75);
+  --border: #472a4e;
+  --heading-tone-1: #ffa45c;
+  --heading-tone-2: #f99a5c;
+  --heading-tone-3: #f0905e;
+  --heading-tone-4: #e28a66;
+  --heading-tone-5: #d2866f;
+  --heading-tone-6: #c08378;
+  /* Вечерний листопад: те же листья, подсвеченные закатом. */
+  --heading-grad-span: 28em;
+  --heading-grad-1: linear-gradient(100deg, #ffc38a 0%, #ec6a55 45%, #ffa45c 100%);
+  --heading-grad-2: linear-gradient(100deg, #e6bd62 0%, #c2c46a 40%, #f99a5c 100%);
+  --heading-grad-3: linear-gradient(100deg, #c59ad8 0%, #e77a8a 45%, #f0905e 100%);
+  --heading-grad-4: linear-gradient(100deg, #ec6a55 0%, #e6bd62 50%, #e28a66 100%);
+  --heading-grad-5: linear-gradient(100deg, #a9bb72 0%, #e6bd62 50%, #d2866f 100%);
+  --heading-grad-6: linear-gradient(100deg, #dcb6d8 0%, #c08378 100%);
+  --font-text: 'Inter', -apple-system, system-ui, sans-serif;
+  --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+}

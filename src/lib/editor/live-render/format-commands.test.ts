@@ -227,12 +227,12 @@ describe('toggleInlineFormat — nested formatting', () => {
 });
 
 describe('toggleInlineFormat — selection partially overlapping a node', () => {
-  it('Strong_SelectionStartsInsideExistingBoldEndsOutside_WrapsRawTextVerbatim', () => {
-    // Documented decision (see findEnclosingNode's comment in
-    // format-commands.ts): when the selection is not *entirely* contained
-    // in a single node of the target kind, we don't try to detect or
-    // repair the partial overlap — we treat it as "add" and wrap exactly
-    // what's selected, existing markers and all.
+  it('Strong_SelectionStartsInsideExistingBoldEndsOutside_MergesWithIt', () => {
+    // When the selection is not *entirely* contained in a single node of the
+    // target kind it takes the "add" path — but it no longer wraps the raw
+    // selected text, markers and all (that gave the crossing `**bo**ld** re**st`).
+    // It merges with the overlapping node of the same kind instead; the rest
+    // of the crossing rules live in format-commands-crossing.test.ts.
     //
     // "**bold** rest" — StrongEmphasis is [0,8) ("**bold**"). Selecting
     // [4,11) starts inside the bold text ("l" of "bold") and ends past the
@@ -244,9 +244,8 @@ describe('toggleInlineFormat — selection partially overlapping a node', () => 
     toggleInlineFormat(view, 'strong');
     const result = applyDispatch(view, dispatch);
 
-    // raw selected text "ld** re" gets wrapped verbatim in a fresh "**...**".
-    expect(result.doc.toString()).toBe('**bo**ld** re**st');
-    expect(result.sliceDoc(result.selection.main.from, result.selection.main.to)).toBe('ld** re');
+    expect(result.doc.toString()).toBe('**bold re**st');
+    expect(result.sliceDoc(result.selection.main.from, result.selection.main.to)).toBe('ld re');
   });
 });
 

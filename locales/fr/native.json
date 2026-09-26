@@ -44,6 +44,7 @@
   "menu.view.select_tab": "Onglet {n}",
   "menu.view.show_tabs": "Afficher les onglets",
   "menu.view.tabs_compact": "Compact",
+  "menu.view.tabs_dates": "Afficher les dates",
 
   "menu.theme.title": "Thème",
   "menu.theme.half_light": "Clair",
@@ -54,6 +55,8 @@
   "menu.ai.title": "IA",
   "menu.ai.connect": "Apprends couplet à ton IA",
   "menu.ai.comment": "Commenter la sélection",
+  "menu.ai.next_mark": "Marque IA suivante",
+  "menu.ai.prev_mark": "Marque IA précédente",
   "menu.ai.watch_command": "Connecter l'agent aux questions du document",
   "menu.ai.playbook": "Playbook IA",
 

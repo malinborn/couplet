@@ -57,8 +57,8 @@ export function activeLanguage(): SupportedLanguage {
   return currentLanguage;
 }
 
-function lookup(key: string): string | undefined {
-  return catalogs.get(currentLanguage)?.[key] ?? catalogs.get(FALLBACK_LANGUAGE)?.[key];
+function lookup(key: string, language: SupportedLanguage = currentLanguage): string | undefined {
+  return catalogs.get(language)?.[key] ?? catalogs.get(FALLBACK_LANGUAGE)?.[key];
 }
 
 function interpolate(template: string, params?: Record<string, unknown>): string {
@@ -78,6 +78,15 @@ function interpolate(template: string, params?: Record<string, unknown>): string
  */
 export function t(key: string, params?: Record<string, unknown>): string {
   return interpolate(lookup(key) ?? key, params);
+}
+
+/**
+ * `t` in an explicit language rather than the installed one — for pure
+ * formatters whose tests pin a language (`tabs/relative-time.ts`) without
+ * touching the process-wide catalog.
+ */
+export function tIn(language: SupportedLanguage, key: string, params?: Record<string, unknown>): string {
+  return interpolate(lookup(key, language) ?? key, params);
 }
 
 type PluralCategory = 'one' | 'few' | 'many' | 'other';
@@ -117,8 +126,18 @@ export function pluralCategory(language: SupportedLanguage, n: number): PluralCa
  * locale has exactly `en`'s key set) does not have to special-case plurals.
  */
 export function plural(count: number, key: string, params?: Record<string, unknown>): string {
-  const category = pluralCategory(currentLanguage, count);
-  return t(`${key}.${category}`, { count, ...params });
+  return pluralIn(currentLanguage, count, key, params);
+}
+
+/** `plural` in an explicit language — see `tIn`. */
+export function pluralIn(
+  language: SupportedLanguage,
+  count: number,
+  key: string,
+  params?: Record<string, unknown>
+): string {
+  const category = pluralCategory(language, count);
+  return tIn(language, `${key}.${category}`, { count, ...params });
 }
 
 /**

@@ -482,6 +482,28 @@ Note that Lezer names the markers of *both* `Emphasis` and `StrongEmphasis`
 `EmphasisMark` — the difference is the mark's text length. Match on the node
 name, not the mark name.
 
+### A selection that crosses a span is split, never wrapped raw
+
+The visible selection "слово и нажми" in `**выдели слово** и нажми` is
+`слово** и нажми` in source — it carries the bold's hidden closing `**`.
+Wrapping that raw gave crossing markup, and the repair filter, seeing a change
+whose range covers exactly one marker of the bold pair, correctly read a torn
+pair and wrote `**` back: `**выдели ***слово** и нажми*`, raw asterisks on
+screen. So `addFormat` (`format-commands.ts`) splits the wrap at the hidden
+markup of every span that *crosses* the selection (a link's `[` and `](url)`
+included — Lezer resolves brackets before emphasis, so `*a [b* c]` has no
+`Emphasis` even when `[b* c]` is not a link), snaps an edge out of inline code,
+and merges with overlapping spans of the same kind:
+`**выдели *слово*** *и нажми*`. A span wholly inside the selection is left
+nested, not split.
+
+Two things about the emitted changes are load-bearing. New markers are **pure
+insertions**, which `repairChange` never touches. And an absorbed same-kind span
+is rewritten as **one** change from its opening marker to its closing one:
+`repairChangeSet` judges each change of a transaction separately, so the two
+markers deleted as two changes read as two torn pairs and both come straight
+back.
+
 ### The toolbar and the inspector need opposite focus rules
 
 The toolbar's buttons use `mousedown` with `preventDefault()`, so DOM focus

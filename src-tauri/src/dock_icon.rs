@@ -36,6 +36,8 @@ const VARIANTS: &[(&str, &[u8])] = &[
     ("paper-dark", include_bytes!("../dock-icons/paper-dark.png")),
     ("ink-light", include_bytes!("../dock-icons/ink-light.png")),
     ("ink-dark", include_bytes!("../dock-icons/ink-dark.png")),
+    ("autumn-light", include_bytes!("../dock-icons/autumn-light.png")),
+    ("autumn-dark", include_bytes!("../dock-icons/autumn-dark.png")),
 ];
 
 /// Иконка бандла — для темы, у которой своего варианта нет.
