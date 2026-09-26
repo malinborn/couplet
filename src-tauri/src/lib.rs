@@ -408,18 +408,32 @@ pub fn run() {
             // Crash-safety net. The authoritative save happens on the way out
             // (see `save_session_on_exit`); this only catches a hard kill.
             let ticker_handle = app.handle().clone();
-            std::thread::spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_millis(1000));
-                let state = ticker_handle.state::<SessionState>();
-                if state.is_quitting() {
-                    return;
-                }
-                if state.take_dirty() {
-                    let snapshot = state.snapshot(session::now_secs());
-                    let _ = session::write_session(&snapshot);
-                    // Must include the pending restore's buffers, not just the
-                    // live ones — see `referenced_untitled`.
-                    session::prune_untitled_files(&state.referenced_untitled());
+            std::thread::spawn(move || {
+                // `None`: purge on the first tick — an app that ran for weeks
+                // empties the trash when it is next launched.
+                let mut last_purge: Option<std::time::Instant> = None;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(1000));
+                    let state = ticker_handle.state::<SessionState>();
+                    if state.is_quitting() {
+                        return;
+                    }
+                    if state.take_dirty() {
+                        let snapshot = state.snapshot(session::now_secs());
+                        let _ = session::write_session(&snapshot);
+                        // Must include the pending restore's buffers, not just the
+                        // live ones — see `referenced_untitled`. What it leaves
+                        // out goes to `session/.trash/`, never away.
+                        session::prune_untitled_files(&state.referenced_untitled());
+                    }
+                    let purge_due = match last_purge {
+                        None => true,
+                        Some(at) => at.elapsed() >= session::DRAFTS_TRASH_PURGE_EVERY,
+                    };
+                    if purge_due {
+                        session::purge_drafts_trash(session::now_secs());
+                        last_purge = Some(std::time::Instant::now());
+                    }
                 }
             });
 

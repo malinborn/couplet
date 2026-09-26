@@ -268,7 +268,7 @@ pub fn untitled_file_name(tab_id: &str) -> String {
 }
 
 /// Whether `name` is an untitled sidecar of this build or an older one — what
-/// `prune_untitled_files` may delete when nothing refers to it. Its temp file
+/// `prune_untitled_files` may move to the trash when nothing refers to it. Its temp file
 /// (`<name>.tmp`) is not.
 pub fn is_untitled_sidecar(name: &str) -> bool {
     (name.starts_with(DRAFT_PREFIX) || name.starts_with(LEGACY_UNTITLED_PREFIX)) && name.ends_with(".md")
@@ -755,6 +755,18 @@ fn trash_path_for(trash: &Path, stem: &str, now_secs: u64) -> Result<PathBuf, St
     Err(format!("no free trash name for {stem}"))
 }
 
+/// When a trash file was thrown away, read back from its name. `None` for
+/// any name this module did not make — the purge never touches those.
+fn trashed_at(name: &str) -> Option<u64> {
+    let rest = name.strip_suffix(".md")?;
+    let at = rest.rfind(TRASHED_MARK)?;
+    let secs = rest[at + TRASHED_MARK.len()..].split('-').next()?;
+    if secs.is_empty() || !secs.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    secs.parse().ok()
+}
+
 /// Move one sidecar into `trash` by `rename`: same volume, so there is never
 /// a moment without a copy. On any failure the file stays where it was.
 fn move_to_trash(src: &Path, trash: &Path, now_secs: u64) -> Result<PathBuf, String> {
@@ -791,6 +803,42 @@ fn prune_untitled_files_in(dir: &Path, referenced: &HashSet<String>, now_secs: u
         }
         if let Err(e) = move_to_trash(&entry.path(), &trash, now_secs) {
             eprintln!("session: kept an unreferenced draft in place: {e}");
+        }
+    }
+}
+
+/// `<app data dir>/session/.trash/` — created on demand by whoever puts
+/// something there.
+pub fn drafts_trash_dir() -> Result<PathBuf, String> {
+    Ok(session_dir()?.join(DRAFTS_TRASH_DIR))
+}
+
+/// How long a draft stays in `session/.trash/`, counted from the stamp in its name.
+pub const DRAFTS_TRASH_KEEP_SECS: u64 = 30 * 24 * 60 * 60;
+
+/// How often a running app purges the trash; it also purges on its first tick.
+pub const DRAFTS_TRASH_PURGE_EVERY: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+
+/// Delete trash files thrown away more than `DRAFTS_TRASH_KEEP_SECS` ago —
+/// the end of the retention the trash promised, the only deletion of user
+/// text there is.
+pub fn purge_drafts_trash(now_secs: u64) {
+    let Ok(trash) = drafts_trash_dir() else { return };
+    purge_trash_in(&trash, now_secs);
+}
+
+/// `purge_drafts_trash` in `trash`. Only regular files whose name carries a
+/// stamp this module wrote; anything else is left alone.
+fn purge_trash_in(trash: &Path, now_secs: u64) {
+    let Ok(entries) = fs::read_dir(trash) else { return };
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|t| t.is_file()) {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(at) = name.to_str().and_then(trashed_at) else { continue };
+        if now_secs.saturating_sub(at) > DRAFTS_TRASH_KEEP_SECS {
+            let _ = fs::remove_file(entry.path());
         }
     }
 }
@@ -1451,6 +1499,44 @@ mod tests {
         assert_eq!(std::fs::read_to_string(trash.join("draft-b.trashed-1000.md")).unwrap(), "first");
         assert_eq!(std::fs::read_to_string(trash.join("draft-b.trashed-1000-1.md")).unwrap(), "second");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn trashed_at_reads_the_stamp_back_and_refuses_foreign_names() {
+        assert_eq!(trashed_at("draft-b.trashed-1000.md"), Some(1000));
+        assert_eq!(trashed_at("draft-b.trashed-1000-3.md"), Some(1000));
+        assert_eq!(trashed_at("closed-1-2-3.trashed-77.md"), Some(77));
+        for foreign in ["notes.md", "draft-b.md", "draft-b.trashed-.md", "draft-b.trashed-12x.md", ".closed-1-2-3.tmp"] {
+            assert_eq!(trashed_at(foreign), None, "{foreign}");
+        }
+    }
+
+    #[test]
+    fn the_purge_removes_only_trash_older_than_thirty_days() {
+        let trash = scratch_dir("purge");
+        let now = 100 * DRAFTS_TRASH_KEEP_SECS;
+        let old = format!("draft-old.trashed-{}.md", now - DRAFTS_TRASH_KEEP_SECS - 1);
+        let edge = format!("draft-edge.trashed-{}.md", now - DRAFTS_TRASH_KEEP_SECS);
+        let fresh = format!("closed-1-2-3.trashed-{}.md", now - 10);
+        for name in [old.as_str(), edge.as_str(), fresh.as_str(), "notes.md", ".closed-9.tmp"] {
+            std::fs::write(trash.join(name), "x").unwrap();
+        }
+        std::fs::create_dir_all(trash.join("sub.trashed-1.md")).unwrap();
+
+        purge_trash_in(&trash, now);
+
+        let mut expected = vec![".closed-9.tmp".to_string(), fresh, edge, "notes.md".to_string()];
+        expected.sort();
+        assert_eq!(files_in(&trash), expected, "only the file past 30 days goes");
+        assert!(trash.join("sub.trashed-1.md").is_dir(), "a directory is never removed");
+        let _ = std::fs::remove_dir_all(&trash);
+    }
+
+    #[test]
+    fn purging_a_trash_that_does_not_exist_is_a_noop() {
+        let missing = std::env::temp_dir().join(format!("couplet-no-trash-{}", new_tab_id()));
+        purge_trash_in(&missing, u64::MAX);
+        assert!(!missing.exists());
     }
 
     #[test]
