@@ -11,6 +11,8 @@ set -uo pipefail
 
 APP="${1:?usage: scripts/verify-draft-safety.sh /path/to/couplet-safety.app}"
 ID="pro.couplet.safety"
+NAME="couplet-safety"
+SEEDED_AT=1790000000
 DATA="$HOME/Library/Application Support/couplet-safety"
 SOCK="/tmp/pro_couplet_safety_si.sock"
 LOG="${TMPDIR:-/tmp}/couplet-safety.log"
@@ -18,9 +20,18 @@ TAB="1790000000000-1-0"
 DRAFT="draft-$TAB.md"
 TEXT="- [ ] PLAN: survive every launch"
 
-bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist" 2>/dev/null)
+PLIST="$APP/Contents/Info.plist"
+bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST" 2>/dev/null)
 if [ "$bundle_id" != "$ID" ]; then
   echo "refusing: $APP is '$bundle_id', not $ID"
+  exit 2
+fi
+# The data dir and the command socket are keyed by productName, not by the
+# identifier, and Tauri writes productName into CFBundleName. A bundle with
+# the private id but the release name would share the owner's data dir.
+bundle_name=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$PLIST" 2>/dev/null)
+if [ "$bundle_name" != "$NAME" ]; then
+  echo "refusing: $APP is named '$bundle_name', not $NAME"
   exit 2
 fi
 BIN="$APP/Contents/MacOS/couplet"
@@ -38,7 +49,7 @@ rm -rf "$DATA"
 mkdir -p "$DATA/session"
 printf '%s' "$TEXT" > "$DATA/session/$DRAFT"
 cat > "$DATA/session-v2.json" <<JSON
-{"version":2,"savedAt":1790000000,"windows":[{"number":1,"project":null,"x":120,"y":120,"width":900,"height":700,"tabs":[{"tabId":"$TAB","path":null,"untitled":"$DRAFT","cursor":0,"topLine":1}],"activeTab":"$TAB"}]}
+{"version":2,"savedAt":$SEEDED_AT,"windows":[{"number":1,"project":null,"x":120,"y":120,"width":900,"height":700,"tabs":[{"tabId":"$TAB","path":null,"untitled":"$DRAFT","cursor":0,"topLine":1}],"activeTab":"$TAB"}]}
 JSON
 # An older marker: the welcome window opens, as it did after the upgrade.
 printf '0.0.1:en' > "$DATA/onboarding-version"
@@ -82,6 +93,18 @@ check() {
 
 for run in 1 2 3; do
   launch
+  if [ "$run" = 1 ]; then
+    # Proof the app under test read and wrote THIS data dir: without it every
+    # PASS below could only mean nobody touched the seeded files.
+    # The app writes pretty JSON (`"savedAt": 1790…`); the seed is compact.
+    saved_at=$(sed -n 's/.*"savedAt":[[:space:]]*\([0-9]*\).*/\1/p' "$DATA/session-v2.json" 2>/dev/null)
+    if [ -z "$saved_at" ] || [ "$saved_at" = "$SEEDED_AT" ]; then
+      echo "FAIL [launch 1] session-v2.json not rewritten (savedAt '$saved_at'); is $DATA its data dir?"
+      quit
+      exit 1
+    fi
+    echo "PASS [launch 1] session-v2.json rewritten (savedAt $saved_at)"
+  fi
   check "launch $run, nobody restored"
   quit
   check "after quit $run"
