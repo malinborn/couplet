@@ -71,6 +71,7 @@
     aiHighlightRanges,
   } from './lib/editor/ai-highlight';
   import { activeAskIds, addAiAsk, removeAiAsk } from './lib/editor/ai-ask';
+  import { gotoAiMark } from './lib/editor/ai-mark-nav';
   import type { TabOwner } from './lib/switch-document';
   import { activeCellEditSession } from './lib/editor/cell-edit-session';
   import { closeSearchPanel } from '@codemirror/search';
@@ -798,6 +799,8 @@
     'find',
     'recent_files',
     'ai_comment',
+    'ai_next_mark',
+    'ai_prev_mark',
     'select_all',
     'open',
     'save_as',
@@ -2231,6 +2234,10 @@
           break;
         case 'ai_comment':
           createCommentFromSelection();
+          break;
+        case 'ai_next_mark':
+        case 'ai_prev_mark':
+          if (editorHandle?.view) gotoAiMark(editorHandle.view, action === 'ai_next_mark' ? 1 : -1);
           break;
         case 'ai_watch_command':
           copyWatchCommand();

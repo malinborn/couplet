@@ -877,6 +877,8 @@ mod tests {
         [
             "menu.ai.connect",
             "menu.ai.comment",
+            "menu.ai.next_mark",
+            "menu.ai.prev_mark",
             "menu.ai.watch_command",
             "menu.ai.playbook",
         ]

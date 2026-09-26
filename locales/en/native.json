@@ -54,6 +54,8 @@
   "menu.ai.title": "AI",
   "menu.ai.connect": "Teach Your AI couplet",
   "menu.ai.comment": "Comment on Selection",
+  "menu.ai.next_mark": "Next AI Mark",
+  "menu.ai.prev_mark": "Previous AI Mark",
   "menu.ai.watch_command": "Connect Agent to Doc Questions",
   "menu.ai.playbook": "AI Playbook",
 

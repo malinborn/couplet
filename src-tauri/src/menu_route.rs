@@ -126,8 +126,8 @@ mod tests {
     fn document_actions_go_to_one_window() {
         for id in [
             "open", "save", "save_as", "close", "select_all", "find", "recent_files",
-            "ai_comment", "ai_watch_command", "format_json", "new_tab", "next_tab",
-            "prev_tab", "select_tab_1", "select_tab_9", "toggle_drawer",
+            "ai_comment", "ai_next_mark", "ai_prev_mark", "ai_watch_command", "format_json",
+            "new_tab", "next_tab", "prev_tab", "select_tab_1", "select_tab_9", "toggle_drawer",
         ] {
             assert_eq!(menu_route(id), MenuRoute::Focused, "{id}");
         }
