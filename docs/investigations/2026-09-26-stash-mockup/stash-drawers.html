@@ -1270,10 +1270,10 @@ function hitLine(line, q) {
 }
 function cardHTML(t, i, mm) {
   const isNote = t.kind === 'note', isDraft = t.kind === 'draft';
-  const st = `<span class="st-m">${icon('tray')}в стэше</span>`;
-  const meta = isNote ? `${st}${t.repo ? `<span>${esc(t.repo)}</span>` : ''}` : isDraft ? '<span>пустая — исчезнет при закрытии</span>'
+  // A stashed note is marked by the stash glyph before its title only; the sub-line keeps just the repo.
+  const meta = isNote ? (t.repo ? `<span>${esc(t.repo)}</span>` : '') : isDraft ? '<span>пустая — исчезнет при закрытии</span>'
     : t.proj ? `<span>${esc(t.proj)}</span><span class="br">⎇ ${esc(t.br)}</span>` : '<span>не сохранён</span>';
-  const imeta = isNote ? st : isDraft ? 'пустая' : t.proj ? `${esc(t.proj)} · <span class="br">⎇ ${esc(t.br)}</span>` : 'не сохранён';
+  const imeta = isNote ? (t.repo ? esc(t.repo) : '') : isDraft ? 'пустая' : t.proj ? `${esc(t.proj)} · <span class="br">⎇ ${esc(t.br)}</span>` : 'не сохранён';
   const nameQ = mm && mm.rank < 2 ? query : '';
   const name = isNote ? `${icon('tray', 'sg')}${hl(t.name, nameQ)}` : isDraft ? 'Новая заметка' : hl(t.name, nameQ);
   const mark = t.kind === 'file' && inStash(t) ? `<span class="in-stash" title="Есть в стэше">${icon('tray')}</span>` : '';
