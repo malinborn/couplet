@@ -36,14 +36,6 @@ struct Filter<'a> {
     since: Option<i64>,
 }
 
-/// A row that passed the filters. `derived` is the entry's shown
-/// `(repo, branch)`, filled only when the repo filter had to look at it: a
-/// `.git` lookup per file is paid for the page, not the whole stash.
-struct Candidate {
-    row: EntryRow,
-    derived: Option<(Option<String>, Option<String>)>,
-}
-
 /// Descending sort key; `rowid` last, so every key is unique and a keyset
 /// cursor is exact (plan D6, D7).
 type SortKey = (i64, i64, i64);
@@ -536,19 +528,19 @@ impl Stash {
         Ok(changed > 0 && title != old_title)
     }
 
-    /// Rows passing the filters. SQL decides everything but a file's repo:
-    /// the stored column (written at put-away, roadmap A3) can be stale either
-    /// way — the file moved into a repository later, or its `.git` went away —
-    /// so a file matches when its stored repo *or* its live derived repo equals
-    /// the filter, and the live half is checked here.
-    fn candidates(&self, f: &Filter<'_>) -> Result<Vec<Candidate>, String> {
+    /// Rows passing the filters, all decided in SQL. The repo filter reads
+    /// the stored column for notes and files alike: a file's repo is written
+    /// at put-away precisely so this needs no `.git` walk per file reference
+    /// (roadmap A3). It can lag the live repository until the next put-away;
+    /// only the returned page's display (`derived_repo`) looks at the disk.
+    fn candidates(&self, f: &Filter<'_>) -> Result<Vec<EntryRow>, String> {
         let sql = format!(
             "SELECT {ENTRY_COLUMNS} FROM entries e \
              WHERE (e.deleted_at IS NOT NULL) = ?1 \
                AND (?1 = 0 OR e.kind = 'note') \
                AND (?2 IS NULL OR e.kind = ?2) \
                AND (?3 IS NULL OR EXISTS (SELECT 1 FROM tags t WHERE t.entry_id = e.id AND t.tag = ?3)) \
-               AND (?4 IS NULL OR e.kind = 'file' OR e.repo = ?4) \
+               AND (?4 IS NULL OR e.repo = ?4) \
                AND (?5 IS NULL OR COALESCE(e.stashed_at, e.modified_at) >= ?5)"
         );
         let mut stmt = self.conn.prepare(&sql).map_err(db::err)?;
@@ -566,23 +558,7 @@ impl Stash {
             .map_err(db::err)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(db::err)?;
-        let Some(repo) = f.repo else {
-            return Ok(rows
-                .into_iter()
-                .map(|row| Candidate { row, derived: None })
-                .collect());
-        };
-        let mut out = Vec::with_capacity(rows.len());
-        for row in rows {
-            let derived = derived_repo(&row);
-            if row.repo.as_deref() == Some(repo) || derived.0.as_deref() == Some(repo) {
-                out.push(Candidate {
-                    row,
-                    derived: Some(derived),
-                });
-            }
-        }
-        Ok(out)
+        Ok(rows)
     }
 
     /// One page of the stash, or of the trash with `deleted` (plan D6).
@@ -603,31 +579,31 @@ impl Stash {
             repo: repo.as_deref(),
             since: q.since,
         })?;
-        all.sort_by_key(|c| Reverse(key(&c.row)));
+        all.sort_by_key(|row| Reverse(key(row)));
         let total = all.len();
         // Keyset: everything strictly after the last key shown, so an entry
         // raised above the cursor between two pages is not shown twice.
         let start = after.map_or(0, |cursor| {
             all.iter()
-                .position(|c| key(&c.row) < cursor)
+                .position(|row| key(row) < cursor)
                 .unwrap_or(total)
         });
-        let mut page: Vec<Candidate> = all.into_iter().skip(start).take(limit + 1).collect();
+        let mut page: Vec<EntryRow> = all.into_iter().skip(start).take(limit + 1).collect();
         let more = page.len() > limit;
         page.truncate(limit);
         let next_cursor = if more {
-            page.last().map(|c| encode_cursor(key(&c.row)))
+            page.last().map(|row| encode_cursor(key(row)))
         } else {
             None
         };
         let mut tags = db::all_tags(&self.conn)?;
         let entries = page
             .into_iter()
-            .map(|c| {
-                let (repo, branch) = c.derived.unwrap_or_else(|| derived_repo(&c.row));
-                let preview = read_preview(Path::new(&c.row.path));
-                let tags = tags.remove(&c.row.id).unwrap_or_default();
-                entry_from(c.row, tags, repo, branch, preview)
+            .map(|row| {
+                let (repo, branch) = derived_repo(&row);
+                let preview = read_preview(Path::new(&row.path));
+                let tags = tags.remove(&row.id).unwrap_or_default();
+                entry_from(row, tags, repo, branch, preview)
             })
             .collect();
         Ok(ListResult {
@@ -654,7 +630,7 @@ impl Stash {
             .len();
         let stashed_today = live
             .iter()
-            .filter(|c| c.row.stashed_at.is_some_and(|t| t >= day_start_ms))
+            .filter(|row| row.stashed_at.is_some_and(|t| t >= day_start_ms))
             .count();
         Ok(StashCounts {
             total: live.len(),
@@ -1480,10 +1456,11 @@ mod tests {
     }
 
     #[test]
-    fn a_files_repo_filter_matches_its_stored_or_its_live_repo() {
-        // Roadmap A3: a file's repo is stored at put-away and derived live for
-        // display; either one matching the filter keeps the entry.
-        let (mut stash, root) = stash_in("list-repo-live");
+    fn a_repo_filter_reads_the_stored_column_only() {
+        // Roadmap A3: a file's repo is stored at put-away precisely so the
+        // filter is SQL — no `.git` walk per file reference in the stash. The
+        // live repo is only what the returned page shows.
+        let (mut stash, root) = stash_in("list-repo-stored");
         let stored_only = {
             let repo = root.join("work/gone");
             fs::create_dir_all(repo.join(".git")).unwrap();
@@ -1497,29 +1474,44 @@ mod tests {
             fs::remove_dir_all(repo.join(".git")).unwrap();
             id
         };
-        let live_only = {
-            let id = stash
-                .put_away(&put(vec![user_file(&root, "later/b.md", "b")]), T0)
-                .unwrap()
-                .remove(0)
-                .entry
-                .id;
-            let repo = root.join("work/later");
-            fs::create_dir_all(repo.join(".git")).unwrap();
-            fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
-            id
-        };
+        let later_file = user_file(&root, "later/b.md", "b");
+        let live_only = stash
+            .put_away(&put(vec![later_file.clone()]), T0)
+            .unwrap()
+            .remove(0)
+            .entry
+            .id;
+        let repo = root.join("work/later");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+
         let gone = stash
             .list(&query(|q| q.repo = Some("gone".into())))
             .unwrap();
         assert_eq!(ids(&gone), vec![stored_only.clone()]);
         assert_eq!(gone.entries[0].repo, None, "shown as it is now");
+        assert_eq!(stash.counts(Some("gone"), 0).unwrap().total, 1);
+
+        let later = stash
+            .list(&query(|q| q.repo = Some("later".into())))
+            .unwrap();
+        assert!(
+            later.entries.is_empty(),
+            "stored NULL: not in the filter yet"
+        );
+        assert_eq!(later.total, 0);
+        assert_eq!(stash.counts(Some("later"), 0).unwrap().total, 0);
+        let all = stash.list(&ListQuery::default()).unwrap();
+        let shown = all.entries.iter().find(|e| e.id == live_only).unwrap();
+        assert_eq!(shown.repo.as_deref(), Some("later"), "though shown live");
+
+        // The next put-away refreshes the stored repo, and the filter follows.
+        stash.put_away(&put(vec![later_file]), T0 + 1).unwrap();
         let later = stash
             .list(&query(|q| q.repo = Some("later".into())))
             .unwrap();
         assert_eq!(ids(&later), vec![live_only]);
-        assert_eq!(later.entries[0].repo.as_deref(), Some("later"));
-        assert_eq!(stash.counts(Some("gone"), 0).unwrap().total, 1);
+        assert_eq!(stash.counts(Some("later"), 0).unwrap().total, 1);
     }
 
     #[test]
