@@ -408,13 +408,14 @@ impl Stash {
     }
 
     /// Records that a document was opened from the stash. `false` when the
-    /// path is not a stash entry (opening any other file is not stash news).
+    /// path is not a stash entry (opening any other file is not stash news),
+    /// and for a trashed one, which stays inert (roadmap A8).
     pub fn touch_opened(&mut self, path: &str, now: i64) -> Result<bool, String> {
         let path = crate::path_norm::normalize_str(path);
         let changed = self
             .conn
             .execute(
-                "UPDATE entries SET opened_at = ?1 WHERE path = ?2",
+                "UPDATE entries SET opened_at = ?1 WHERE path = ?2 AND deleted_at IS NULL",
                 params![now, path],
             )
             .map_err(db::err)?;
@@ -965,6 +966,17 @@ mod tests {
             !stash.touch_opened(&other, T0).unwrap(),
             "not a stash entry"
         );
+    }
+
+    #[test]
+    fn opening_a_trashed_entry_does_not_touch_its_row() {
+        // Roadmap A8: a trashed row is inert — `.trash/x.md` opened by hand is
+        // not "opened from the stash".
+        let (mut stash, _root) = stash_in("opened-trashed");
+        let note = stash.create_note("# Удалённая", None, T0, MSK).unwrap();
+        set_columns(&stash, &note.id, &format!("deleted_at = {}", T0 + 1));
+        assert!(!stash.touch_opened(&note.path, T0 + 10).unwrap());
+        assert_eq!(stash.get(&note.id).unwrap().opened_at, None);
     }
 
     #[test]
