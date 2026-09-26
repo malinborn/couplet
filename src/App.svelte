@@ -2211,6 +2211,9 @@
         case 'theme_family_ink':
           theme.setFamily('ink');
           break;
+        case 'theme_family_autumn':
+          theme.setFamily('autumn');
+          break;
         case 'theme_half_light':
           theme.setHalf('light');
           break;

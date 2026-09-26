@@ -397,7 +397,7 @@ pub fn build_menu(
     // «Classic» здесь — то же имя, которым эта семья зовётся в коде с самого
     // начала (`ThemeFamily`), просто раньше в меню она была «Default».
     //
-    // Названия семей — Classic / Aurora / Blueprint / Phosphor / Paper / Ink —
+    // Названия семей — Classic / Aurora / Blueprint / Phosphor / Paper / Ink / Autumn —
     // имена собственные и не переводятся.
     let theme_family_classic = CheckMenuItemBuilder::with_id("theme_family_classic", "Classic").build(app)?;
     let theme_family_aurora = CheckMenuItemBuilder::with_id("theme_family_aurora", "Aurora").build(app)?;
@@ -407,6 +407,8 @@ pub fn build_menu(
         CheckMenuItemBuilder::with_id("theme_family_phosphor", "Phosphor").build(app)?;
     let theme_family_paper = CheckMenuItemBuilder::with_id("theme_family_paper", "Paper").build(app)?;
     let theme_family_ink = CheckMenuItemBuilder::with_id("theme_family_ink", "Ink").build(app)?;
+    let theme_family_autumn =
+        CheckMenuItemBuilder::with_id("theme_family_autumn", "Autumn").build(app)?;
     let theme_half_light =
         CheckMenuItemBuilder::with_id("theme_half_light", t("menu.theme.half_light")).build(app)?;
     let theme_half_dark =
@@ -421,6 +423,7 @@ pub fn build_menu(
         .item(&theme_family_phosphor)
         .item(&theme_family_paper)
         .item(&theme_family_ink)
+        .item(&theme_family_autumn)
         .separator()
         .item(&theme_half_light)
         .item(&theme_half_dark)
@@ -553,6 +556,7 @@ pub fn build_menu(
             ("phosphor", theme_family_phosphor),
             ("paper", theme_family_paper),
             ("ink", theme_family_ink),
+            ("autumn", theme_family_autumn),
         ],
         half_light: theme_half_light,
         half_dark: theme_half_dark,
