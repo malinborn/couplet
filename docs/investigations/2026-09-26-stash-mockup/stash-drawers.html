@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>couplet — макет стэша: два ящика</title>
+<title>couplet — макет тайника: два ящика</title>
 <style>
 /* ───────────────────────── Fonts (bundled, relative to repo root) ───────────────────────── */
 @font-face { font-family: 'Inter'; src: url('../../../src/assets/fonts/InterVariable.woff2') format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
@@ -634,7 +634,7 @@ svg.ico { width: 1em; height: 1em; display: inline-block; flex: 0 0 auto; }
 .f-add:hover { border-color: var(--stash); color: var(--text-primary); }
 .f-note { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* Sections: «Отложено» on top, then the rest. */
+/* (sections removed in v5 — the stash is one flat list; .st-sec is unused) */
 .st-sec { display: flex; align-items: center; gap: 6px; padding: 8px 4px 6px; font-size: 10.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--text-muted); }
 .st-sec svg { width: 12px; height: 12px; }
 .st-sec.away { color: color-mix(in oklab, var(--stash) 85%, var(--text-primary)); }
@@ -756,6 +756,28 @@ body.compact .card-path { display: none; }
 .ghost.as-open { outline: 2px solid var(--brand-a); }
 .ghost.as-stash .ghost-bar, .ghost.as-open .ghost-bar { height: 24px; }
 
+/* Every stash card shows when it was put away — kept even in compact cards. */
+body.compact .stash-drawer .card:not(.trashed) .card-meta, .narrow.stash-open .stash-drawer .card:not(.trashed) .card-meta { display: flex; }
+body.compact .stash-drawer .card-meta > :not(.aw), .narrow.stash-open .stash-drawer .card-meta > :not(.aw) { display: none; }
+
+/* Trash («Удалённые»): the stash drawer's bottom area mirrors the tabs drawer's stash bar.
+   Its button switches the drawer into the trash view: dimmed note cards, days left,
+   «вернуть» / «удалить навсегда». Only notes land here — a file ref has no trash. */
+.trash-bar { margin-top: 0; }
+.stash-drawer.trash-view .sorts { display: none; }
+.card.trashed:not(.closing) { opacity: .66; }
+.card.trashed:not(.closing):hover { opacity: .92; }
+.card.trashed .kind-ico { color: var(--text-muted); }
+.tr-actions { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 11px; }
+.tr-actions .left { flex: 1; min-width: 0; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tr-actions button {
+  flex: 0 0 auto; border: 1px solid var(--border); background: var(--bg-surface); border-radius: 6px; padding: 2px 8px;
+  font-size: 11px; color: var(--text-subtle); cursor: pointer; white-space: nowrap; transition: border-color .12s, color .12s;
+}
+.tr-actions button:hover { border-color: var(--text-muted); color: var(--text-primary); }
+.tr-actions .tr-restore { border-color: var(--stash-line); color: var(--text-primary); }
+.tr-actions .tr-restore:hover { border-color: var(--stash); }
+
 /* Demo panel additions. */
 .seg { margin-bottom: 12px; box-shadow: none; }
 .seg button { flex: 1; }
@@ -806,7 +828,7 @@ body.compact .card-path { display: none; }
         <div class="tab-list" id="tabList"><div class="tab-cards" id="tabCards"></div><div class="empty" id="emptyRes">Ничего не найдено</div><div class="drop-ind" id="dropInd"></div></div>
         <div class="sel-bar" id="selBar">
           <span class="n" id="selN"></span>
-          <button id="selStash" title="Отложить выбранные в стэш (⌃T)">В стэш</button>
+          <button id="selStash" title="Отложить выбранные в тайник (⌃T)">В тайник</button>
           <button id="selNewWin">В новое окно</button>
           <button id="selClose">Закрыть выбранные</button>
           <button class="x" id="selClear" title="Снять выделение">×</button>
@@ -814,11 +836,11 @@ body.compact .card-path { display: none; }
         <div class="hint" id="hint"><span><b>⇧ клик / протяжка</b> — выделение · <b>⌘ клик</b> — закрыть</span></div>
         <div class="stash-bar" id="stashBar">
           <div class="idle">
-            <button class="stash-btn" id="stashBtn" type="button" aria-pressed="false" title="Стэш — второй ящик справа (→)"><span data-ico="tray"></span>Стэш</button>
+            <button class="stash-btn" id="stashBtn" type="button" aria-pressed="false" title="Тайник — второй ящик справа (→)"><span data-ico="tray"></span>Тайник</button>
             <span class="stash-sum" id="stashSum"></span>
-            <kbd title="→ открывает стэш">→</kbd>
+            <kbd title="→ открывает тайник">→</kbd>
           </div>
-          <div class="drop" aria-hidden="true"><span data-ico="tray"></span>Отложить в стэш<span class="dn" id="stashDropN"></span><span class="dk">⌃T</span></div>
+          <div class="drop" aria-hidden="true"><span data-ico="tray"></span>Отложить в тайник<span class="dn" id="stashDropN"></span><span class="dk">⌃T</span></div>
         </div>
       </aside>
       <div class="notch" id="notch" role="button" tabindex="0" aria-label="Вкладки окна #22">
@@ -827,21 +849,27 @@ body.compact .card-path { display: none; }
       </div>
     </div>
     <div class="stash-wrap" id="stashWrap">
-      <aside class="drawer stash-drawer" id="stashDrawer" aria-label="Стэш">
+      <aside class="drawer stash-drawer" id="stashDrawer" aria-label="Тайник">
         <div class="drawer-head">
-          <div class="drawer-title"><b><span class="st-g" data-ico="tray"></span>Стэш <span class="cnt">· <span id="stCount"></span></span></b><small class="type-hint" id="stTypeHint"><svg class="mag" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.8" cy="6.8" r="4.8" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M10.4 10.4 14.2 14.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>печатайте · #тег</small><small class="focus-hint">стэш <kbd>→</kbd></small></div>
+          <div class="drawer-title"><b><span class="st-g" id="stGlyph"></span><span id="stTitle">Тайник</span> <span class="cnt">· <span id="stCount"></span></span></b><small class="type-hint" id="stTypeHint"><svg class="mag" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.8" cy="6.8" r="4.8" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M10.4 10.4 14.2 14.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>печатайте · #тег</small><small class="focus-hint">тайник <kbd>→</kbd></small></div>
           <div class="st-filter" id="stFilter"></div>
           <div class="sorts">
             <span class="lbl">Разложить:</span>
             <button class="sort-btn st-sort" data-ssort="edited" title="Недавно изменённые сверху">изменение <kbd>⌘L</kbd></button><span class="dot">·</span>
             <button class="sort-btn st-sort" data-ssort="opened" title="Недавно открытые сверху">открытие <kbd>⌘R</kbd></button><span class="dot">·</span>
-            <button class="sort-btn st-sort" data-ssort="kind" title="Сначала заметки, потом файлы">заметки, файлы <kbd>⌘U</kbd></button>
+            <button class="sort-btn st-sort" data-ssort="kind" title="Сначала заметки, потом файлы">тип <kbd>⌘U</kbd></button>
           </div>
         </div>
         <div class="search" id="stSearch" aria-live="polite"><span class="s-ico" aria-hidden="true"><svg class="mag" viewBox="0 0 16 16"><circle cx="6.8" cy="6.8" r="4.8" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M10.4 10.4 14.2 14.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span><span class="s-q" id="stQ"></span><span class="caret" aria-hidden="true"></span><span class="s-n" id="stN"></span></div>
         <div class="tab-list" id="stList"><div class="tab-cards" id="stCards"></div><div class="empty" id="stEmpty">Ничего не найдено</div></div>
         <div class="st-foot"><span><b>тяните во вкладки</b> — открыть · <b>#тег</b> — фильтр · <b>← →</b> — ящики</span></div>
-        <div class="drop-veil" aria-hidden="true"><span><span data-ico="tray"></span>Отложить в стэш</span></div>
+        <div class="stash-bar trash-bar" id="trashBar">
+          <div class="idle">
+            <button class="stash-btn" id="trashBtn" type="button" aria-pressed="false"><span id="trashBtnIco"></span><span id="trashBtnLabel">Удалённые</span></button>
+            <span class="stash-sum" id="trashSum"></span>
+          </div>
+        </div>
+        <div class="drop-veil" aria-hidden="true"><span><span data-ico="tray"></span>Отложить в тайник</span></div>
       </aside>
     </div>
     <div class="carousel" id="carousel" aria-hidden="true">
@@ -862,11 +890,11 @@ body.compact .card-path { display: none; }
   <div class="theme-switch seg" role="group" aria-label="Ширина окна">
     <button data-width="wide" aria-pressed="true" title="1180px: ящики рядом, между ними страница">Широкое</button>
     <button data-width="narrow" aria-pressed="false" title="720px: ящики рядом, компактные карточки">Узкое</button>
-    <button data-width="xnarrow" aria-pressed="false" title="560px: при открытии стэша окно раздвигается">Очень узкое</button>
+    <button data-width="xnarrow" aria-pressed="false" title="560px: при открытии тайника окно раздвигается">Очень узкое</button>
   </div>
   <div class="row">
     <button class="demo-btn" id="demoToggle"><span>Ящик вкладок: открыть / закрыть</span><kbd>⌘J</kbd></button>
-    <button class="demo-btn stash" id="demoStash"><span>Стэш: открыть / закрыть</span><kbd>→</kbd></button>
+    <button class="demo-btn stash" id="demoStash"><span>Тайник: открыть / закрыть</span><kbd>→</kbd></button>
     <button class="demo-btn stash" id="demoDedup"><span>Окно #12 откладывает tabs-02-model.md с #review — дубль</span></button>
     <button class="demo-btn" id="demoNew"><span>Новая пустая заметка</span><kbd>⌘T</kbd></button>
     <button class="demo-btn" id="demoType"><span>Набрать текст в новой заметке</span></button>
@@ -879,15 +907,16 @@ body.compact .card-path { display: none; }
     <label class="tgl"><input type="checkbox" id="tglCarousel" checked><span class="sw"></span><span>Карусель окон при перетаскивании</span></label>
   </div>
   <ul>
-    <li><b>Внизу ящика вкладок</b> — стэш: кнопка и сводка. Потяните карточку — низ станет зоной «Отложить в стэш»; на страницу — по-прежнему карусель окон</li>
-    <li><b>Стэш справа</b> (кнопка или <kbd>→</kbd>): тяните карточку в ящик вкладок — она переедет туда вкладкой. Вкладку в стэш — так же обратно</li>
-    <li>Окно #22 привязано к <b>shelf-design</b> — стэш открывается с этим фильтром, × снимает (или ⌫ в пустом поиске)</li>
+    <li><b>Внизу ящика вкладок</b> — тайник: кнопка и сводка. Потяните карточку — низ станет зоной «Отложить в тайник»; на страницу — по-прежнему карусель окон</li>
+    <li><b>Тайник справа</b> (кнопка или <kbd>→</kbd>): тяните карточку в ящик вкладок — она переедет туда вкладкой. Вкладку в тайник — так же обратно</li>
+    <li>Окно #22 привязано к <b>shelf-design</b> — тайник открывается с этим фильтром, × снимает (или ⌫ в пустом поиске)</li>
     <li><kbd>←</kbd> <kbd>→</kbd> — фокус между ящиками; печать фильтрует ящик в фокусе; <b>#тег</b> — по тегу; клик по тегу на карточке — тоже</li>
-    <li><b>Esc</b>: сначала сбрасывает поиск, потом закрывает ящик в фокусе. Стэш закрывается один; ящик вкладок закрывает оба</li>
-    <li>Отложить: ⌃T, «В стэш» у выделения, ⌘W на заметке. Уже лежащее в стэше не дублируется — карточка поднимается и мигает</li>
-    <li>Заметка во вкладке и в заголовке окна — со значком стэша вместо «Untitled». Пустая заметка при закрытии просто исчезает</li>
-    <li>Узкое окно: ящики не перекрываются — сжимаются рядом и переходят на компактные карточки. Очень узкое: при открытии стэша окно само раздвигается, при закрытии — возвращается</li>
-    <li>Что открыто вкладкой в этом окне, в стэше не показано: ящики работают как перенос. Открытое в другом окне видно с пометкой «открыта в #N»</li>
+    <li><b>Esc</b>: сначала сбрасывает поиск, потом закрывает ящик в фокусе. Тайник закрывается один; ящик вкладок закрывает оба</li>
+    <li>Отложить: ⌃T, «В тайник» у выделения, ⌘W на заметке. Уже лежащее в тайнике не дублируется — карточка поднимается и мигает</li>
+    <li>Заметка во вкладке и в заголовке окна — со значком тайника вместо «Untitled». Пустая заметка при закрытии просто исчезает</li>
+    <li>Узкое окно: ящики не перекрываются — сжимаются рядом и переходят на компактные карточки. Очень узкое: при открытии тайника окно само раздвигается, при закрытии — возвращается</li>
+    <li>Что открыто вкладкой в этом окне, в тайнике не показано: ящики работают как перенос. Открытое в другом окне видно с пометкой «открыта в #N»</li>
+    <li><b>Удалённые</b> — кнопка внизу тайника: удалённые заметки 30 дней, «вернуть» / «удалить навсегда»; Esc — назад в тайник. У ссылок на файлы корзины нет</li>
     <li>Остальное как в макете ящика: ⇧ — выделение, ⌘ клик — закрыть, ↑↓ Enter, ⌘1…⌘9, ⌘L ⌘R ⌘U</li>
   </ul>
 </div>
@@ -904,27 +933,27 @@ const WT = 'worktree-shelf-design';
 const TODAY_MIN = 630;   // mock "now" = 2026-09-26 10:30; stash ages are minutes before it
 
 const REPORT_MD =
-`# Стэш в couplet — исследование и решения
+`# Тайник в couplet — исследование и решения
 Повод: после \`brew upgrade\` пропал untitled с планами. couplet сам хранит документы без имени, их нельзя потерять.
 ## Коротко
-- все документы по умолчанию лежат в стэше: хрупкого untitled больше нет
+- все документы по умолчанию лежат в тайнике: хрупкого untitled больше нет
 - «отложить» убирает документ с глаз, но оставляет его под рукой
-- стэш общий, с тегами; окно проекта фильтрует его по тегу своего репо
-## 4.5 Где стэш живёт в UI
-Внизу дровера вкладок — область стэша с кнопкой; справа — второй дровер своего цвета.
-> Вкладки — то, что сейчас открыто. Стэш — то, что хранится.`;
+- тайник общий, с тегами; окно проекта фильтрует его по тегу своего репо
+## 4.5 Где тайник живёт в UI
+Внизу дровера вкладок — область тайника с кнопкой; справа — второй дровер своего цвета.
+> Вкладки — то, что сейчас открыто. Тайник — то, что хранится.`;
 
 /* The stash: notes (couplet owns the text) and file references (the file stays where it is).
    `repo` is the auto repo tag; `away` = minutes since it was put away (null = not put away). */
 const STASH0 = [
-  { id: 'n1', kind: 'note', repo: WIN_PROJECT, tags: ['couplet'], edited: 18, opened: 18, away: null, md:
+  { id: 'n1', kind: 'note', repo: WIN_PROJECT, tags: ['couplet'], edited: 18, opened: 18, away: 1500, md:
 `# Планы
 - [ ] Герн
 - [ ] Дать доступ на тачку
 - [x] Фаза 0: корзина вместо удаления черновиков
 - [ ] Созвон с AppSec про SAST
-- [ ] Показать Максу макет стэша` },
-  { id: 'n2', kind: 'note', repo: null, tags: ['infra'], edited: 95, opened: 60, away: null, md:
+- [ ] Показать Максу макет тайника` },
+  { id: 'n2', kind: 'note', repo: null, tags: ['infra'], edited: 95, opened: 60, away: 2000, md:
 `Заметки к 1:1 с DevSecOps
 - SAST в пайплайне: semgrep или CodeQL?
 - кто владеет правилами и исключениями
@@ -939,35 +968,35 @@ const STASH0 = [
 \`prune_untitled_files\` переносит черновик в \`session/.trash/\`, чистка через 30 дней.
 - [ ] rescue-снимок на ⌘W
 - [ ] правило в CLAUDE.md: текст не удаляется без второй копии` },
-  { id: 'n5', kind: 'note', repo: null, tags: ['infra'], edited: 1500, opened: 1500, away: null, md:
+  { id: 'n5', kind: 'note', repo: null, tags: ['infra'], edited: 1500, opened: 1500, away: 1480, md:
 `# Вопросы к AppSec по SAST
 - semgrep или CodeQL — кто поддерживает правила?
 - исключения: где живут и кто их ревьюит
 - блокировать PR или только отчёт?` },
-  { id: 'n6', kind: 'note', repo: WIN_PROJECT, tags: ['couplet', 'ideas'], edited: 3600, opened: 3600, away: null, md:
+  { id: 'n6', kind: 'note', repo: WIN_PROJECT, tags: ['couplet', 'ideas'], edited: 3600, opened: 3600, away: 3590, md:
 `Названия для тем
 aurora, blueprint, phosphor — дальше: **sepia**? **graphite**? **tidal**?
 - каждая иконка — своя семья, light + dark` },
-  { id: 'n7', kind: 'note', repo: null, tags: ['ideas', 'infra'], edited: 7000, opened: 7000, away: null, md:
+  { id: 'n7', kind: 'note', repo: null, tags: ['ideas', 'infra'], edited: 7000, opened: 7000, away: 6900, md:
 `# Сниппеты для Time-бота
 - \`/oncall\` — кто дежурит сейчас
 - \`/deploy status ai-gateway\`
 - \`/vpn cert edge-2\` — сколько дней до истечения` },
-  { id: 'n8', kind: 'note', repo: null, tags: [], edited: 10200, opened: 10200, away: null, md:
+  { id: 'n8', kind: 'note', repo: null, tags: [], edited: 10200, opened: 10200, away: 10100, md:
 `Разговор с контрактором
 Отпуск с 1 октября — передать миграцию Vault Олегу. Доступы на время отпуска отозвать.` },
-  { id: 'n9', kind: 'note', repo: null, tags: ['infra'], edited: 240, opened: 240, away: null, md:
+  { id: 'n9', kind: 'note', repo: null, tags: ['infra'], edited: 240, opened: 240, away: 3000, md:
 `Черновик письма команде
 Коллеги, с понедельника дежурства меняются: основной — Марина, резерв — Олег.` },
-  { id: 'f1', kind: 'file', name: 'report.md', repo: WIN_PROJECT, br: WT, dir: 'docs/investigations/2026-09-26-shelf/', tags: ['couplet'], edited: 40, opened: 25, away: null, md: REPORT_MD },
-  { id: 'f2', kind: 'file', name: '2026-09-25-tabs-02-model.md', repo: WIN_PROJECT, br: 'main', dir: 'docs/superpowers/plans/', tags: ['couplet'], edited: 1300, opened: 1300, away: null, md:
+  { id: 'f1', kind: 'file', name: 'report.md', repo: WIN_PROJECT, br: WT, dir: 'docs/investigations/2026-09-26-shelf/', tags: ['couplet'], edited: 40, opened: 25, away: 1400, md: REPORT_MD },
+  { id: 'f2', kind: 'file', name: '2026-09-25-tabs-02-model.md', repo: WIN_PROJECT, br: 'main', dir: 'docs/superpowers/plans/', tags: ['couplet'], edited: 1300, opened: 1300, away: 1290, md:
 `# Tabs 02: model
 B-lite: only the active tab is a live state.
 ## Decisions
 - D1 one file = one tab app-wide
 - D6 background file tabs are always clean
 - D14 ⌘1…⌘9 pick the n-th visible card` },
-  { id: 'f3', kind: 'file', name: 'ai-interface.md', repo: WIN_PROJECT, br: 'main', dir: 'docs/', tags: ['couplet'], edited: 2900, opened: 2900, away: null, md:
+  { id: 'f3', kind: 'file', name: 'ai-interface.md', repo: WIN_PROJECT, br: 'main', dir: 'docs/', tags: ['couplet'], edited: 2900, opened: 2900, away: 2850, md:
 `# AI interface
 \`couplet show\` and \`couplet edit\` let an agent open a file in the running app and highlight what it changed.
 ## JSON contract
@@ -982,12 +1011,12 @@ Every command answers with \`{ "ok": true, "window": 22 }\` or an error object w
 edge-1: до 2026-12-02 · edge-2: до 2026-10-05 ⚠
 ## Ротация
 \`certbot renew --deploy-hook reload-xray\`` },
-  { id: 'f6', kind: 'file', name: 'grafana-alerts-audit.md', repo: 'infra', br: 'agent/audit', dir: 'reports/', tags: ['infra', 'ideas'], edited: 5000, opened: 5000, away: null, md:
+  { id: 'f6', kind: 'file', name: 'grafana-alerts-audit.md', repo: 'infra', br: 'agent/audit', dir: 'reports/', tags: ['infra', 'ideas'], edited: 5000, opened: 5000, away: 4950, md:
 `# Аудит алертов Grafana
 Из 212 правил 37 не срабатывали год, 11 срабатывают ежедневно и никто не реагирует.
 - Удалить 37 молчащих правил
 - Владельца на каждое правило — поле \`team\` в лейблах` },
-  { id: 'f7', kind: 'file', name: 'nginx-tls-scan.md', repo: 'infra', br: 'agent/scan', dir: 'reports/', tags: ['infra'], edited: 8200, opened: 8200, away: null, md:
+  { id: 'f7', kind: 'file', name: 'nginx-tls-scan.md', repo: 'infra', br: 'agent/scan', dir: 'reports/', tags: ['infra'], edited: 8200, opened: 8200, away: 8100, md:
 `# TLS-скан nginx
 18 хостов, 2 всё ещё отдают TLS 1.1. Один сертификат истекает через 11 дней: \`wiki.internal\`.
 - [ ] Выключить TLS 1.1 на \`legacy-proxy-1\`, \`legacy-proxy-2\`` },
@@ -1013,11 +1042,11 @@ Agents are guests: they may open a document but never take the tab the human typ
 - D9 an agent command on a background tab marks it unviewed
 - D12 quick looks expire after an hour, never the active tab` },
   { id: 5, name: 'stash-mockup-brief.md', proj: WIN_PROJECT, br: WT, dir: 'docs/', md:
-`# Макет стэша: бриф
-Два ящика: вкладки слева, стэш справа, своего цвета. Внизу ящика вкладок — зона «Отложить в стэш».
+`# Макет тайника: бриф
+Два ящика: вкладки слева, тайник справа, своего цвета. Внизу ящика вкладок — зона «Отложить в тайник».
 - [x] заметки и ссылки на файлы — разные иконки
 - [ ] теги, #репо по окну
-- [ ] узкое окно — стэш вторым слоем` },
+- [ ] узкое окно — тайник вторым слоем` },
   { id: 6, noteId: 'n2' },
   { id: 7, name: 'README.md', proj: WIN_PROJECT, br: WT, md:
 `# couplet
@@ -1093,9 +1122,29 @@ const INITIAL_ORDER = [2, 1, 5, 3, 4, 7, 6, 8, 9, 11, 10];     // "manually arra
 
 let clock = 200;
 const tabs = new Map();
-const stash = { open: false, items: STASH0.map(x => ({ ...x, tags: [...x.tags] })), kb: -1, query: '', repoChip: WIN_PROJECT, sort: 'edited' };
+const stash = { open: false, items: STASH0.map(x => ({ ...x, tags: [...x.tags] })), kb: -1, query: '', repoChip: WIN_PROJECT, sort: 'edited', view: 'stash' };
 const SI = id => stash.items.find(x => x.id === id);
 let stashSeq = 100, tick = 0;
+/* Trash: deleted notes, kept 30 days. `deleted` = minutes since deletion (same clock as `edited`). */
+let trash = [
+  { id: 't1', kind: 'note', repo: null, tags: ['infra'], edited: 5200, opened: 5200, away: null, deleted: 4400, md:
+`# Черновик поста про VPN
+Почему мы ушли с OpenVPN на Xray: скорость, обфускация, меньше жалоб из регионов.
+- [ ] цифры по handshake до и после` },
+  { id: 't2', kind: 'note', repo: null, tags: [], edited: 18400, opened: 18400, away: null, deleted: 17900, md:
+`Список покупок в офис
+- HDMI-кабели ×3
+- удлинители в переговорки
+- кофе в зёрнах` },
+  { id: 't3', kind: 'note', repo: WIN_PROJECT, tags: ['couplet', 'ideas'], edited: 37800, opened: 37800, away: null, deleted: 37500, md:
+`Старые идеи для тем
+«sepia» и «graphite» — отказались: слишком похожи на light.
+- искать тёплую пару для phosphor` },
+];
+const trEls = new Map();
+const TRASH_DAYS = 30;
+const daysAgo = m => m < TODAY_MIN ? 0 : Math.floor((m - TODAY_MIN) / 1440) + 1;
+const daysLeft = it => Math.max(1, TRASH_DAYS - daysAgo(it.deleted));
 const stamp = () => -(++tick);         // "just now", newer = smaller
 let focus = 'tabs';                    // which drawer has the keys while both are open
 
@@ -1145,6 +1194,7 @@ const ICONS = {
   tray: '<path d="M2.5 9.5 4.2 3.5h7.6l1.7 6"/><path d="M2.5 9.5v3.2c0 .4.3.8.8.8h9.4c.5 0 .8-.4.8-.8V9.5h-3.3l-.9 1.6H6.7l-.9-1.6z"/>',
   note: '<rect x="3.5" y="2.5" width="9" height="11" rx="1.3"/><path d="M6 6h4M6 8.5h4M6 11h2.4"/>',
   fref: '<path d="M8 2.5H4.8c-.7 0-1.3.6-1.3 1.3v8.4c0 .7.6 1.3 1.3 1.3h6.4c.7 0 1.3-.6 1.3-1.3V9"/><path d="M10.5 2.5h3v3M13.5 2.5 8.5 7.5"/>',
+  bin: '<path d="M3 4.5h10M6.5 4.5V3h3v1.5"/><path d="M4.5 4.5l.6 8.3c.05.7.6 1.2 1.3 1.2h3.2c.7 0 1.25-.5 1.3-1.2l.6-8.3"/><path d="M7 7v4.2M9 7v4.2"/>',
   repo: '<path d="M2.5 4.3c0-.5.4-.8.8-.8h3l1.3 1.5h5.1c.5 0 .8.4.8.8v6.4c0 .5-.3.8-.8.8H3.3c-.4 0-.8-.3-.8-.8z"/>',
 };
 const icon = (name, cls = 'ico', sw = 1.5) => `<svg class="${cls}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
@@ -1220,13 +1270,13 @@ function when(m) {
   const d = Math.floor((m - TODAY_MIN) / 1440) + 1; return `${d} ${plural(d, 'день', 'дня', 'дней')} назад`;
 }
 function metaText(t) {
-  if (t.kind === 'note') return t.repo || 'заметка';   // drag ghost of a note tab: no «в стэше» label, like the card
+  if (t.kind === 'note') return t.repo || 'заметка';   // drag ghost of a note tab: no «в тайнике» label, like the card
   if (t.kind === 'draft') return 'пустая заметка';
   return t.proj ? `${t.proj} · ⎇ ${t.br}` : 'не сохранён';
 }
 
 /* ═════════════════════════ Rendering ═════════════════════════ */
-const DRAFT_HTML = '<p class="muted">Пустая заметка. Закроете, ничего не набрав, — она просто исчезнет. Первый символ — и она уже в стэше.</p>';
+const DRAFT_HTML = '<p class="muted">Пустая заметка. Закроете, ничего не набрав, — она просто исчезнет. Первый символ — и она уже в тайнике.</p>';
 function renderEditor() {
   const t = T(W.active); const doc = $('#doc1');
   const label = t.kind === 'note' ? `${icon('tray', 'sg')}${esc(t.name)}` : t.kind === 'draft' ? '<span class="t-draft">Новая заметка</span>' : esc(t.name);
@@ -1277,12 +1327,12 @@ function cardHTML(t, i, mm) {
   const imeta = isNote ? (t.repo ? esc(t.repo) : '') : isDraft ? 'пустая' : t.proj ? `${esc(t.proj)} · <span class="br">⎇ ${esc(t.br)}</span>` : 'не сохранён';
   const nameQ = mm && mm.rank < 2 ? query : '';
   const name = isNote ? `${icon('tray', 'sg')}${hl(t.name, nameQ)}` : isDraft ? 'Новая заметка' : hl(t.name, nameQ);
-  const mark = t.kind === 'file' && inStash(t) ? `<span class="in-stash" title="Есть в стэше">${icon('tray')}</span>` : '';
+  const mark = t.kind === 'file' && inStash(t) ? `<span class="in-stash" title="Есть в тайнике">${icon('tray')}</span>` : '';
   let preview;
   if (mm && mm.rank === 2) preview = `<div class="hit-l">в тексте:</div><div class="hit">${hitLine(mm.line, query)}</div>`;
   else if (isCompact()) { const f = firstLine(isNote ? dropFirstLine(t.md) : t.md); preview = f ? `<div>${esc(f)}</div>` : ''; }
   else preview = renderPreview(isNote ? dropFirstLine(t.md) : t.md);
-  const closeTitle = isNote ? 'Закрыть — заметка останется в стэше (⌘-клик)' : isDraft ? 'Закрыть — пустая заметка исчезнет' : 'Закрыть (⌘-клик)';
+  const closeTitle = isNote ? 'Закрыть — заметка останется в тайнике (⌘-клик)' : isDraft ? 'Закрыть — пустая заметка исчезнет' : 'Закрыть (⌘-клик)';
   return `<span class="ring"></span><span class="wash"></span>
     <div class="card-head"><span class="sel-dot">✓</span><span class="card-name">${name}</span>${mark}<span class="card-imeta">${imeta}</span><span class="ai-chip">✦ от ИИ</span>
       ${i < 9 ? `<kbd class="card-kbd">⌘${i + 1}</kbd>` : ''}<button class="card-close" type="button" aria-label="Закрыть ${esc(t.name)}" title="${closeTitle}">×</button></div>
@@ -1376,8 +1426,9 @@ function matchItem(it, pq) {
   for (const raw of it.md.split('\n')) { const l = plainLine(raw); if (l && l.toLowerCase().includes(pq.text)) return { rank: 2, line: l }; }
   return null;
 }
+const lastTouch = it => Math.min(it.edited, it.away ?? Infinity);   // edit or put-away, whichever is newer
 const STASH_SORTS = {
-  edited: (a, b) => a.edited - b.edited,
+  edited: (a, b) => lastTouch(a) - lastTouch(b),
   opened: (a, b) => a.opened - b.opened,
   kind: (a, b) => (a.kind === b.kind ? 0 : a.kind === 'note' ? -1 : 1) || a.edited - b.edited,
 };
@@ -1389,12 +1440,9 @@ function computeStashView() {
   const hit = stash.items.filter(it => m.has(it.id) && openTabFor(it) == null);
   const cmp = STASH_SORTS[stash.sort];
   const byRank = (a, b) => (pq.text ? m.get(a.id).rank - m.get(b.id).rank : 0);
-  const away = hit.filter(it => it.away != null).sort((a, b) => byRank(a, b) || a.away - b.away);   // put away: newest first
-  const rest = hit.filter(it => it.away == null).sort((a, b) => byRank(a, b) || cmp(a, b));
-  return { away, rest, m, text: pq.text, openHere };
+  const list = hit.sort((a, b) => byRank(a, b) || cmp(a, b));   // one flat list, no sections
+  return { list, m, text: pq.text, openHere };
 }
-const secAway = Object.assign(document.createElement('div'), { className: 'st-sec away' });
-const secRest = Object.assign(document.createElement('div'), { className: 'st-sec' });
 function stCardHTML(it, mm, text) {
   const isNote = it.kind === 'note';
   const nameQ = mm && mm.rank < 2 ? text : '';
@@ -1414,7 +1462,7 @@ function stCardHTML(it, mm, text) {
   return `<div class="card-head"><span class="kind-ico" title="${isNote ? 'Заметка — текст хранит couplet' : 'Ссылка на файл — сам файл лежит на своём месте'}">${icon(isNote ? 'note' : 'fref', 'ico', 1.4)}</span>
       <span class="card-name">${hl(itemTitle(it), nameQ)}</span>
       ${elsewhere != null ? `<span class="open-mark" title="Открыт вкладкой в другом окне — откроется здесь, переехав оттуда">${isNote ? 'открыта' : 'открыт'} в #${elsewhere}</span>` : ''}
-      <button class="card-rm" type="button" title="${isNote ? 'Заметка уйдёт в корзину на 30 дней' : 'Файл останется на месте — уберётся только ссылка'}">${isNote ? 'удалить' : 'убрать из стэша'}</button></div>
+      <button class="card-rm" type="button" title="${isNote ? 'Заметка уйдёт в корзину на 30 дней' : 'Файл останется на месте — уберётся только ссылка'}">${isNote ? 'удалить' : 'убрать из тайника'}</button></div>
     <div class="card-meta">${meta.join('')}</div>
     ${isNote ? '' : `<div class="card-path" title="${esc(it.repo + '/' + it.dir + it.name)}">${esc(it.dir + it.name)}</div>`}
     ${preview ? `<div class="card-preview">${preview}</div>` : ''}
@@ -1427,23 +1475,84 @@ function stCard(it, mm, text) {
   if (el.dataset.sig !== sig) { el.innerHTML = stCardHTML(it, mm, text); el.dataset.sig = sig; }
   el.classList.toggle('note', it.kind === 'note');
   el.classList.toggle('file', it.kind === 'file');
-  el.classList.toggle('away', it.away != null);
   el.classList.toggle('kb', stash.open && focus === 'stash' && stView[stash.kb] === it.id);
   if (!el.isConnected) { el.classList.remove('closing'); el.style.height = ''; }   // back after a move out
   if (stArriving.has(it.id)) { stArriving.delete(it.id); restart(el, 'arriving', 520); }
   if (stPulse.has(it.id)) { stPulse.delete(it.id); restart(el, 'pulse', 1150, 260); }
   return el;
 }
-function renderStash() {
+function trCardHTML(it) {
+  const preview = isCompact() ? (() => { const f = firstLine(dropFirstLine(it.md)); return f ? `<div>${esc(f)}</div>` : ''; })() : renderPreview(dropFirstLine(it.md));
+  const tags = [
+    ...(it.repo ? [`<span class="tag repo">${icon('repo', 'ico', 1.4)}${esc(it.repo)}</span>`] : []),
+    ...it.tags.map(tg => `<span class="tag">#${esc(tg)}</span>`),
+  ].join('');
+  const left = daysLeft(it);
+  return `<div class="card-head"><span class="kind-ico" title="Удалённая заметка">${icon('note', 'ico', 1.4)}</span><span class="card-name">${esc(itemTitle(it))}</span></div>
+    <div class="card-meta"><span>удалена ${when(it.deleted)}</span></div>
+    ${preview ? `<div class="card-preview">${preview}</div>` : ''}
+    ${tags ? `<div class="card-tags">${tags}</div>` : ''}
+    <div class="tr-actions"><span class="left">удалится через ${left} дн.</span><button class="tr-restore" type="button" title="Вернуть в тайник вместе с тегами">вернуть</button><button class="tr-purge" type="button" title="Без возможности вернуть">удалить навсегда</button></div>`;
+}
+function renderTrash() {
   const box = $('#stCards');
-  const { away, rest, m, text, openHere } = computeStashView();
-  stView = [...away, ...rest].map(it => it.id);
-  const seq = [];
-  const secs = away.length > 0;
-  if (secs) { secAway.innerHTML = `${icon('tray')}Отложено <span class="n">· ${away.length}</span>`; seq.push(secAway); }
-  away.forEach(it => seq.push(stCard(it, m.get(it.id), text)));
-  if (secs && rest.length) { secRest.innerHTML = `Остальное <span class="n">· ${rest.length}</span>`; seq.push(secRest); }
-  rest.forEach(it => seq.push(stCard(it, m.get(it.id), text)));
+  const pq = parseStashQuery(stash.query);
+  const list = trash.filter(it => {
+    for (const tg of pq.tags) if (tg && !itemTags(it).some(x => x.toLowerCase().startsWith(tg))) return false;
+    return !pq.text || itemTitle(it).toLowerCase().includes(pq.text) || it.md.toLowerCase().includes(pq.text);
+  }).sort((a, b) => a.deleted - b.deleted);
+  stView = [];
+  const seq = list.map(it => {
+    let el = trEls.get(it.id);
+    if (!el) { el = document.createElement('div'); el.className = 'card note trashed'; el.dataset.tid = it.id; trEls.set(it.id, el); }
+    const sig = [it.deleted, isCompact()].join('|');
+    if (el.dataset.sig !== sig) { el.innerHTML = trCardHTML(it); el.dataset.sig = sig; }
+    if (!el.isConnected) { el.classList.remove('closing'); el.style.height = ''; }
+    return el;
+  });
+  seq.forEach((el, pos) => { if (box.children[pos] !== el) box.insertBefore(el, box.children[pos] || null); });
+  while (box.children.length > seq.length) box.lastElementChild.remove();
+  for (const [id, el] of trEls) if (!trash.some(x => x.id === id)) { el.remove(); trEls.delete(id); }
+  $('#stTitle').textContent = 'Удалённые';
+  $('#stCount').textContent = trash.length;
+  $('#stSearch').classList.toggle('on', !!stash.query);
+  $('#stTypeHint').classList.toggle('off', !!stash.query);
+  $('#stQ').textContent = stash.query;
+  $('#stN').textContent = stash.query ? (list.length ? `${list.length} из ${trash.length}` : '') + ' · esc — сброс' : '';
+  $('#stEmpty').classList.toggle('on', !list.length);
+  $('#stEmpty').textContent = stash.query ? 'Ничего не найдено' : 'Удалённых заметок нет';
+  const fr = $('#stFilter');
+  const html = `<span class="f-note">заметки хранятся ${TRASH_DAYS} дней, потом удаляются · Esc — назад в тайник</span>`;
+  if (fr.dataset.html !== html) { fr.innerHTML = html; fr.dataset.html = html; }
+  renderStashBar();
+}
+function renderTrashBar() {
+  const inTrash = stash.view === 'trash';
+  const ico = inTrash ? 'tray' : 'bin';
+  const btnIco = $('#trashBtnIco'), glyph = $('#stGlyph');
+  if (btnIco.dataset.ico !== ico) { btnIco.innerHTML = icon(ico); btnIco.dataset.ico = ico; }
+  const gl = inTrash ? 'bin' : 'tray';
+  if (glyph.dataset.ico !== gl) { glyph.innerHTML = icon(gl); glyph.dataset.ico = gl; }
+  $('#trashBtnLabel').textContent = inTrash ? '← в тайник' : 'Удалённые';
+  $('#trashBtn').setAttribute('aria-pressed', String(inTrash));
+  $('#trashBtn').title = inTrash ? 'Назад в тайник (Esc)' : `Удалённые заметки — ${TRASH_DAYS} дней можно вернуть`;
+  const html = inTrash ? `· <span class="num">${stash.items.length}</span> в тайнике` : `· <span class="num">${trash.length}</span> · хранятся ${TRASH_DAYS} дней`;
+  const sum = $('#trashSum');
+  if (sum.dataset.html !== html) { sum.innerHTML = html; sum.dataset.html = html; }
+}
+function setStashView(v) {
+  stash.view = v; stash.query = ''; stash.kb = -1;
+  $('#stashDrawer').classList.toggle('trash-view', v === 'trash');
+  $('#stList').scrollTop = 0;
+  renderStash();
+}
+function renderStash() {
+  if (stash.view === 'trash') { renderTrash(); return; }
+  $('#stTitle').textContent = 'Тайник';
+  const box = $('#stCards');
+  const { list, m, text, openHere } = computeStashView();
+  stView = list.map(it => it.id);
+  const seq = list.map(it => stCard(it, m.get(it.id), text));
   seq.forEach((el, pos) => { if (box.children[pos] !== el) box.insertBefore(el, box.children[pos] || null); });
   while (box.children.length > seq.length) box.lastElementChild.remove();
   stash.items.forEach(it => { it.newTags = null; });
@@ -1455,11 +1564,11 @@ function renderStash() {
   $('#stQ').textContent = stash.query;
   $('#stN').textContent = stash.query ? (stView.length ? `${stView.length} из ${total}` : '') + ' · esc — сброс' : '';
   $('#stEmpty').classList.toggle('on', !stView.length);
-  $('#stEmpty').textContent = stash.query ? 'Ничего не найдено' : openHere ? 'Всё с этим тегом уже открыто вкладками' : `С тегом #${stash.repoChip} в стэше пусто`;
+  $('#stEmpty').textContent = stash.query ? 'Ничего не найдено' : openHere ? 'Всё с этим тегом уже открыто вкладками' : `С тегом #${stash.repoChip} в тайнике пусто`;
   const fr = $('#stFilter');
   const html = stash.repoChip
-    ? `<span class="fchip" title="Окно #22 привязано к репо ${esc(stash.repoChip)} — стэш открыт с этим фильтром">${icon('repo', 'ico', 1.4)}${esc(stash.repoChip)}<button class="fchip-x" type="button" aria-label="Снять фильтр по репо" title="Показать весь стэш (⌫ в пустом поиске)">×</button></span><span class="f-note">репо окна · ${stView.length} из ${total}${openHere ? ` · ${openHere} во вкладках` : ''}</span>`
-    : `<button class="f-add" type="button" title="Вернуть фильтр по репо окна">+ ${icon('repo', 'ico', 1.4)}${esc(WIN_PROJECT)}</button><span class="f-note">весь стэш · ${stView.length} из ${total}${openHere ? ` · ${openHere} во вкладках` : ''}</span>`;
+    ? `<span class="fchip" title="Окно #22 привязано к репо ${esc(stash.repoChip)} — тайник открыт с этим фильтром">${icon('repo', 'ico', 1.4)}${esc(stash.repoChip)}<button class="fchip-x" type="button" aria-label="Снять фильтр по репо" title="Показать весь тайник (⌫ в пустом поиске)">×</button></span><span class="f-note">репо окна · ${stView.length} из ${total}${openHere ? ` · ${openHere} во вкладках` : ''}</span>`
+    : `<button class="f-add" type="button" title="Вернуть фильтр по репо окна">+ ${icon('repo', 'ico', 1.4)}${esc(WIN_PROJECT)}</button><span class="f-note">весь тайник · ${stView.length} из ${total}${openHere ? ` · ${openHere} во вкладках` : ''}</span>`;
   if (fr.dataset.html !== html) { fr.innerHTML = html; fr.dataset.html = html; }
   document.querySelectorAll('.st-sort').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.ssort === stash.sort)));
   renderStashBar();
@@ -1470,6 +1579,7 @@ function renderStashBar() {
   const sum = $('#stashSum');
   if (sum.dataset.html !== html) { sum.innerHTML = html; sum.dataset.html = html; }
   $('#stashBtn').setAttribute('aria-pressed', String(stash.open));
+  renderTrashBar();
 }
 function bumpStashBar() {
   restart($('#stashSum .num'), 'bump', 520);
@@ -1526,6 +1636,7 @@ function openStash() {
   drawer.mode = 'pinned'; clearTimeout(hoverCloseTimer);
   if (stash.open) { setFocus('stash'); return; }
   stash.open = true; stash.query = ''; stash.kb = -1;
+  stash.view = 'stash'; $('#stashDrawer').classList.remove('trash-view');
   stash.repoChip = WIN_PROJECT;                             // a project window opens its stash filtered by its repo tag
   $('#content1').classList.add('stash-open');
   $('#stList').scrollTop = 0;
@@ -1535,6 +1646,7 @@ function openStash() {
 function closeStash() {
   if (!stash.open) return;
   stash.open = false; stash.query = ''; stash.kb = -1;
+  stash.view = 'stash'; $('#stashDrawer').classList.remove('trash-view');
   $('#content1').classList.remove('stash-open');
   stEls.forEach(el => { el.classList.remove('expanded'); clearTimeout(el._hold); });
   setFocus('tabs');
@@ -1542,6 +1654,7 @@ function closeStash() {
 }
 const toggleStash = () => stash.open ? closeStash() : openStash();
 $('#stashBtn').addEventListener('click', e => { e.currentTarget.blur(); toggleStash(); });
+$('#trashBtn').addEventListener('click', e => { e.currentTarget.blur(); setFocus('stash'); setStashView(stash.view === 'trash' ? 'stash' : 'trash'); });
 wrap.addEventListener('pointerdown', () => { if (stash.open) setFocus('tabs'); }, true);
 $('#stashWrap').addEventListener('pointerdown', () => { if (stash.open) setFocus('stash'); }, true);
 $('#stashWrap').addEventListener('pointerenter', () => clearTimeout(hoverCloseTimer));
@@ -1608,15 +1721,15 @@ function closeTabs(ids) {
   removeTabs(ids.filter(id => !drafts.includes(id)), { toStack: true });
   if (drafts.length) removeTabs(drafts);
   if (notes.length) bumpStashBar();
-  if (ids.length > 1) toast(`Закрыто ${ids.length} ${plural(ids.length, 'вкладка', 'вкладки', 'вкладок')}${notes.length ? ` <span>· заметки отложены в стэш</span>` : ''} <span>· ⌘⇧T вернёт по одной</span>`);
-  else if (notes.length) toast(`Заметка <b>${esc(T(notes[0]).name)}</b> отложена <span>· она в стэше, наверху</span>`);
-  else if (drafts.length) toast('Пустая заметка закрыта <span>· хранить нечего, в стэш не попала</span>');
+  if (ids.length > 1) toast(`Закрыто ${ids.length} ${plural(ids.length, 'вкладка', 'вкладки', 'вкладок')}${notes.length ? ` <span>· заметки отложены в тайник</span>` : ''} <span>· ⌘⇧T вернёт по одной</span>`);
+  else if (notes.length) toast(`Заметка <b>${esc(T(notes[0]).name)}</b> отложена <span>· она в тайнике, наверху</span>`);
+  else if (drafts.length) toast('Пустая заметка закрыта <span>· хранить нечего, в тайник не попала</span>');
 }
 function reopen() {
   const e = closedStack.pop();
   if (!e) { toast('Нечего возвращать'); return; }
   const t = T(e.id);
-  if (t.kind === 'note') { const it = SI(t.noteId); if (!it) { toast('Заметка уже удалена'); return; } it.away = null; it.opened = stamp(); }
+  if (t.kind === 'note') { const it = SI(t.noteId); if (!it) { toast('Заметка уже удалена'); return; } it.opened = stamp(); }
   const idx = Math.min(e.index, W.order.length);
   W.order.splice(idx, 0, e.id); arriving.add(e.id);
   W.active = e.id; t.viewedAt = ++clock;
@@ -1664,13 +1777,13 @@ function stashTabs(ids) {
     let it = t.kind === 'note' ? SI(t.noteId) : stash.items.find(x => itemKey(x) === tabKey(t));
     if (it) bumped.push(it);
     else {
-      it = { id: 'f' + (++stashSeq), kind: 'file', name: t.name, repo: t.proj, br: t.br, dir: t.dir || '', md: t.md, tags: [], edited: stamp(), opened: stamp(), away: null };
+      it = { id: 'f' + (++stashSeq), kind: 'file', name: t.name, repo: t.proj, br: t.br, dir: t.dir || '', md: t.md, tags: [], edited: stamp(), opened: stamp(), away: stamp() };
       stash.items.push(it); added.push(it);
     }
     it.away = stamp();
   }
   removeTabs(ids);
-  if (stash.open) { stash.query = ''; }
+  if (stash.open) { stash.query = ''; if (stash.view === 'trash') { stash.view = 'stash'; $('#stashDrawer').classList.remove('trash-view'); } }
   [...added, ...bumped].forEach(it => stArriving.add(it.id));
   flipStash();
   if (stash.open) $('#stList').scrollTo({ top: 0, behavior: 'smooth' });
@@ -1681,12 +1794,12 @@ function stashTabs(ids) {
   if (!n) msg = 'Пустая заметка закрыта <span>· хранить нечего</span>';
   else if (n === 1 && bumped.length) {
     const it = bumped[0];
-    msg = it.kind === 'note' ? `Заметка <b>${esc(itemTitle(it))}</b> → стэш <span>· отложена</span>`
-      : `<b>${esc(itemTitle(it))}</b> → стэш <span>· запись уже была — вторая не создана</span>`;
-  } else if (n === 1) msg = `<b>${esc(itemTitle(added[0]))}</b> → стэш <span>· отложено</span>`;
+    msg = it.kind === 'note' ? `Заметка <b>${esc(itemTitle(it))}</b> → тайник <span>· отложена</span>`
+      : `<b>${esc(itemTitle(it))}</b> → тайник <span>· запись уже была — вторая не создана</span>`;
+  } else if (n === 1) msg = `<b>${esc(itemTitle(added[0]))}</b> → тайник <span>· отложено</span>`;
   else {
     const dup = bumped.filter(it => it.kind === 'file').length;
-    msg = `Отложено в стэш: ${n}${dup ? ` <span>· для ${dup} запись уже была — дублей нет</span>` : ''}`;
+    msg = `Отложено в тайник: ${n}${dup ? ` <span>· для ${dup} запись уже была — дублей нет</span>` : ''}`;
   }
   if (hidden) msg += ` <span>· ${hidden === 1 ? 'скрыт' : 'скрыты'} фильтром #${esc(stash.repoChip)}</span>`;
   if (n && drafts.length) msg += ' <span>· пустая заметка просто закрыта</span>';
@@ -1696,7 +1809,7 @@ function stashTabs(ids) {
 function openFromStash(itemId, { before } = {}) {
   const it = SI(itemId); if (!it) return null;
   const ex = openTabFor(it);
-  it.away = null; it.opened = stamp();
+  it.opened = stamp();
   if (ex != null) {
     W.active = ex; T(ex).viewedAt = ++clock; renderEditor();
     flip(renderList); flipStash();
@@ -1728,7 +1841,7 @@ function openFromStash(itemId, { before } = {}) {
   setTimeout(flipStash, sel && stash.open ? 230 : 0);
   requestAnimationFrame(() => { const el = cardEls.get(id); if (el && drawer.open) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); });
   const fem = it.kind === 'note';
-  toast(`<b>${esc(itemTitle(it))}</b> ${fem ? 'открыта' : 'открыт'} вкладкой <span>· ${from != null ? `${fem ? 'переехала' : 'переехал'} из #${from}` : 'из стэша'}</span>`);
+  toast(`<b>${esc(itemTitle(it))}</b> ${fem ? 'открыта' : 'открыт'} вкладкой <span>· ${from != null ? `${fem ? 'переехала' : 'переехал'} из #${from}` : 'из тайника'}</span>`);
   return id;
 }
 function removeFromStash(itemId) {
@@ -1739,9 +1852,13 @@ function removeFromStash(itemId) {
   if (tid != null) removeTabs([tid]);                      // a deleted note leaves the window too
   const el = stEls.get(itemId);
   if (el) { clearTimeout(el._hold); el.classList.remove('expanded'); el.style.height = el.offsetHeight + 'px'; void el.offsetHeight; el.classList.add('closing'); el.style.height = '0px'; }
-  setTimeout(() => { stash.items = stash.items.filter(x => x !== it); flipStash(); renderList(); }, 250);
-  toast(isNote ? `Заметка <b>${esc(itemTitle(it))}</b> в корзине <span>· 30 дней можно вернуть</span>`
-    : `<b>${esc(it.name)}</b> убран из стэша <span>· файл остался на месте</span>`);
+  setTimeout(() => {
+    stash.items = stash.items.filter(x => x !== it);
+    if (isNote) { delete it.removing; it.deleted = stamp(); it.away = null; trash.unshift(it); restart($('#trashSum .num'), 'bump', 520); restart($('#trashBar'), 'got', 720); }
+    flipStash(); renderList();
+  }, 250);
+  toast(isNote ? `Заметка <b>${esc(itemTitle(it))}</b> в удалённых <span>· ${TRASH_DAYS} дней можно вернуть</span>`
+    : `<b>${esc(it.name)}</b> убран из тайника <span>· файл остался на месте</span>`);
 }
 /* ⌃T (candidate key, page handler — see report §4.2): put away the ⇧-selection, the card under the ring, or the active tab. */
 function stashByKey() {
@@ -1778,7 +1895,24 @@ cardsBox.addEventListener('pointerdown', e => {
 });
 const stCardsBox = $('#stCards');
 stCardsBox.addEventListener('contextmenu', e => e.preventDefault());
+function trashAction(id, restore) {
+  const it = trash.find(x => x.id === id); if (!it) return;
+  const el = trEls.get(id);
+  if (el) { el.style.height = el.offsetHeight + 'px'; void el.offsetHeight; el.classList.add('closing'); el.style.height = '0px'; }
+  setTimeout(() => {
+    trash = trash.filter(x => x !== it);
+    if (restore) { delete it.deleted; it.away = stamp(); stash.items.push(it); stArriving.add(it.id); }
+    renderStash(); renderList();
+    if (restore) bumpStashBar();
+    restart($('#trashSum .num'), 'bump', 520);
+  }, 230);
+  const hidden = restore && stash.repoChip && it.repo !== stash.repoChip;
+  toast(restore ? `Заметка <b>${esc(itemTitle(it))}</b> вернулась в тайник <span>· с тегами, наверху${hidden ? ` · скрыта фильтром #${esc(stash.repoChip)}` : ''}</span>`
+    : `Заметка <b>${esc(itemTitle(it))}</b> удалена навсегда`);
+}
 stCardsBox.addEventListener('click', e => {
+  const tr = e.target.closest('.tr-restore, .tr-purge');
+  if (tr) { e.stopPropagation(); trashAction(tr.closest('.card').dataset.tid, tr.classList.contains('tr-restore')); return; }
   const rm = e.target.closest('.card-rm');
   if (rm) { e.stopPropagation(); removeFromStash(rm.closest('.card').dataset.sid); return; }
   const tag = e.target.closest('.tag');
@@ -1786,7 +1920,7 @@ stCardsBox.addEventListener('click', e => {
 });
 stCardsBox.addEventListener('pointerdown', e => {
   const card = e.target.closest('.card'); if (!card || e.target.closest('.card-rm, .tag')) return;
-  if (e.button !== 0 || card.classList.contains('closing')) return;
+  if (e.button !== 0 || card.classList.contains('closing') || card.classList.contains('trashed')) return;
   e.preventDefault();
   startPress(card.dataset.sid, card, e, 'stash');
 });
@@ -1835,7 +1969,7 @@ function beginDrag(id, card, sx, sy, src) {
   ids.forEach(x => els.get(x)?.classList.add('dragging'));
   let name, meta;
   if (src === 'tabs') { const t = T(id); name = t.name; meta = metaText(t); }
-  else { const it = SI(id); name = itemTitle(it); meta = it.kind === 'note' ? 'заметка из стэша' : `${it.repo} · ⎇ ${it.br}`; }
+  else { const it = SI(id); name = itemTitle(it); meta = it.kind === 'note' ? 'заметка из тайника' : `${it.repo} · ⎇ ${it.br}`; }
   const g = document.createElement('div'); g.className = 'ghost' + (ids.length > 1 ? ' multi' : '') + (src === 'stash' ? ' from-stash' : '');
   g.innerHTML = `<div class="ghost-bar"><i></i><i></i><i></i><span></span></div>
     <div class="ghost-body"><div class="ghost-name">${esc(name)}</div><div class="ghost-meta">${esc(meta)}</div></div>
@@ -1889,7 +2023,7 @@ function dragAt(x, y) {
   g.classList.toggle('cancel', tgt.kind === 'none');
   const bar = g.querySelector('.ghost-bar span');
   bar.textContent = tgt.kind === 'desktop' || tgt.kind === 'newwin' ? 'Новое окно' : tgt.kind === 'win' || tgt.kind === 'thumb' ? `→ #${tgt.win.id}`
-    : toStash ? 'В стэш' : tgt.kind === 'open' ? (tgt.existing != null ? 'Уже открыт — показать' : 'Открыть вкладкой') : '';
+    : toStash ? 'В тайник' : tgt.kind === 'open' ? (tgt.existing != null ? 'Уже открыт — показать' : 'Открыть вкладкой') : '';
   const wide = tgt.kind === 'desktop' || tgt.kind === 'win' || inCar || car.on;
   // Over a stash target the ghost shrinks and lifts above the pointer, so the drop zone under it stays readable.
   const ox = wide || toStash ? 40 : drag.ox, oy = wide ? 12 : toStash ? 112 : drag.oy;
@@ -2027,7 +2161,7 @@ function wireMini(w) {
    tab(s) there; back over the drawer = reorder; Esc = cancel. */
 const OFFSCREEN = [
   { id: 12, focusedAt: 190, tabs: [
-    { name: 'tabs-roadmap.md', proj: 'md-mini', br: 'main', md: `# Вкладки: дорожная карта\n## Планы\n1. Фундамент — **готово**\n2. Модель вкладок — **готово**\n3. Хлястик и дровер — **готово**\n4. Контракт ИИ и CLI — **готово**\n5. Стэш — макет` },
+    { name: 'tabs-roadmap.md', proj: 'md-mini', br: 'main', md: `# Вкладки: дорожная карта\n## Планы\n1. Фундамент — **готово**\n2. Модель вкладок — **готово**\n3. Хлястик и дровер — **готово**\n4. Контракт ИИ и CLI — **готово**\n5. Тайник — макет` },
     { name: 'session-v2-notes.md', proj: 'md-mini', br: 'main', md: `# Session v2\nНовее побеждает по \`savedAt\`. \`session.json\` не пишется.` } ] },
   { id: 7, focusedAt: 170, tabs: [
     { name: 'nginx-upstreams.md', proj: 'infra', br: 'main', md: `# nginx upstreams\nВеса canary: 90 / 10. Health-check каждые 5 с.` },
@@ -2144,7 +2278,7 @@ document.addEventListener('keydown', e => {
   const inStash = stash.open && focus === 'stash';
   if (e.key === 'Escape' && drawer.open) {
     e.preventDefault();
-    if (inStash) { if (stash.query) setStashQuery(''); else closeStash(); return; }
+    if (inStash) { if (stash.query) setStashQuery(''); else if (stash.view === 'trash') setStashView('stash'); else closeStash(); return; }
     if (query) setQuery('');                                   // 1st Esc: clear the search
     else if (selected.size) { selected.clear(); renderList(); }
     else closeDrawer();                                        // next Esc: close (both)
@@ -2234,7 +2368,7 @@ function ensureRoom() {
   let left = r.left;
   if (left + need > innerWidth - 12) left = Math.max(8, innerWidth - 12 - need);
   win.style.width = need + 'px'; win.style.left = left + 'px';
-  toast('Окно раздвинулось, чтобы стэш встал рядом <span>· вернётся, когда стэш закроется</span>');
+  toast('Окно раздвинулось, чтобы тайник встал рядом <span>· вернётся, когда тайник закроется</span>');
 }
 function restoreRoom() {
   if (!widened) return;
@@ -2259,8 +2393,8 @@ $('#demoReset').addEventListener('click', () => location.reload());
 /* Dedup from another window: the same file, stashed from window #12 with a tag. */
 $('#demoDedup').addEventListener('click', () => {
   const it = stash.items.find(x => x.id === 'f2');       // in the stash, not open in this window → visible
-  if (!it) { toast('tabs-02-model.md уже убран из стэша <span>· сбросьте макет</span>'); return; }
-  if (openTabFor(it) != null) { toast('tabs-02-model.md сейчас открыт здесь вкладкой — в стэше его не видно <span>· отложите его сначала</span>'); return; }
+  if (!it) { toast('tabs-02-model.md уже убран из тайника <span>· сбросьте макет</span>'); return; }
+  if (openTabFor(it) != null) { toast('tabs-02-model.md сейчас открыт здесь вкладкой — в тайнике его не видно <span>· отложите его сначала</span>'); return; }
   const wasOpen = stash.open;
   openStash(); stash.query = ''; stash.repoChip = WIN_PROJECT;
   setTimeout(() => {
@@ -2277,19 +2411,19 @@ $('#demoNew').addEventListener('click', () => {
   W.order.splice(W.order.indexOf(W.active) + 1, 0, id); arriving.add(id);
   W.active = id;
   flip(renderList); renderEditor();
-  toast('Новая заметка <span>· пока пустая — в стэше её нет; закроете пустой — исчезнет</span>');
+  toast('Новая заметка <span>· пока пустая — в тайнике её нет; закроете пустой — исчезнет</span>');
 });
 $('#demoType').addEventListener('click', () => {
   const tid = T(W.active).kind === 'draft' ? W.active : [...W.order].reverse().find(id => T(id).kind === 'draft');
   if (tid == null) { toast('Сначала «Новая пустая заметка»'); return; }
   const old = T(tid);
-  const it = { id: 'n' + (++stashSeq), kind: 'note', repo: WIN_PROJECT, tags: [], edited: stamp(), opened: stamp(), away: null,
+  const it = { id: 'n' + (++stashSeq), kind: 'note', repo: WIN_PROJECT, tags: [], edited: stamp(), opened: stamp(), away: stamp(),
     md: 'Купить HDMI-кабель в переговорку\n- [ ] спросить Олега про адаптер USB-C\n- [ ] проектор на 3 этаже — заявка в Pyrus' };
   stash.items.push(it); stArriving.add(it.id);
   tabs.set(tid, makeNoteTab(tid, it.id, { openedAt: old.openedAt, viewedAt: ++clock }));
   W.active = tid;
   flip(renderList); renderEditor(); flipStash(); bumpStashBar();
-  toast(`Первый символ — и заметка уже в стэше <span>· с тегом репо #${WIN_PROJECT} по окну</span>`);
+  toast(`Первый символ — и заметка уже в тайнике <span>· с тегом репо #${WIN_PROJECT} по окну</span>`);
 });
 $('#aiBind').addEventListener('click', () => toast('<b>Промпт скопирован</b> <span>— отправьте его AI-агенту</span>'));
 notch.title = `Вкладки окна #22 — навести, клик или ${drawerKey.label}`;
