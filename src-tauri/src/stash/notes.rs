@@ -100,6 +100,20 @@ pub(crate) fn note_file_name(unix_ms: i64, offset_secs: i64, salt: u16) -> Strin
     )
 }
 
+/// Whether `name` has exactly the shape `note_file_name` produces:
+/// `####-##-##-####-xxxx.md`, `#` an ASCII digit and `x` a lower-case hex one. What makes a
+/// file in the notes folder a note (plan D5): notes are trashed and purged,
+/// so anything the human put there under another name stays a file reference.
+pub(crate) fn is_note_file_name(name: &str) -> bool {
+    const SHAPE: &[u8] = b"####-##-##-####-xxxx.md";
+    name.len() == SHAPE.len()
+        && name.bytes().zip(SHAPE).all(|(b, s)| match s {
+            b'#' => b.is_ascii_digit(),
+            b'x' => matches!(b, b'0'..=b'9' | b'a'..=b'f'),
+            _ => b == *s,
+        })
+}
+
 /// Creates `path` empty with mode 0600, failing with `AlreadyExists` when
 /// anything is there. `atomic_write::save` keeps an existing file's mode, so a
 /// file reserved here stays 0600 through every later save (plan D3).
@@ -183,6 +197,32 @@ mod tests {
     fn the_file_name_is_the_local_minute_and_a_salt() {
         assert_eq!(note_file_name(T, MSK, 0xa3f9), "2026-09-26-0215-a3f9.md");
         assert_eq!(note_file_name(T, 0, 0x000b), "2026-09-25-2315-000b.md");
+    }
+
+    #[test]
+    fn a_note_file_name_is_recognised_and_nothing_else_is() {
+        for salt in [0x0000, 0x000b, 0xa3f9, 0xffff] {
+            let name = note_file_name(T, MSK, salt);
+            assert!(is_note_file_name(&name), "{name}");
+        }
+        for name in [
+            "",
+            "hand-made.md",
+            ".stash-export.json",
+            ".2026-09-26-0215-a3f9.md",
+            "2026-09-26-0215-A3F9.md",
+            "2026-09-26-0215-a3f9.markdown",
+            "2026-09-26-0215-a3f9.md.bak",
+            "2026-09-26-0215-a3f.md",
+            "2026-09-26-0215-a3f9a.md",
+            "2026-09-26-215-a3f9.md",
+            "2026-09-26_0215-a3f9.md",
+            "2026-09-26-0215-g3f9.md",
+            "2026-09-26-0215-a3f9 копия.md",
+            "２026-09-26-0215-a3f9.md",
+        ] {
+            assert!(!is_note_file_name(name), "{name:?}");
+        }
     }
 
     #[test]

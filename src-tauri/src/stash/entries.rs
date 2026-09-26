@@ -129,8 +129,26 @@ fn file_repo(path: &str) -> Option<String> {
     normalize_repo(Some(&info.project))
 }
 
-/// A path not yet in the stash becomes an entry: a note when it lies in the
-/// notes folder, a file reference otherwise (plan D5, D18).
+/// What a path not yet in the stash becomes (plan D5). A note only when it is
+/// a direct child of the notes folder named the way `create_note` names
+/// notes: notes get trashed and purged, file references only unlinked, so a
+/// folder the human already kept at `~/couplet/` — a git clone, drafts, our
+/// own `.trash/` — must never turn into notes. Both paths are normalized.
+fn kind_of_new(path: &Path, notes_dir: &Path) -> StashKind {
+    let is_note = path.parent() == Some(notes_dir)
+        && path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(notes::is_note_file_name);
+    if is_note {
+        StashKind::Note
+    } else {
+        StashKind::File
+    }
+}
+
+/// A path not yet in the stash becomes an entry, a note or a file reference
+/// as `kind_of_new` decides (plan D5, D18).
 fn insert_new(
     tx: &Connection,
     path: &str,
@@ -142,11 +160,7 @@ fn insert_new(
     if !meta.is_file() {
         return Err(format!("cannot put away {path}: not a file"));
     }
-    let kind = if Path::new(path).starts_with(notes_dir) {
-        StashKind::Note
-    } else {
-        StashKind::File
-    };
+    let kind = kind_of_new(Path::new(path), notes_dir);
     let (title, repo) = match kind {
         StashKind::Note => (
             fs::read_to_string(path)
@@ -955,15 +969,45 @@ mod tests {
     }
 
     #[test]
-    fn a_file_in_the_notes_folder_is_a_note() {
+    fn a_couplet_named_file_directly_in_the_notes_folder_is_a_note() {
+        // A note file that lost its row (a restored backup, a hand copy) is
+        // recognised by its name and put away as the note it is.
         let (mut stash, _root) = stash_in("note-folder");
-        let path = stash.notes_dir().unwrap().join("hand-made.md");
+        let path = stash.notes_dir().unwrap().join("2026-09-26-0215-beef.md");
         fs::write(&path, "- [ ] позвонить\n").unwrap();
         let r = stash
             .put_away(&put(vec![path.to_string_lossy().into_owned()]), T0)
             .unwrap();
         assert_eq!(r[0].entry.kind, StashKind::Note);
         assert_eq!(r[0].entry.title.as_deref(), Some("позвонить"));
+    }
+
+    #[test]
+    fn anything_else_in_the_notes_folder_is_a_file_reference() {
+        // Notes are trashed and purged (stage 06), file references only
+        // unlinked: a user's own `~/couplet/` (a git clone, a folder of drafts)
+        // must never be classified into the kind that gets deleted.
+        let (mut stash, _root) = stash_in("note-folder-files");
+        let dir = stash.notes_dir().unwrap();
+        let cases = [
+            "sub/2026-09-26-0215-beef.md",
+            ".trash/x.md",
+            ".trash/2026-09-26-0215-beef.md",
+            ".stash-export.json",
+            "hand-made.md",
+            ".2026-09-26-0215-beef.md",
+        ];
+        for rel in cases {
+            let path = dir.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "# Чужой файл\n").unwrap();
+            let r = stash
+                .put_away(&put(vec![path.to_string_lossy().into_owned()]), T0)
+                .unwrap();
+            assert_eq!(r[0].entry.kind, StashKind::File, "{rel}");
+            let name = Path::new(rel).file_name().unwrap().to_string_lossy();
+            assert_eq!(r[0].entry.title.as_deref(), Some(&*name), "{rel}");
+        }
     }
 
     #[test]
