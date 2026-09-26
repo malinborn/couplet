@@ -816,12 +816,18 @@ fn trash_path_for(trash: &Path, stem: &str, now_secs: u64) -> Result<PathBuf, St
 }
 
 /// When a trash file was thrown away, read back from its name. `None` for
-/// any name this module did not make — the purge never touches those.
+/// any name this module did not make — the purge never touches those. The
+/// tail is exactly what `trash_path_for` writes: `<secs>` or `<secs>-<n>`.
 fn trashed_at(name: &str) -> Option<u64> {
     let rest = name.strip_suffix(".md")?;
     let at = rest.rfind(TRASHED_MARK)?;
-    let secs = rest[at + TRASHED_MARK.len()..].split('-').next()?;
-    if secs.is_empty() || !secs.bytes().all(|b| b.is_ascii_digit()) {
+    let tail = &rest[at + TRASHED_MARK.len()..];
+    let (secs, n) = match tail.split_once('-') {
+        Some((secs, n)) => (secs, Some(n)),
+        None => (tail, None),
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits(secs) || n.is_some_and(|n| !digits(n)) {
         return None;
     }
     secs.parse().ok()
@@ -1700,7 +1706,17 @@ mod tests {
         assert_eq!(trashed_at("draft-b.trashed-1000.md"), Some(1000));
         assert_eq!(trashed_at("draft-b.trashed-1000-3.md"), Some(1000));
         assert_eq!(trashed_at("closed-1-2-3.trashed-77.md"), Some(77));
-        for foreign in ["notes.md", "draft-b.md", "draft-b.trashed-.md", "draft-b.trashed-12x.md", ".closed-1-2-3.tmp"] {
+        for foreign in [
+            "notes.md",
+            "draft-b.md",
+            "draft-b.trashed-.md",
+            "draft-b.trashed-12x.md",
+            ".closed-1-2-3.tmp",
+            "x.trashed-5-foo.md",
+            "x.trashed-5-.md",
+            "x.trashed-5-1-2.md",
+            "x.trashed--5.md",
+        ] {
             assert_eq!(trashed_at(foreign), None, "{foreign}");
         }
     }
