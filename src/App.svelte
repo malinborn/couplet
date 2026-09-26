@@ -118,6 +118,7 @@
   import './lib/theme/paper.css';
   import './lib/theme/ink.css';
   import './lib/theme/autumn.css';
+  import './lib/theme/odyssey.css';
   import './styles/global.css';
   import './styles/editor.css';
   import './styles/tabs.css';

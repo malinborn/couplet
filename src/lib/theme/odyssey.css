@@ -1,0 +1,127 @@
+/* «Odyssey» — хтоническая и стоическая: по «Одиссее» Нолана.
+ *
+ * Стоическая — значит сдержанная. Разнообразие здесь не цель (это история
+ * Autumn): заголовки держит одно золото, жирный — это просто текст светлее,
+ * а не отдельный цвет, и акцентов ровно столько, сколько нужно для правки.
+ *
+ *   золото Агамемнона — заголовки; блик по золоту только на H1;
+ *   огонь Трои        — каретка, чекбоксы: то, что меняют руками;
+ *   плюмаж            — линия цитаты, единственный красный;
+ *   туман             — ссылки;
+ *   штормовой просвет — текст и курсив;
+ *   пепел             — выполненное и вычеркнутое.
+ *
+ * Тёмная — ночь у Сциллы: сине-зелёная чернь моря, текст — свет в разрыве
+ * туч. Светлая — туман над скалами: холодная серо-голубая мгла, текст —
+ * чёрная броня, заголовки — то же золото, потемневшее до бронзы (5:1).
+ */
+
+:root[data-theme='odyssey-light'] {
+  --bg-base: #dde4e6;
+  --bg-surface: #d1d9dc;
+  --text-primary: #12181c;
+  --text-subtle: #44525a;
+  --text-muted: #7c878c;
+  --highlight: #cdd6d9;
+  --color-heading: #7a5616;
+  --color-bold: #0a0e10;
+  --color-italic: #3e5a5e;
+  --color-link: #1e5f80;
+  --color-code-bg: #d1d9dc;
+  --color-code-text: #12181c;
+  --color-selection: #c3d3db;
+  --color-border: #c6cfd2;
+  --color-cursor: #b8421c;
+  --color-caret-top: #b8421c;
+  --color-caret-bottom: #8a1f12;
+  --color-line-highlight: #d6dee1;
+  --color-strikethrough: #7c878c;
+  --color-task-done: #7c878c;
+  --color-task-done-line: #b8421c;
+  --color-blockquote-border: #8a1f12;
+  --color-hr: #c6cfd2;
+  --color-list-marker: #7a5a36;
+  --color-checkbox: #b8421c;
+  --color-table-border: #c6cfd2;
+  --color-table-even-bg: #d6dee1;
+  /* Золотая пыль, тающая в тумане. */
+  --table-header-grad: linear-gradient(135deg, #e2d9c2 0%, #d8dcd6 55%, #cfdade 100%);
+  --table-header-text: #12181c;
+  --color-glow: 184, 66, 28;
+  --ai-edit-bg: rgba(184, 66, 28, 0.12);
+  --ai-edit-shimmer: rgba(184, 66, 28, 0.26);
+  --ai-ask-bg: rgba(18, 24, 28, 0.05);
+  --ai-ask-border: rgba(18, 24, 28, 0.22);
+  --ai-ask-chip-bg: #e8edef;
+  --ai-ask-chip-hover-bg: rgba(184, 66, 28, 0.14);
+  --ai-ask-accent: #12181c;
+  --ai-ask-accent-text: #dde4e6;
+  --bg-overlay: rgba(221, 228, 230, 0.78);
+  --border: #c6cfd2;
+  /* Одно золото, стареющее к нижним уровням в бронзу и сталь. */
+  --heading-tone-1: #7a5616;
+  --heading-tone-2: #735418;
+  --heading-tone-3: #6a521e;
+  --heading-tone-4: #5c5028;
+  --heading-tone-5: #4f4f40;
+  --heading-tone-6: #4a5058;
+  --heading-grad-span: 28em;
+  --heading-grad-1: linear-gradient(100deg, #8a6414 0%, #7a5616 100%);
+  --font-text: 'Inter', -apple-system, system-ui, sans-serif;
+  --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+}
+
+:root[data-theme='odyssey-dark'] {
+  --bg-base: #0e1418;
+  --bg-surface: #151d22;
+  --text-primary: #cdd3c8;
+  --text-subtle: #93a09a;
+  --text-muted: #5f6c6a;
+  --highlight: #1f2a30;
+  --color-heading: #d4b06a;
+  --color-bold: #eef0e4;
+  --color-italic: #a9ad84;
+  --color-link: #6fa6c4;
+  --color-code-bg: #151d22;
+  --color-code-text: #cdd3c8;
+  --color-selection: #263740;
+  --color-border: #1f2b31;
+  --color-cursor: #dd6632;
+  --color-caret-top: #f2c455;
+  --color-caret-bottom: #dd6632;
+  --color-line-highlight: #121a1f;
+  --color-strikethrough: #5f6c6a;
+  --color-task-done: #5f6c6a;
+  --color-task-done-line: #dd6632;
+  --color-blockquote-border: #b8342a;
+  --color-hr: #1f2b31;
+  --color-list-marker: #a8854a;
+  --color-checkbox: #dd6632;
+  --color-table-border: #1f2b31;
+  --color-table-even-bg: #121a1f;
+  /* Золото, уходящее в ночное море. */
+  --table-header-grad: linear-gradient(135deg, #262216 0%, #1c2124 55%, #182329 100%);
+  --table-header-text: #d4b06a;
+  --color-glow: 221, 102, 50;
+  --ai-edit-bg: rgba(221, 102, 50, 0.15);
+  --ai-edit-shimmer: rgba(221, 102, 50, 0.32);
+  --ai-ask-bg: rgba(111, 166, 196, 0.08);
+  --ai-ask-border: rgba(111, 166, 196, 0.26);
+  --ai-ask-chip-bg: rgba(205, 211, 200, 0.05);
+  --ai-ask-chip-hover-bg: rgba(221, 102, 50, 0.18);
+  --ai-ask-accent: #d4b06a;
+  --ai-ask-accent-text: #0e1418;
+  --bg-overlay: rgba(14, 20, 24, 0.78);
+  --border: #1f2b31;
+  --heading-tone-1: #d4b06a;
+  --heading-tone-2: #cfa862;
+  --heading-tone-3: #c49c5c;
+  --heading-tone-4: #b0956a;
+  --heading-tone-5: #9a9282;
+  --heading-tone-6: #8e939c;
+  /* Блик огня на золотом доспехе — только у H1. */
+  --heading-grad-span: 28em;
+  --heading-grad-1: linear-gradient(100deg, #f2d38c 0%, #d4b06a 100%);
+  --font-text: 'Inter', -apple-system, system-ui, sans-serif;
+  --font-code: 'JetBrains Mono', 'SF Mono', monospace;
+}

@@ -100,7 +100,7 @@ describe('themePickerSource', () => {
     expect(result).toBeNull();
   });
 
-  it('FieldOpen_ReturnsExactlyTheSevenFamilies', () => {
+  it('FieldOpen_ReturnsExactlyTheEightFamilies', () => {
     const { control } = fakeControl();
     const view = makeView(control);
     view.dispatch({ effects: openThemePicker.of({ anchor: 0 }) });
@@ -109,7 +109,7 @@ describe('themePickerSource', () => {
 
     expect(result).not.toBeNull();
     const labels = result!.options.map((o) => o.label).sort();
-    expect(labels).toEqual(['Aurora', 'Blueprint', 'Classic', 'Phosphor', 'Paper', 'Ink', 'Autumn'].sort());
+    expect(labels).toEqual(['Aurora', 'Blueprint', 'Classic', 'Phosphor', 'Paper', 'Ink', 'Autumn', 'Odyssey'].sort());
   });
 
   it('MarksExactlyTheCurrentFamilyAsCurrent', () => {
@@ -233,7 +233,7 @@ describe('themeOptions ordering (via themePickerSource, boost)', () => {
     await waitUntil(() => completionStatus(view.state) === 'active');
 
     const labels = currentCompletions(view.state).map((o) => o.label);
-    expect(labels).toEqual(['Classic', 'Aurora', 'Blueprint', 'Phosphor', 'Paper', 'Ink', 'Autumn']);
+    expect(labels).toEqual(['Classic', 'Aurora', 'Blueprint', 'Phosphor', 'Paper', 'Ink', 'Autumn', 'Odyssey']);
   });
 });
 
