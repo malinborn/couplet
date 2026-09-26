@@ -9,7 +9,7 @@
  *   вечер   — тёплый фиолетовый, текст днём и сам лист вечером.
  *
  * Светлая — осенний день: лист цвета молока с корицей, текст тёплым
- * фиолетовым. Заголовок H1 — закат в миниатюре, клён → корица → вечер.
+ * фиолетовым. Заголовки — листопад: у каждого уровня свой набор листьев.
  * Тыква #cc6218 на этом фоне даёт 3.2:1 — ровно для не-текстовых меток,
  * поэтому жирный и заголовки идут корицей (6:1), а не тыквой.
  *
@@ -68,8 +68,17 @@
   --heading-tone-4: #764437;
   --heading-tone-5: #6c463e;
   --heading-tone-6: #624845;
-  --heading-grad-1: linear-gradient(100deg, #b3302a 0%, #8a3f22 50%, #6b3a66 100%);
-  --heading-grad-2: linear-gradient(100deg, #9e3826 0%, #7a3f45 100%);
+  /* Заголовки — листопад, а не одна ветка: у каждого уровня своя
+   * последовательность листьев, цвет меняется каждые ~4 буквы. Короткий проход
+   * (20em) — ради частоты смен; дальше строка оседает в свой тон, он же
+   * последний stop. Все stop'ы ≥ 3.6:1 на фоне. */
+  --heading-grad-span: 20em;
+  --heading-grad-1: linear-gradient(100deg, #b3302a 0%, #c05a14 12%, #9c6e12 24%, #6a6b1c 36%, #7a2436 48%, #6b3a66 60%, #a6441c 72%, #9c6e12 84%, #8a3f22 100%);
+  --heading-grad-2: linear-gradient(100deg, #9c6e12 0%, #a6441c 14%, #7a2436 28%, #8e5f8c 42%, #b3302a 56%, #6a6b1c 70%, #c05a14 84%, #86402a 100%);
+  --heading-grad-3: linear-gradient(100deg, #6b3a66 0%, #b3302a 16%, #9c6e12 32%, #5c6a2a 48%, #a6441c 64%, #8e5f8c 80%, #7f4230 100%);
+  --heading-grad-4: linear-gradient(100deg, #7a2436 0%, #c05a14 20%, #6a6b1c 40%, #6b3a66 60%, #b3302a 80%, #764437 100%);
+  --heading-grad-5: linear-gradient(100deg, #a6441c 0%, #9c6e12 25%, #5c6a2a 50%, #8e5f8c 75%, #6c463e 100%);
+  --heading-grad-6: linear-gradient(100deg, #8e5f8c 0%, #8a3f22 33%, #6a6b1c 66%, #624845 100%);
   --font-text: 'Inter', -apple-system, system-ui, sans-serif;
   --font-code: 'JetBrains Mono', 'SF Mono', monospace;
 }
@@ -123,9 +132,14 @@
   --heading-tone-4: #e28a66;
   --heading-tone-5: #d2866f;
   --heading-tone-6: #c08378;
-  /* Закат: тыква у горизонта, выше клён, ещё выше розовое небо. */
-  --heading-grad-1: linear-gradient(100deg, #ffb36b 0%, #ec6a55 50%, #e77a8a 100%);
-  --heading-grad-2: linear-gradient(100deg, #ffa45c 0%, #ec6a55 100%);
+  /* Вечерний листопад: те же листья, подсвеченные закатом. */
+  --heading-grad-span: 20em;
+  --heading-grad-1: linear-gradient(100deg, #ffc38a 0%, #ffa45c 12%, #ec6a55 24%, #e77a8a 36%, #c59ad8 48%, #e6bd62 60%, #c2c46a 72%, #ec6a55 84%, #ffa45c 100%);
+  --heading-grad-2: linear-gradient(100deg, #e6bd62 0%, #ec6a55 14%, #c59ad8 28%, #ffa45c 42%, #c2c46a 56%, #e77a8a 70%, #ffc38a 84%, #f99a5c 100%);
+  --heading-grad-3: linear-gradient(100deg, #e77a8a 0%, #e6bd62 20%, #a9bb72 40%, #ec6a55 60%, #c59ad8 80%, #f0905e 100%);
+  --heading-grad-4: linear-gradient(100deg, #c59ad8 0%, #ffa45c 20%, #c2c46a 40%, #e77a8a 60%, #e6bd62 80%, #e28a66 100%);
+  --heading-grad-5: linear-gradient(100deg, #ec6a55 0%, #e6bd62 25%, #dcb6d8 50%, #a9bb72 75%, #d2866f 100%);
+  --heading-grad-6: linear-gradient(100deg, #e6bd62 0%, #e77a8a 33%, #c59ad8 66%, #c08378 100%);
   --font-text: 'Inter', -apple-system, system-ui, sans-serif;
   --font-code: 'JetBrains Mono', 'SF Mono', monospace;
 }
