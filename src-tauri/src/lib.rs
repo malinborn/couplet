@@ -418,13 +418,21 @@ pub fn run() {
                     if state.is_quitting() {
                         return;
                     }
+                    // No live window (launch before the first heartbeat, or the
+                    // last window destroyed ahead of the exit path): the file on
+                    // disk stands — `snapshot_to_write` says why. The GC waits
+                    // too: in the second case the file still names the destroyed
+                    // window's draft, which nothing in memory references any
+                    // more, and trashing it would restore that tab empty-handed.
                     if state.take_dirty() {
-                        let snapshot = state.snapshot(session::now_secs());
-                        let _ = session::write_session(&snapshot);
-                        // Must include the pending restore's buffers, not just the
-                        // live ones — see `referenced_untitled`. What it leaves
-                        // out goes to `session/.trash/`, never away.
-                        session::prune_untitled_files(&state.referenced_untitled());
+                        if let Some(snapshot) = state.snapshot_to_write(session::now_secs()) {
+                            let _ = session::write_session(&snapshot);
+                            // Includes the pending restore's buffers, not just the
+                            // live ones, and everything the file just written
+                            // names — see `untitled_to_keep_after`. What it leaves
+                            // out goes to `session/.trash/`, never away.
+                            session::prune_untitled_files(&state.untitled_to_keep_after(&snapshot));
+                        }
                     }
                     let purge_due = match last_purge {
                         None => true,
@@ -597,11 +605,11 @@ fn save_session_on_exit(app: &tauri::AppHandle) {
     // `RunEvent::Exit` alone. A comment paused seconds before a quit has to be
     // handed over on the way out, or nothing is left to hand it over.
     comment_pause::commit_all_open(app);
-    let snapshot = state.exit_snapshot(session::now_secs());
+    let snapshot = state.snapshot_to_write(session::now_secs());
     state.mark_quitting();
     // A quit records the session, it never erases it: with no live window
-    // left, the last good file on disk stands (`exit_snapshot` says why that
-    // also keeps the un-restored drafts named).
+    // left, the last good file on disk stands (`snapshot_to_write` says why
+    // that also keeps the un-restored drafts named).
     if let Some(snapshot) = snapshot {
         let _ = session::write_session(&snapshot);
     }
