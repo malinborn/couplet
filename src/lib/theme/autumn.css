@@ -39,6 +39,9 @@
   --color-strikethrough: #9c8580;
   --color-task-done: #9c8580;
   --color-task-done-line: #9b6b98;
+  /* Выполненное — листопад: клён, тыква, охра, вечер. Последний stop обязан
+   * совпадать с --color-task-done (см. task-done-gradient.test.ts). */
+  --task-done-grad: linear-gradient(100deg, #b3302a 0%, #cc6218 26%, #a8761a 50%, #9b6b98 76%, #9c8580 100%);
   --color-blockquote-border: #b3302a;
   --color-hr: #e0c8a9;
   --color-list-marker: #9b6b98;
@@ -93,6 +96,7 @@
   --color-strikethrough: #8f7688;
   --color-task-done: #8f7688;
   --color-task-done-line: #ffa45c;
+  --task-done-grad: linear-gradient(100deg, #ec6a55 0%, #ffa45c 26%, #e6bd62 50%, #dcb6d8 76%, #8f7688 100%);
   --color-blockquote-border: #ec6a55;
   --color-hr: #472a4e;
   --color-list-marker: #ffa45c;
