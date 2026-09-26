@@ -163,12 +163,14 @@ fn insert_new(
         ),
         StashKind::File => (file_title(path), file_repo(path)),
     };
+    // Never in the future: a skewed mtime would hold the entry at the top of
+    // «changed» and make every real save look older to `file_written`.
     let modified = meta
         .modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .and_then(|d| i64::try_from(d.as_millis()).ok())
-        .unwrap_or(now);
+        .map_or(now, |m| m.min(now));
     let id = unique_id(tx)?;
     tx.execute(
         "INSERT INTO entries (id, kind, path, title, repo, created_at, modified_at, stashed_at, caret, top_line) \
@@ -923,6 +925,30 @@ mod tests {
         assert!(first[0].created && !second[0].created);
         assert_eq!(first[0].entry.id, second[0].entry.id);
         assert_eq!(rows(&stash, "entries"), 1);
+    }
+
+    #[test]
+    fn a_future_mtime_is_clamped_to_now() {
+        // A clock-skewed volume or a `touch -t 2100…` would otherwise pin the
+        // entry above everything in «changed» until 2100, and make every real
+        // save look older (`file_written` only moves forward).
+        let (mut stash, root) = stash_in("put-future");
+        let future = user_file(&root, "future.md", "f");
+        let past = user_file(&root, "past.md", "p");
+        let at = |ms: i64| UNIX_EPOCH + std::time::Duration::from_millis(ms as u64);
+        let set = |path: &str, ms: i64| {
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(at(ms))
+                .unwrap();
+        };
+        set(&future, Y2100);
+        set(&past, T0 - 60_000);
+        let r = stash.put_away(&put(vec![future, past]), T0).unwrap();
+        assert_eq!(r[0].entry.modified_at, T0);
+        assert_eq!(r[1].entry.modified_at, T0 - 60_000, "a past mtime is kept");
     }
 
     #[test]
