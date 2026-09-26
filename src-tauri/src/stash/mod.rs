@@ -8,12 +8,17 @@
 
 mod clock;
 mod db;
+mod entries;
 mod ids;
 mod notes;
 mod paths;
 
 pub use paths::StashPaths;
 
+use std::fs;
+use std::path::PathBuf;
+
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 /// What an entry is: a note couplet owns, or a reference to the user's file.
@@ -38,6 +43,107 @@ impl StashKind {
             "file" => Some(StashKind::File),
             _ => None,
         }
+    }
+}
+
+/// One stash entry as the frontend and agents see it (roadmap `StashEntry`).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StashEntry {
+    pub id: String,
+    pub kind: StashKind,
+    pub path: String,
+    /// `None` → the UI's localized «Без названия». Stored as `''` (roadmap A4).
+    pub title: Option<String>,
+    /// Notes: the stored window project name. Files: derived git toplevel name.
+    pub repo: Option<String>,
+    /// Files only, derived at read time.
+    pub branch: Option<String>,
+    /// Without `#`, alphabetical; the repo tag is not one of them.
+    pub tags: Vec<String>,
+    pub created_at: i64,
+    pub modified_at: i64,
+    pub stashed_at: Option<i64>,
+    pub opened_at: Option<i64>,
+    pub deleted_at: Option<i64>,
+    pub caret: i64,
+    pub top_line: i64,
+    /// First ~400 characters of the text; `""` when unreadable.
+    pub preview: String,
+}
+
+/// The stash: one database connection and where things live. Synchronous and
+/// clock-free — callers pass `now` — so every behaviour is a plain unit test.
+pub struct Stash {
+    conn: Connection,
+    paths: StashPaths,
+    notes_dir_ready: bool,
+}
+
+impl Stash {
+    /// Opens the database. Touches only the app data directory (plan D2).
+    pub fn open(paths: StashPaths) -> Result<Self, String> {
+        let conn = db::open(&paths.db_path)?;
+        Ok(Self { conn, paths, notes_dir_ready: false })
+    }
+
+    /// The notes folder, created and put in its one spelling
+    /// (`path_norm`, the spelling `OpenFiles` and the `path` column use) the
+    /// first time anything needs it.
+    fn notes_dir(&mut self) -> Result<PathBuf, String> {
+        if !self.notes_dir_ready {
+            fs::create_dir_all(&self.paths.notes_dir)
+                .map_err(|e| format!("cannot create {}: {e}", self.paths.notes_dir.display()))?;
+            self.paths = self
+                .paths
+                .with_notes_dir(crate::path_norm::normalize_path(&self.paths.notes_dir));
+            self.notes_dir_ready = true;
+        }
+        Ok(self.paths.notes_dir.clone())
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod testkit {
+    use super::*;
+    use std::path::Path;
+
+    /// 2026-09-26 02:15 in Moscow (+03:00).
+    pub(crate) const T0: i64 = 1_790_378_100_000;
+    pub(crate) const MSK: i64 = 10_800;
+
+    /// `root/home` stands for the user's home (roadmap A1: notes live in
+    /// `~/<product>/`), `root/data` for the app data directory.
+    pub(crate) fn paths_in(root: &Path) -> StashPaths {
+        StashPaths::from_bases(&root.join("home"), &root.join("data"), "couplet-test")
+    }
+
+    pub(crate) fn stash_in(tag: &str) -> (Stash, PathBuf) {
+        let root = crate::atomic_write::testkit::scratch(&format!("stash-{tag}"));
+        (Stash::open(paths_in(&root)).unwrap(), root)
+    }
+
+    /// A user's file outside the notes folder, in its normalized spelling.
+    pub(crate) fn user_file(root: &Path, rel: &str, text: &str) -> String {
+        let path = root.join("work").join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, text).unwrap();
+        crate::path_norm::normalize_str(&path.to_string_lossy())
+    }
+
+    pub(crate) fn rows(stash: &Stash, table: &str) -> i64 {
+        stash
+            .conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// Sets columns of one entry directly, for tests that need exact times.
+    pub(crate) fn set_columns(stash: &Stash, id: &str, assignments: &str) {
+        stash
+            .conn
+            .execute(&format!("UPDATE entries SET {assignments} WHERE id = ?1"), [id])
+            .unwrap();
     }
 }
 

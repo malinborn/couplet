@@ -115,20 +115,26 @@ fn is_acceptable(file: &Path) -> bool {
     file.is_absolute() && !file.components().any(|c| c == Component::ParentDir)
 }
 
+/// `git_info` only for a file inside a repository. The stash's repo tag for a
+/// file reference is "the git toplevel"; a loose file has none — unlike a
+/// drawer card, whose grey line falls back to the file's folder.
+pub fn repo_info(file: &Path) -> Option<GitInfo> {
+    if !is_acceptable(file) {
+        return None;
+    }
+    let (toplevel, dot_git) = find_dot_git(file)?;
+    let branch = resolve_git_dir(&toplevel, &dot_git)
+        .and_then(|dir| read_small(&dir.join("HEAD")))
+        .and_then(|head| branch_from_head(&head));
+    Some(GitInfo { project: dir_name(&toplevel), branch })
+}
+
 pub fn git_info(file: &Path) -> Option<GitInfo> {
     if !is_acceptable(file) {
         return None;
     }
     let parent = file.parent().filter(|p| !p.as_os_str().is_empty())?;
-    match find_dot_git(file) {
-        Some((toplevel, dot_git)) => {
-            let branch = resolve_git_dir(&toplevel, &dot_git)
-                .and_then(|dir| read_small(&dir.join("HEAD")))
-                .and_then(|head| branch_from_head(&head));
-            Some(GitInfo { project: dir_name(&toplevel), branch })
-        }
-        None => Some(GitInfo { project: dir_name(parent), branch: None }),
-    }
+    repo_info(file).or_else(|| Some(GitInfo { project: dir_name(parent), branch: None }))
 }
 
 /// The project `file` belongs to (spec §2): the directory holding the nearest
@@ -377,5 +383,28 @@ mod tests {
         assert_eq!(project_root(&dir.join("a.md")), Some(dir));
         assert_eq!(project_root(Path::new("relative.md")), None);
         assert_eq!(project_root(Path::new("/tmp/../etc/a.md")), None);
+    }
+
+    #[test]
+    fn repo_info_is_the_toplevel_inside_a_repository() {
+        let root = scratch("repo-info").join("couplet");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join(".git/HEAD"), "ref: refs/heads/feat/stash\n").unwrap();
+        assert_eq!(
+            repo_info(&root.join("docs/plan.md")),
+            Some(GitInfo { project: "couplet".into(), branch: Some("feat/stash".into()) })
+        );
+    }
+
+    #[test]
+    fn repo_info_is_none_outside_a_repository_where_git_info_falls_back() {
+        let dir = scratch("repo-info-none").join("loose");
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(repo_info(&dir.join("a.md")), None, "no repo tag for a loose file");
+        assert_eq!(
+            git_info(&dir.join("a.md")),
+            Some(GitInfo { project: "loose".into(), branch: None }),
+            "the drawer's grey line is unchanged"
+        );
     }
 }
