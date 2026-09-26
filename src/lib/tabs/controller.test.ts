@@ -2097,6 +2097,17 @@ describe('tabs arriving from another window (plan 05)', () => {
     expect(h.deps.rust.closeWindow).not.toHaveBeenCalled();
   });
 
+  it('ABlankTypedIntoWhileTheArrivalLoads_IsClosedWithItsText_NeverJustReleased', async () => {
+    // Review M4: the blank is picked before the arrival is read; text typed
+    // in between must reach Rust's rescue copy, not vanish with a release.
+    const h = await started(files, [untitledTab('u')]);
+    h.hooks.duringRead = () => h.type('typed meanwhile');
+    await h.controller.arrive([fileTab('x', '/x.md')]);
+    h.hooks.duringRead = () => {};
+    expect(h.deps.rust.release).not.toHaveBeenCalledWith('u');
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'typed meanwhile');
+  });
+
   it('AnUntitledTypedIntoDoesNotGiveWay', async () => {
     const h = await started(files, [untitledTab('u')]);
     h.type('mine');

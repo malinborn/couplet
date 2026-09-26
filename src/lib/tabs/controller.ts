@@ -903,8 +903,12 @@ export function createTabController(deps: TabControllerDeps) {
   ): Promise<boolean> {
     const closing = findById(list, tabId);
     if (!closing) return false;
+    // A release is only for a blank Untitled, but it was judged blank before
+    // an await: text typed since goes through `close`, which keeps a rescue copy.
     const finish = (position: Position, discarded: string | null) =>
-      how === 'close' ? deps.rust.close(tabId, position, discarded) : deps.rust.release(tabId);
+      how === 'close' || discarded?.trim()
+        ? deps.rust.close(tabId, position, discarded)
+        : deps.rust.release(tabId);
 
     if (tabId !== list.activeId) {
       // A background tab is clean by construction and was handed over when
