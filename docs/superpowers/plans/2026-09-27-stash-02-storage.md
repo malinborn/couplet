@@ -3518,11 +3518,13 @@ Filled in by the implementer (Task 1 Step 1, Task 1 Step 5, Task 14 Step 4).
 
 `Cargo.lock` gained six packages and changed none: `rusqlite 0.37.0`, `libsqlite3-sys 0.35.0` and their dependencies `fallible-iterator 0.3.0`, `fallible-streaming-iterator 0.1.9`, `hashlink 0.10.0`, `vcpkg 0.2.15`. The probe's Cyrillic case assertion (`"ТАЙНИК"`) passes as written.
 
-**After** (Task 14):
-- cargo test: … passed / … ignored
-- clippy warnings: … (must equal Before)
-- release `md-mini` binary: … bytes (Δ …)
-- release rebuild after `cargo clean -p libsqlite3-sys`: … s
+**After** (Task 14; branch `feat/stash` at `27d2e98` + this task's docs, 2026-09-27, all builds offline with `CARGO_NET_OFFLINE=true`):
+- cargo test: 750 passed / 3 ignored (lib; the two other test targets 0/0) — +84 against Before, more than the planned +67: Tasks 1–13 added tests beyond the plan's count
+- clippy warnings: 50 (`warning: \`md-mini\` (lib) generated 50 warnings`) — equals Before
+- release `md-mini` binary: 19470992 bytes (Δ +2342016 bytes, ≈ +2.23 MiB, arm64 only) — under the ~3 MB bound. The delta is the whole stage (bundled SQLite + the `stash` module), not SQLite alone
+- release rebuild after `cargo clean --release -p libsqlite3-sys`: 32.65 s `real` (recompiles `libsqlite3-sys`, `rusqlite` and `md-mini`, incl. the release link) — under the ~2 min bound
+- `npm run check:x86`: `Finished` — bundled SQLite and `clock.rs`'s `time_t`/`c_long` compile for `x86_64-apple-darwin`
+- frontend unchanged by this stage: `npx vitest run --dir src` 2084 passed (97 files), `npm run check` 0 errors / 0 warnings
 
 ---
 
