@@ -763,6 +763,17 @@ pub(crate) fn note_saved_as(
         eprintln!("[stash::trash] saved as {new}, but a tab still holds {old}: the note stays");
         return Ok(None);
     }
+    // A copy saved into the trash would be a trashed row's file (purged in
+    // 30 days), one under a note name a note nobody put away: neither has
+    // left the stash.
+    let notes_dir = super::paths::notes_dir_spelled(&state.with(|s| Ok(s.paths.clone()))?);
+    let new_path = Path::new(&new);
+    if new_path.starts_with(notes_dir.join(super::paths::TRASH_DIR))
+        || super::entries::kind_of_new(new_path, &notes_dir) == StashKind::Note
+    {
+        eprintln!("[stash::trash] saved as {new}, inside the stash's own folder: the note stays");
+        return Ok(None);
+    }
     let id = match state.with(|s| s.entry_for_path(&old))? {
         Some(e) if e.kind == StashKind::Note && e.deleted_at.is_none() => e.id,
         _ => return Ok(None),
@@ -2701,6 +2712,31 @@ mod tests {
         assert_eq!(asked.into_inner(), vec![e.path.clone()]);
         assert!(!Path::new(&e.path).exists());
         assert_eq!(fs::read_to_string(&new).unwrap(), "x");
+    }
+
+    #[test]
+    fn save_as_into_the_trash_or_onto_a_note_name_is_left_alone() {
+        // The file saved there would become a trashed row's file (purged in
+        // 30 days) or look like a note nobody put away.
+        let (state, _root) = state_in("trash-saved-as-into-stash");
+        let text = "# План\n";
+        let e = state.with(|s| s.create_note(text, None, T0, MSK)).unwrap();
+        let before = live_row(&state, &e.id);
+        let paths = state.with(|s| Ok(s.paths.clone())).unwrap();
+        fs::create_dir_all(&paths.trash_dir).unwrap();
+        let into_trash = paths.trash_dir.join("plan.md");
+        fs::write(&into_trash, text).unwrap();
+        let note_name = crate::stash::notes::note_file_name(T0 + DAY, MSK, 7);
+        let onto_note_name = paths.notes_dir.join(note_name);
+        fs::write(&onto_note_name, text).unwrap();
+
+        for new in [&into_trash, &onto_note_name] {
+            let new = new.to_string_lossy();
+            assert_eq!(note_saved_as(&state, &e.path, &new, nobody_holds, T0 + 5).unwrap(), None);
+        }
+
+        assert_eq!(live_row(&state, &e.id), before);
+        assert_eq!(fs::read_to_string(&e.path).unwrap(), text);
     }
 
     #[test]
