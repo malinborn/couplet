@@ -17,7 +17,7 @@ use rusqlite::{Connection, ErrorCode, Row, TransactionBehavior};
 
 use super::StashKind;
 
-pub(crate) const SCHEMA_VERSION: i64 = 1;
+pub(crate) const SCHEMA_VERSION: i64 = 2;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Between two tries of the WAL switch (`switch_to_wal`).
 const WAL_RETRY_PAUSE: Duration = Duration::from_millis(5);
@@ -25,7 +25,7 @@ const WAL_RETRY_PAUSE: Duration = Duration::from_millis(5);
 /// `MIGRATIONS[i]` takes the schema from version `i` to `i + 1`. Append only:
 /// a released migration is never edited, because databases that already ran
 /// it will never run it again.
-const MIGRATIONS: [&str; 1] = [V1];
+const MIGRATIONS: [&str; 2] = [V1, V2];
 
 /// Schema v1, exactly the roadmap's (its `PRAGMA` lines live in `configure`:
 /// they are per connection, not per schema).
@@ -53,6 +53,20 @@ CREATE TABLE tags (
 CREATE VIRTUAL TABLE entries_fts USING fts5(
   title, body,
   tokenize = 'trigram'
+);
+";
+
+/// Schema v2 (stash plan 03, A5): which untitled draft — by sidecar name and
+/// content fingerprint — became which note. The draft importer's
+/// idempotency: a draft seen again with the same content is not imported
+/// twice. No `PRAGMA user_version` here: `migrate` sets it.
+const V2: &str = "
+CREATE TABLE draft_imports (
+  source      TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  entry_id    TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+  imported_at INTEGER NOT NULL,
+  PRIMARY KEY (source, fingerprint)
 );
 ";
 
@@ -314,7 +328,7 @@ mod tests {
         VALUES ('s1-0001', 'note', '/n/a.md', 'A', 'proj', 1, 2, 3, 4, NULL, 5, 6)";
 
     #[test]
-    fn a_fresh_database_gets_schema_v1_and_the_pragmas() {
+    fn a_fresh_database_gets_the_current_schema_and_the_pragmas() {
         let conn = open(&db_in("db-fresh")).unwrap();
         assert_eq!(one::<i64>(&conn, "PRAGMA user_version"), SCHEMA_VERSION);
         assert_eq!(one::<String>(&conn, "PRAGMA journal_mode"), "wal");
@@ -322,14 +336,14 @@ mod tests {
         assert_eq!(one::<i64>(&conn, "PRAGMA busy_timeout"), 5000);
         assert_eq!(one::<i64>(&conn, "PRAGMA synchronous"), 1, "NORMAL");
         let mut stmt = conn
-            .prepare("SELECT name FROM sqlite_master WHERE name IN ('entries', 'tags', 'entries_fts') ORDER BY name")
+            .prepare("SELECT name FROM sqlite_master WHERE name IN ('entries', 'tags', 'entries_fts', 'draft_imports') ORDER BY name")
             .unwrap();
         let names: Vec<String> = stmt
             .query_map([], |r| r.get(0))
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
-        assert_eq!(names, ["entries", "entries_fts", "tags"]);
+        assert_eq!(names, ["draft_imports", "entries", "entries_fts", "tags"]);
         assert_eq!(
             one::<i64>(&conn, "SELECT count(*) FROM entries_fts"),
             0,
@@ -384,6 +398,84 @@ mod tests {
     }
 
     #[test]
+    fn a_fresh_database_is_at_version_2_with_draft_imports() {
+        let conn = open(&db_in("db-v2")).unwrap();
+        assert_eq!(one::<i64>(&conn, "PRAGMA user_version"), 2);
+        conn.execute(
+            "INSERT INTO draft_imports (source, fingerprint, entry_id, imported_at) \
+             VALUES ('draft-1.md', 'f', 'nope', 1)",
+            [],
+        )
+        .expect_err("entry_id must name an entry");
+        conn.execute(INSERT_A, []).unwrap();
+        conn.execute(
+            "INSERT INTO draft_imports (source, fingerprint, entry_id, imported_at) \
+             VALUES ('draft-1.md', 'f', 's1-0001', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO draft_imports (source, fingerprint, entry_id, imported_at) \
+             VALUES ('draft-1.md', 'f', 's1-0001', 2)",
+            [],
+        )
+        .expect_err("one row per (source, fingerprint)");
+        conn.execute("DELETE FROM entries WHERE id = 's1-0001'", [])
+            .unwrap();
+        assert_eq!(
+            one::<i64>(&conn, "SELECT count(*) FROM draft_imports"),
+            0,
+            "an import record goes with its entry"
+        );
+    }
+
+    #[test]
+    fn a_version_1_database_gains_draft_imports_and_keeps_its_rows() {
+        let path = db_in("db-v1-to-v2");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        {
+            // A stash exactly as a stage-02 build left it.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(V1).unwrap();
+            conn.execute_batch("PRAGMA user_version = 1;").unwrap();
+            conn.execute(INSERT_A, []).unwrap();
+        }
+        let conn = open(&path).unwrap();
+        assert_eq!(one::<i64>(&conn, "PRAGMA user_version"), 2);
+        assert_eq!(
+            one::<i64>(
+                &conn,
+                "SELECT count(*) FROM sqlite_master WHERE name = 'draft_imports'"
+            ),
+            1
+        );
+        assert_eq!(
+            one::<i64>(&conn, "SELECT count(*) FROM entries"),
+            1,
+            "the data survived"
+        );
+    }
+
+    #[test]
+    fn a_database_one_version_ahead_is_refused() {
+        let path = db_in("db-v3");
+        {
+            let conn = open(&path).unwrap();
+            conn.execute_batch(&format!("PRAGMA user_version = {};", SCHEMA_VERSION + 1))
+                .unwrap();
+        }
+        let err = open(&path).unwrap_err();
+        assert!(err.is_permanent(), "{err}");
+        assert!(err.to_string().contains("newer couplet"), "{err}");
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(
+            one::<i64>(&conn, "PRAGMA user_version"),
+            SCHEMA_VERSION + 1,
+            "never downgraded"
+        );
+    }
+
+    #[test]
     fn a_database_from_a_newer_build_is_refused_and_left_alone() {
         let path = db_in("db-newer");
         {
@@ -407,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn processes_opening_a_fresh_file_at_once_all_get_v1() {
+    fn processes_opening_a_fresh_file_at_once_all_get_the_current_schema() {
         let path = db_in("db-race");
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
         let handles: Vec<_> = (0..8)

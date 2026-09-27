@@ -437,6 +437,32 @@ fn entry_from(row: EntryRow, tags: Vec<String>) -> StashEntry {
     }
 }
 
+/// The entry of a note whose file `path` already holds `text`, created and
+/// modified at `at` (unix ms); returns its id. Opens no transaction: the
+/// caller's wraps it, so the draft importer records the import in the same
+/// one. The title comes from `text` and `repo` is stored as its basename
+/// (A3), exactly as `create_note` stores them. The caller writes the file
+/// first: one that rolls back leaves a file with no entry — the text twice,
+/// never none.
+pub(crate) fn insert_note_row(
+    tx: &Connection,
+    path: &str,
+    text: &str,
+    repo: Option<&str>,
+    at: i64,
+) -> Result<String, String> {
+    let title = notes::title_of(text).unwrap_or_default();
+    let repo = normalize_repo(repo);
+    let id = unique_id(tx)?;
+    tx.execute(
+        "INSERT INTO entries (id, kind, path, title, repo, created_at, modified_at) \
+         VALUES (?1, 'note', ?2, ?3, ?4, ?5, ?5)",
+        params![id, path, title, repo, at],
+    )
+    .map_err(db::err)?;
+    Ok(id)
+}
+
 impl Stash {
     /// A new note: its file in the notes folder, then its entry. Not put away
     /// (`stashed_at` is NULL): the note is open in the tab that typed it.
@@ -454,12 +480,10 @@ impl Stash {
         // `create_new`: never overwrites anything already in the folder.
         let path = notes::create_note_file(&dir, text, now, offset_secs, ids::random16)?;
         let path = path.to_string_lossy().into_owned();
-        let title = notes::title_of(text).unwrap_or_default();
-        let repo = normalize_repo(repo);
         // If the insert fails the file stays — it may be the only copy of the
         // human's text — and the error names it, so the caller can still reach it.
         let id = self
-            .insert_note(&path, &title, repo.as_deref(), now)
+            .insert_note(&path, text, repo, now)
             .map_err(|e| format!("note saved to {path} but not recorded in the stash: {e}"))?;
         self.get(&id)
     }
@@ -467,7 +491,7 @@ impl Stash {
     fn insert_note(
         &mut self,
         path: &str,
-        title: &str,
+        text: &str,
         repo: Option<&str>,
         now: i64,
     ) -> Result<String, String> {
@@ -475,13 +499,7 @@ impl Stash {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db::err)?;
-        let id = unique_id(&tx)?;
-        tx.execute(
-            "INSERT INTO entries (id, kind, path, title, repo, created_at, modified_at) \
-             VALUES (?1, 'note', ?2, ?3, ?4, ?5, ?5)",
-            params![id, path, title, repo, now],
-        )
-        .map_err(db::err)?;
+        let id = insert_note_row(&tx, path, text, repo, now)?;
         tx.commit().map_err(db::err)?;
         Ok(id)
     }
@@ -948,6 +966,62 @@ mod tests {
             .execute_batch("PRAGMA query_only = OFF;")
             .unwrap();
         assert_eq!(rows(&stash, "entries"), 0);
+    }
+
+    #[test]
+    fn insert_note_row_takes_its_time_and_joins_the_callers_transaction() {
+        let (mut stash, _root) = stash_in("note-row");
+        let at = T0 - 86_400_000;
+        let text = "# Rolled back\nbody\n";
+        let dir = stash.notes_dir().unwrap();
+        let path = notes::create_note_file(&dir, text, at, MSK, ids::random16).unwrap();
+        let path = path.to_string_lossy().into_owned();
+        {
+            let tx = stash
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .unwrap();
+            let id = insert_note_row(&tx, &path, text, Some("/p/proj"), at).unwrap();
+            let row: (String, i64, i64, String, Option<String>, Option<i64>) = tx
+                .query_row(
+                    "SELECT kind, created_at, modified_at, title, repo, stashed_at \
+                     FROM entries WHERE id = ?1",
+                    [&id],
+                    |r| {
+                        Ok((
+                            r.get(0)?,
+                            r.get(1)?,
+                            r.get(2)?,
+                            r.get(3)?,
+                            r.get(4)?,
+                            r.get(5)?,
+                        ))
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                row,
+                (
+                    "note".into(),
+                    at,
+                    at,
+                    "Rolled back".into(),
+                    Some("proj".into()),
+                    None
+                )
+            );
+            // Dropped without commit.
+        }
+        assert_eq!(
+            rows(&stash, "entries"),
+            0,
+            "the row went with the caller's transaction"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            text,
+            "the file stays: the text twice, never none"
+        );
     }
 
     #[test]

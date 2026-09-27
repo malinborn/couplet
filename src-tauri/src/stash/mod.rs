@@ -585,7 +585,7 @@ mod tests {
         // Even once it would open: this session does not try again.
         Connection::open(&paths.db_path)
             .unwrap()
-            .execute_batch("PRAGMA user_version = 1;")
+            .execute_batch(&format!("PRAGMA user_version = {};", db::SCHEMA_VERSION))
             .unwrap();
         assert!(state.with(|s| s.list(&ListQuery::default())).is_err());
         assert!(!state.is_available());

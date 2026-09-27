@@ -764,7 +764,15 @@ pub fn now_secs() -> u64 {
 /// Atomic write, same tmp+rename shape as `recovery.rs`. Always v2, always
 /// `session-v2.json` — `session.json` is left alone for a rollback.
 pub fn write_session(session: &Session) -> Result<(), String> {
-    let path = data_file(SESSION_FILE)?;
+    write_session_in(&crate::paths::app_data_dir()?, session)
+}
+
+/// `write_session` into `dir` — the draft importer's (it rewrites the loaded
+/// session before any window exists), and its tests'. Plain tmp + rename,
+/// not `atomic_write::save`: `dir` is the app's own data dir, where there is
+/// no user metadata to keep (CLAUDE.md).
+pub fn write_session_in(dir: &Path, session: &Session) -> Result<(), String> {
+    let path = dir.join(SESSION_FILE);
     let tmp = path.with_extension("json.tmp");
     let data = serde_json::to_string_pretty(session)
         .map_err(|e| format!("Failed to serialize session: {}", e))?;
@@ -1411,6 +1419,27 @@ mod tests {
     fn a_slash_tmp_tab_from_an_older_session_restores_as_slash_private_tmp() {
         let s = with_paths_normalized(session(vec![window(vec![tab("a", Some("/tmp/nope-s.md"))])]), crate::path_norm::normalize_str);
         assert_eq!(s.windows[0].tabs[0].path.as_deref(), Some("/private/tmp/nope-s.md"));
+    }
+
+    #[test]
+    fn write_session_in_writes_v2_into_the_given_directory() {
+        let dir = crate::atomic_write::testkit::scratch("session-in");
+        let mut s = session(vec![window(vec![tab("a", Some("/tmp/a.md"))])]);
+        s.saved_at = 1_790_378_100;
+        write_session_in(&dir, &s).unwrap();
+        let back = parse_session(&fs::read_to_string(dir.join(SESSION_FILE)).unwrap()).unwrap();
+        assert_eq!(back.version, SESSION_VERSION);
+        assert_eq!(back.saved_at, s.saved_at);
+        assert_eq!(back.windows[0].tabs[0].path.as_deref(), Some("/tmp/a.md"));
+        assert!(!dir.join("session-v2.json.tmp").exists());
+        assert!(!dir.join("session.json").exists(), "v1 is left alone for a rollback");
+
+        // A second write replaces the first whole.
+        let s2 = session(vec![window(vec![tab("b", Some("/tmp/b.md"))])]);
+        write_session_in(&dir, &s2).unwrap();
+        let back = parse_session(&fs::read_to_string(dir.join(SESSION_FILE)).unwrap()).unwrap();
+        assert_eq!(back.windows.len(), 1);
+        assert_eq!(back.windows[0].tabs[0].path.as_deref(), Some("/tmp/b.md"));
     }
 
     #[test]
