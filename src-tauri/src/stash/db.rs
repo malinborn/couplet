@@ -7,7 +7,10 @@
 //! the caller reports the stash unavailable and the file stays as evidence.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::fs::{self, OpenOptions};
+use std::io::ErrorKind;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, ErrorCode, Row, TransactionBehavior};
@@ -92,13 +95,53 @@ fn open_err(e: rusqlite::Error) -> OpenError {
 /// Opens (creating if needed) and migrates the database at `path`.
 pub(crate) fn open(path: &Path) -> Result<Connection, OpenError> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)
+        fs::create_dir_all(dir)
             .map_err(|e| OpenError::Failed(format!("cannot create {}: {e}", dir.display())))?;
     }
+    create_private(path)?;
     let mut conn = Connection::open(path).map_err(open_err)?;
     configure(&conn)?;
     migrate(&mut conn)?;
+    make_private(path);
     Ok(conn)
+}
+
+/// Titles, paths and tags are as private as the export (0600). Created here
+/// before SQLite sees the path, because SQLite gives `-wal` and `-shm` the
+/// database file's mode: a new stash is private from its first byte.
+fn create_private(path: &Path) -> Result<(), OpenError> {
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+    {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(OpenError::Failed(format!(
+            "cannot create {}: {e}",
+            path.display()
+        ))),
+    }
+}
+
+/// A database a build before this one left readable, with whatever `-wal`
+/// and `-shm` sit beside it, made 0600. Only after the open succeeded, so a
+/// refused file keeps even its mode; best effort, since a stash that works
+/// but stays readable beats one that refuses to open over a `chmod`.
+fn make_private(path: &Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let file = PathBuf::from(format!("{}{suffix}", path.display()));
+        let Ok(meta) = fs::metadata(&file) else {
+            continue;
+        };
+        if meta.permissions().mode() & 0o777 == 0o600 {
+            continue;
+        }
+        if let Err(e) = fs::set_permissions(&file, fs::Permissions::from_mode(0o600)) {
+            eprintln!("stash: cannot make {} private: {e}", file.display());
+        }
+    }
 }
 
 fn configure(conn: &Connection) -> Result<(), OpenError> {
@@ -292,6 +335,38 @@ mod tests {
             0,
             "stage 02 leaves the index empty"
         );
+    }
+
+    #[test]
+    fn the_database_and_its_wal_are_private() {
+        use crate::atomic_write::testkit::mode_of;
+        let path = db_in("db-mode");
+        let conn = open(&path).unwrap();
+        conn.execute(INSERT_A, []).unwrap();
+        let sibling = |suffix: &str| PathBuf::from(format!("{}{suffix}", path.display()));
+        for p in [path.clone(), sibling("-wal"), sibling("-shm")] {
+            assert_eq!(mode_of(&p), 0o600, "{}", p.display());
+        }
+    }
+
+    #[test]
+    fn an_existing_readable_database_is_made_private() {
+        use crate::atomic_write::testkit::mode_of;
+        let path = db_in("db-mode-old");
+        drop(open(&path).unwrap());
+        let sibling = |suffix: &str| PathBuf::from(format!("{}{suffix}", path.display()));
+        // A 0644 database left by a build that did not restrict it, with its
+        // WAL still beside it (another connection keeps it open).
+        let keep = Connection::open(&path).unwrap();
+        keep.execute(INSERT_A, []).unwrap();
+        for p in [path.clone(), sibling("-wal"), sibling("-shm")] {
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        drop(open(&path).unwrap());
+        for p in [path.clone(), sibling("-wal"), sibling("-shm")] {
+            assert_eq!(mode_of(&p), 0o600, "{}", p.display());
+        }
+        drop(keep);
     }
 
     #[test]

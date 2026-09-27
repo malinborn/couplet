@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::ErrorKind;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -64,7 +65,12 @@ pub(crate) fn daily_backup(
     let tmp = dir.join(format!("{}.tmp", backup_name(date)));
     // A leftover is an unfinished copy from a crashed run, never a backup.
     let _ = fs::remove_file(&tmp);
-    if let Err(e) = copy_into(conn, &tmp) {
+    // 0600 before it is published: titles, paths and tags, like the export.
+    let copied = copy_into(conn, &tmp).and_then(|()| {
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("cannot make {} private: {e}", tmp.display()))
+    });
+    if let Err(e) = copied {
         // Our own half-written temp; the database it was copied from is intact.
         let _ = fs::remove_file(&tmp);
         return Err(e);
@@ -271,6 +277,13 @@ mod tests {
             .query_row("SELECT id FROM entries", [], |r| r.get(0))
             .unwrap();
         assert_eq!(id, note.id);
+    }
+
+    #[test]
+    fn a_backup_is_private() {
+        let (stash, _root) = stash_in("backup-mode");
+        let made = stash.daily_backup(T0, MSK).unwrap().unwrap();
+        assert_eq!(mode_of(&made), 0o600, "titles and paths, like the export");
     }
 
     #[test]
