@@ -666,10 +666,57 @@ pub(crate) struct PurgeReport {
     pub(crate) skipped: Vec<(String, String)>,
 }
 
+/// `stash_purge` / `stash_restore`'s refusal while a tab holds the trashed
+/// file (I2). The frontend shows it as is.
+pub(crate) const HELD_ERROR: &str = "the note is open in a tab";
+
+/// How much later than `deleted_at` a trashed file's mtime may be and still
+/// count as untouched: the copy fallback stamps the copy a moment after the
+/// `now` the delete was given.
+const EDIT_GRACE_MS: i64 = 2_000;
+
+/// The row's path, read under the lock, for an owner check made off it.
+fn row_path(state: &StashState, id: &str) -> Result<String, String> {
+    state.with(|s| row(&s.conn, id)).map(|r| r.path)
+}
+
+/// Why the 30-day purge leaves `id` alone this time, if it must (I2): a tab
+/// holds the file — it was opened from `.trash/` by hand or by an agent, and
+/// deleting it would pull the text out from under that tab — or the file
+/// changed after its deletion (a write to a trashed file never moves
+/// `deleted_at`, D18). `held` runs with no stash lock held.
+fn purge_hold(state: &StashState, id: &str, held: &impl Fn(&str) -> bool) -> Option<String> {
+    let r = match state.with(|s| row(&s.conn, id)) {
+        Ok(r) => r,
+        Err(e) => return Some(e),
+    };
+    if held(&r.path) {
+        return Some(HELD_ERROR.to_string());
+    }
+    let deleted_at = r.deleted_at?;
+    let modified = fs::symlink_metadata(&r.path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+    match modified {
+        Some(m) if m > deleted_at + EDIT_GRACE_MS => {
+            Some(format!("{} changed after it was deleted", r.path))
+        }
+        _ => None,
+    }
+}
+
 /// The 30-day purge (D10's pass): every expired trashed note, one stash lock
 /// per note, so the housekeeping thread never holds the lock across a run of
-/// file removals. One refused row never stops the rest.
-pub(crate) fn purge_expired(state: &StashState, now: i64) -> PurgeReport {
+/// file removals. One refused row never stops the rest; a held or edited
+/// file (`purge_hold`) is skipped, not purged. The owner check and the purge
+/// are two steps: a tab opening the file in between is D17's accepted gap.
+pub(crate) fn purge_expired(
+    state: &StashState,
+    now: i64,
+    held: impl Fn(&str) -> bool,
+) -> PurgeReport {
     let mut report = PurgeReport::default();
     let ids = match state.with(|s| s.expired_trash(now)) {
         Ok(ids) => ids,
@@ -679,6 +726,11 @@ pub(crate) fn purge_expired(state: &StashState, now: i64) -> PurgeReport {
         }
     };
     for id in ids {
+        if let Some(why) = purge_hold(state, &id, &held) {
+            eprintln!("[stash::trash] purge of {id} skipped: {why}");
+            report.skipped.push((id, why));
+            continue;
+        }
         match state.with(|s| s.purge_entry(&id)) {
             Ok(()) => report.purged.push(id),
             Err(e) => {
@@ -690,12 +742,41 @@ pub(crate) fn purge_expired(state: &StashState, now: i64) -> PurgeReport {
     report
 }
 
-/// «вернуть»: `Stash::restore_entry`, then the search index from the note as
+/// «удалить навсегда» (`Stash::purge_entry` + `after_write`), refused with
+/// `HELD_ERROR` while a tab holds the trashed file (I2). `held` runs with no
+/// stash lock held.
+pub(crate) fn purge(
+    state: &StashState,
+    id: &str,
+    now: i64,
+    held: impl Fn(&str) -> bool,
+) -> Result<(), String> {
+    if held(&row_path(state, id)?) {
+        return Err(HELD_ERROR.to_string());
+    }
+    state.with(|s| {
+        s.purge_entry(id)?;
+        s.after_write(now, clock::local_offset_secs(now.div_euclid(1000)));
+        Ok(())
+    })
+}
+
+/// «вернуть»: refused with `HELD_ERROR` while a tab holds the trashed file —
+/// moving it would leave that tab autosaving an orphan into `.trash/` (I2).
+/// Then `Stash::restore_entry`, then the search index from the note as
 /// it is on disk — read with no lock held, written only while the row still
 /// has the `modified_at` it was restored with (`reindex_written`), so a save
 /// that lands in between is not overwritten by this older read. Best effort
 /// (D8): the index is derived, and a failed one must not undo a restore.
-pub(crate) fn restore(state: &StashState, id: &str, now: i64) -> Result<StashEntry, String> {
+pub(crate) fn restore(
+    state: &StashState,
+    id: &str,
+    now: i64,
+    held: impl Fn(&str) -> bool,
+) -> Result<StashEntry, String> {
+    if held(&row_path(state, id)?) {
+        return Err(HELD_ERROR.to_string());
+    }
     let entry = state.with(|s| s.restore_entry(id, now))?;
     // `read_saved` logs a file it cannot read; `ensure_index` fills the gap later.
     if let Some(text) = search::read_saved(&entry.path) {
@@ -928,6 +1009,18 @@ pub(crate) fn delete_flow(env: &impl DeleteEnv, id: &str) -> Result<FlowOutcome,
     env.trash(id).map(FlowOutcome::Done)
 }
 
+/// Whether a live window's tab holds `path`: `OpenFiles` alone, released
+/// before anything takes the stash lock (D17/A11). No registry yet counts as
+/// held — the answer that moves and deletes nothing.
+pub(crate) fn tab_holds(app: &tauri::AppHandle, path: &str) -> bool {
+    use tauri::Manager;
+    let Some(open_files) = app.try_state::<crate::window::OpenFiles>() else {
+        return true;
+    };
+    let reg = open_files.0.lock().unwrap_or_else(|p| p.into_inner());
+    live_owner(&reg, path, |label| app.get_webview_window(label).is_some()).is_some()
+}
+
 /// The live window holding `path` in the registry, with its `#N`. A holder
 /// whose window is gone counts as nobody: asking it would only wait out
 /// `DROP_REPLY_TIMEOUT`.
@@ -1008,12 +1101,17 @@ impl Housekept {
     }
 }
 
-/// One pass: finish interrupted moves, then purge what is 30 days old; one
-/// export and backup (`after_write`) if anything changed.
-pub(crate) fn housekeeping_pass(state: &StashState, now: i64) -> Housekept {
+/// One pass: finish interrupted moves, then purge what is 30 days old and
+/// neither held by a tab nor edited (`purge_expired`); one export and backup
+/// (`after_write`) if anything changed.
+pub(crate) fn housekeeping_pass(
+    state: &StashState,
+    now: i64,
+    held: impl Fn(&str) -> bool,
+) -> Housekept {
     let done = Housekept {
         reconciled: reconcile(state, now),
-        purged: purge_expired(state, now),
+        purged: purge_expired(state, now, held),
     };
     if done.changed() {
         let offset = clock::local_offset_secs(now.div_euclid(1000));
@@ -1040,7 +1138,7 @@ pub(crate) fn start_housekeeping(state: StashState, app: tauri::AppHandle) {
                 let now = clock::now_ms();
                 if due(last, now) {
                     last = Some(now);
-                    let done = housekeeping_pass(&state, now);
+                    let done = housekeeping_pass(&state, now, |p| tab_holds(&app, p));
                     if done.changed() || !done.purged.skipped.is_empty() {
                         eprintln!(
                             "[stash::trash] housekeeping: {} marked deleted, {} marked restored, {} purged, {} skipped",
@@ -1725,7 +1823,7 @@ mod tests {
         state.with(|s| s.delete_entry(&e.id, T0 + 1)).unwrap();
         assert!(state.with(|s| Ok(!indexed(s, &e.id))).unwrap());
 
-        let back = restore(&state, &e.id, T0 + 2).unwrap();
+        let back = restore(&state, &e.id, T0 + 2, nobody_holds).unwrap();
 
         assert_eq!(back.path, e.path);
         assert_eq!(fs::read_to_string(&back.path).unwrap(), "# Вернись\nтайное слово\n");
@@ -2081,8 +2179,11 @@ mod tests {
         del(&young.id, now - 30 * DAY + 1);
         del(&exact.id, now - 30 * DAY);
         del(&old.id, now - 31 * DAY);
+        for e in [&young, &exact, &old] {
+            backdate(&row_in(&state, &e.id).unwrap().0);
+        }
 
-        let report = purge_expired(&state, now);
+        let report = purge_expired(&state, now, nobody_holds);
 
         let mut purged = report.purged.clone();
         purged.sort();
@@ -2114,14 +2215,100 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+        backdate(&row_in(&state, &good.id).unwrap().0);
 
-        let report = purge_expired(&state, T0 + 31 * DAY);
+        let report = purge_expired(&state, T0 + 31 * DAY, nobody_holds);
 
         assert_eq!(report.purged, vec![good.id.clone()]);
         assert_eq!(report.skipped.len(), 1);
         assert_eq!(report.skipped[0].0, bad.id);
         assert_eq!(fs::read_to_string(&precious).unwrap(), "keep me");
         assert!(state.with(|s| Ok(row(s, &bad.id))).unwrap().is_some());
+    }
+
+    /// The file's mtime set to before every `deleted_at` these tests use:
+    /// `purge_expired` skips a file modified after its deletion, and a test
+    /// file's real mtime is later than the fixed `T0`.
+    fn backdate(path: &str) {
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_millis((T0 - DAY) as u64);
+        fs::File::options().write(true).open(path).unwrap().set_modified(at).unwrap();
+    }
+
+    fn trashed_note(state: &StashState, text: &str, at: i64) -> (StashEntry, String) {
+        let e = state.with(|s| s.create_note(text, None, T0, MSK)).unwrap();
+        state.with(|s| s.delete_entry(&e.id, at)).unwrap();
+        let trashed = row_in(state, &e.id).unwrap().0;
+        backdate(&trashed);
+        (e, trashed)
+    }
+
+    #[test]
+    fn purge_expired_skips_a_note_a_tab_holds() {
+        // Opened from `.trash/` by hand or by an agent: the tab autosaves
+        // there, and the purge must not delete what it is showing (I2).
+        let (state, _root) = state_in("trash-purge-held");
+        let (held, held_path) = trashed_note(&state, "held", T0);
+        let (free, _) = trashed_note(&state, "free", T0);
+        let asked = RefCell::new(Vec::new());
+
+        let report = purge_expired(&state, T0 + 31 * DAY, |p| {
+            asked.borrow_mut().push(p.to_string());
+            p == held_path
+        });
+
+        assert_eq!(report.purged, vec![free.id.clone()]);
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(report.skipped[0].0, held.id);
+        assert!(report.skipped[0].1.contains("open in a tab"), "{:?}", report.skipped);
+        assert!(asked.borrow().contains(&held_path));
+        assert_eq!(fs::read_to_string(&held_path).unwrap(), "held");
+        assert!(row_in(&state, &held.id).is_some());
+    }
+
+    #[test]
+    fn purge_expired_skips_a_note_edited_in_the_trash() {
+        // A write to a trashed file never moves its `deleted_at` (D18): an
+        // mtime after the deletion is the only sign someone worked on it.
+        let (state, _root) = state_in("trash-purge-edited");
+        let (edited, edited_path) = trashed_note(&state, "edited", T0);
+        let (untouched, _) = trashed_note(&state, "untouched", T0);
+        let later = std::time::UNIX_EPOCH + std::time::Duration::from_millis((T0 + DAY) as u64);
+        fs::write(&edited_path, "edited yesterday").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&edited_path)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+
+        let report = purge_expired(&state, T0 + 31 * DAY, nobody_holds);
+
+        assert_eq!(report.purged, vec![untouched.id.clone()]);
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(report.skipped[0].0, edited.id);
+        assert_eq!(fs::read_to_string(&edited_path).unwrap(), "edited yesterday");
+        assert!(row_in(&state, &edited.id).is_some());
+    }
+
+    #[test]
+    fn purge_and_restore_are_refused_while_a_tab_holds_the_file() {
+        let (state, _root) = state_in("trash-held-commands");
+        let (e, trashed) = trashed_note(&state, "shown", T0);
+        let held = |p: &str| p == trashed;
+
+        assert_eq!(purge(&state, &e.id, T0 + 1, held).unwrap_err(), "the note is open in a tab");
+        assert_eq!(restore(&state, &e.id, T0 + 1, held).unwrap_err(), "the note is open in a tab");
+
+        assert_eq!(fs::read_to_string(&trashed).unwrap(), "shown");
+        assert_eq!(row_in(&state, &e.id).unwrap(), (trashed.clone(), Some(T0), None));
+        assert!(!Path::new(&e.path).exists());
+
+        // Nobody holds it: both work again (restore first, then a fresh delete).
+        let back = restore(&state, &e.id, T0 + 2, nobody_holds).unwrap();
+        assert_eq!(fs::read_to_string(&back.path).unwrap(), "shown");
+        state.with(|s| s.delete_entry(&e.id, T0 + 3)).unwrap();
+        purge(&state, &e.id, T0 + 4, nobody_holds).unwrap();
+        assert_eq!(row_in(&state, &e.id), None);
     }
 
     // ---- reconcile, due, and what the rest of the stash sees ----
@@ -2620,7 +2807,9 @@ mod tests {
         let export = state.with(|s| Ok(s.paths.export_path.clone())).unwrap();
         assert!(!export.exists());
 
-        let done = housekeeping_pass(&state, T0 + 31 * DAY);
+        backdate(&row_in(&state, &old.id).unwrap().0);
+
+        let done = housekeeping_pass(&state, T0 + 31 * DAY, nobody_holds);
 
         assert!(done.changed());
         assert_eq!(done.reconciled.deleted, vec![cut.id.clone()]);
@@ -2637,7 +2826,7 @@ mod tests {
         state.with(|s| s.create_note("live", None, T0, MSK)).unwrap();
         let export = state.with(|s| Ok(s.paths.export_path.clone())).unwrap();
 
-        let done = housekeeping_pass(&state, T0 + DAY);
+        let done = housekeeping_pass(&state, T0 + DAY, nobody_holds);
 
         assert!(!done.changed());
         assert!(!export.exists());

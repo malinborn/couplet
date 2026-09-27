@@ -310,16 +310,18 @@ pub async fn stash_delete(
 }
 
 /// «вернуть»: a trashed note back into the notes folder, on top, with its
-/// tags (`trash::restore`: re-indexed off the lock). Emits `restored`.
+/// tags (`trash::restore`: re-indexed off the lock). Refused with
+/// `trash::HELD_ERROR` while a tab holds the trashed file. Emits `restored`.
 #[tauri::command]
 pub async fn stash_restore(
     app: AppHandle,
     state: State<'_, StashState>,
     id: String,
 ) -> Result<StashEntry, String> {
+    let held_app = app.clone();
     let entry = off_lock(&state, move |state| {
         let now = clock::now_ms();
-        let entry = trash::restore(state, &id, now)?;
+        let entry = trash::restore(state, &id, now, |p| trash::tab_holds(&held_app, p))?;
         // Best effort, as everywhere: the restore itself has happened.
         if let Err(e) = state.with(|s| {
             s.after_write(now, offset_at(now));
@@ -335,18 +337,17 @@ pub async fn stash_restore(
 }
 
 /// «удалить навсегда» (D15: no confirmation). Only a trashed note, only a
-/// file inside the trash (`Stash::purge_entry`). Emits `purged`.
+/// file inside the trash (`Stash::purge_entry`), and not while a tab holds
+/// it (`trash::HELD_ERROR`). Emits `purged`.
 #[tauri::command]
 pub async fn stash_purge(
     app: AppHandle,
     state: State<'_, StashState>,
     id: String,
 ) -> Result<(), String> {
-    let purged_id = id.clone();
-    run(&state, move |s| {
-        let now = clock::now_ms();
-        s.purge_entry(&id)?;
-        s.after_write(now, offset_at(now));
+    let (purged_id, held_app) = (id.clone(), app.clone());
+    off_lock(&state, move |state| {
+        trash::purge(state, &id, clock::now_ms(), |p| trash::tab_holds(&held_app, p))?;
         Ok(true)
     })
     .await?;
@@ -368,14 +369,7 @@ pub async fn stash_note_saved_as(
 ) -> Result<bool, String> {
     let (held_app, state) = (app.clone(), state.inner().clone());
     let moved = tauri::async_runtime::spawn_blocking(move || {
-        let held = |path: &str| {
-            // A11: `OpenFiles` alone, released before the stash lock is taken.
-            let Some(open_files) = held_app.try_state::<crate::window::OpenFiles>() else {
-                return true;
-            };
-            let reg = open_files.0.lock().unwrap_or_else(|p| p.into_inner());
-            trash::live_owner(&reg, path, |label| held_app.get_webview_window(label).is_some()).is_some()
-        };
+        let held = |path: &str| trash::tab_holds(&held_app, path);
         trash::note_saved_as(&state, &old_path, &new_path, held, clock::now_ms())
     })
     .await
