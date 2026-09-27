@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PULSE_MS, RELOAD_COALESCE_MS, createStashStore, type StashStoreDeps } from './stash-store.svelte';
 import type { StashSearchArgs, StashSearchResult } from './ipc';
 import { SEARCH_DEBOUNCE_MS, type SearchRequest } from './stash-search';
-import type { StashEntry, StashHit, TabHolder } from './types';
+import { closeStash, setStashQuery, showStash } from './stash-state';
+import type { DeleteOutcome, StashEntry, StashHit, TabHolder } from './types';
 
 function entry(id: string, over: Partial<StashEntry> = {}): StashEntry {
   return {
@@ -564,5 +565,212 @@ describe('stash store', () => {
     expect(s.state.open).toBe(false);
     expect(s.state.sort).toBe('kind');
     expect(s.entries).toHaveLength(2);
+  });
+});
+
+describe('the trash (stage 06)', () => {
+  const T0 = 1_790_000_000_000;
+
+  function trashDeps(over: Partial<NonNullable<StashStoreDeps['trash']>> = {}) {
+    return {
+      list: vi.fn(async () => [entry('t1', { deletedAt: T0 - 1 }), entry('t2', { deletedAt: T0 })]),
+      restore: vi.fn(async (id: string) => entry(id, { stashedAt: T0 })),
+      purge: vi.fn(async () => {}),
+      remove: vi.fn(async (id: string): Promise<DeleteOutcome> => ({ kind: 'trashed', entry: entry(id, { deletedAt: T0 }) })),
+      ...over,
+    };
+  }
+
+  async function inTrash(over: Partial<NonNullable<StashStoreDeps['trash']>> = {}, base = deps()) {
+    const trash = trashDeps(over);
+    const s = createStashStore({ ...base, trash });
+    s.open();
+    await flush();
+    s.enterTrash();
+    await flush();
+    return { s, trash, base };
+  }
+
+  it('entering shows the trash with an empty query and the newest deletion first', async () => {
+    const trash = trashDeps();
+    const s = createStashStore({ ...deps(), trash });
+    s.open();
+    await flush();
+    s.update((st) => setStashQuery(st, 'vpn'));
+    s.enterTrash();
+    expect(s.state.mode).toBe('trash');
+    expect(s.state.query).toBe('');
+    await flush();
+    expect(s.trashLoaded).toBe(true);
+    expect(s.trashEntries.map((e) => e.id)).toEqual(['t2', 't1']);
+  });
+
+  it('every entry reads the trash again; leaving keeps the list for the next time', async () => {
+    const { s, trash } = await inTrash();
+    s.leaveTrash();
+    expect(s.state.mode).toBe('stash');
+    expect(s.trashEntries).toHaveLength(2);
+    s.toggleTrash();
+    expect(s.state.mode).toBe('trash');
+    await flush();
+    expect(trash.list).toHaveBeenCalledTimes(2);
+  });
+
+  it('closing the stash, or a put-away, returns to the stash view', async () => {
+    const { s } = await inTrash();
+    s.close();
+    expect(s.state.mode).toBe('stash');
+    s.open();
+    expect(s.state.mode).toBe('stash');
+    s.enterTrash();
+    s.update(showStash);
+    expect(s.state.mode).toBe('stash');
+  });
+
+  it('the trash cannot be entered while the stash is closed', () => {
+    const trash = trashDeps();
+    const s = createStashStore({ ...deps(), trash });
+    s.enterTrash();
+    expect(s.state).toEqual(closeStash(s.state));
+    expect(s.state.mode).toBe('stash');
+    expect(trash.list).not.toHaveBeenCalled();
+  });
+
+  it('stash-changed reloads the trash too — only while it is shown, on the same coalesced timer', async () => {
+    const { s, trash, base } = await inTrash();
+    s.changed('purged', ['t1']);
+    s.changed('deleted', ['x']);
+    await settleEvents();
+    expect(trash.list).toHaveBeenCalledTimes(2);
+    expect(base.list).toHaveBeenCalledTimes(2);
+    s.leaveTrash();
+    s.changed('purged', ['t2']);
+    await settleEvents();
+    expect(trash.list).toHaveBeenCalledTimes(2);
+  });
+
+  it('an older trash answer never overwrites a newer one', async () => {
+    const slow = deferred<StashEntry[]>();
+    let n = 0;
+    const list = vi.fn(async () => (n++ === 0 ? slow.promise : [entry('new', { deletedAt: T0 })]));
+    const { s } = await inTrash({ list });
+    s.leaveTrash();
+    s.enterTrash();
+    await flush();
+    slow.resolve([entry('old', { deletedAt: T0 })]);
+    await flush();
+    expect(s.trashEntries.map((e) => e.id)).toEqual(['new']);
+  });
+
+  it('the trash bar reads counts.deleted', async () => {
+    const s = createStashStore({ ...deps({ counts: vi.fn(async () => ({ total: 14, stashedToday: 3, deleted: 3 })) }) });
+    s.open();
+    await flush();
+    expect(s.trashTotal).toBe(3);
+  });
+
+  it('restore takes the card out of the trash, puts the entry in the stash and says whether the chip hides it', async () => {
+    const { s, trash } = await inTrash({}, deps({ repo: 'shelf-design' }));
+    const out = await s.restoreEntry(s.trashEntries[0]);
+    expect(trash.restore).toHaveBeenCalledWith('t2');
+    expect(out).toEqual({ kind: 'restored', entry: entry('t2', { stashedAt: T0 }), hiddenBy: 'shelf-design' });
+    expect(s.trashEntries.map((e) => e.id)).toEqual(['t1']);
+    expect(s.entries.some((e) => e.id === 't2')).toBe(true);
+  });
+
+  it('a restored note of the chip\'s own repo is not hidden', async () => {
+    const list = vi.fn(async () => [entry('t1', { deletedAt: T0, repo: 'infra' })]);
+    const restore = vi.fn(async (id: string) => entry(id, { repo: 'infra' }));
+    const { s } = await inTrash({ list, restore }, deps({ repo: 'infra' }));
+    const out = await s.restoreEntry(s.trashEntries[0]);
+    expect(out).toMatchObject({ kind: 'restored', hiddenBy: null });
+  });
+
+  it('purge takes the card out', async () => {
+    const { s, trash } = await inTrash();
+    expect(await s.purgeEntry(s.trashEntries[1])).toEqual({ kind: 'purged' });
+    expect(trash.purge).toHaveBeenCalledWith('t1');
+    expect(s.trashEntries.map((e) => e.id)).toEqual(['t2']);
+  });
+
+  it('a failed action keeps the card and says why', async () => {
+    const { s } = await inTrash({
+      purge: vi.fn(async () => {
+        throw 'outside the note trash';
+      }),
+    });
+    expect(await s.purgeEntry(s.trashEntries[0])).toEqual({ kind: 'failed', message: 'outside the note trash' });
+    expect(s.trashEntries).toHaveLength(2);
+  });
+
+  it('a second click on a card already on its way out sends nothing', async () => {
+    const gate = deferred<StashEntry>();
+    const { s, trash } = await inTrash({ restore: vi.fn(() => gate.promise) });
+    const card = s.trashEntries[0];
+    const first = s.restoreEntry(card);
+    expect(await s.restoreEntry(card)).toEqual({ kind: 'busy' });
+    expect(await s.purgeEntry(card)).toEqual({ kind: 'busy' });
+    gate.resolve(entry(card.id));
+    await first;
+    expect(trash.restore).toHaveBeenCalledTimes(1);
+    expect(trash.purge).not.toHaveBeenCalled();
+  });
+
+  describe('delete from the stash', () => {
+    async function open(over: Partial<NonNullable<StashStoreDeps['trash']>> = {}) {
+      const trash = trashDeps(over);
+      const s = createStashStore({ ...deps(), trash });
+      s.open();
+      await flush();
+      return { s, trash };
+    }
+
+    it('a note goes to the trash: off the stash list at once', async () => {
+      const { s, trash } = await open();
+      const out = await s.removeEntry(s.entries[0]);
+      expect(trash.remove).toHaveBeenCalledWith('a');
+      expect(out).toEqual({ kind: 'trashed', entry: entry('a', { deletedAt: T0 }) });
+      expect(s.entries.map((e) => e.id)).toEqual(['b']);
+    });
+
+    it('a file reference goes the same way', async () => {
+      const { s } = await open({ remove: vi.fn(async (): Promise<DeleteOutcome> => ({ kind: 'removed' })) });
+      expect(await s.removeEntry(s.entries[1])).toEqual({ kind: 'removed' });
+      expect(s.entries.map((e) => e.id)).toEqual(['a']);
+    });
+
+    it('a note another window could not let go of stays on the list', async () => {
+      const kept: DeleteOutcome = { kind: 'kept', reason: 'unsaved', label: 'editor-2', number: 2 };
+      const { s } = await open({ remove: vi.fn(async () => kept) });
+      expect(await s.removeEntry(s.entries[0])).toEqual(kept);
+      expect(s.entries.map((e) => e.id)).toEqual(['a', 'b']);
+    });
+
+    it('a failed delete stays on the list and says why', async () => {
+      const { s } = await open({
+        remove: vi.fn(async () => {
+          throw new Error('no such entry');
+        }),
+      });
+      expect(await s.removeEntry(s.entries[0])).toEqual({ kind: 'failed', message: 'no such entry' });
+      expect(s.entries).toHaveLength(2);
+    });
+
+    it('a trashed note joins a trash list already read, in its place', async () => {
+      const { s } = await open();
+      s.enterTrash();
+      await flush();
+      s.leaveTrash();
+      await s.removeEntry(s.entries[0]);
+      expect(s.trashEntries.map((e) => e.id)).toEqual(['a', 't2', 't1']);
+    });
+
+    it('without trash deps the store says so instead of pretending', async () => {
+      const s = createStashStore(deps());
+      s.open();
+      await flush();
+      expect(await s.removeEntry(s.entries[0])).toMatchObject({ kind: 'failed' });
+      expect(s.entries).toHaveLength(2);
+    });
   });
 });

@@ -6,7 +6,7 @@
  */
 import type { KeyLike } from '../tabs/drawer-state';
 import type { StashSort } from './stash-view';
-import type { StashEntry } from './types';
+import type { StashEntry, StashMode } from './types';
 
 export type DrawerFocus = 'tabs' | 'stash';
 
@@ -21,6 +21,8 @@ export interface StashState {
   repoChip: string | null;
   /** The card the arrows reached; `null` until they are used. */
   kb: string | null;
+  /** The stash or «Удалённые» (stage 06). Every opening, close and put-away comes back to the stash. */
+  mode: StashMode;
 }
 
 export const STASH_CLOSED: StashState = {
@@ -30,16 +32,31 @@ export const STASH_CLOSED: StashState = {
   sort: 'changed',
   repoChip: null,
   kb: null,
+  mode: 'stash',
 };
 
-/** Every opening starts clean and filtered by the window's repo (mockup `openStash`). */
+/** Every opening starts clean, in the stash view, filtered by the window's repo (mockup `openStash`). */
 export function openStash(s: StashState, windowRepo: string | null): StashState {
   if (s.open) return s.focus === 'stash' ? s : { ...s, focus: 'stash' };
-  return { ...s, open: true, focus: 'stash', query: '', kb: null, repoChip: windowRepo };
+  return { ...s, open: true, focus: 'stash', query: '', kb: null, repoChip: windowRepo, mode: 'stash' };
 }
 
 export function closeStash(s: StashState): StashState {
-  return s.open ? { ...s, open: false, focus: 'tabs', query: '', kb: null } : s;
+  return s.open ? { ...s, open: false, focus: 'tabs', query: '', kb: null, mode: 'stash' } : s;
+}
+
+/** «Удалённые»: one query box for both views, so the switch starts it empty (mockup `setStashView`). */
+export function showTrash(s: StashState): StashState {
+  return s.open ? { ...s, mode: 'trash', query: '', kb: null } : s;
+}
+
+/**
+ * Back to the stash with an empty query — «← в тайник», Esc, and every
+ * put-away (mockup `stashTabs`), which calls it whatever the view.
+ */
+export function showStash(s: StashState): StashState {
+  if (s.mode === 'stash' && s.query === '' && s.kb === null) return s;
+  return { ...s, mode: 'stash', query: '', kb: null };
 }
 
 export function focusDrawer(s: StashState, focus: DrawerFocus): StashState {

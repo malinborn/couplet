@@ -16,6 +16,8 @@ import {
   setRepoChip,
   setStashQuery,
   setStashSort,
+  showStash,
+  showTrash,
   stashKbTarget,
   stashKeyAction,
 } from './stash-state';
@@ -71,6 +73,43 @@ describe('open / close / focus', () => {
     const open = openStash(STASH_CLOSED, null);
     expect(focusDrawer(open, 'tabs').focus).toBe('tabs');
     expect(focusDrawer(focusDrawer(open, 'tabs'), 'stash').focus).toBe('stash');
+  });
+});
+
+describe('the trash view (stage 06)', () => {
+  it('the stash starts in the stash view', () => {
+    expect(STASH_CLOSED.mode).toBe('stash');
+    expect(openStash(STASH_CLOSED, null).mode).toBe('stash');
+  });
+
+  it('switching views starts with an empty query and no ring, the drawer stays open', () => {
+    const s = { ...setStashQuery(openStash(STASH_CLOSED, 'infra'), 'vpn'), kb: 'a' };
+    const trash = showTrash(s);
+    expect(trash).toEqual({ ...s, mode: 'trash', query: '', kb: null });
+    const back = showStash(setStashQuery(trash, 'x'));
+    expect(back).toEqual({ ...s, mode: 'stash', query: '', kb: null });
+  });
+
+  it('the repo chip survives a trip through the trash (the trash only ignores it)', () => {
+    const s = openStash(STASH_CLOSED, 'infra');
+    expect(showStash(showTrash(s)).repoChip).toBe('infra');
+  });
+
+  it('showStash on a clean stash view changes nothing — a put-away calls it every time', () => {
+    const s = openStash(STASH_CLOSED, null);
+    expect(showStash(s)).toBe(s);
+    expect(showStash(STASH_CLOSED)).toBe(STASH_CLOSED);
+  });
+
+  it('the trash is reached only from an open stash', () => {
+    expect(showTrash(STASH_CLOSED)).toBe(STASH_CLOSED);
+  });
+
+  it('closing and reopening always come back to the stash view', () => {
+    const trash = showTrash(openStash(STASH_CLOSED, null));
+    expect(closeStash(trash).mode).toBe('stash');
+    // Reopening an open stash (⌃S focus) keeps the view the human is in.
+    expect(openStash({ ...trash, focus: 'tabs' }, null).mode).toBe('trash');
   });
 });
 

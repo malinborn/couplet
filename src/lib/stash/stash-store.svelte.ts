@@ -16,8 +16,18 @@
 import { indexText, type SearchIndex } from '../tabs/drawer-filter';
 import type { StashCounts, StashSearchArgs, StashSearchResult } from './ipc';
 import { createSearchRunner, type SearchRequest } from './stash-search';
-import { STASH_CLOSED, closeStash, openStash, pulses, setRepoChip, type StashState } from './stash-state';
-import type { StashEntry, StashHit, TabHolder } from './types';
+import {
+  STASH_CLOSED,
+  closeStash,
+  openStash,
+  pulses,
+  setRepoChip,
+  showStash,
+  showTrash,
+  type StashState,
+} from './stash-state';
+import { sortTrash } from './trash-view';
+import type { DeleteOutcome, StashEntry, StashHit, TabHolder } from './types';
 
 /** How long a card pulses (mockup `stPulse` 1.1 s, plus its 260 ms delay). */
 export const PULSE_MS = 1400;
@@ -41,6 +51,35 @@ export interface StashStoreDeps {
    * drawer keeps stage 04's local substring filter.
    */
   search?(args: StashSearchArgs): Promise<StashSearchResult>;
+  /**
+   * The trash (stage 06): `listTrash`, `stash_restore`, `stash_purge`,
+   * `stash_delete`. Absent (stage 04's tests), the trash stays empty and every
+   * action answers `failed`.
+   */
+  trash?: StashTrashDeps;
+}
+
+export interface StashTrashDeps {
+  list(): Promise<StashEntry[]>;
+  restore(id: string): Promise<StashEntry>;
+  purge(id: string): Promise<void>;
+  remove(id: string): Promise<DeleteOutcome>;
+}
+
+/**
+ * What a card action came to. `busy`: that card already has one in flight,
+ * nothing was sent. The store never toasts — App maps these to `stash` notes.
+ */
+export type TrashActionOutcome =
+  | { kind: 'restored'; entry: StashEntry; hiddenBy: string | null }
+  | { kind: 'purged' }
+  | { kind: 'busy' }
+  | { kind: 'failed'; message: string };
+
+export type RemoveOutcome = DeleteOutcome | { kind: 'busy' } | { kind: 'failed'; message: string };
+
+function message(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 export function createStashStore(deps: StashStoreDeps) {
@@ -84,6 +123,12 @@ export function createStashStore(deps: StashStoreDeps) {
         },
       })
     : null;
+  /** The trash, newest deletion first; read on every entry into it and on `stash-changed` while shown. */
+  let trashEntries = $state.raw<readonly StashEntry[]>([]);
+  let trashLoaded = $state(false);
+  let trashSeq = 0;
+  /** Cards with an action in flight: a second click must not send a second IPC. */
+  const busy = new Set<string>();
   /** Ids the drawer last rendered: only a card on screen can pulse. Nothing renders from it. */
   let shown: ReadonlySet<string> = new Set();
   /**
@@ -212,6 +257,58 @@ export function createStashStore(deps: StashStoreDeps) {
     await refreshHolders(list);
   }
 
+  /** Entries a tag change or a restore returned: shown at once, before `stash-changed`. */
+  function upsert(list: readonly StashEntry[]): void {
+    if (list.length === 0) return;
+    const byId = new Map(list.map((e) => [e.id, e]));
+    const next = entries.map((e) => byId.get(e.id) ?? e);
+    for (const e of list) if (!entries.some((x) => x.id === e.id)) next.push(e);
+    setEntries(next);
+  }
+
+  /** «Удалённые» (stage 06): the view switches at once, the list is read again. */
+  function enterTrash(): void {
+    if (!state.open) return;
+    state = showTrash(state);
+    void reloadTrash();
+  }
+
+  function leaveTrash(): void {
+    state = showStash(state);
+  }
+
+  /** Latest wins: an older answer that lands after a newer one is dropped. */
+  async function reloadTrash(): Promise<void> {
+    if (!deps.trash) return;
+    const mine = ++trashSeq;
+    try {
+      const list = await deps.trash.list();
+      if (mine !== trashSeq) return;
+      trashEntries = sortTrash(list);
+      trashLoaded = true;
+    } catch (err) {
+      console.error('stash: trash list failed', err);
+    }
+  }
+
+  /** One action per card at a time; a failure keeps the card and answers why. */
+  async function act<T>(
+    id: string,
+    run: (trash: StashTrashDeps) => Promise<T>
+  ): Promise<T | { kind: 'busy' } | { kind: 'failed'; message: string }> {
+    const trash = deps.trash;
+    if (!trash) return { kind: 'failed', message: 'the trash is not available' };
+    if (busy.has(id)) return { kind: 'busy' };
+    busy.add(id);
+    try {
+      return await run(trash);
+    } catch (err) {
+      return { kind: 'failed', message: message(err) };
+    } finally {
+      busy.delete(id);
+    }
+  }
+
   /**
    * One load at a time: a reload asked for while one is in flight runs once
    * after it, however many were asked for — each would read the same newer
@@ -304,6 +401,56 @@ export function createStashStore(deps: StashStoreDeps) {
     close(): void {
       state = closeStash(state);
     },
+    enterTrash,
+    leaveTrash,
+    toggleTrash(): void {
+      if (state.mode === 'trash') leaveTrash();
+      else enterTrash();
+    },
+    get trashEntries(): readonly StashEntry[] {
+      return trashEntries;
+    },
+    get trashLoaded(): boolean {
+      return trashLoaded;
+    },
+    /** What the trash bar counts: every trashed note, whatever the repo chip (D13). */
+    get trashTotal(): number {
+      return counts.deleted;
+    },
+    /**
+     * «удалить» / «убрать из тайника» on a stash card. Can wait ~10 s for
+     * another window to let go of the note's tab: App awaits it outside the
+     * tab queue. The card leaves the list at once (`stash-changed` confirms).
+     */
+    removeEntry(entry: StashEntry): Promise<RemoveOutcome> {
+      return act(entry.id, async (trash) => {
+        const out = await trash.remove(entry.id);
+        if (out.kind === 'kept') return out;
+        setEntries(entries.filter((e) => e.id !== entry.id));
+        if (out.kind === 'trashed' && trashLoaded) {
+          trashEntries = sortTrash([out.entry, ...trashEntries.filter((e) => e.id !== entry.id)]);
+        }
+        return out;
+      });
+    },
+    /** «вернуть»: out of the trash, into the stash on top (`stashedAt` = now), tags kept. */
+    restoreEntry(entry: StashEntry): Promise<TrashActionOutcome> {
+      return act(entry.id, async (trash): Promise<TrashActionOutcome> => {
+        const restored = await trash.restore(entry.id);
+        trashEntries = trashEntries.filter((e) => e.id !== entry.id);
+        upsert([restored]);
+        const chip = state.repoChip;
+        return { kind: 'restored', entry: restored, hiddenBy: chip !== null && restored.repo !== chip ? chip : null };
+      });
+    },
+    /** «удалить навсегда»: no confirmation (plan D15). */
+    purgeEntry(entry: StashEntry): Promise<TrashActionOutcome> {
+      return act(entry.id, async (trash): Promise<TrashActionOutcome> => {
+        await trash.purge(entry.id);
+        trashEntries = trashEntries.filter((e) => e.id !== entry.id);
+        return { kind: 'purged' };
+      });
+    },
     reload,
     refreshCounts,
     /**
@@ -335,6 +482,7 @@ export function createStashStore(deps: StashStoreDeps) {
         eventTimer = undefined;
         if (tabsOpen || state.open) void refreshCounts();
         if (state.open) void reload();
+        if (state.open && state.mode === 'trash') void reloadTrash();
       }, RELOAD_COALESCE_MS);
     },
     setShown(ids: readonly string[]): void {
@@ -343,14 +491,7 @@ export function createStashStore(deps: StashStoreDeps) {
     setWidth(px: number): void {
       width = px;
     },
-    /** Entries a tag change returned: shown at once, before `stash-changed`. */
-    upsert(list: readonly StashEntry[]): void {
-      if (list.length === 0) return;
-      const byId = new Map(list.map((e) => [e.id, e]));
-      const next = entries.map((e) => byId.get(e.id) ?? e);
-      for (const e of list) if (!entries.some((x) => x.id === e.id)) next.push(e);
-      setEntries(next);
-    },
+    upsert,
     remove(id: string): void {
       setEntries(entries.filter((e) => e.id !== id));
     },

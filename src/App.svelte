@@ -51,11 +51,14 @@
   import { ctrlTabHandler } from './lib/tabs/tab-cycle-keys';
   import {
     listAllEntries,
+    listTrash,
     requestTabMove,
     stashCounts,
     stashCreateNote,
     stashDelete,
     stashEntryForPath,
+    stashPurge,
+    stashRestore,
     stashSearch,
     stashTag,
     stashTouchOpened,
@@ -71,6 +74,7 @@
   import { restoreWindow, widenForStash } from './lib/stash/window-widen';
   import { createWidenSession } from './lib/stash/widen-session';
   import { onStashOpenEdge } from './lib/stash/stash-open-edge.svelte';
+  import { showStash } from './lib/stash/stash-state';
   import { entryTitle } from './lib/stash/stash-view';
   import type { StashToastNote } from './lib/stash/stash-toast';
   import type { StashEntry, TagChange } from './lib/stash/types';
@@ -911,6 +915,12 @@
     holders: (paths) => tabHolders(paths),
     windowRepo: async () => (await windowProject()).repo,
     search: (args) => stashSearch(args),
+    trash: {
+      list: () => listTrash(),
+      restore: (id) => stashRestore(id),
+      purge: (id) => stashPurge(id),
+      remove: (id) => stashDelete(id),
+    },
   });
 
   /** How long a put-away's toast waits for the new cards, to say how many the repo chip hides. */
@@ -943,6 +953,8 @@
    * "not stashed" answers already have their `stash-error` from the controller.
    */
   async function putAway(tabIds: string[]): Promise<void> {
+    // Every put-away shows the stash, query cleared (mockup `stashTabs`, plan 06 D14).
+    stashStore.update(showStash);
     await tabSourcesReady;
     const outcome = await putAwayTabs(tabIds, {
       tabs: () => tabList.tabs,
@@ -1007,18 +1019,19 @@
     }
   }
 
-  /** «убрать из тайника» (D13): file refs only; the file itself stays where it is. */
+  /**
+   * «убрать из тайника» (a file reference; the file stays) and «удалить» (a
+   * note, to the trash — stage 06). Awaited here, outside the tab queue: Rust
+   * may first ask the window holding the note to drop its tab, and that drop
+   * runs in a tab queue — this window's own included.
+   */
   async function removeStashEntry(entry: StashEntry): Promise<void> {
-    if (entry.kind !== 'file') return;
-    try {
-      const outcome = await stashDelete(entry.id);
-      if (outcome.kind !== 'removed') return;
-    } catch (err) {
-      toasts.push({ kind: 'stash', note: { what: 'error', message: String(err) } });
-      return;
+    const outcome = await stashStore.removeEntry(entry);
+    if (outcome.kind === 'failed') {
+      toasts.push({ kind: 'stash', note: { what: 'error', message: outcome.message } });
+    } else if (outcome.kind === 'removed') {
+      quietStashToast({ what: 'removed', title: entryTitle(entry, stashUntitled()) });
     }
-    stashStore.remove(entry.id);
-    quietStashToast({ what: 'removed', title: entryTitle(entry, stashUntitled()) });
   }
 
   /** A tag chip added or removed on a card; the drawer pops its own additions (`markNewTags`). */
