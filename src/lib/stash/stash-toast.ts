@@ -1,7 +1,9 @@
 /**
- * The `stash` toast (stash stage 04): one kind for every drawer notice, so a
- * newer one replaces the last (`toasts.push` replaces a kind). Copy from the
- * mockup's toasts. `stashToastText` is what `ToastStack` renders — plain text,
+ * The `stash` toast (stash stage 04): one kind for every drawer report, so a
+ * newer one replaces the last (`toasts.push` replaces a kind). A note that
+ * stands until closed — a failure, a refusal — is `stash-standing` instead
+ * (`isStandingStashNote`, review M3): under the shared kind the next quiet
+ * report replaced it and went by itself, unread. Copy from the mockup's toasts. `stashToastText` is what `ToastStack` renders — plain text,
  * never `{@html}` (titles are user text).
  *
  * Not the `stash-error` kind: that one is stage 03's persistent headline for a
@@ -54,6 +56,13 @@ export type StashToastNote =
    * note. Stands until dismissed; «Перейти» shows that window.
    */
   | { what: 'kept'; reason: KeptReason; title: string; label: string; number: number | null };
+
+/** The notes that stand until dismissed: something failed or was refused, and the human has to act. */
+export type StandingStashNote = Extract<StashToastNote, { what: 'error' | 'kept' | 'pull-failed' }>;
+
+export function isStandingStashNote(note: StashToastNote): note is StandingStashNote {
+  return note.what === 'error' || note.what === 'kept' || note.what === 'pull-failed';
+}
 
 export interface StashToastText {
   text: string;

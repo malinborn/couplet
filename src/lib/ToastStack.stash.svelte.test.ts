@@ -36,7 +36,7 @@ describe('ToastStack — stash notices', () => {
 
   it('a pull that failed offers «Перейти» to the holder', () => {
     const { store, onRevealWindow } = render();
-    store.push({ kind: 'stash', note: { what: 'pull-failed', number: 19, label: 'editor-19' } });
+    store.push({ kind: 'stash-standing', note: { what: 'pull-failed', number: 19, label: 'editor-19' } });
     flushSync();
     const go = target.querySelector<HTMLButtonElement>('.md-toast-action')!;
     expect(go.textContent?.trim()).toBe('Перейти');
@@ -49,7 +49,7 @@ describe('ToastStack — stash notices', () => {
   it('a delete a tab held back offers «Перейти» to that window (stage 06)', () => {
     const { store, onRevealWindow } = render();
     store.push({
-      kind: 'stash',
+      kind: 'stash-standing',
       note: { what: 'kept', reason: 'unsaved', title: 'Планы', label: 'editor-2', number: 2 },
     });
     flushSync();
@@ -82,6 +82,16 @@ describe('ToastStack — stash notices', () => {
     store.push({ kind: 'stash', note: { what: 'removed', title: 'b.md' } });
     flushSync();
     expect(target.querySelectorAll('.md-toast')).toHaveLength(1);
+  });
+
+  it('a quiet stash notice leaves a standing stash note in place (review M3)', () => {
+    const { store } = render();
+    store.push({ kind: 'stash-standing', note: { what: 'error', message: 'locked' } });
+    store.push({ kind: 'stash', note: { what: 'widened' } });
+    flushSync();
+    const texts = [...target.querySelectorAll('.md-toast-text')].map((e) => e.textContent?.trim());
+    expect(texts).toContain('Тайник не ответил');
+    expect(texts).toContain('Окно раздвинулось, чтобы тайник встал рядом');
   });
 
   it('a stash notice leaves a standing stash-error in place (separate kinds)', () => {

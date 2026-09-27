@@ -269,4 +269,16 @@ describe('createToastStore', () => {
     store.push({ kind: 'save-error', fileName: 'a.md', message: 'disk full' });
     expect(store.toasts.map((t) => t.payload.kind)).toEqual(['save-error', 'unsaved-blocked']);
   });
+
+  it('StashStanding_SurvivesALaterQuietStashNotice', () => {
+    // A refusal (`kept`) or a failure stands until closed (stash D19); the
+    // quiet notices that follow it go by themselves and must not take it along.
+    const store = createToastStore();
+    store.push({
+      kind: 'stash-standing',
+      note: { what: 'kept', reason: 'unsaved', title: 'a', label: 'editor-2', number: 2 },
+    });
+    store.push({ kind: 'stash', note: { what: 'widened' } });
+    expect(store.toasts.map((t) => t.payload.kind).sort()).toEqual(['stash', 'stash-standing']);
+  });
 });

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { installCatalog } from '../i18n';
-import { stashToastText, type StashToastNote } from './stash-toast';
+import { isStandingStashNote, stashToastText, type StashToastNote } from './stash-toast';
 import type { KeptReason } from './types';
 
 beforeEach(() => installCatalog('ru'));
@@ -115,5 +115,26 @@ describe('stashToastText', () => {
       expect(kept('open', null)).toBe('Заметку Планы снова открыли в #? — не удалена');
       expect(kept('busy', 2)).toBe('Заметка Планы в #2 ждёт вашего ответа агенту — не удалена');
     });
+  });
+});
+
+describe('isStandingStashNote (review M3)', () => {
+  it('a failure, a refusal and a failed pull stand; every report goes by itself', () => {
+    const standing: StashToastNote[] = [
+      { what: 'error', message: 'x' },
+      { what: 'kept', reason: 'busy', title: 'a', label: 'editor-2', number: 2 },
+      { what: 'pull-failed', number: 2, label: 'editor-2' },
+    ];
+    const quiet: StashToastNote[] = [
+      put({}),
+      { what: 'opened', title: 'a', isNote: true, from: null },
+      { what: 'removed', title: 'a' },
+      { what: 'widened' },
+      { what: 'trashed', title: 'a' },
+      { what: 'restored', title: 'a', hiddenBy: null },
+      { what: 'purged', title: 'a' },
+    ];
+    for (const note of standing) expect(isStandingStashNote(note)).toBe(true);
+    for (const note of quiet) expect(isStandingStashNote(note)).toBe(false);
   });
 });

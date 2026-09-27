@@ -81,7 +81,7 @@
   import { showStash } from './lib/stash/stash-state';
   import { handleStashDropTab } from './lib/stash/stash-drop';
   import { entryTitle } from './lib/stash/stash-view';
-  import type { StashToastNote } from './lib/stash/stash-toast';
+  import { isStandingStashNote, type StashToastNote } from './lib/stash/stash-toast';
   import type { StashEntry, TagChange } from './lib/stash/types';
   import { moveIds } from './lib/tabs/drawer-geometry';
   import { createStashMarks } from './lib/stash/stash-marks.svelte';
@@ -950,9 +950,14 @@
     return t('stash.untitled');
   }
 
-  /** A stash notice that answers a gesture and goes by itself, like «Номер #N занят». */
-  function quietStashToast(note: StashToastNote): void {
-    quietToast({ kind: 'stash', note });
+  /**
+   * A stash notice. A report answers a gesture and goes by itself, like «Номер
+   * #N занят»; a failure or a refusal stands until closed, under its own kind
+   * so the next report cannot replace it (review M3).
+   */
+  function stashNotice(note: StashToastNote): void {
+    if (isStandingStashNote(note)) toasts.push({ kind: 'stash-standing', note });
+    else quietToast({ kind: 'stash', note });
   }
 
   /** A tab as its drawer card names it, read before a put-away closes it (the close makes every file a stashed one). */
@@ -1005,8 +1010,7 @@
     }
     const note = putAwayNote(outcome, hidden, chip);
     if (note === null) return;
-    if (note.what === 'error') toasts.push({ kind: 'stash', note });
-    else quietStashToast(note);
+    stashNotice(note);
   }
 
   /** Stash → tabs (D9): this window, a pull from its holder, or a fresh open here. */
@@ -1029,13 +1033,13 @@
       touch: (path) => stashTouchOpened(path),
     });
     if (opened.kind === 'opened') {
-      quietStashToast({ what: 'opened', title, isNote, from: null });
+      stashNotice({ what: 'opened', title, isNote, from: null });
     } else if (opened.kind === 'pulled') {
-      quietStashToast({ what: 'opened', title, isNote, from: opened.number });
+      stashNotice({ what: 'opened', title, isNote, from: opened.number });
     } else if (opened.kind === 'pull-failed') {
-      toasts.push({ kind: 'stash', note: { what: 'pull-failed', number: opened.number, label: opened.label } });
+      stashNotice({ what: 'pull-failed', number: opened.number, label: opened.label });
     } else if (opened.kind === 'failed' && opened.error !== null) {
-      toasts.push({ kind: 'stash', note: { what: 'error', message: opened.error } });
+      stashNotice({ what: 'error', message: opened.error });
     }
   }
 
@@ -1049,15 +1053,15 @@
     const outcome = await stashStore.removeEntry(entry);
     const title = entryTitle(entry, stashUntitled());
     if (outcome.kind === 'failed') {
-      toasts.push({ kind: 'stash', note: { what: 'error', message: outcome.message } });
+      stashNotice({ what: 'error', message: outcome.message });
     } else if (outcome.kind === 'removed') {
-      quietStashToast({ what: 'removed', title });
+      stashNotice({ what: 'removed', title });
     } else if (outcome.kind === 'trashed') {
-      quietStashToast({ what: 'trashed', title });
+      stashNotice({ what: 'trashed', title });
     } else if (outcome.kind === 'kept') {
       // Stands: the human has to go to that window and deal with the tab.
       const { reason, label, number } = outcome;
-      toasts.push({ kind: 'stash', note: { what: 'kept', reason, title, label, number } });
+      stashNotice({ what: 'kept', reason, title, label, number });
     }
   }
 
@@ -1065,16 +1069,16 @@
   async function restoreStashEntry(entry: StashEntry): Promise<void> {
     const title = entryTitle(entry, stashUntitled());
     const outcome = await stashStore.restoreEntry(entry);
-    if (outcome.kind === 'restored') quietStashToast({ what: 'restored', title, hiddenBy: outcome.hiddenBy });
-    else if (outcome.kind === 'failed') toasts.push({ kind: 'stash', note: { what: 'error', message: outcome.message } });
+    if (outcome.kind === 'restored') stashNotice({ what: 'restored', title, hiddenBy: outcome.hiddenBy });
+    else if (outcome.kind === 'failed') stashNotice({ what: 'error', message: outcome.message });
   }
 
   /** «удалить навсегда» (stage 06): no confirmation (plan D15). */
   async function purgeStashEntry(entry: StashEntry): Promise<void> {
     const title = entryTitle(entry, stashUntitled());
     const outcome = await stashStore.purgeEntry(entry);
-    if (outcome.kind === 'purged') quietStashToast({ what: 'purged', title });
-    else if (outcome.kind === 'failed') toasts.push({ kind: 'stash', note: { what: 'error', message: outcome.message } });
+    if (outcome.kind === 'purged') stashNotice({ what: 'purged', title });
+    else if (outcome.kind === 'failed') stashNotice({ what: 'error', message: outcome.message });
   }
 
   /** A tag chip added or removed on a card; the drawer pops its own additions (`markNewTags`). */
@@ -1082,7 +1086,7 @@
     try {
       stashStore.upsert([await stashTag(entry.id, change.add ?? [], change.remove ?? [])]);
     } catch (err) {
-      toasts.push({ kind: 'stash', note: { what: 'error', message: String(err) } });
+      stashNotice({ what: 'error', message: String(err) });
     }
   }
 
@@ -1106,7 +1110,7 @@
   const widenSession = createWidenSession({
     widen: () => widenForStash(),
     restore: restoreWindow,
-    announce: () => quietStashToast({ what: 'widened' }),
+    announce: () => stashNotice({ what: 'widened' }),
   });
   onStashOpenEdge(() => stashStore.state.open, widenSession.edge);
 

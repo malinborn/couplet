@@ -179,7 +179,7 @@
               number: toast.payload.number,
             })}</span
           >
-        {:else if toast.payload.kind === 'stash'}
+        {:else if toast.payload.kind === 'stash' || toast.payload.kind === 'stash-standing'}
           <!-- Plain text only: titles are user text (never `{@html}`). -->
           {@const note = toast.payload.note}
           {@const text = stashToastText(note)}
