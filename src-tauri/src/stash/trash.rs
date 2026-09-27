@@ -134,7 +134,7 @@ fn link_then_unlink(from: &Path, to: &Path) -> Result<(), MoveError> {
 /// The roadmap's cross-volume rule: a second copy exists, is on disk and
 /// matches byte for byte before the first one is removed. A source that will
 /// not go leaves both copies (`Other`).
-pub(crate) fn copy_verify_remove(from: &Path, to: &Path) -> Result<(), MoveError> {
+fn copy_verify_remove(from: &Path, to: &Path) -> Result<(), MoveError> {
     let bytes = fs::read(from)?;
     let mode = fs::metadata(from)?.permissions().mode() & 0o7777;
     copy_new_verified(&bytes, mode, to)?;
