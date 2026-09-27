@@ -174,9 +174,12 @@ mod tests {
         let cases: Vec<TitleCase> =
             serde_json::from_str(include_str!("../../tests/fixtures/note-titles.json"))
                 .expect("fixture is JSON");
-        assert!(
-            cases.len() >= 15,
-            "the fixture is the TS mirror's contract too; keep it rich"
+        // Pinned exactly, in both suites (`note-title.test.ts` says 48 too):
+        // a case lost from the file must fail here, not pass silently.
+        assert_eq!(
+            cases.len(),
+            48,
+            "the fixture is the TS mirror's contract too; keep both counts in step"
         );
         for case in &cases {
             assert_eq!(title_of(&case.text), case.title, "text: {:?}", case.text);
