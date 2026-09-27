@@ -157,6 +157,8 @@ pub fn run() {
         .manage(ai_socket::AiPending::new())
         .manage(ai_socket::AiQueue::new())
         .manage(typing::TypingClock::new())
+        // Stash stage 06: pending `stash-drop-tab` requests. Reads no disk.
+        .manage(stash::DropRequests::default())
         .invoke_handler(tauri::generate_handler![
             commands::read_file,
             commands::write_file,
@@ -199,6 +201,9 @@ pub fn run() {
             stash::commands::stash_touch_opened,
             stash::commands::stash_counts,
             stash::commands::stash_delete,
+            stash::commands::stash_restore,
+            stash::commands::stash_purge,
+            stash::commands::stash_drop_done,
             stash::commands::stash_search,
             recovery::save_recovery,
             recovery::delete_recovery,
@@ -306,6 +311,12 @@ pub fn run() {
             // thread when missing, corrupt, outdated or stale. After the draft
             // import, which holds the stash lock here on the main thread.
             app.state::<stash::StashState>().ensure_index_in_background(app.handle().clone());
+            // Stash plan 06: reconcile interrupted trash moves and purge what
+            // is 30 days old — now, then once a day. Also after the draft
+            // import (the lock again); alongside the index check, whose
+            // writes are guarded by path and `modified_at`, so the two may
+            // interleave.
+            stash::start_housekeeping(app.state::<stash::StashState>().inner().clone(), app.handle().clone());
 
             let (menu, theme_items, engine_items, view_toggles, session_menu_items, transient_items) =
                 menu::build_menu(app.handle(), pending_count, explicit_language.as_deref())?;

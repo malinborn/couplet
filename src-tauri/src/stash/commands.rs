@@ -8,13 +8,15 @@
 //! (`plan_put_away`) — runs in the same blocking task but outside the lock
 //! (I3): one slow volume must not queue every other stash call behind it.
 
-use tauri::{AppHandle, State};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use super::entries::plan_put_away;
 use super::search::{self, SearchArgs, SearchPage};
+use super::trash;
 use super::{
-    clock, emit_changed, DeleteOutcome, Enrich, ListQuery, ListResult, ListSort, PutAway, PutAwayResult, Stash,
-    StashCounts, StashEntry, StashKind, StashState,
+    clock, emit_changed, DeleteOutcome, DropRequests, Enrich, ListQuery, ListResult, ListSort, PutAway,
+    PutAwayResult, Stash, StashCounts, StashEntry, StashKind, StashState,
 };
 
 /// One trip to the blocking pool. `f` takes the stash lock itself, only
@@ -202,25 +204,173 @@ pub async fn stash_touch_opened(
     Ok(())
 }
 
-/// «убрать из тайника» (stage 04: file references only; stage 06 adds the
-/// note trash, roadmap A7). The user's file is never touched. Emits `deleted`
-/// with the id, so an open tab drops its «in the stash» mark at once.
+/// `stash-drop-tab`'s payload: Rust asks the one window holding a note's
+/// tab to drop it before the note moves into the trash (stage 06 D3).
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DropTab {
+    request_id: u64,
+    path: String,
+}
+
+/// `trash::delete_flow`'s app side. Runs on the blocking pool: `ask_to_drop`
+/// blocks on the window's answer.
+struct AppDeleteEnv {
+    app: AppHandle,
+    state: StashState,
+}
+
+impl trash::DeleteEnv for AppDeleteEnv {
+    fn entry(&self, id: &str) -> Result<(StashKind, bool, String), String> {
+        let e = self.state.with(|s| s.get(id))?;
+        Ok((e.kind, e.deleted_at.is_some(), e.path))
+    }
+
+    fn owner(&self, path: &str) -> Option<trash::Owner> {
+        // D17/A11: `OpenFiles` alone, released before the stash lock is taken.
+        let open_files = self.app.try_state::<crate::window::OpenFiles>()?;
+        let reg = open_files.0.lock().unwrap_or_else(|p| p.into_inner());
+        trash::live_owner(&reg, path, |label| {
+            self.app.get_webview_window(label).is_some()
+        })
+    }
+
+    fn ask_to_drop(&self, owner: &trash::Owner, path: &str) -> trash::DropReply {
+        let Some(reqs) = self.app.try_state::<DropRequests>() else {
+            return trash::DropReply::Timeout;
+        };
+        let (request_id, rx) = reqs.register(&owner.label);
+        let payload = DropTab {
+            request_id,
+            path: path.to_string(),
+        };
+        if let Err(e) = self.app.emit_to(owner.label.as_str(), "stash-drop-tab", payload) {
+            eprintln!("[stash] stash-drop-tab to {} not sent: {e}", owner.label);
+            reqs.abandon(request_id);
+            return trash::DropReply::Timeout;
+        }
+        match rx.recv_timeout(trash::DROP_REPLY_TIMEOUT) {
+            Ok(true) => trash::DropReply::Dropped,
+            Ok(false) => trash::DropReply::Refused,
+            Err(_) => {
+                reqs.abandon(request_id);
+                trash::DropReply::Timeout
+            }
+        }
+    }
+
+    fn trash(&self, id: &str) -> Result<trash::Deleted, String> {
+        self.state.with(|s| {
+            // Taken now, not when the flow started: it may have waited 10 s.
+            let now = clock::now_ms();
+            let deleted = s.delete_entry(id, now)?;
+            s.after_write(now, offset_at(now));
+            Ok(deleted)
+        })
+    }
+}
+
+/// «удалить» / «убрать из тайника» (stage 06, roadmap A7). A note goes into
+/// the trash — first dropped from the tab holding it, by that tab's window
+/// (`trash::delete_flow`); `kept` when that window refused or did not
+/// answer, and then nothing changed. A file reference loses only its entry:
+/// the user's file is never touched. Emits `deleted` with the id unless kept.
 #[tauri::command]
 pub async fn stash_delete(
     app: AppHandle,
     state: State<'_, StashState>,
     id: String,
 ) -> Result<DeleteOutcome, String> {
-    let removed_id = id.clone();
-    let outcome = run(&state, move |s| {
+    let env = AppDeleteEnv {
+        app: app.clone(),
+        state: state.inner().clone(),
+    };
+    let flow_id = id.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let outcome = match trash::delete_flow(&env, &flow_id)? {
+            trash::FlowOutcome::Done(trash::Deleted::Removed) => DeleteOutcome::Removed,
+            trash::FlowOutcome::Done(trash::Deleted::Trashed) => DeleteOutcome::Trashed {
+                entry: Box::new(env.state.with(|s| s.get(&flow_id))?),
+            },
+            trash::FlowOutcome::Kept { reason, owner } => DeleteOutcome::Kept {
+                reason,
+                label: owner.label,
+                number: owner.number,
+            },
+        };
+        // The preview is read after the stash lock is released (I3).
+        Ok::<_, String>(outcome.enrich())
+    })
+    .await
+    .map_err(|e| format!("stash task failed: {e}"))??;
+    if !matches!(outcome, DeleteOutcome::Kept { .. }) {
+        emit_changed(&app, "deleted", Some(vec![id]));
+    }
+    Ok(outcome)
+}
+
+/// «вернуть»: a trashed note back into the notes folder, on top, with its
+/// tags (`trash::restore`: re-indexed off the lock). Emits `restored`.
+#[tauri::command]
+pub async fn stash_restore(
+    app: AppHandle,
+    state: State<'_, StashState>,
+    id: String,
+) -> Result<StashEntry, String> {
+    let entry = off_lock(&state, move |state| {
         let now = clock::now_ms();
-        let outcome = s.remove_file_ref(&id)?;
-        s.after_write(now, offset_at(now));
-        Ok(outcome)
+        let entry = trash::restore(state, &id, now)?;
+        // Best effort, as everywhere: the restore itself has happened.
+        if let Err(e) = state.with(|s| {
+            s.after_write(now, offset_at(now));
+            Ok(())
+        }) {
+            eprintln!("[stash] export after restore skipped: {e}");
+        }
+        Ok(entry)
     })
     .await?;
-    emit_changed(&app, "deleted", Some(vec![removed_id]));
-    Ok(outcome)
+    emit_changed(&app, "restored", Some(vec![entry.id.clone()]));
+    Ok(entry)
+}
+
+/// «удалить навсегда» (D15: no confirmation). Only a trashed note, only a
+/// file inside the trash (`Stash::purge_entry`). Emits `purged`.
+#[tauri::command]
+pub async fn stash_purge(
+    app: AppHandle,
+    state: State<'_, StashState>,
+    id: String,
+) -> Result<(), String> {
+    let purged_id = id.clone();
+    run(&state, move |s| {
+        let now = clock::now_ms();
+        s.purge_entry(&id)?;
+        s.after_write(now, offset_at(now));
+        Ok(true)
+    })
+    .await?;
+    emit_changed(&app, "purged", Some(vec![purged_id]));
+    Ok(())
+}
+
+/// The answer to `stash-drop-tab`. Accepted only from the window the request
+/// went to; a late one (after the timeout) is dropped on purpose — that
+/// delete has already answered `kept`.
+#[tauri::command]
+pub async fn stash_drop_done(
+    window: tauri::WebviewWindow,
+    requests: State<'_, DropRequests>,
+    request_id: u64,
+    dropped: bool,
+) -> Result<(), String> {
+    if !requests.answer(window.label(), request_id, dropped) {
+        eprintln!(
+            "[stash] stash_drop_done {request_id} from {} ignored (late, unknown or not asked)",
+            window.label()
+        );
+    }
+    Ok(())
 }
 
 #[tauri::command]

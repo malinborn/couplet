@@ -9,9 +9,13 @@ use std::io::{ErrorKind, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use std::collections::HashMap;
+use std::sync::{mpsc, Mutex};
+use std::time::Duration;
+
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
-use super::{db, search, Stash, StashEntry, StashKind, StashState};
+use super::{clock, db, search, KeptReason, Stash, StashEntry, StashKind, StashState};
 
 const MAX_SUFFIX: u32 = 999;
 /// A name taken between `unique_target` and the move is retried this often.
@@ -672,6 +676,217 @@ pub(crate) fn restore(state: &StashState, id: &str, now: i64) -> Result<StashEnt
         }
     }
     Ok(entry)
+}
+
+// ---- the delete flow (D2/D3) ----
+
+/// How long a delete waits for the window holding a note's tab to drop it.
+pub(crate) const DROP_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The window whose tab holds a note's path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Owner {
+    pub(crate) label: String,
+    pub(crate) number: Option<u32>,
+}
+
+/// What the owner window answered to `stash-drop-tab`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DropReply {
+    Dropped,
+    /// The tab's save had not landed; the window kept it (and said so there).
+    Refused,
+    /// No answer in `DROP_REPLY_TIMEOUT`, or the event could not be sent.
+    Timeout,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FlowOutcome {
+    Done(Deleted),
+    Kept { reason: KeptReason, owner: Owner },
+}
+
+/// What `delete_flow` needs from the app. `commands::AppDeleteEnv` implements
+/// it over `OpenFiles`, `StashState` and the `stash-drop-tab` round trip;
+/// tests fake it.
+pub(crate) trait DeleteEnv {
+    /// `(kind, trashed, path)` of the entry.
+    fn entry(&self, id: &str) -> Result<(StashKind, bool, String), String>;
+    /// The live window whose tab holds `path`, read under a short
+    /// `OpenFiles` lock that is dropped before anything takes the stash lock
+    /// (D17/A11).
+    fn owner(&self, path: &str) -> Option<Owner>;
+    /// Ask `owner` to drop its tab of `path` and wait for the answer.
+    fn ask_to_drop(&self, owner: &Owner, path: &str) -> DropReply;
+    /// `Stash::delete_entry` (+ `after_write`) under the stash lock.
+    fn trash(&self, id: &str) -> Result<Deleted, String>;
+}
+
+/// D2/D3: a live note held by a tab is dropped by that tab's window first —
+/// its last keystroke saved, no autosave bound to its path any more — and the
+/// file moves only once nobody holds the path, so nothing can write it back
+/// into the notes folder. A file reference leaves the stash whoever has it
+/// open (D12): its file is not touched.
+pub(crate) fn delete_flow(env: &impl DeleteEnv, id: &str) -> Result<FlowOutcome, String> {
+    let (kind, trashed, path) = env.entry(id)?;
+    if kind == StashKind::Note && !trashed {
+        if let Some(owner) = env.owner(&path) {
+            match env.ask_to_drop(&owner, &path) {
+                DropReply::Dropped => {}
+                DropReply::Refused => {
+                    return Ok(FlowOutcome::Kept { reason: KeptReason::Unsaved, owner })
+                }
+                DropReply::Timeout => {
+                    return Ok(FlowOutcome::Kept { reason: KeptReason::Timeout, owner })
+                }
+            }
+            // A tab opened on the path meanwhile (another window, an agent).
+            if let Some(again) = env.owner(&path) {
+                return Ok(FlowOutcome::Kept { reason: KeptReason::Open, owner: again });
+            }
+        }
+    }
+    env.trash(id).map(FlowOutcome::Done)
+}
+
+/// The live window holding `path` in the registry, with its `#N`. A holder
+/// whose window is gone counts as nobody: asking it would only wait out
+/// `DROP_REPLY_TIMEOUT`.
+pub(crate) fn live_owner(
+    reg: &crate::tabs::TabRegistry,
+    path: &str,
+    is_live: impl Fn(&str) -> bool,
+) -> Option<Owner> {
+    let (label, _tab) = reg.owner_of(path)?;
+    if !is_live(&label) {
+        return None;
+    }
+    let number = reg.window(&label).and_then(|w| w.number);
+    Some(Owner { label, number })
+}
+
+/// Pending `stash-drop-tab` requests, answered by `stash_drop_done`.
+/// Managed state; reads no disk.
+#[derive(Default)]
+pub(crate) struct DropRequests(Mutex<DropInner>);
+
+#[derive(Default)]
+struct DropInner {
+    next: u64,
+    waiting: HashMap<u64, (String, mpsc::Sender<bool>)>,
+}
+
+impl DropRequests {
+    fn inner(&self) -> std::sync::MutexGuard<'_, DropInner> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// A new request to window `label`, and where its answer arrives.
+    pub(crate) fn register(&self, label: &str) -> (u64, mpsc::Receiver<bool>) {
+        let (tx, rx) = mpsc::channel();
+        let mut inner = self.inner();
+        inner.next += 1;
+        let id = inner.next;
+        inner.waiting.insert(id, (label.to_string(), tx));
+        (id, rx)
+    }
+
+    /// `false` for an unknown or already answered request, or one asked of
+    /// another window — only the window asked may say its tab is gone.
+    pub(crate) fn answer(&self, from_label: &str, request_id: u64, dropped: bool) -> bool {
+        let mut inner = self.inner();
+        match inner.waiting.get(&request_id) {
+            Some((label, _)) if label == from_label => {
+                let Some((_, tx)) = inner.waiting.remove(&request_id) else {
+                    return false;
+                };
+                tx.send(dropped).is_ok()
+            }
+            _ => false,
+        }
+    }
+
+    /// A request nobody waits for any more (timed out, or never sent).
+    pub(crate) fn abandon(&self, request_id: u64) {
+        self.inner().waiting.remove(&request_id);
+    }
+}
+
+// ---- housekeeping (D10) ----
+
+/// What one housekeeping pass changed.
+#[derive(Debug, Default)]
+pub(crate) struct Housekept {
+    pub(crate) reconciled: Reconciled,
+    pub(crate) purged: PurgeReport,
+}
+
+impl Housekept {
+    pub(crate) fn changed(&self) -> bool {
+        !self.reconciled.deleted.is_empty()
+            || !self.reconciled.restored.is_empty()
+            || !self.purged.purged.is_empty()
+    }
+}
+
+/// One pass: finish interrupted moves, then purge what is 30 days old; one
+/// export and backup (`after_write`) if anything changed.
+pub(crate) fn housekeeping_pass(state: &StashState, now: i64) -> Housekept {
+    let done = Housekept {
+        reconciled: reconcile(state, now),
+        purged: purge_expired(state, now),
+    };
+    if done.changed() {
+        let offset = clock::local_offset_secs(now.div_euclid(1000));
+        if let Err(e) = state.with(|s| {
+            s.after_write(now, offset);
+            Ok(())
+        }) {
+            eprintln!("[stash::trash] housekeeping export skipped: {e}");
+        }
+    }
+    done
+}
+
+/// Housekeeping on its own thread: a pass at startup, then an hourly check
+/// against wall clock (D10) — `thread::sleep`'s clock stops while the Mac
+/// sleeps, so "once a day" is `due`, not a 24 h sleep. Emits `stash-changed`
+/// per reason only when that reason has ids.
+pub(crate) fn start_housekeeping(state: StashState, app: tauri::AppHandle) {
+    let spawned = std::thread::Builder::new()
+        .name("stash-trash".into())
+        .spawn(move || {
+            let mut last: Option<i64> = None;
+            loop {
+                let now = clock::now_ms();
+                if due(last, now) {
+                    last = Some(now);
+                    let done = housekeeping_pass(&state, now);
+                    if done.changed() || !done.purged.skipped.is_empty() {
+                        eprintln!(
+                            "[stash::trash] housekeeping: {} marked deleted, {} marked restored, {} purged, {} skipped",
+                            done.reconciled.deleted.len(),
+                            done.reconciled.restored.len(),
+                            done.purged.purged.len(),
+                            done.purged.skipped.len(),
+                        );
+                    }
+                    for (reason, ids) in [
+                        ("deleted", done.reconciled.deleted),
+                        ("restored", done.reconciled.restored),
+                        ("purged", done.purged.purged),
+                    ] {
+                        if !ids.is_empty() {
+                            super::emit_changed(&app, reason, Some(ids));
+                        }
+                    }
+                }
+                std::thread::sleep(Duration::from_secs(60 * 60));
+            }
+        });
+    if let Err(e) = spawned {
+        eprintln!("[stash::trash] housekeeping thread not started: {e}");
+    }
 }
 
 #[cfg(test)]
@@ -1846,5 +2061,329 @@ mod tests {
         // And back: restored, it is found again.
         stash.restore_entry(&a.id, T0 + 3).unwrap();
         assert_eq!(crate::stash::search::found(&stash.conn, "та"), vec![a.id.clone()]);
+    }
+
+    // ---- the delete flow, drop requests, housekeeping ----
+
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct FakeEnv {
+        file: bool,
+        deleted: bool,
+        /// Popped front on each `owner()` call.
+        owners: RefCell<Vec<Option<Owner>>>,
+        reply: Option<DropReply>,
+        log: RefCell<Vec<String>>,
+    }
+
+    fn owner(label: &str, number: u32) -> Option<Owner> {
+        Some(Owner {
+            label: label.into(),
+            number: Some(number),
+        })
+    }
+
+    fn pop(q: &RefCell<Vec<Option<Owner>>>) -> Option<Owner> {
+        let mut q = q.borrow_mut();
+        if q.is_empty() {
+            None
+        } else {
+            q.remove(0)
+        }
+    }
+
+    impl DeleteEnv for FakeEnv {
+        fn entry(&self, _id: &str) -> Result<(StashKind, bool, String), String> {
+            self.log.borrow_mut().push("entry".into());
+            let kind = if self.file { StashKind::File } else { StashKind::Note };
+            Ok((kind, self.deleted, "/notes/a.md".into()))
+        }
+        fn owner(&self, _path: &str) -> Option<Owner> {
+            self.log.borrow_mut().push("owner".into());
+            pop(&self.owners)
+        }
+        fn ask_to_drop(&self, o: &Owner, _path: &str) -> DropReply {
+            self.log.borrow_mut().push(format!("ask:{}", o.label));
+            self.reply.clone().unwrap_or(DropReply::Timeout)
+        }
+        fn trash(&self, _id: &str) -> Result<Deleted, String> {
+            self.log.borrow_mut().push("trash".into());
+            Ok(if self.file { Deleted::Removed } else { Deleted::Trashed })
+        }
+    }
+
+    fn logged(env: &FakeEnv) -> Vec<String> {
+        env.log.borrow().clone()
+    }
+
+    #[test]
+    fn a_note_in_no_tab_is_trashed_at_once() {
+        let env = FakeEnv::default();
+        assert_eq!(delete_flow(&env, "id").unwrap(), FlowOutcome::Done(Deleted::Trashed));
+        assert_eq!(logged(&env), vec!["entry", "owner", "trash"]);
+    }
+
+    #[test]
+    fn a_note_open_in_a_tab_is_dropped_there_first_and_only_then_moved() {
+        let env = FakeEnv {
+            owners: RefCell::new(vec![owner("editor-2", 2), None]),
+            reply: Some(DropReply::Dropped),
+            ..Default::default()
+        };
+        assert_eq!(delete_flow(&env, "id").unwrap(), FlowOutcome::Done(Deleted::Trashed));
+        assert_eq!(logged(&env), vec!["entry", "owner", "ask:editor-2", "owner", "trash"]);
+    }
+
+    #[test]
+    fn a_tab_whose_save_has_not_landed_keeps_the_note() {
+        let env = FakeEnv {
+            owners: RefCell::new(vec![owner("main", 1)]),
+            reply: Some(DropReply::Refused),
+            ..Default::default()
+        };
+        assert_eq!(
+            delete_flow(&env, "id").unwrap(),
+            FlowOutcome::Kept {
+                reason: KeptReason::Unsaved,
+                owner: owner("main", 1).unwrap()
+            }
+        );
+        assert!(!logged(&env).contains(&"trash".to_string()));
+    }
+
+    #[test]
+    fn a_window_that_does_not_answer_keeps_the_note() {
+        let env = FakeEnv {
+            owners: RefCell::new(vec![owner("editor-3", 3)]),
+            reply: Some(DropReply::Timeout),
+            ..Default::default()
+        };
+        assert_eq!(
+            delete_flow(&env, "id").unwrap(),
+            FlowOutcome::Kept {
+                reason: KeptReason::Timeout,
+                owner: owner("editor-3", 3).unwrap()
+            }
+        );
+        assert!(!logged(&env).contains(&"trash".to_string()));
+    }
+
+    #[test]
+    fn a_note_reopened_between_the_drop_and_the_move_is_kept() {
+        let env = FakeEnv {
+            owners: RefCell::new(vec![owner("main", 1), owner("editor-4", 4)]),
+            reply: Some(DropReply::Dropped),
+            ..Default::default()
+        };
+        assert_eq!(
+            delete_flow(&env, "id").unwrap(),
+            FlowOutcome::Kept {
+                reason: KeptReason::Open,
+                owner: owner("editor-4", 4).unwrap()
+            }
+        );
+        assert!(!logged(&env).contains(&"trash".to_string()));
+    }
+
+    #[test]
+    fn a_file_ref_is_removed_without_asking_any_tab() {
+        let env = FakeEnv {
+            file: true,
+            owners: RefCell::new(vec![owner("main", 1)]),
+            ..Default::default()
+        };
+        assert_eq!(delete_flow(&env, "id").unwrap(), FlowOutcome::Done(Deleted::Removed));
+        assert_eq!(logged(&env), vec!["entry", "trash"]);
+    }
+
+    #[test]
+    fn an_already_trashed_note_is_not_asked_about() {
+        let env = FakeEnv {
+            deleted: true,
+            owners: RefCell::new(vec![owner("main", 1)]),
+            ..Default::default()
+        };
+        assert_eq!(delete_flow(&env, "id").unwrap(), FlowOutcome::Done(Deleted::Trashed));
+        assert_eq!(logged(&env), vec!["entry", "trash"]);
+    }
+
+    #[test]
+    fn an_unknown_entry_asks_nobody_and_moves_nothing() {
+        struct Missing;
+        impl DeleteEnv for Missing {
+            fn entry(&self, id: &str) -> Result<(StashKind, bool, String), String> {
+                Err(format!("no stash entry {id}"))
+            }
+            fn owner(&self, _: &str) -> Option<Owner> {
+                panic!("asked for an owner")
+            }
+            fn ask_to_drop(&self, _: &Owner, _: &str) -> DropReply {
+                panic!("asked a window")
+            }
+            fn trash(&self, _: &str) -> Result<Deleted, String> {
+                panic!("trashed")
+            }
+        }
+        assert!(delete_flow(&Missing, "nope").is_err());
+    }
+
+    /// The real `delete_flow` over a real stash: the file moves only when
+    /// the flow says so, and a kept note is exactly where it was.
+    struct StashEnv<'a> {
+        state: &'a StashState,
+        owners: RefCell<Vec<Option<Owner>>>,
+        reply: DropReply,
+    }
+
+    impl DeleteEnv for StashEnv<'_> {
+        fn entry(&self, id: &str) -> Result<(StashKind, bool, String), String> {
+            let e = self.state.with(|s| s.get(id))?;
+            Ok((e.kind, e.deleted_at.is_some(), e.path))
+        }
+        fn owner(&self, _: &str) -> Option<Owner> {
+            pop(&self.owners)
+        }
+        fn ask_to_drop(&self, _: &Owner, _: &str) -> DropReply {
+            self.reply.clone()
+        }
+        fn trash(&self, id: &str) -> Result<Deleted, String> {
+            self.state.with(|s| s.delete_entry(id, T0 + 1))
+        }
+    }
+
+    #[test]
+    fn a_kept_note_stays_in_place_byte_for_byte_and_indexed() {
+        for (reply, owners) in [
+            (DropReply::Refused, vec![owner("main", 1)]),
+            (DropReply::Timeout, vec![owner("main", 1)]),
+            (DropReply::Dropped, vec![owner("main", 1), owner("editor-2", 2)]),
+        ] {
+            let (state, _root) = state_in("trash-flow-kept");
+            let e = state
+                .with(|s| s.create_note("# Держись\nслово\n", None, T0, MSK))
+                .unwrap();
+            let env = StashEnv {
+                state: &state,
+                owners: RefCell::new(owners),
+                reply: reply.clone(),
+            };
+            let got = delete_flow(&env, &e.id).unwrap();
+            assert!(matches!(got, FlowOutcome::Kept { .. }), "{reply:?}: {got:?}");
+            assert_eq!(fs::read_to_string(&e.path).unwrap(), "# Держись\nслово\n");
+            assert_eq!(row_in(&state, &e.id).unwrap(), (e.path.clone(), None, None));
+            assert!(indexed_in(&state, &e.id));
+        }
+    }
+
+    #[test]
+    fn a_dropped_note_moves_into_the_trash() {
+        let (state, _root) = state_in("trash-flow-dropped");
+        let e = state.with(|s| s.create_note("# Уходи\n", None, T0, MSK)).unwrap();
+        let env = StashEnv {
+            state: &state,
+            owners: RefCell::new(vec![owner("editor-2", 2), None]),
+            reply: DropReply::Dropped,
+        };
+        assert_eq!(delete_flow(&env, &e.id).unwrap(), FlowOutcome::Done(Deleted::Trashed));
+        let (path, deleted_at, _) = row_in(&state, &e.id).unwrap();
+        assert_eq!(deleted_at, Some(T0 + 1));
+        assert!(!Path::new(&e.path).exists());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "# Уходи\n");
+    }
+
+    #[test]
+    fn an_open_file_ref_is_removed_and_its_file_left_alone() {
+        let (state, root) = state_in("trash-flow-ref");
+        let (r, file) = state
+            .with(|s| Ok(file_ref(s, &root, "doc.md", "мой файл")))
+            .unwrap();
+        let env = StashEnv {
+            state: &state,
+            owners: RefCell::new(vec![owner("main", 1)]),
+            reply: DropReply::Timeout,
+        };
+        assert_eq!(delete_flow(&env, &r.id).unwrap(), FlowOutcome::Done(Deleted::Removed));
+        assert_eq!(row_in(&state, &r.id), None);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "мой файл");
+    }
+
+    #[test]
+    fn the_owner_is_the_live_window_holding_the_path_with_its_number() {
+        let mut reg = crate::tabs::TabRegistry::new();
+        assert!(reg.add_tab("editor-2", "t2", Some("/n/a.md".into())));
+        reg.set_number("editor-2", Some(2));
+        assert!(reg.add_tab("gone", "t9", Some("/n/b.md".into())));
+        let live = |l: &str| l != "gone";
+        assert_eq!(live_owner(&reg, "/n/a.md", live), owner("editor-2", 2));
+        assert_eq!(live_owner(&reg, "/n/b.md", live), None, "a dead window holds nothing");
+        assert_eq!(live_owner(&reg, "/n/c.md", live), None);
+    }
+
+    #[test]
+    fn drop_requests_accept_an_answer_only_from_the_window_asked() {
+        let reqs = DropRequests::default();
+        let (id, rx) = reqs.register("editor-2");
+        assert!(!reqs.answer("main", id, true));
+        assert!(reqs.answer("editor-2", id, true));
+        assert!(rx.recv_timeout(std::time::Duration::from_millis(50)).unwrap());
+        assert!(!reqs.answer("editor-2", id, true), "answered twice");
+        let (id2, _rx2) = reqs.register("main");
+        reqs.abandon(id2);
+        assert!(!reqs.answer("main", id2, false));
+    }
+
+    #[test]
+    fn drop_requests_get_distinct_ids() {
+        let reqs = DropRequests::default();
+        let (a, _ra) = reqs.register("main");
+        let (b, _rb) = reqs.register("main");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn a_housekeeping_pass_reconciles_purges_and_writes_the_export_once() {
+        let (state, root) = state_in("trash-housekeeping");
+        let old = state.with(|s| s.create_note("old", None, T0, MSK)).unwrap();
+        let cut = state.with(|s| s.create_note("cut", None, T0, MSK)).unwrap();
+        let bad = state.with(|s| s.create_note("bad", None, T0, MSK)).unwrap();
+        state.with(|s| s.delete_entry(&old.id, T0)).unwrap();
+        state.with(|s| s.delete_entry(&bad.id, T0)).unwrap();
+        let precious = root.join("precious.md");
+        fs::write(&precious, "keep me").unwrap();
+        state
+            .with(|s| {
+                repoint(s, &bad.id, &precious);
+                Ok(())
+            })
+            .unwrap();
+        // A delete cut between the rename and the transaction.
+        let trash = state.with(|s| Ok(s.paths.trash_dir.clone())).unwrap();
+        let name = PathBuf::from(&cut.path).file_name().unwrap().to_owned();
+        fs::rename(&cut.path, trash.join(&name)).unwrap();
+        let export = state.with(|s| Ok(s.paths.export_path.clone())).unwrap();
+        assert!(!export.exists());
+
+        let done = housekeeping_pass(&state, T0 + 31 * DAY);
+
+        assert!(done.changed());
+        assert_eq!(done.reconciled.deleted, vec![cut.id.clone()]);
+        assert!(done.reconciled.restored.is_empty());
+        assert_eq!(done.purged.purged, vec![old.id.clone()]);
+        assert_eq!(done.purged.skipped.len(), 1);
+        assert_eq!(fs::read_to_string(&precious).unwrap(), "keep me");
+        assert!(export.exists(), "one after_write for the pass");
+    }
+
+    #[test]
+    fn a_housekeeping_pass_with_nothing_to_do_writes_nothing() {
+        let (state, _root) = state_in("trash-housekeeping-idle");
+        state.with(|s| s.create_note("live", None, T0, MSK)).unwrap();
+        let export = state.with(|s| Ok(s.paths.export_path.clone())).unwrap();
+
+        let done = housekeeping_pass(&state, T0 + DAY);
+
+        assert!(!done.changed());
+        assert!(!export.exists());
     }
 }

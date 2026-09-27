@@ -21,6 +21,7 @@ mod trash;
 
 pub use paths::StashPaths;
 pub(crate) use paths::{is_note_path, notes_dir_spelled};
+pub(crate) use trash::{start_housekeeping, DropRequests};
 
 use std::fs;
 use std::path::PathBuf;
@@ -147,7 +148,12 @@ impl Enrich for StashCounts {
 
 impl Enrich for DeleteOutcome {
     fn enrich(self) -> Self {
-        self
+        match self {
+            DeleteOutcome::Trashed { entry } => DeleteOutcome::Trashed {
+                entry: Box::new(entry.enrich()),
+            },
+            other => other,
+        }
     }
 }
 
@@ -238,14 +244,34 @@ pub struct StashCounts {
     pub deleted: usize,
 }
 
-/// `stash_delete`'s answer (roadmap A7). Stage 04 has only the file branch;
-/// stage 06 adds `Trashed { entry }` and `Kept { reason, label, number }` —
-/// not declared yet, because nothing could construct them.
+/// Why a note open in a tab stayed where it was (stage 06, roadmap A7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeptReason {
+    /// The window holding its tab refused: the tab's save had not landed.
+    Unsaved,
+    /// That window did not answer within `trash::DROP_REPLY_TIMEOUT`.
+    Timeout,
+    /// A tab held it again by the time the file was about to move.
+    Open,
+}
+
+/// `stash_delete`'s answer (roadmap A7).
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum DeleteOutcome {
+    /// A note is in the trash; `entry` is it there (path in `.trash/`).
+    /// Boxed: an entry is far larger than the other variants.
+    Trashed { entry: Box<StashEntry> },
     /// A file reference left the stash; the file itself was not touched.
     Removed,
+    /// A note open in a tab could not be dropped from it: nothing changed.
+    /// `label`/`number`: the window holding it, for «Перейти».
+    Kept {
+        reason: KeptReason,
+        label: String,
+        number: Option<u32>,
+    },
 }
 
 /// The stash: one database connection and where things live. Synchronous and
@@ -735,6 +761,38 @@ mod tests {
             serde_json::to_value(DeleteOutcome::Removed).unwrap(),
             serde_json::json!({ "kind": "removed" })
         );
+        let kept = DeleteOutcome::Kept {
+            reason: KeptReason::Unsaved,
+            label: "editor-2".into(),
+            number: Some(2),
+        };
+        assert_eq!(
+            serde_json::to_value(kept).unwrap(),
+            serde_json::json!({ "kind": "kept", "reason": "unsaved", "label": "editor-2", "number": 2 })
+        );
+        let unnumbered = DeleteOutcome::Kept {
+            reason: KeptReason::Timeout,
+            label: "main".into(),
+            number: None,
+        };
+        assert_eq!(
+            serde_json::to_value(unnumbered).unwrap(),
+            serde_json::json!({ "kind": "kept", "reason": "timeout", "label": "main", "number": null })
+        );
+        assert_eq!(serde_json::to_value(KeptReason::Open).unwrap(), serde_json::json!("open"));
+    }
+
+    #[test]
+    fn a_trashed_outcome_carries_the_entry_and_is_enriched() {
+        let (mut stash, _root) = testkit::stash_in("delete-outcome-trashed");
+        let e = stash.create_note("# Ушла\nтекст", None, testkit::T0, testkit::MSK).unwrap();
+        let bare = stash.get(&e.id).unwrap();
+        assert_eq!(bare.preview, "", "the database half has no preview");
+        let out = DeleteOutcome::Trashed { entry: Box::new(bare) }.enrich();
+        let v = serde_json::to_value(&out).unwrap();
+        assert_eq!(v["kind"], "trashed");
+        assert_eq!(v["entry"]["id"], e.id.as_str());
+        assert_eq!(v["entry"]["preview"], "# Ушла\nтекст");
     }
 }
 
