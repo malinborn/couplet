@@ -598,7 +598,7 @@ describe('close', () => {
     await h.controller.closeActive();
     expect(h.deps.reportUnsaved).not.toHaveBeenCalled();
     // A restored tab comes back at its saved caret (0 here), which is what gets recorded.
-    expect(h.deps.rust.close).toHaveBeenCalledWith('u', { cursor: 0, topLine: 1 }, 'draft');
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', { cursor: 0, topLine: 1 }, 'draft', false);
     expect(h.active()).toBe('a');
   });
 
@@ -607,7 +607,7 @@ describe('close', () => {
     const h = await started({ '/a.md': 'AAAA' }, [untitledTab('u', 'draft'), fileTab('a', '/a.md')], 'u');
     h.type(' and the rest');
     await h.controller.closeActive();
-    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'draft and the rest');
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'draft and the rest', false);
   });
 
   it('HandsABackgroundUntitledTabsCachedTextToRust', async () => {
@@ -615,7 +615,7 @@ describe('close', () => {
     h.type(' two');
     await h.controller.activate('a');
     await h.controller.closeTabs(['u']);
-    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'one two');
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'one two', false);
   });
 
   it('HandsARestoredNeverOpenedUntitledTabsTextToRust', async () => {
@@ -624,13 +624,13 @@ describe('close', () => {
     const h = await started({ '/a.md': 'AAAA' }, [fileTab('a', '/a.md'), untitledTab('u', 'restored text')], 'a');
     await h.controller.closeTabs(['u']);
     expect(h.calls, 'never loaded into the editor').not.toContain('swap');
-    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'restored text');
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'restored text', false);
   });
 
   it('HandsNoTextForAFileTab', async () => {
     const h = await started({ '/a.md': 'AAAA', '/b.md': 'BBBB' }, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
     await h.controller.closeActive();
-    expect(h.deps.rust.close).toHaveBeenCalledWith('a', expect.anything(), null);
+    expect(h.deps.rust.close).toHaveBeenCalledWith('a', expect.anything(), null, false);
   });
 
   it('ClosesABackgroundTabWithItsCachedPosition', async () => {
@@ -640,7 +640,7 @@ describe('close', () => {
 
     await h.controller.closeTabs(['a']);
 
-    expect(h.deps.rust.close).toHaveBeenCalledWith('a', { cursor: 2, topLine: 1 }, null);
+    expect(h.deps.rust.close).toHaveBeenCalledWith('a', { cursor: 2, topLine: 1 }, null, false);
     expect(h.active()).toBe('t1');
     expect(h.calls).not.toContain('swap');
   });
@@ -866,7 +866,7 @@ describe('close, continued', () => {
 
     await h.controller.closeTabs(['u']);
 
-    expect(h.deps.rust.close).toHaveBeenCalledWith('u', { cursor: 0, topLine: 1 }, 'draft');
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', { cursor: 0, topLine: 1 }, 'draft', false);
     const { tabs } = h.controller.report({ cursor: 0, topLine: 1, content: 'AAAA' });
     expect(tabs.map((t) => t.tabId)).toEqual(['a']);
   });
@@ -895,7 +895,7 @@ describe('close, continued', () => {
     const closing = h.controller.closeActive();
     await Promise.all([opening, closing]);
 
-    expect(h.deps.rust.close).toHaveBeenCalledWith('t1', expect.anything(), null);
+    expect(h.deps.rust.close).toHaveBeenCalledWith('t1', expect.anything(), null, false);
     expect(h.ids()).toEqual(['a']);
     expect(h.active()).toBe('a');
   });
@@ -1608,7 +1608,7 @@ describe('quick looks', () => {
     await h.controller.keepTransient('t1');
     expect(meta(h, 't1')).toMatchObject({ transient: false, transientSeenAt: 0 });
     await h.controller.closeTransient('t2');
-    expect(h.deps.rust.close).toHaveBeenCalledWith('t2', expect.anything(), null);
+    expect(h.deps.rust.close).toHaveBeenCalledWith('t2', expect.anything(), null, false);
     expect(h.ids()).toEqual(['a', 't1']);
   });
 
@@ -1758,7 +1758,7 @@ describe('quick looks across a restart (tabs-questions Q8)', () => {
     h.clock.now = 5 * TRANSIENT_IGNORED_AFTER_MS;
     await h.controller.expireTransients('close');
     expect(h.ids(), 'c went; b is active; a was never seen').toEqual(['b', 'a']);
-    expect(h.deps.rust.close).toHaveBeenCalledWith('c', expect.anything(), null);
+    expect(h.deps.rust.close).toHaveBeenCalledWith('c', expect.anything(), null, false);
   });
 
   it('ExpiredWhileTheAppWasDown_TheKeepPolicyMakesThemOrdinary', async () => {
@@ -2142,7 +2142,7 @@ describe('tabs arriving from another window (plan 05)', () => {
     await h.controller.arrive([fileTab('x', '/x.md')]);
     h.hooks.duringRead = () => {};
     expect(h.deps.rust.release).not.toHaveBeenCalledWith('u');
-    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'typed meanwhile');
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'typed meanwhile', false);
   });
 
   it('AnUntitledTypedIntoDoesNotGiveWay', async () => {
@@ -2393,23 +2393,39 @@ describe('notes', () => {
 
   it('ClosingATabWhoseBirthFailedStillKeepsTheRescueCopy', async () => {
     const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.notes.create.mockRejectedValue(new Error('EPERM'));
+    h.type('draft');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    await h.controller.closeActive();
+    // The close tried once more (inside the back-off: it is the last chance).
+    expect(h.notes.create).toHaveBeenCalledTimes(2);
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'draft', false);
+  });
+
+  it('ClosingATabWhoseBirthFailedOnceMakesTheNoteAfterAll', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
     h.notes.create.mockRejectedValueOnce(new Error('EPERM'));
     h.type('draft');
     h.controller.noteTyped();
     await h.controller.drain();
     await h.controller.closeActive();
-    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'draft');
+    expect(h.files.get('/notes/n1.md')).toBe('draft');
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), null, false);
   });
 
-  it('ABackgroundTabClosedBeforeItsBirthRanIsClosedWithItsRescueCopyAndNeverBorn', async () => {
+  it('ABackgroundTabClosedBeforeItsQueuedBirthRanIsBornOnceByTheClose', async () => {
     const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
-    // Typed with no `noteTyped` yet: the switch's settle is what queues the birth.
+    // Typed with no `noteTyped` yet: the switch's settle queues a birth, which
+    // runs after the close and finds the tab gone.
     h.type('draft');
     void h.controller.activate('a');
     void h.controller.closeTabs(['u']);
     await h.controller.drain();
-    expect(h.notes.create).not.toHaveBeenCalled();
-    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'draft');
+    expect(h.notes.create).toHaveBeenCalledTimes(1);
+    expect(h.files.get('/notes/n1.md')).toBe('draft');
+    expect(h.calls.indexOf('claim u /notes/n1.md')).toBeLessThan(h.calls.indexOf('close u'));
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), null, false);
   });
 
   it('ABackgroundUntitledTabWithTextBecomesANoteAfterASettle', async () => {
@@ -2450,6 +2466,107 @@ describe('notes', () => {
     expect(h.active()).toBe('a');
     expect(h.controller.list.tabs.find((t) => t.id === 'm')?.path).toBe('/notes/n1.md');
     expect(h.files.get('/notes/n1.md')).toBe('moved text');
+  });
+
+  it('PutAwayActiveClosesTheTabAndAsksRustToPutItAway', async () => {
+    const h = await started({ '/a.md': 'A', '/b.md': 'B' }, [fileTab('a', '/a.md'), fileTab('b', '/b.md')], 'a', withNotes);
+    expect(await h.controller.putAwayActive()).toBe(true);
+    expect(h.deps.rust.close).toHaveBeenCalledWith('a', expect.objectContaining({ topLine: 1 }), null, true);
+    expect(h.ids()).toEqual(['b']);
+  });
+
+  it('PutAwayOfAFileTabWhoseSaveDidNotLandKeepsTheTab', async () => {
+    const h = await started({ '/a.md': 'A', '/b.md': 'B' }, [fileTab('a', '/a.md'), fileTab('b', '/b.md')], 'a', withNotes);
+    h.setSaveSucceeds(false);
+    h.type('x');
+    expect(await h.controller.putAwayActive()).toBe(false);
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+    expect(h.ids()).toEqual(['a', 'b']);
+  });
+
+  it('PutAwayOfABlankNewTabClosesItWithoutATrace', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    await h.controller.putAwayActive();
+    expect(h.notes.create).not.toHaveBeenCalled();
+    // Blank: nothing for a rescue copy (Rust ignores blank text) and no path to stash.
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), '', true);
+    expect(h.ids()).toEqual(['a']);
+  });
+
+  it('PutAwayOfAnUntitledTabWithTextMakesTheNoteThenPutsItAway', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.type('idea');
+    expect(await h.controller.putAwayActive()).toBe(true);
+    expect(h.files.get('/notes/n1.md')).toBe('idea');
+    expect(h.calls.indexOf('claim u /notes/n1.md')).toBeLessThan(h.calls.indexOf('close u'));
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), null, true);
+  });
+
+  it('PutAwayWithNoActiveTabDoesNothing', async () => {
+    const h = makeHarness({}, withNotes);
+    expect(await h.controller.putAwayActive()).toBe(false);
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+  });
+
+  it('ClosingAnUntitledTabWithTextMakesItANoteFirst', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.type('keep me');
+    await h.controller.closeActive();
+    expect(h.files.get('/notes/n1.md')).toBe('keep me');
+    expect(h.calls.indexOf('claim u /notes/n1.md')).toBeLessThan(h.calls.indexOf('close u'));
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), null, false);
+    expect(h.ids()).toEqual(['a']);
+  });
+
+  it('ClosingTheLastUntitledTabWithTextMakesItANoteThenClosesTheWindow', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.type('last words');
+    await h.controller.closeActive();
+    expect(h.files.get('/notes/n1.md')).toBe('last words');
+    expect(h.calls.indexOf('close u')).toBeLessThan(h.calls.indexOf('closeWindow'));
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), null, false);
+  });
+
+  it('ClosingABackgroundUntitledTabWithTextMakesItANoteFirst', async () => {
+    const h = makeHarness({ '/a.md': 'A' });
+    // Notes off during init so no settle-time birth runs first.
+    await h.controller.init([fileTab('a', '/a.md'), untitledTab('u', 'draft')], 'a');
+    Object.assign(h.deps, { notes: h.notes });
+    await h.controller.closeTabs(['u']);
+    expect(h.files.get('/notes/n1.md')).toBe('draft');
+    expect(h.calls.indexOf('claim u /notes/n1.md')).toBeLessThan(h.calls.indexOf('close u'));
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), null, false);
+  });
+
+  it('AFailedBirthStillClosesTheUntitledTabAsBefore', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.notes.create.mockRejectedValue(new Error('EPERM'));
+    h.type('text');
+    await h.controller.closeActive();
+    expect(h.notes.failed).toHaveBeenCalledWith('EPERM');
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'text', false);
+    expect(h.ids()).toEqual(['a']);
+  });
+
+  it('ABlankGivingWayIsStillReleased', async () => {
+    const h = await started({ '/x.md': 'X' }, [untitledTab('u')], 'u', withNotes);
+    await h.controller.arrive([fileTab('x', '/x.md')]);
+    expect(h.notes.create).not.toHaveBeenCalled();
+    expect(h.calls).toContain('release u');
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+  });
+
+  it('ABlankTypedIntoWhileTheArrivalLoadsBecomesANoteAndIsClosed_NeverJustReleased', async () => {
+    // Stage 01's rule (text typed since the blank was picked goes through
+    // `close`) holds once that text is a note: Rust then puts it away.
+    const h = await started({ '/x.md': 'X' }, [untitledTab('u')], 'u', withNotes);
+    h.hooks.duringRead = () => h.type('typed meanwhile');
+    await h.controller.arrive([fileTab('x', '/x.md')]);
+    h.hooks.duringRead = () => {};
+    await h.controller.drain();
+    expect(h.files.get('/notes/n1.md')).toBe('typed meanwhile');
+    expect(h.deps.rust.release).not.toHaveBeenCalledWith('u');
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), null, false);
   });
 
   it('WithoutNoteDepsAnUntitledTabStaysUntitled', async () => {

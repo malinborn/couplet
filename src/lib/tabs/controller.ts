@@ -250,8 +250,10 @@ export interface TabControllerDeps {
     /**
      * ⌘W (Rust `tab_close`). `discarded`: an untitled tab's text as it was on
      * screen, for the rescue copy in the draft trash; `null` for a file tab.
+     * `putAway`: ⌃T — Rust also makes the document a stash entry (a file a
+     * reference). A note is put away on every close (stash plan 03, D5).
      */
-    close(tabId: string, position: Position, discarded: string | null): Promise<void>;
+    close(tabId: string, position: Position, discarded: string | null, putAway: boolean): Promise<void>;
     focusElsewhere(path: string): Promise<void>;
     closeWindow(): Promise<void>;
     /** Move tabs of this window to `target` (Rust `tab_move`, atomic). Rejects when Rust refused. */
@@ -1022,24 +1024,38 @@ export function createTabController(deps: TabControllerDeps) {
    * to arrivals — so a release never closes this one. `true` when the tab is gone from the list.
    * `onLastTab` runs when closing it is about to close the window — an agent's
    * `close` answers there, before its window is gone. `quiet`: an agent's
-   * close — its refusal is the agent's answer, not a toast (D5).
+   * close — its refusal is the agent's answer, not a toast (D5). `putAway`:
+   * ⌃T / `/stash` / the menu — Rust puts the document into the stash as it
+   * closes (stash plan 03, D5). An untitled tab with text becomes a note
+   * first, so a close puts it away instead of dropping it; if that fails it
+   * closes as before, with its rescue copy.
    */
   async function closeNow(
     tabId: string,
     how: 'close' | 'release' = 'close',
     onLastTab?: () => Promise<void>,
-    quiet = false
+    quiet = false,
+    putAway = false
   ): Promise<boolean> {
-    const closing = findById(list, tabId);
-    if (!closing) return false;
+    if (!findById(list, tabId)) return false;
+    // Set when this close made the tab a note: it held text, so like
+    // untitled text it is never merely released — the close puts it away.
+    let born = false;
+    const birth = async (): Promise<void> => {
+      if ((await becomeNoteNow(tabId)).kind === 'born') born = true;
+    };
     // A release is only for a blank Untitled, but it was judged blank before
-    // an await: text typed since goes through `close`, which keeps a rescue copy.
+    // an await: text typed since goes through `close`, which keeps a rescue
+    // copy (or, once it is a note, puts it away).
     const finish = (position: Position, discarded: string | null) =>
-      how === 'close' || discarded?.trim()
-        ? deps.rust.close(tabId, position, discarded)
+      how === 'close' || born || discarded?.trim()
+        ? deps.rust.close(tabId, position, discarded, putAway)
         : deps.rust.release(tabId);
 
     if (tabId !== list.activeId) {
+      if (findById(list, tabId)?.path === null) await birth();
+      const closing = findById(list, tabId);
+      if (!closing) return false;
       // A background tab is clean by construction and was handed over when
       // it was left; there is nothing to flush.
       const cached = cache.get(tabId);
@@ -1055,9 +1071,12 @@ export function createTabController(deps: TabControllerDeps) {
 
     deps.editor.commitCellEdit();
     await flushWithRetries();
+    // Stash spec: ⌘W puts a note away. An untitled tab with text becomes one
+    // first; a blank one has nothing to keep and closes without a trace. If
+    // the birth fails, the untitled text is not a reason to refuse: the tab
+    // closes as it always did, with its rescue copy (spec §8).
+    if (deps.doc.path() === null) await birth();
     const path = deps.doc.path();
-    // An untitled tab's text is not a reason to refuse: ⌘W on untitled
-    // discards it by design (spec §8).
     const verdict = decideLeave({
       activePath: path,
       activeIsDirty: deps.doc.dirty(),
@@ -1437,6 +1456,14 @@ export function createTabController(deps: TabControllerDeps) {
       queue.run(async () => {
         if (list.activeId !== null) await closeNow(list.activeId);
       }),
+    /**
+     * ⌃T, `/stash`, File → «Отложить в тайник»: the active document into the
+     * stash, its tab closed. `true`: closed.
+     */
+    putAwayActive: () =>
+      queue.run(async () =>
+        list.activeId === null ? false : closeNow(list.activeId, 'close', undefined, false, true)
+      ),
     selectIndex: (n: number) =>
       queue.run(async () => {
         const tab = tabByIndex(list, n);
