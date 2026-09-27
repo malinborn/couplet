@@ -66,10 +66,17 @@ export async function widenForStash(viewport: number = window.innerWidth): Promi
     // Move first, then grow: the frame never pokes past the screen edge.
     if (plan.position) await win.setPosition(new LogicalPosition(plan.position.x, plan.position.y));
     await win.setSize(new LogicalSize(plan.inner.width, plan.inner.height));
+    // What the window server made of it, not what was asked: it clamps to the
+    // screen and rounds to device pixels, and `restoreWindow` compares the
+    // window against this within 1 px — the asked-for size would read as
+    // "the human resized it" and the window would never go back.
+    const [gotInner, gotPos] = await Promise.all([win.innerSize(), plan.position ? win.outerPosition() : null]);
+    const widened = gotInner.toLogical(scale);
+    const at = gotPos ? gotPos.toLogical(scale) : null;
     return {
       before: { width: inner.width, height: inner.height, x: pos.x, y: pos.y },
-      widened: plan.inner,
-      at: plan.position,
+      widened: { width: widened.width, height: widened.height },
+      at: at ? { x: at.x, y: at.y } : null,
     };
   } catch (err) {
     console.error('stash: could not widen the window', err);
