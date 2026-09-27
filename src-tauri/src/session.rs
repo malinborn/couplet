@@ -584,8 +584,16 @@ impl SessionState {
     /// window in it; and every write of this run carries them. Either way the
     /// file left standing names them.
     pub fn snapshot_to_write(&self, saved_at: u64) -> Option<Session> {
+        self.snapshot_to_write_counting_live(saved_at)
+            .map(|(session, _)| session)
+    }
+
+    /// `snapshot_to_write`, plus how many of its leading windows are live.
+    /// The quit path puts away only those windows' notes (stash plan 03, D8):
+    /// the carried ones were never open this run.
+    pub fn snapshot_to_write_counting_live(&self, saved_at: u64) -> Option<(Session, usize)> {
         let (session, live) = self.snapshot_counting_live(saved_at);
-        (live > 0).then_some(session)
+        (live > 0).then_some((session, live))
     }
 
     /// The sidecars a GC run right after writing `written` must keep: every
@@ -1591,6 +1599,30 @@ mod tests {
         let drafts: Vec<Option<&str>> =
             written.windows.iter().map(|w| w.tabs[0].untitled.as_deref()).collect();
         assert_eq!(drafts, vec![Some("draft-m.md"), Some("draft-u.md")], "live first, then carried");
+    }
+
+    #[test]
+    fn the_quit_snapshot_counts_its_live_windows_ahead_of_the_carried_ones() {
+        // The quit puts away only what was open (stash plan 03, D8): the
+        // carried window's file tab left no tab and must not be stamped.
+        let state = SessionState::new();
+        state.set_pending(vec![window(vec![
+            tab("c", Some("/n/c.md")),
+            untitled_tab("u", "draft-u.md"),
+        ])]);
+        state.set_tabs("main", vec![tab("a", Some("/n/a.md"))], Some("a".to_string()));
+        let (written, live) = state
+            .snapshot_to_write_counting_live(0)
+            .expect("a live window is worth recording");
+        assert_eq!((written.windows.len(), live), (2, 1));
+        assert_eq!(written.windows[0].tabs[0].tab_id, "a", "live first");
+        assert_eq!(
+            Some(written.windows),
+            state.snapshot_to_write(0).map(|s| s.windows),
+            "the same session"
+        );
+        state.remove("main");
+        assert!(state.snapshot_to_write_counting_live(0).is_none());
     }
 
     #[test]

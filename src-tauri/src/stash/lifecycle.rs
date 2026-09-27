@@ -1,17 +1,23 @@
-//! What leaving the tabs means for the stash (stash plan 03, D5-D6). Decided
+//! What leaving the tabs means for the stash (stash plan 03, D5-D8). Decided
 //! here, from the database, never from a frontend's cache: `tab_close` (⌘W,
-//! ⌃T, `/stash`, an agent's close, an expired quick look) comes through
-//! `documents_left`.
+//! ⌃T, `/stash`, an agent's close, an expired quick look), a window's red
+//! button and a quit all come through `documents_left`.
 //!
 //! Lock discipline (I3, A11): the stash lock covers SQL only. Each document
 //! goes lookup (SQL) → the user's disk (unlocked) → write (SQL); the caller
-//! runs all of it on the blocking pool with no other lock held.
+//! runs all of it off the main thread with no other lock held — except a
+//! quit, which runs it on the main thread because the process is ending.
 
 use std::fs;
 use std::io::Read;
 use std::path::Path;
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager};
+
+use crate::session::{Session, SessionState, WindowSnapshot};
+use crate::tabs::WindowTabs;
 
 use super::entries::{kind_of_new, plan_put_away};
 use super::{clock, db, emit_changed, PutAway, Stash, StashKind, StashState};
@@ -24,6 +30,9 @@ pub(crate) enum Leaving {
     /// ⌃T / `/stash` / File → «Отложить в тайник»: `Closed`, and a file
     /// becomes a reference.
     PutAway,
+    /// The red button or a quit (D8): nothing was flushed, so a note is put
+    /// away but never discarded (D6), and a file is left as it is.
+    WithWindow,
 }
 
 /// What the stash did with a document that left. The id is the entry's.
@@ -81,7 +90,7 @@ impl Stash {
 /// directly in the notes folder is ever removed, and the file goes before the
 /// row, so a file that will not go keeps its entry and is put away instead.
 /// A file enters the stash only on `PutAway`; a trashed entry is never
-/// touched (A8).
+/// touched (A8). `WithWindow` only ever puts a live note away.
 pub(crate) fn document_left(
     state: &StashState,
     path: &str,
@@ -95,10 +104,13 @@ pub(crate) fn document_left(
     match &entry {
         Some(e) if e.deleted_at.is_some() => {
             return match leaving {
-                Leaving::Closed => Ok(Left::Untouched),
+                Leaving::Closed | Leaving::WithWindow => Ok(Left::Untouched),
                 Leaving::PutAway => Err(format!("in the trash: {path}")),
             };
         }
+        // The red button and ⌘Q leave the last ≤300 ms of typing unflushed:
+        // a blank file is no proof of a blank buffer (D6).
+        Some(e) if e.kind == StashKind::Note && leaving == Leaving::WithWindow => {}
         Some(e) if e.kind == StashKind::Note => {
             let is_note_file = kind_of_new(Path::new(path), &notes_dir) == StashKind::Note;
             if is_note_file && remove_if_blank(Path::new(path)) {
@@ -107,7 +119,7 @@ pub(crate) fn document_left(
                 return Ok(Left::Discarded(id));
             }
         }
-        _ if leaving == Leaving::Closed => return Ok(Left::Untouched),
+        _ if leaving != Leaving::PutAway => return Ok(Left::Untouched),
         _ => {}
     }
     let req = PutAway {
@@ -154,8 +166,9 @@ pub(crate) fn documents_left_in(
 }
 
 /// `documents_left_in` in the live app, then one `stash-changed` (A6:
-/// `put-away`, naming every entry put away or discarded). Blocking: call it
-/// on the blocking pool, with no other lock held.
+/// `put-away`, naming every entry put away or discarded) — unless the app is
+/// quitting, when no drawer is left to refresh. Blocking: call it on the
+/// blocking pool (a quit excepted), with no other lock held.
 pub(crate) fn documents_left(app: &AppHandle, docs: &[(String, usize, usize)], leaving: Leaving) {
     if docs.is_empty() {
         return;
@@ -164,9 +177,139 @@ pub(crate) fn documents_left(app: &AppHandle, docs: &[(String, usize, usize)], l
         return;
     };
     let ids = documents_left_in(&state, docs, leaving, clock::now_ms());
-    if !ids.is_empty() {
+    let quitting = app
+        .try_state::<SessionState>()
+        .is_some_and(|s| s.is_quitting());
+    if !ids.is_empty() && !quitting {
         emit_changed(app, "put-away", Some(ids));
     }
+}
+
+/// Stash work handed to the blocking pool that a quit must not cut short.
+///
+/// Closing the last window by its red button destroys it and then exits the
+/// process at once (nothing prevents the exit): a put-away still queued or
+/// running on the pool would simply never land. The quit path waits for
+/// these — bounded, since it runs on the main thread.
+struct InFlight {
+    count: Mutex<usize>,
+    idle: Condvar,
+}
+
+/// One unit of `InFlight` work; counted from `enter` until dropped.
+pub(crate) struct Pending<'a>(&'a InFlight);
+
+impl InFlight {
+    const fn new() -> Self {
+        Self {
+            count: Mutex::new(0),
+            idle: Condvar::new(),
+        }
+    }
+
+    fn enter(&self) -> Pending<'_> {
+        *self.count.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        Pending(self)
+    }
+
+    /// Waits until nothing is in flight, at most `timeout`. `true`: idle.
+    fn wait_idle(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut count = self.count.lock().unwrap_or_else(|e| e.into_inner());
+        while *count > 0 {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            count = self
+                .idle
+                .wait_timeout(count, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        true
+    }
+}
+
+impl Drop for Pending<'_> {
+    fn drop(&mut self) {
+        let mut count = self.0.count.lock().unwrap_or_else(|e| e.into_inner());
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            self.0.idle.notify_all();
+        }
+    }
+}
+
+static IN_FLIGHT: InFlight = InFlight::new();
+
+/// Counts the caller's stash work in flight until the guard drops. Take it
+/// before handing the work to the pool, so a quit sees it even queued.
+pub(crate) fn pending() -> Pending<'static> {
+    IN_FLIGHT.enter()
+}
+
+/// How long a quit waits for stash work in flight. SQL plus a note's own
+/// metadata normally takes milliseconds; this is for a stash waiting out its
+/// busy timeout, and a quit may not hang on it.
+const QUIT_WAIT: Duration = Duration::from_secs(3);
+
+/// The quit path: waits (bounded) for stash work still in flight.
+pub(crate) fn wait_for_pending() {
+    if !IN_FLIGHT.wait_idle(QUIT_WAIT) {
+        eprintln!("stash: quitting with a put-away still in flight");
+    }
+}
+
+/// `documents_left` on the blocking pool, for a caller on the main thread
+/// (the red button's `Destroyed`). Counted in flight from here, so a quit
+/// right behind it waits for it.
+pub(crate) fn documents_left_later(
+    app: &AppHandle,
+    docs: Vec<(String, usize, usize)>,
+    leaving: Leaving,
+) {
+    if docs.is_empty() {
+        return;
+    }
+    let pending = pending();
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _pending = pending;
+        documents_left(&app, &docs, leaving);
+    });
+}
+
+/// A closing window's file tabs, with the carets its last heartbeat recorded.
+/// Read before `SessionState::remove` erases them.
+pub(crate) fn left_with_window(
+    tabs: &WindowTabs,
+    snapshot: Option<&WindowSnapshot>,
+) -> Vec<(String, usize, usize)> {
+    tabs.tabs
+        .iter()
+        .filter_map(|t| {
+            let path = t.path.clone()?;
+            let (cursor, top_line) = snapshot
+                .and_then(|s| s.tabs.iter().find(|s| s.tab_id == t.id))
+                .map(|s| (s.cursor, s.top_line))
+                .unwrap_or((0, 1));
+            Some((path, cursor, top_line))
+        })
+        .collect()
+}
+
+/// The file tabs of the first `live` windows of the session written on quit
+/// (`SessionState::snapshot_to_write_counting_live`). The windows after them
+/// are carried un-restored from the previous run: not open, so nothing of
+/// theirs left the tabs — stamping them would raise their notes on every quit.
+pub(crate) fn left_at_quit(session: &Session, live: usize) -> Vec<(String, usize, usize)> {
+    session
+        .windows
+        .iter()
+        .take(live)
+        .flat_map(|w| w.tabs.iter())
+        .filter_map(|t| t.path.clone().map(|p| (p, t.cursor, t.top_line)))
+        .collect()
 }
 
 #[cfg(test)]
@@ -355,6 +498,208 @@ mod tests {
             Path::new(&file).exists(),
             "a blank file reference is never discarded"
         );
+    }
+
+    #[test]
+    fn a_window_closing_never_discards_even_a_blank_note() {
+        // The red button and ⌘Q do not flush the last keystrokes: blank on disk
+        // is not proof the buffer was blank (D6).
+        let (state, _root) = state_in("window");
+        let note = note(&state, "x");
+        std::fs::write(&note.path, "").unwrap();
+        assert_eq!(
+            document_left(&state, &note.path, 5, 2, Leaving::WithWindow, NOW).unwrap(),
+            Left::PutAway(note.id.clone())
+        );
+        assert!(Path::new(&note.path).exists());
+        let e = state.with(|s| s.get(&note.id)).unwrap();
+        assert_eq!((e.stashed_at, e.caret, e.top_line), (Some(NOW), 5, 2));
+    }
+
+    #[test]
+    fn a_window_closing_leaves_files_and_trashed_notes_alone() {
+        let (state, root) = state_in("window-files");
+        let open = user_file(&root, "open.md", "a");
+        assert_eq!(
+            document_left(&state, &open, 1, 1, Leaving::WithWindow, NOW).unwrap(),
+            Left::Untouched
+        );
+        assert!(
+            by_path(&state, &open).is_none(),
+            "a file never enters the stash by itself"
+        );
+
+        let stashed = user_file(&root, "stashed.md", "b");
+        document_left(&state, &stashed, 4, 2, Leaving::PutAway, NOW).unwrap();
+        assert_eq!(
+            document_left(&state, &stashed, 9, 9, Leaving::WithWindow, NOW + 1).unwrap(),
+            Left::Untouched
+        );
+        let e = by_path(&state, &stashed).unwrap();
+        assert_eq!(
+            (e.stashed_at, e.caret),
+            (Some(NOW), 4),
+            "a reference keeps its stamp"
+        );
+
+        let trashed = note(&state, "x");
+        state
+            .with(|s| {
+                set_columns(s, &trashed.id, "deleted_at = 5, stashed_at = NULL");
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            document_left(&state, &trashed.path, 3, 2, Leaving::WithWindow, NOW).unwrap(),
+            Left::Untouched
+        );
+        let e = state.with(|s| s.get(&trashed.id)).unwrap();
+        assert_eq!((e.deleted_at, e.stashed_at), (Some(5), None));
+    }
+
+    #[test]
+    fn a_window_takes_its_file_tabs_with_the_last_heartbeats_carets() {
+        use crate::session::{TabSnapshot, WindowSnapshot};
+        use crate::tabs::{RegTab, WindowTabs};
+        let tabs = WindowTabs {
+            tabs: vec![
+                RegTab {
+                    id: "a".into(),
+                    path: Some("/n/a.md".into()),
+                },
+                RegTab {
+                    id: "u".into(),
+                    path: None,
+                },
+                RegTab {
+                    id: "b".into(),
+                    path: Some("/p/b.md".into()),
+                },
+            ],
+            ..Default::default()
+        };
+        let snapshot = WindowSnapshot {
+            number: Some(1),
+            project: None,
+            x: 0,
+            y: 0,
+            width: 900,
+            height: 700,
+            tabs: vec![TabSnapshot {
+                tab_id: "a".into(),
+                cursor: 12,
+                top_line: 4,
+                ..Default::default()
+            }],
+            active_tab: Some("a".into()),
+        };
+        assert_eq!(
+            left_with_window(&tabs, Some(&snapshot)),
+            vec![
+                ("/n/a.md".to_string(), 12, 4),
+                ("/p/b.md".to_string(), 0, 1)
+            ]
+        );
+        assert_eq!(
+            left_with_window(&tabs, None),
+            vec![("/n/a.md".to_string(), 0, 1), ("/p/b.md".to_string(), 0, 1)],
+            "a window that never heartbeat still takes its files"
+        );
+    }
+
+    fn quit_session() -> crate::session::Session {
+        use crate::session::{Session, TabSnapshot, WindowSnapshot, SESSION_VERSION};
+        let window = |tabs: Vec<TabSnapshot>| WindowSnapshot {
+            number: None,
+            project: None,
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+            active_tab: None,
+            tabs,
+        };
+        let file = |id: &str, path: &str, cursor| TabSnapshot {
+            tab_id: id.into(),
+            path: Some(path.into()),
+            cursor,
+            top_line: 1,
+            ..Default::default()
+        };
+        let draft = |id: &str| TabSnapshot {
+            tab_id: id.into(),
+            untitled: Some(format!("draft-{id}.md")),
+            ..Default::default()
+        };
+        Session {
+            version: SESSION_VERSION,
+            saved_at: 1,
+            windows: vec![
+                window(vec![file("a", "/n/a.md", 2)]),
+                window(vec![draft("u")]),
+                // Carried by `snapshot_to_write` from the previous run: not open.
+                window(vec![file("c", "/n/c.md", 7), draft("v")]),
+            ],
+        }
+    }
+
+    #[test]
+    fn a_quit_takes_every_file_tab_of_the_live_windows() {
+        assert_eq!(
+            left_at_quit(&quit_session(), 2),
+            vec![("/n/a.md".to_string(), 2, 1)]
+        );
+    }
+
+    #[test]
+    fn a_quit_never_takes_the_windows_nobody_restored() {
+        // Stamping them would raise their notes in «changed» on every quit.
+        assert_eq!(
+            left_at_quit(&quit_session(), 1),
+            vec![("/n/a.md".to_string(), 2, 1)]
+        );
+        assert_eq!(left_at_quit(&quit_session(), 0), Vec::new());
+        assert_eq!(
+            left_at_quit(&quit_session(), 3).len(),
+            2,
+            "counted, not guessed"
+        );
+    }
+
+    #[test]
+    fn with_nothing_in_flight_a_quit_does_not_wait() {
+        let flight = InFlight::new();
+        let started = std::time::Instant::now();
+        assert!(flight.wait_idle(std::time::Duration::from_secs(5)));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_quit_waits_for_a_window_still_being_put_away() {
+        let flight = InFlight::new();
+        let done = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let pending = flight.enter();
+            scope.spawn(|| {
+                let _pending = pending;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                done.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            assert!(flight.wait_idle(std::time::Duration::from_secs(5)));
+            assert!(
+                done.load(std::sync::atomic::Ordering::SeqCst),
+                "waited for it"
+            );
+        });
+    }
+
+    #[test]
+    fn a_quit_waits_a_bounded_time() {
+        let flight = InFlight::new();
+        let _stuck = flight.enter();
+        let started = std::time::Instant::now();
+        assert!(!flight.wait_idle(std::time::Duration::from_millis(50)));
+        assert!(started.elapsed() >= std::time::Duration::from_millis(50));
     }
 
     #[test]

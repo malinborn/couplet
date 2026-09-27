@@ -339,7 +339,10 @@ pub async fn tab_close(
             crate::stash::lifecycle::Leaving::Closed
         };
         let (stash_app, doc) = (app.clone(), (path.clone(), cursor, top_line));
+        // Counted in flight, so a quit landing meanwhile waits for it.
+        let pending = crate::stash::lifecycle::pending();
         let stashed = tauri::async_runtime::spawn_blocking(move || {
+            let _pending = pending;
             crate::stash::lifecycle::documents_left(&stash_app, &[doc], leaving);
         })
         .await;

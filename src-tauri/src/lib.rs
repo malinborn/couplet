@@ -514,6 +514,23 @@ pub fn run() {
                         reg.window(label).cloned()
                     };
                     if let Some(tabs) = closing {
+                        // Spec: a window closing puts its notes away (stash
+                        // plan 03, D8). Not while quitting: `save_session_on_exit`
+                        // does it once for every live window. Read before
+                        // `remove` below erases the carets; the stash work goes
+                        // to the blocking pool — this is the main thread — with
+                        // the registry and session locks already released (A11).
+                        if !session_state.is_quitting() {
+                            let left = stash::lifecycle::left_with_window(
+                                &tabs,
+                                session_state.snapshot_for(label).as_ref(),
+                            );
+                            stash::lifecycle::documents_left_later(
+                                app,
+                                left,
+                                stash::lifecycle::Leaving::WithWindow,
+                            );
+                        }
                         let stack = app.state::<closed::ClosedStack>();
                         if closed::record_window_close(&session_state, &stack, label, &tabs) > 0 {
                             closed::refresh_reopen_item(app);
@@ -633,14 +650,28 @@ fn save_session_on_exit(app: &tauri::AppHandle) {
     // `RunEvent::Exit` alone. A comment paused seconds before a quit has to be
     // handed over on the way out, or nothing is left to hand it over.
     comment_pause::commit_all_open(app);
-    let snapshot = state.snapshot_to_write(session::now_secs());
+    let snapshot = state.snapshot_to_write_counting_live(session::now_secs());
     state.mark_quitting();
     // A quit records the session, it never erases it: with no live window
     // left, the last good file on disk stands (`snapshot_to_write` says why
     // that also keeps the un-restored drafts named).
-    if let Some(snapshot) = snapshot {
+    if let Some((snapshot, live)) = snapshot {
         let _ = session::write_session(&snapshot);
+        // After the session: it matters more. The live windows' notes are
+        // stamped put away, never discarded — the last ≤300 ms of typing may
+        // not be on disk (stash plan 03, D6/D8). Synchronously, on the main
+        // thread: a task handed to the pool here would race the process exit.
+        // Bounded in practice — a lookup and a stamp per note, a note's own
+        // metadata; a file tab is left untouched before any disk work.
+        stash::lifecycle::documents_left(
+            app,
+            &stash::lifecycle::left_at_quit(&snapshot, live),
+            stash::lifecycle::Leaving::WithWindow,
+        );
     }
+    // A red button on the last window destroys it and exits right behind
+    // it; its put-away may still be on the blocking pool (bounded wait).
+    stash::lifecycle::wait_for_pending();
 }
 
 /// The window a document-scoped menu action belongs to — see `menu_route`.
