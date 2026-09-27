@@ -25,6 +25,7 @@
     onAiCommand,
     onCommentsChanged,
     onStashChanged,
+    onTabPull,
     type AiCommandPayload,
     type UpdateInfo,
   } from './lib/tauri/events';
@@ -48,9 +49,29 @@
     type RevealResult,
   } from './lib/tabs/window-number';
   import { ctrlTabHandler } from './lib/tabs/tab-cycle-keys';
-  import { stashCreateNote, stashEntryForPath, windowProject } from './lib/stash/ipc';
+  import {
+    listAllEntries,
+    requestTabMove,
+    stashCounts,
+    stashCreateNote,
+    stashDelete,
+    stashEntryForPath,
+    stashTag,
+    stashTouchOpened,
+    tabHolders,
+    windowProject,
+  } from './lib/stash/ipc';
   import { slashInProgress } from './lib/editor/slash-in-progress';
-  import { noteTitle } from './lib/stash/note-title';
+  import { isBlankText, noteTitle } from './lib/stash/note-title';
+  import { tabCaption } from './lib/stash/tab-caption';
+  import { createStashStore } from './lib/stash/stash-store.svelte';
+  import { putAwayNote, putAwayTabs } from './lib/stash/put-away';
+  import { awaitPull, openFromStash } from './lib/stash/open-from-stash';
+  import { restoreWindow, widenForStash, type WidenMemo } from './lib/stash/window-widen';
+  import { entryTitle } from './lib/stash/stash-view';
+  import type { StashToastNote } from './lib/stash/stash-toast';
+  import type { StashEntry, TagChange } from './lib/stash/types';
+  import { moveIds } from './lib/tabs/drawer-geometry';
   import { createStashMarks } from './lib/stash/stash-marks.svelte';
   import { stashKeysHandler } from './lib/stash/stash-keys';
   import type { StashControl } from './lib/editor/slash-stash';
@@ -85,7 +106,7 @@
   import { createTabController, type DiskOptions, type MoveDone, type OpenAnswer, type Stranded } from './lib/tabs/controller';
   import { AGENT_ERRORS, createAgentCommands, type AgentResponse, type AskResult } from './lib/tabs/agent-commands';
   import { createTypingTracker } from './lib/tabs/typing';
-  import { emptyTabList, type TabListState } from './lib/tabs/tab-model';
+  import { emptyTabList, type TabListState, type TabMeta } from './lib/tabs/tab-model';
   import type { CarouselWindow, MoveTarget } from './lib/tabs/carousel';
   import { stripLeavingState } from './lib/tabs/tab-cache';
   import { decideSaveAs } from './lib/tabs/save-as';
@@ -877,6 +898,179 @@
 
   /** The window carousel is up: the page behind it blurs (D9, D11). */
   let carouselOn = $state(false);
+
+  // --- Stash drawer (stash stage 04) ---
+
+  /** This window's stash drawer: entries, counts, holders, the drawer pair's state. */
+  const stashStore = createStashStore({
+    list: () => listAllEntries(),
+    counts: () => stashCounts(),
+    holders: (paths) => tabHolders(paths),
+    windowRepo: async () => (await windowProject()).repo,
+  });
+
+  /** How long a put-away's toast waits for the new cards, to say how many the repo chip hides. */
+  const PUT_AWAY_HIDDEN_WAIT_MS = 1500;
+
+  function stashUntitled(): string {
+    return t('stash.untitled');
+  }
+
+  /** A stash notice that answers a gesture and goes by itself, like «Номер #N занят». */
+  function quietStashToast(note: StashToastNote): void {
+    quietToast({ kind: 'stash', note });
+  }
+
+  /** A tab as its drawer card names it, read before a put-away closes it (the close makes every file a stashed one). */
+  function captionOfTab(tab: TabMeta): string {
+    const text = tabs.textOf(tab.id);
+    return tabCaption({
+      path: tab.path,
+      title: text === null ? undefined : noteTitle(text),
+      blank: text === null ? tab.path === null : isBlankText(text),
+      mark: stashMarks.get(tab.path),
+    }).name;
+  }
+
+  /**
+   * Tabs → stash (the drop zone, a drop on the stash drawer, «В тайник», ⌃T
+   * with the drawer open): each tab the way ⌃T goes (`controller.putAwayTabs`,
+   * stage 04 D8 as amended). The cards arrive through `stash-changed`; Rust's
+   * "not stashed" answers already have their `stash-error` from the controller.
+   */
+  async function putAway(tabIds: string[]): Promise<void> {
+    await tabSourcesReady;
+    const outcome = await putAwayTabs(tabIds, {
+      tabs: () => tabList.tabs,
+      caption: captionOfTab,
+      mark: (path) => stashMarks.get(path)?.kind ?? null,
+      blank: (tab) => {
+        const text = tabs.textOf(tab.id);
+        return text === null || isBlankText(text);
+      },
+      close: async (ids) => {
+        const answer = await tabs.putAwayTabs(ids);
+        if (answer) return answer;
+        // The serial queue swallowed a throw (and logged it) mid-batch: the tabs
+        // already gone did close, and went the way ⌃T goes.
+        const left = new Set(tabList.tabs.map((tab) => tab.id));
+        const closed = ids.filter((id) => !left.has(id));
+        if (closed.length === 0) throw new Error('the tabs could not be closed');
+        return { closed, notStashed: [] };
+      },
+    });
+    const chip = stashStore.state.open ? stashStore.state.repoChip : null;
+    let hidden = 0;
+    if (outcome.kind === 'done' && chip !== null && outcome.stashedPaths.length > 0) {
+      // Known only once the reload `stash-changed` started has the new cards; a
+      // note born from an untitled tab has no path here and carries the window's
+      // repo — the chip's default — so it is never hidden.
+      const paths = outcome.stashedPaths;
+      const arrived = (): boolean => paths.every((p) => stashStore.entries.some((e) => e.path === p));
+      await awaitPull(arrived, PUT_AWAY_HIDDEN_WAIT_MS);
+      hidden = stashStore.entries.filter((e) => paths.includes(e.path) && e.repo !== chip).length;
+    }
+    const note = putAwayNote(outcome, hidden, chip);
+    if (note === null) return;
+    if (note.what === 'error') toasts.push({ kind: 'stash', note });
+    else quietStashToast(note);
+  }
+
+  /** Stash → tabs (D9): this window, a pull from its holder, or a fresh open here. */
+  async function openStashEntry(entry: StashEntry, before: string | null | undefined): Promise<void> {
+    await tabSourcesReady;
+    const title = entryTitle(entry, stashUntitled());
+    const isNote = entry.kind === 'note';
+    const has = (path: string): boolean => tabs.findByPath(path) !== undefined;
+    const opened = await openFromStash(entry, before, {
+      requestMove: (path) => requestTabMove(path),
+      activate: async (tabId) => {
+        await tabs.activate(tabId);
+      },
+      openPath: (path, position) => tabs.openPath(path, position),
+      has,
+      place: (path, at) => {
+        const tab = tabs.findByPath(path);
+        if (tab) void tabs.reorder(moveIds(tabList.tabs.map((x) => x.id), [tab.id], at));
+      },
+      touch: (path) => stashTouchOpened(path),
+    });
+    if (opened.kind === 'opened') {
+      quietStashToast({ what: 'opened', title, isNote, from: null });
+    } else if (opened.kind === 'pulled') {
+      // The holder runs the move (`tab-pull`); the tab comes in through `tabs-arrive`.
+      if (await awaitPull(() => has(entry.path))) {
+        quietStashToast({ what: 'opened', title, isNote, from: opened.number });
+      } else {
+        toasts.push({ kind: 'stash', note: { what: 'pull-failed', number: opened.number, label: opened.label } });
+      }
+    } else if (opened.kind === 'failed' && opened.error !== null) {
+      toasts.push({ kind: 'stash', note: { what: 'error', message: opened.error } });
+    }
+  }
+
+  /** «убрать из тайника» (D13): file refs only; the file itself stays where it is. */
+  async function removeStashEntry(entry: StashEntry): Promise<void> {
+    if (entry.kind !== 'file') return;
+    try {
+      const outcome = await stashDelete(entry.id);
+      if (outcome.kind !== 'removed') return;
+    } catch (err) {
+      toasts.push({ kind: 'stash', note: { what: 'error', message: String(err) } });
+      return;
+    }
+    stashStore.remove(entry.id);
+    quietStashToast({ what: 'removed', title: entryTitle(entry, stashUntitled()) });
+  }
+
+  /** A tag chip added or removed on a card; the drawer pops its own additions (`markNewTags`). */
+  async function tagStashEntry(entry: StashEntry, change: TagChange): Promise<void> {
+    try {
+      stashStore.upsert([await stashTag(entry.id, change.add ?? [], change.remove ?? [])]);
+    } catch (err) {
+      toasts.push({ kind: 'stash', note: { what: 'error', message: String(err) } });
+    }
+  }
+
+  /**
+   * ⌃T (D18, roadmap A10). With the drawer open: the ⇧-selection, else the
+   * card under the keyboard ring, else the active tab — and nothing while the
+   * stash has the keys. With it closed: stage 03's put-away of the active
+   * document. `/stash` and File → «Отложить в тайник» stay on `putAwayActive`.
+   */
+  function putAwayByKey(): void {
+    const targets = drawerHandle?.putAwayTargets();
+    if (targets === null) return;
+    if (targets === undefined) {
+      putAwayActive();
+      return;
+    }
+    void putAway(targets);
+  }
+
+  /** The window widened for the stash (D15) — put back when it closes, if still as widened. */
+  let widened: WidenMemo | null = null;
+  $effect(() => {
+    const open = stashStore.state.open;
+    untrack(() => {
+      if (open) {
+        void widenForStash().then((memo) => {
+          if (!memo) return;
+          // Closed again before the widen landed: put it straight back.
+          if (!stashStore.state.open) {
+            void restoreWindow(memo);
+            return;
+          }
+          widened = memo;
+          quietStashToast({ what: 'widened' });
+        });
+      } else if (widened) {
+        const memo = widened;
+        widened = null;
+        void restoreWindow(memo);
+      }
+    });
+  });
 
   /** A move from the drawer's carousel (plan 05). A refusal already has its toast (`mayLeave`). */
   async function moveTabs(tabIds: string[], target: MoveTarget): Promise<void> {
@@ -1828,8 +2022,11 @@
     void tabSourcesReady.then(() => tabs.putAwayActive());
   }
 
-  /** ⌃T: registered right after `onWindowCtrlTab`, before the drawer's listener. */
-  const onWindowStashKeys = stashKeysHandler({ putAway: putAwayActive });
+  /** ⌃T and ⌃S (one listener): registered right after `onWindowCtrlTab`, before the drawer's listener. */
+  const onWindowStashKeys = stashKeysHandler({
+    putAway: putAwayByKey,
+    toggleStash: () => drawerHandle?.toggleStash(),
+  });
 
   /** `/stash` in the slash menu. One object: the editor's completion sources are built once per state. */
   const stashControl: StashControl = { putAway: putAwayActive };
@@ -2115,6 +2312,19 @@
     // Not a tab source: it stays out of the `Promise.all` before `get_window_init`.
     const unlistenStash = onStashChanged((reason, ids) => {
       void stashMarks.changed(reason, ids, tabList.tabs.flatMap((tab) => (tab.path === null ? [] : [tab.path])));
+      stashStore.changed(reason, ids);
+    });
+    // Stash stage 04 (D9): another window opens from its stash a tab this one
+    // holds. The plan-05 move, run here where its dirty checks live; no
+    // «Перенесено» toast — the human is in the other window, which announces
+    // the arrival.
+    const unlistenTabPull = onTabPull(({ path, target }) => {
+      void tabSourcesReady
+        .then(async () => {
+          const tab = tabs.findByPath(path);
+          if (tab) await tabs.moveTabs([tab.id], { kind: 'window', label: target });
+        })
+        .catch((err: unknown) => console.error('Failed to hand a tab to another window:', err));
     });
 
     // Pull what the backend stored for this window (its tabs, restored or
@@ -2204,6 +2414,9 @@
           break;
         case 'toggle_drawer':
           drawerHandle?.toggle();
+          break;
+        case 'toggle_stash':
+          drawerHandle?.toggleStash();
           break;
         case 'toggle_tabs_compact:on':
           tabsCompact.set(true);
@@ -2503,6 +2716,7 @@
       unlistenTabsArrive.then((fn) => fn());
       unlistenWindowNumber.then((fn) => fn());
       unlistenStash.then((fn) => fn());
+      unlistenTabPull.then((fn) => fn());
       unlistenExternalChange.then((fn) => fn());
       unlistenAiCommand.then((fn) => fn());
       unlistenComments.then((fn) => fn());
@@ -2742,6 +2956,11 @@
   onrestorefocus={() => editorHandle?.view?.focus()}
   onrenumber={renumber}
   marks={(path) => stashMarks.get(path)}
+  stash={stashStore}
+  onputaway={(ids) => void putAway(ids)}
+  onstashopen={(entry, before) => void openStashEntry(entry, before)}
+  onstashremove={(entry) => void removeStashEntry(entry)}
+  onstashtag={(entry, change) => void tagStashEntry(entry, change)}
 />
 
 <TransientBar
@@ -2764,6 +2983,7 @@
 
 <ToastStack
   store={toasts}
+  right={stashStore.state.open ? stashStore.width + 16 : undefined}
   onFormatJson={() => formatJson(true)}
   onRevealWindow={(label) => {
     invoke('reveal_other_window', { label }).catch(logTabIpc('reveal_other_window'));
