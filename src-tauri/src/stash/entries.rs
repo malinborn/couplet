@@ -295,6 +295,9 @@ pub(crate) struct PutAwayPlan {
     tags: Vec<String>,
     caret: Option<i64>,
     top_line: Option<i64>,
+    /// Taken before any probe read a body: a row stamped later than this by
+    /// a save holds a newer body than the probe's (`put_away_probed`).
+    probed_at: i64,
 }
 
 /// `put_away`'s disk half. Paths are normalized here — the dedup key is
@@ -329,6 +332,7 @@ pub(crate) fn plan_put_away(
         tags,
         caret: req.caret,
         top_line: req.top_line,
+        probed_at: now,
     })
 }
 
@@ -620,17 +624,23 @@ impl Stash {
         let mut done: Vec<(String, bool)> = Vec::with_capacity(plan.probes.len());
         for probe in &plan.probes {
             let path = probe.path.as_str();
-            let existing: Option<(String, String, Option<i64>)> = tx
+            let existing: Option<(String, String, i64, Option<i64>)> = tx
                 .query_row(
-                    "SELECT id, kind, deleted_at FROM entries WHERE path = ?1",
+                    "SELECT id, kind, modified_at, deleted_at FROM entries WHERE path = ?1",
                     [path],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
                 .optional()
                 .map_err(db::err)?;
+            // A save stamped the row after the probe began: its re-read, newer
+            // than the probe's, is (or will be) in the index.
+            let saved_since = matches!(
+                existing,
+                Some((_, _, modified, None)) if modified > plan.probed_at
+            );
             let (id, created) = match existing {
-                Some((_, _, Some(_))) => return Err(format!("in the trash: {path}")),
-                Some((id, kind, None)) => {
+                Some((_, _, _, Some(_))) => return Err(format!("in the trash: {path}")),
+                Some((id, kind, _, None)) => {
                     tx.execute(
                         "UPDATE entries SET stashed_at = ?1, caret = COALESCE(?2, caret), \
                          top_line = COALESCE(?3, top_line) WHERE id = ?4",
@@ -654,6 +664,7 @@ impl Stash {
             // body the probe could not read keeps what the index has; a new
             // entry is then found by its title alone.
             match (&probe.body, created) {
+                (Some(_), false) if saved_since => {}
                 (Some(body), _) => index_best_effort(search::write_body(&tx, &id, body), &id),
                 (None, true) => index_best_effort(search::write_body(&tx, &id, ""), &id),
                 (None, false) => {}
@@ -1314,6 +1325,31 @@ mod tests {
             crate::stash::search::found(&stash.conn, "бывший"),
             vec![r[0].entry.id.clone()]
         );
+    }
+
+    #[test]
+    fn a_put_away_probed_before_a_save_keeps_the_saved_body() {
+        // The probe reads the file with no lock held; a save that lands
+        // before the transaction indexes its own, newer text, which the
+        // probe's older read must not overwrite.
+        let (mut stash, root) = stash_in("put-probed-race");
+        let file = user_file(&root, "race.md", "первая версия");
+        let id = stash.put_away(&put(vec![file.clone()]), T0).unwrap()[0]
+            .entry
+            .id
+            .clone();
+        let plan =
+            plan_put_away(&put(vec![file.clone()]), &stash.notes_dir_spelling(), T0 + 10).unwrap();
+        fs::write(&file, "вторая версия").unwrap();
+        let written = stash.file_written(&file, None, T0 + 20).unwrap();
+        assert!(stash
+            .reindex_written(&file, "вторая версия", T0 + 20)
+            .unwrap());
+        assert!(written.stamped);
+        let r = stash.put_away_probed(plan, T0 + 10).unwrap();
+        assert_eq!(r[0].entry.stashed_at, Some(T0 + 10), "still put away");
+        assert_eq!(crate::stash::search::found(&stash.conn, "вторая"), vec![id]);
+        assert!(crate::stash::search::found(&stash.conn, "первая").is_empty());
     }
 
     #[test]

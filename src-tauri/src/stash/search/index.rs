@@ -55,10 +55,13 @@ pub struct LiveRow {
     pub path: String,
     pub title: String,
     pub modified_at: i64,
+    /// Raised by every put-away, which re-reads the file and indexes it.
+    stashed_at: Option<i64>,
     deleted: bool,
 }
 
-const ROW_COLUMNS: &str = "rowid, id, kind, path, title, modified_at, deleted_at IS NOT NULL";
+const ROW_COLUMNS: &str =
+    "rowid, id, kind, path, title, modified_at, stashed_at, deleted_at IS NOT NULL";
 
 fn live_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<LiveRow> {
     let kind: String = r.get(2)?;
@@ -71,7 +74,8 @@ fn live_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<LiveRow> {
         path: r.get(3)?,
         title: r.get(4)?,
         modified_at: r.get(5)?,
-        deleted: r.get(6)?,
+        stashed_at: r.get(6)?,
+        deleted: r.get(7)?,
     })
 }
 
@@ -209,9 +213,10 @@ pub fn live_rows(conn: &Connection) -> Result<Vec<LiveRow>, String> {
 
 /// One rebuild chunk in one IMMEDIATE transaction (a deferred one fails at
 /// once with SQLITE_BUSY_SNAPSHOT when another process wrote in between).
-/// `rows[i]` gets `bodies[i]` only if it is still live with the same path
-/// and `modified_at` as in the snapshot; otherwise whatever changed it has
-/// indexed it itself. Returns how many rows were written.
+/// `rows[i]` gets `bodies[i]` only if it is still live with the same path,
+/// `modified_at` and `stashed_at` as in the snapshot; otherwise a save or a
+/// put-away wrote it meanwhile and has indexed it itself — from a newer read
+/// than this one. Returns how many rows were written.
 pub fn write_chunk(
     conn: &Connection,
     rows: &[LiveRow],
@@ -223,7 +228,11 @@ pub fn write_chunk(
         let Some(now) = find(&tx, "id", &snap.id)? else {
             continue;
         };
-        if now.deleted || now.path != snap.path || now.modified_at != snap.modified_at {
+        if now.deleted
+            || now.path != snap.path
+            || now.modified_at != snap.modified_at
+            || now.stashed_at != snap.stashed_at
+        {
             continue;
         }
         upsert(&tx, now.rowid, &now.title, body)?;
@@ -650,6 +659,23 @@ mod tests {
         let fts = d.fts_rows();
         assert_eq!(fts.len(), 1);
         assert_eq!(fts[0].2, "ключ");
+    }
+
+    #[test]
+    fn a_rebuild_chunk_skips_a_row_put_away_since_its_snapshot() {
+        let d = db("rebuild-put-away");
+        d.note("n1", "старое", 10);
+        let rows = live_rows(&d.conn).unwrap();
+        let bodies: Vec<String> = rows.iter().map(|r| load_body(&r.path, r.kind)).collect();
+        // A put-away after the snapshot re-probed the file and indexed it:
+        // it raises `stashed_at`, not `modified_at`.
+        fs::write(d.path_of("n1"), "новое").unwrap();
+        d.conn
+            .execute("UPDATE entries SET stashed_at = 11 WHERE id = 'n1'", [])
+            .unwrap();
+        write_body(&d.conn, "n1", "новое").unwrap();
+        assert_eq!(write_chunk(&d.conn, &rows, &bodies), Ok(0));
+        assert_eq!(d.fts_rows()[0].2, "новое");
     }
 
     fn indexed_count(d: &super::super::test_support::Db) -> i64 {
