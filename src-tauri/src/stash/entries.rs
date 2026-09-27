@@ -332,35 +332,46 @@ fn is_dataless_flags(st_flags: u32) -> bool {
     st_flags & SF_DATALESS != 0
 }
 
-/// A regular file whose bytes are here to read without waiting.
-fn readable_now(meta: &fs::Metadata) -> bool {
+/// Why a file's bytes can't be read without waiting, `None` for a regular
+/// file whose bytes are here.
+fn not_readable_now(meta: &fs::Metadata) -> Option<&'static str> {
     #[cfg(target_os = "macos")]
     {
         use std::os::macos::fs::MetadataExt;
         if is_dataless_flags(meta.st_flags()) {
-            return false;
+            return Some("not downloaded (dataless)");
         }
     }
-    meta.is_file()
+    (!meta.is_file()).then_some("not a regular file")
 }
 
-/// At most `max_bytes` of a regular file's start as UTF-8, a character cut
-/// by the limit dropped; `None` for anything unreadable, not a regular file,
-/// not downloaded (dataless), or not UTF-8. Checked and opened like
-/// `git_info::read_small`: a FIFO, a device or a file iCloud would have to
-/// fetch first must not hang a listing or a put-away.
-fn read_head(path: &Path, max_bytes: u64) -> Option<String> {
-    if !fs::metadata(path).is_ok_and(|m| readable_now(&m)) {
-        return None;
+/// A regular file opened for reading, or why not: missing, not a regular
+/// file, or not downloaded (dataless). Checked and opened like
+/// `git_info::read_small` — by path before the open, and again on the
+/// descriptor opened non-blocking — so a FIFO, a device or a file iCloud would
+/// have to fetch first never hangs a listing, a put-away or indexing.
+pub(super) fn open_readable_now(path: &Path) -> Result<fs::File, String> {
+    let meta = fs::metadata(path).map_err(|e| e.to_string())?;
+    if let Some(why) = not_readable_now(&meta) {
+        return Err(why.to_string());
     }
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
         .open(path)
-        .ok()?;
-    if !file.metadata().is_ok_and(|m| readable_now(&m)) {
-        return None;
+        .map_err(|e| e.to_string())?;
+    let meta = file.metadata().map_err(|e| e.to_string())?;
+    if let Some(why) = not_readable_now(&meta) {
+        return Err(why.to_string());
     }
+    Ok(file)
+}
+
+/// At most `max_bytes` of a regular file's start as UTF-8, a character cut
+/// by the limit dropped; `None` for anything `open_readable_now` refuses, or
+/// not UTF-8.
+fn read_head(path: &Path, max_bytes: u64) -> Option<String> {
+    let file = open_readable_now(path).ok()?;
     let mut bytes = Vec::new();
     file.take(max_bytes).read_to_end(&mut bytes).ok()?;
     match String::from_utf8(bytes) {
