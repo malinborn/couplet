@@ -83,7 +83,13 @@ fn configure(conn: &Connection) -> Result<(), String> {
             "stash: journal_mode is {mode}, not wal — the app and the CLI will block each other more"
         );
     }
-    conn.execute_batch("PRAGMA foreign_keys = ON;").map_err(err)
+    // NORMAL, not FULL: in WAL a commit is then durable once the WAL is
+    // checkpointed, not at every commit — a power cut can lose the last few
+    // metadata updates, never corrupt the file. The metadata is recoverable
+    // (the notes are their own files), and the save hook commits on every
+    // autosave: FULL would add an fsync to each one.
+    conn.execute_batch("PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;")
+        .map_err(err)
 }
 
 fn user_version(conn: &Connection) -> Result<i64, String> {
@@ -207,6 +213,7 @@ mod tests {
         assert_eq!(one::<String>(&conn, "PRAGMA journal_mode"), "wal");
         assert_eq!(one::<i64>(&conn, "PRAGMA foreign_keys"), 1);
         assert_eq!(one::<i64>(&conn, "PRAGMA busy_timeout"), 5000);
+        assert_eq!(one::<i64>(&conn, "PRAGMA synchronous"), 1, "NORMAL");
         let mut stmt = conn
             .prepare("SELECT name FROM sqlite_master WHERE name IN ('entries', 'tags', 'entries_fts') ORDER BY name")
             .unwrap();
