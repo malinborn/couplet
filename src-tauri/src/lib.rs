@@ -285,7 +285,10 @@ pub fn run() {
             // enabled state depends on whether there is anything to restore.
             let pending_count = {
                 let state = app.state::<SessionState>();
-                match session::read_session() {
+                // Stash plan 03: untitled drafts become notes before any window
+                // is planned from the session — a restored tab opens its note.
+                // Needs `StashState`, managed above.
+                match stash::migrate_drafts::run_at_startup(app.handle(), session::read_session()) {
                     Some(loaded) => {
                         let count = loaded.windows.len();
                         state.set_pending(loaded.windows);

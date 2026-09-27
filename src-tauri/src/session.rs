@@ -896,7 +896,7 @@ fn trashed_at(name: &str) -> Option<u64> {
 /// unlink the original — at every moment at least one name holds the text.
 /// When the link fails the file stays where it was; when only the unlink
 /// fails both names remain, which the next pass retries.
-fn move_to_trash(src: &Path, trash: &Path, now_secs: u64) -> Result<PathBuf, String> {
+pub(crate) fn move_to_trash(src: &Path, trash: &Path, now_secs: u64) -> Result<PathBuf, String> {
     let name = src
         .file_name()
         .and_then(|n| n.to_str())

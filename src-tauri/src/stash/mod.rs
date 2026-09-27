@@ -13,6 +13,7 @@ mod db;
 mod entries;
 mod ids;
 pub(crate) mod lifecycle;
+pub(crate) mod migrate_drafts;
 mod notes;
 mod paths;
 
