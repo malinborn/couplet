@@ -11,7 +11,15 @@ export function createStashMarks(lookup: (path: string) => Promise<StashEntry | 
   let marks = $state<Record<string, StashMark | null>>({});
   /** Path → the request whose answer may land; a later ask or `learn` supersedes it. */
   const asked = new Map<string, number>();
+  /** Path → the id of its entry, for a `deleted` change (which names ids, not paths). */
+  const ids = new Map<string, string>();
   let seq = 0;
+
+  function remember(path: string, entry: StashEntry | null): void {
+    if (entry) ids.set(path, entry.id);
+    else ids.delete(path);
+    marks = { ...marks, [path]: markOf(entry) };
+  }
 
   async function fetchOne(path: string): Promise<void> {
     const mine = ++seq;
@@ -25,7 +33,11 @@ export function createStashMarks(lookup: (path: string) => Promise<StashEntry | 
       return;
     }
     if (asked.get(path) !== mine) return;
-    marks = { ...marks, [path]: markOf(entry) };
+    remember(path, entry);
+  }
+
+  function refresh(paths: readonly string[]): Promise<void> {
+    return Promise.all(paths.map(fetchOne)).then(() => {});
   }
 
   return {
@@ -38,14 +50,39 @@ export function createStashMarks(lookup: (path: string) => Promise<StashEntry | 
         if (p !== null && !(p in marks) && !asked.has(p)) void fetchOne(p);
       }
     },
-    /** Ask again (on `stash-changed`); resolves once every answer landed or was dropped. */
-    refresh(paths: readonly string[]): Promise<void> {
-      return Promise.all(paths.map(fetchOne)).then(() => {});
+    /** Ask again; resolves once every answer landed or was dropped. */
+    refresh,
+    /**
+     * `stash-changed`: every open path is asked again — one whose last lookup
+     * failed included. Entries it reports `deleted` lose their mark at once,
+     * over any answer in flight: a discarded note's row is gone.
+     */
+    changed(reason: string, changedIds: readonly string[] | undefined, openPaths: readonly string[]): Promise<void> {
+      if (reason === 'deleted' && changedIds && changedIds.length > 0) {
+        const gone = new Set(changedIds);
+        for (const [path, id] of ids) {
+          if (!gone.has(id)) continue;
+          asked.set(path, ++seq);
+          remember(path, null);
+        }
+      }
+      return refresh(openPaths);
+    },
+    /** Forget every path not in `openPaths` (the tab list changed); a late answer for one is dropped. */
+    retain(openPaths: readonly (string | null)[]): void {
+      const open = new Set(openPaths);
+      for (const path of asked.keys()) if (!open.has(path)) asked.delete(path);
+      for (const path of ids.keys()) if (!open.has(path)) ids.delete(path);
+      const stale = Object.keys(marks).filter((path) => !open.has(path));
+      if (stale.length === 0) return;
+      const kept = { ...marks };
+      for (const path of stale) delete kept[path];
+      marks = kept;
     },
     /** An entry this window just made (a note birth): known at once, over any answer in flight. */
     learn(entry: StashEntry): void {
       asked.set(entry.path, ++seq);
-      marks = { ...marks, [entry.path]: markOf(entry) };
+      remember(entry.path, entry);
     },
   };
 }

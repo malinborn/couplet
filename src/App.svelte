@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import Editor from './lib/editor/Editor.svelte';
   import type { EditorHandle } from './lib/editor/Editor.svelte';
   import type { ViewUpdate } from '@codemirror/view';
@@ -2112,8 +2112,8 @@
 
     const unlistenWindowNumber = onWindowNumber(setWindowNumber);
     // Not a tab source: it stays out of the `Promise.all` before `get_window_init`.
-    const unlistenStash = onStashChanged(() => {
-      void stashMarks.refresh(tabList.tabs.flatMap((tab) => (tab.path === null ? [] : [tab.path])));
+    const unlistenStash = onStashChanged((reason, ids) => {
+      void stashMarks.changed(reason, ids, tabList.tabs.flatMap((tab) => (tab.path === null ? [] : [tab.path])));
     });
 
     // Pull what the backend stored for this window (its tabs, restored or
@@ -2585,7 +2585,14 @@
     fileState.stashMark = stashMarks.get(fileState.filePath)?.kind ?? null;
   });
   $effect(() => {
-    stashMarks.ensure(tabList.tabs.map((tab) => tab.path));
+    const paths = tabList.tabs.map((tab) => tab.path);
+    // Follows the tab list only: an answer landing must not re-run this, or
+    // a mark `learn`ed for a note whose tab has not claimed it yet would be
+    // evicted before the claim lands.
+    untrack(() => {
+      stashMarks.retain(paths);
+      stashMarks.ensure(paths);
+    });
   });
   $effect(() => {
     const path = fileState.filePath;

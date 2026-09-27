@@ -92,4 +92,79 @@ describe('stash marks', () => {
     await marks.refresh(['/f.md']);
     expect(marks.get('/f.md')?.kind).toBe('file');
   });
+
+  it('a stash change drops the marks of deleted entries at once', async () => {
+    const d = deferred<StashEntry | null>();
+    const lookup = vi.fn<Lookup>().mockResolvedValueOnce(entry('/n.md', { id: 'gone' })).mockReturnValueOnce(d.promise);
+    const marks = createStashMarks(lookup);
+    marks.ensure(['/n.md']);
+    await flush();
+    expect(marks.get('/n.md')?.kind).toBe('note');
+    const done = marks.changed('deleted', ['gone'], ['/n.md']);
+    // Before the lookup answers: a discarded note is not in the stash any more.
+    expect(marks.get('/n.md')).toBeNull();
+    d.resolve(null);
+    await done;
+    expect(marks.get('/n.md')).toBeNull();
+  });
+
+  it('a learned entry is dropped by its id too', () => {
+    const marks = createStashMarks(() => new Promise<StashEntry | null>(() => {}));
+    marks.learn(entry('/n.md', { id: 'born' }));
+    void marks.changed('deleted', ['born'], []);
+    expect(marks.get('/n.md')).toBeNull();
+  });
+
+  it('a stash change for other entries keeps the mark until the lookup answers', async () => {
+    const d = deferred<StashEntry | null>();
+    const lookup = vi.fn<Lookup>().mockResolvedValueOnce(entry('/n.md', { id: 'kept' })).mockReturnValueOnce(d.promise);
+    const marks = createStashMarks(lookup);
+    marks.ensure(['/n.md']);
+    await flush();
+    const done = marks.changed('deleted', ['other'], ['/n.md']);
+    expect(marks.get('/n.md')?.kind).toBe('note');
+    d.resolve(entry('/n.md', { id: 'kept', title: 'Renamed' }));
+    await done;
+    expect(marks.get('/n.md')?.title).toBe('Renamed');
+  });
+
+  it('every stash change asks again for every open path, one that failed before included', async () => {
+    const lookup = vi
+      .fn<Lookup>()
+      .mockRejectedValueOnce(new Error('ipc'))
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue(entry('/a.md', { kind: 'file' }));
+    const marks = createStashMarks(lookup);
+    marks.ensure(['/a.md', '/b.md']);
+    await flush();
+    await marks.changed('put-away', undefined, ['/a.md', '/b.md']);
+    expect(lookup).toHaveBeenCalledTimes(4);
+    expect(lookup.mock.calls.map((c) => c[0])).toEqual(['/a.md', '/b.md', '/a.md', '/b.md']);
+    expect(marks.get('/a.md')?.kind).toBe('file');
+  });
+
+  it('retain forgets paths that are no longer open', async () => {
+    const lookup = vi.fn(async (p: string) => entry(p));
+    const marks = createStashMarks(lookup);
+    marks.ensure(['/a.md', '/b.md']);
+    await flush();
+    marks.retain(['/a.md']);
+    expect(marks.get('/a.md')?.kind).toBe('note');
+    expect(marks.get('/b.md')).toBeNull();
+    // Opened again: asked again, not served from a stale cache.
+    marks.ensure(['/a.md', '/b.md']);
+    await flush();
+    expect(lookup).toHaveBeenCalledTimes(3);
+    expect(marks.get('/b.md')?.kind).toBe('note');
+  });
+
+  it('an answer for a path forgotten meanwhile is dropped', async () => {
+    const d = deferred<StashEntry | null>();
+    const marks = createStashMarks(() => d.promise);
+    marks.ensure(['/b.md']);
+    marks.retain([]);
+    d.resolve(entry('/b.md'));
+    await flush();
+    expect(marks.get('/b.md')).toBeNull();
+  });
 });
