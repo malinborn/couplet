@@ -240,15 +240,16 @@ pub fn run() {
             // follows every write command (put away, tag). A stash that cannot
             // open is managed anyway, as unavailable: its commands answer with
             // the reason, the app runs on and the database file is left alone
-            // (plan D11).
+            // (plan D11). Unless the reason is permanent it retries on a later
+            // call, so the hook and the backup are wired either way: against
+            // an unavailable stash they fail harmlessly, and a stash that opens
+            // later still gets its title updates.
             let stash_state = stash::StashState::open(stash::StashPaths::resolve());
-            if stash_state.is_available() {
-                let emitter = app.handle().clone();
-                stash::install_write_hook(stash_state.clone(), move |reason| {
-                    stash::emit_changed(&emitter, reason, None);
-                });
-                stash_state.backup_in_background();
-            }
+            let emitter = app.handle().clone();
+            stash::install_write_hook(stash_state.clone(), move |reason| {
+                stash::emit_changed(&emitter, reason, None);
+            });
+            stash_state.backup_in_background();
             app.manage(stash_state);
             // Before anything can register a file to `main` (CLI args, the
             // pending-files list) and before its frontend asks for its number.

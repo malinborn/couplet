@@ -8,14 +8,16 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use rusqlite::{Connection, Row, TransactionBehavior};
+use rusqlite::{Connection, ErrorCode, Row, TransactionBehavior};
 
 use super::StashKind;
 
 pub(crate) const SCHEMA_VERSION: i64 = 1;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+/// Between two tries of the WAL switch (`switch_to_wal`).
+const WAL_RETRY_PAUSE: Duration = Duration::from_millis(5);
 
 /// `MIGRATIONS[i]` takes the schema from version `i` to `i + 1`. Append only:
 /// a released migration is never edited, because databases that already ran
@@ -55,29 +57,59 @@ pub(crate) fn err(e: rusqlite::Error) -> String {
     format!("stash database: {e}")
 }
 
+/// Why `open` failed. `Refused` is for good: a newer build's schema, or a
+/// file that is not a database — no retry changes either, and the file is
+/// never touched (plan D11). `Failed` may pass: a lock held past the busy
+/// timeout, a folder that could not be created, a volume not mounted yet.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum OpenError {
+    Refused(String),
+    Failed(String),
+}
+
+impl OpenError {
+    pub(crate) fn is_permanent(&self) -> bool {
+        matches!(self, OpenError::Refused(_))
+    }
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OpenError::Refused(m) | OpenError::Failed(m) => f.write_str(m),
+        }
+    }
+}
+
+fn open_err(e: rusqlite::Error) -> OpenError {
+    if e.sqlite_error_code() == Some(ErrorCode::NotADatabase) {
+        OpenError::Refused(err(e))
+    } else {
+        OpenError::Failed(err(e))
+    }
+}
+
 /// Opens (creating if needed) and migrates the database at `path`.
-pub(crate) fn open(path: &Path) -> Result<Connection, String> {
+pub(crate) fn open(path: &Path) -> Result<Connection, OpenError> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
-            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+            .map_err(|e| OpenError::Failed(format!("cannot create {}: {e}", dir.display())))?;
     }
-    let mut conn = Connection::open(path).map_err(err)?;
+    let mut conn = Connection::open(path).map_err(open_err)?;
     configure(&conn)?;
     migrate(&mut conn)?;
     Ok(conn)
 }
 
-fn configure(conn: &Connection) -> Result<(), String> {
+fn configure(conn: &Connection) -> Result<(), OpenError> {
     // First: switching to WAL takes a lock, which may have to wait.
-    conn.busy_timeout(BUSY_TIMEOUT).map_err(err)?;
+    conn.busy_timeout(BUSY_TIMEOUT).map_err(open_err)?;
     // Before the journal-mode switch, which writes the file header: a newer
     // build's database (or a file that is not a database at all) is refused
     // without a single byte of it changed. `migrate` checks again under the
     // write lock; this early read is only about not touching the file.
     refuse_newer(user_version(conn)?)?;
-    let mode: String = conn
-        .query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))
-        .map_err(err)?;
+    let mode = switch_to_wal(conn)?;
     if !mode.eq_ignore_ascii_case("wal") {
         eprintln!(
             "stash: journal_mode is {mode}, not wal — the app and the CLI will block each other more"
@@ -89,42 +121,74 @@ fn configure(conn: &Connection) -> Result<(), String> {
     // (the notes are their own files), and the save hook commits on every
     // autosave: FULL would add an fsync to each one.
     conn.execute_batch("PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;")
-        .map_err(err)
+        .map_err(open_err)
 }
 
-fn user_version(conn: &Connection) -> Result<i64, String> {
+/// `PRAGMA journal_mode = WAL`, retried on `SQLITE_BUSY` for up to the busy
+/// timeout. The busy handler cannot cover this statement: the switch reads
+/// the header under a shared lock and then asks for an exclusive one, and
+/// when two connections both hold the shared lock and both ask, SQLite
+/// answers `SQLITE_BUSY` at once instead of calling the handler (waiting
+/// could only deadlock). The failed statement has released its lock, so
+/// starting it over is safe — and it is what lets several processes open a
+/// fresh file at once (measured: 16 of 100 runs of the 8-thread race lost
+/// one opener here).
+fn switch_to_wal(conn: &Connection) -> Result<String, OpenError> {
+    let deadline = Instant::now() + BUSY_TIMEOUT;
+    loop {
+        match conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0)) {
+            Err(e)
+                if e.sqlite_error_code() == Some(ErrorCode::DatabaseBusy)
+                    && Instant::now() < deadline =>
+            {
+                std::thread::sleep(WAL_RETRY_PAUSE);
+            }
+            result => return result.map_err(open_err),
+        }
+    }
+}
+
+fn user_version(conn: &Connection) -> Result<i64, OpenError> {
     conn.query_row("PRAGMA user_version", [], |r| r.get(0))
-        .map_err(err)
+        .map_err(open_err)
 }
 
 /// Never downgrade: an older build must not write a schema it does not know.
-fn refuse_newer(current: i64) -> Result<(), String> {
+fn refuse_newer(current: i64) -> Result<(), OpenError> {
     if current > SCHEMA_VERSION {
-        return Err(format!(
+        return Err(OpenError::Refused(format!(
             "stash.db has schema {current}, this build knows up to {SCHEMA_VERSION}: it was written by a newer couplet"
-        ));
+        )));
     }
     Ok(())
 }
 
-/// One step per transaction, the version read under the write lock: two
+/// A plain read first: a database already at `SCHEMA_VERSION` — every open
+/// but the very first — takes no write lock, so it opens while the CLI or the
+/// MCP server is in the middle of a write. Only an older one is migrated, one
+/// step per transaction, the version re-read under the write lock: two
 /// processes opening a fresh file at once must not both run `V1`.
-pub(crate) fn migrate(conn: &mut Connection) -> Result<(), String> {
+pub(crate) fn migrate(conn: &mut Connection) -> Result<(), OpenError> {
+    let current = user_version(conn)?;
+    refuse_newer(current)?;
+    if current == SCHEMA_VERSION {
+        return Ok(());
+    }
     loop {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(err)?;
+            .map_err(open_err)?;
         let current = user_version(&tx)?;
         refuse_newer(current)?;
         if current == SCHEMA_VERSION {
-            return tx.commit().map_err(err);
+            return tx.commit().map_err(open_err);
         }
-        let step =
-            usize::try_from(current).map_err(|_| format!("stash.db has schema {current}"))?;
-        tx.execute_batch(MIGRATIONS[step]).map_err(err)?;
+        let step = usize::try_from(current)
+            .map_err(|_| OpenError::Refused(format!("stash.db has schema {current}")))?;
+        tx.execute_batch(MIGRATIONS[step]).map_err(open_err)?;
         tx.execute_batch(&format!("PRAGMA user_version = {};", current + 1))
-            .map_err(err)?;
-        tx.commit().map_err(err)?;
+            .map_err(open_err)?;
+        tx.commit().map_err(open_err)?;
     }
 }
 
@@ -255,7 +319,8 @@ mod tests {
                 .unwrap();
         }
         let err = open(&path).unwrap_err();
-        assert!(err.contains("newer couplet"), "{err}");
+        assert!(err.to_string().contains("newer couplet"), "{err}");
+        assert!(err.is_permanent(), "no retry can make this build know v7");
         let conn = Connection::open(&path).unwrap();
         assert_eq!(one::<i64>(&conn, "PRAGMA user_version"), 7);
         assert_eq!(one::<i64>(&conn, "SELECT count(*) FROM entries"), 1);
@@ -285,12 +350,42 @@ mod tests {
     }
 
     #[test]
+    fn an_up_to_date_database_opens_while_another_connection_writes() {
+        // The app opening while the CLI holds a write transaction (stage 07):
+        // a database already at `SCHEMA_VERSION` needs no write lock to open.
+        let path = db_in("db-writer");
+        drop(open(&path).unwrap());
+        let mut writer = Connection::open(&path).unwrap();
+        let tx = writer
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        tx.execute(INSERT_A, []).unwrap();
+        let started = std::time::Instant::now();
+        let conn = open(&path).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "did not wait for the writer: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(one::<i64>(&conn, "PRAGMA user_version"), SCHEMA_VERSION);
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn a_lock_or_a_missing_folder_is_worth_retrying() {
+        let root = scratch("db-retryable");
+        std::fs::write(root.join("data"), "a file where the folder should be").unwrap();
+        let err = open(&root.join("data").join("stash.db")).unwrap_err();
+        assert!(!err.is_permanent(), "{err}");
+    }
+
+    #[test]
     fn a_file_that_is_not_a_database_is_refused_and_left_alone() {
         let path = db_in("db-garbage");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let garbage = b"this is not an SQLite file, and it is evidence\n".repeat(200);
         std::fs::write(&path, &garbage).unwrap();
-        assert!(open(&path).is_err());
+        assert!(open(&path).unwrap_err().is_permanent());
         assert_eq!(std::fs::read(&path).unwrap(), garbage, "never rewritten");
         let mut names: Vec<String> = std::fs::read_dir(path.parent().unwrap())
             .unwrap()

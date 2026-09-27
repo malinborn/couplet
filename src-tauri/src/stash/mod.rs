@@ -20,6 +20,7 @@ pub use paths::StashPaths;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -155,7 +156,7 @@ pub struct Stash {
 
 impl Stash {
     /// Opens the database. Touches only the app data directory (plan D2).
-    pub fn open(paths: StashPaths) -> Result<Self, String> {
+    pub(crate) fn open(paths: StashPaths) -> Result<Self, db::OpenError> {
         let conn = db::open(&paths.db_path)?;
         Ok(Self { conn, paths, notes_dir_ready: false })
     }
@@ -217,23 +218,81 @@ pub fn emit_changed(app: &AppHandle, reason: &str, ids: Option<Vec<String>>) {
     let _ = app.emit(STASH_CHANGED, StashChanged::new(reason, ids));
 }
 
-/// The Tauri-managed stash. `Err` holds why it could not open (plan D11):
-/// the app runs on, every command answers with the reason, the database file
-/// is left as it was.
+/// How often an unavailable stash tries to open again, at most. Each try
+/// can wait the whole busy timeout, and the save hook asks on every autosave.
+const REOPEN_EVERY: Duration = Duration::from_secs(5);
+
+/// What `StashState` holds: the open stash, or why it is not open.
+enum Slot {
+    Ready(Stash),
+    Unavailable {
+        /// `None`: the paths themselves could not be named — nothing to retry.
+        paths: Option<StashPaths>,
+        reason: String,
+        /// A newer schema or a file that is not a database (`OpenError::Refused`):
+        /// no retry this session, the file stays as it is (plan D11).
+        permanent: bool,
+        tried_at: Instant,
+    },
+}
+
+impl Slot {
+    fn open(paths: StashPaths) -> Self {
+        match Stash::open(paths.clone()) {
+            Ok(stash) => Slot::Ready(stash),
+            Err(e) => {
+                eprintln!("stash: unavailable: {e}");
+                Slot::Unavailable {
+                    paths: Some(paths),
+                    reason: e.to_string(),
+                    permanent: e.is_permanent(),
+                    tried_at: Instant::now(),
+                }
+            }
+        }
+    }
+}
+
+struct Shared {
+    slot: Mutex<Slot>,
+    reopen_every: Duration,
+}
+
+/// The Tauri-managed stash. Unavailable (plan D11): the app runs on, every
+/// command answers with the reason, the database file is left as it was —
+/// and, unless the reason is permanent, the next call after `REOPEN_EVERY`
+/// tries to open it again: a lock the CLI held through launch, or a data
+/// folder that could not be created, must not cost the stash for the whole
+/// session.
 ///
 /// Lock order (roadmap A11): this mutex is taken with no other lock held —
 /// never while holding `OpenFiles`, `PendingFiles` or `ClosedStack` — and
 /// nothing inside a `with` call takes one of those.
 #[derive(Clone)]
-pub struct StashState(Arc<Mutex<Result<Stash, String>>>);
+pub struct StashState(Arc<Shared>);
 
 impl StashState {
     pub fn open(paths: Result<StashPaths, String>) -> Self {
-        let stash = paths.and_then(Stash::open);
-        if let Err(e) = &stash {
-            eprintln!("stash: unavailable: {e}");
-        }
-        Self(Arc::new(Mutex::new(stash)))
+        Self::open_retrying_every(paths, REOPEN_EVERY)
+    }
+
+    fn open_retrying_every(paths: Result<StashPaths, String>, reopen_every: Duration) -> Self {
+        let slot = match paths {
+            Ok(paths) => Slot::open(paths),
+            Err(reason) => {
+                eprintln!("stash: unavailable: {reason}");
+                Slot::Unavailable {
+                    paths: None,
+                    reason,
+                    permanent: true,
+                    tried_at: Instant::now(),
+                }
+            }
+        };
+        Self(Arc::new(Shared {
+            slot: Mutex::new(slot),
+            reopen_every,
+        }))
     }
 
     /// Runs `f` on the stash under its lock. Blocking (SQLite waits up to its
@@ -241,15 +300,30 @@ impl StashState {
     /// across an `await`. A panic inside an earlier call poisons nothing that
     /// matters: its transaction rolled back when it was dropped.
     pub fn with<T>(&self, f: impl FnOnce(&mut Stash) -> Result<T, String>) -> Result<T, String> {
-        let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        match guard.as_mut() {
-            Ok(stash) => f(stash),
-            Err(e) => Err(format!("stash unavailable: {e}")),
+        let mut guard = self.0.slot.lock().unwrap_or_else(|p| p.into_inner());
+        if let Slot::Unavailable {
+            paths: Some(paths),
+            permanent: false,
+            tried_at,
+            ..
+        } = &*guard
+        {
+            if tried_at.elapsed() >= self.0.reopen_every {
+                *guard = Slot::open(paths.clone());
+            }
+        }
+        match &mut *guard {
+            Slot::Ready(stash) => f(stash),
+            Slot::Unavailable { reason, .. } => Err(format!("stash unavailable: {reason}")),
         }
     }
 
-    pub fn is_available(&self) -> bool {
-        self.0.lock().unwrap_or_else(|p| p.into_inner()).is_ok()
+    #[cfg(test)]
+    fn is_available(&self) -> bool {
+        matches!(
+            *self.0.slot.lock().unwrap_or_else(|p| p.into_inner()),
+            Slot::Ready(_)
+        )
     }
 
     /// Today's backup, off the launch path (plan D12).
@@ -380,6 +454,55 @@ mod tests {
             fs::read(&paths.db_path).unwrap(),
             b"not a database, and it must survive"
         );
+    }
+
+    #[test]
+    fn an_unavailable_stash_opens_once_the_cause_is_gone() {
+        let root = scratch("stash-recovers");
+        let paths = testkit::paths_in(&root);
+        fs::write(root.join("data"), "a file where the data folder should be").unwrap();
+        let state = StashState::open_retrying_every(Ok(paths), Duration::ZERO);
+        assert!(!state.is_available());
+        assert!(state.with(|s| s.list(&ListQuery::default())).is_err());
+
+        fs::remove_file(root.join("data")).unwrap();
+        assert!(state.with(|s| s.list(&ListQuery::default())).is_ok());
+        assert!(state.is_available());
+    }
+
+    #[test]
+    fn an_unavailable_stash_retries_at_most_every_few_seconds() {
+        let root = scratch("stash-throttled");
+        fs::write(root.join("data"), "a file where the data folder should be").unwrap();
+        let state = StashState::open(Ok(testkit::paths_in(&root)));
+        fs::remove_file(root.join("data")).unwrap();
+        assert!(
+            state.with(|s| s.list(&ListQuery::default())).is_err(),
+            "the next try waits for REOPEN_EVERY"
+        );
+        assert!(!root.join("data").exists(), "and did not touch the disk");
+    }
+
+    #[test]
+    fn a_database_from_a_newer_build_keeps_the_stash_unavailable() {
+        let root = scratch("stash-newer");
+        let paths = testkit::paths_in(&root);
+        drop(Stash::open(paths.clone()).unwrap());
+        Connection::open(&paths.db_path)
+            .unwrap()
+            .execute_batch("PRAGMA user_version = 7;")
+            .unwrap();
+        let state = StashState::open_retrying_every(Ok(paths.clone()), Duration::ZERO);
+        let err = state.with(|s| s.list(&ListQuery::default())).unwrap_err();
+        assert!(err.contains("newer couplet"), "{err}");
+
+        // Even once it would open: this session does not try again.
+        Connection::open(&paths.db_path)
+            .unwrap()
+            .execute_batch("PRAGMA user_version = 1;")
+            .unwrap();
+        assert!(state.with(|s| s.list(&ListQuery::default())).is_err());
+        assert!(!state.is_available());
     }
 
     #[test]
