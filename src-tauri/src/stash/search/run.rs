@@ -2,8 +2,9 @@
 //! from one SQL query without LIMIT — MATCH for long terms, `stash_fold`
 //! title substrings for short ones, tag/kind/repo/trash filters on stored
 //! columns — ordered by relevance, then freshness. Only the page's entries
-//! and snippets are built. Everything here reads the database alone: the
-//! command enriches the page after releasing the stash lock (`Enrich`, I3).
+//! and snippets are built. Under the stash lock only SQL runs
+//! (`select_page`); the command cuts the snippets (`PageDraft::into_page`)
+//! and enriches the page (`Enrich`, I3) after releasing it.
 
 use rusqlite::types::Value;
 use rusqlite::{params_from_iter, Connection, OptionalExtension};
@@ -28,6 +29,13 @@ const FRESH_SQL: &str = "max(e.modified_at, coalesce(e.stashed_at, 0))";
 /// most 200 cards (`STASH_RENDER_CAP`), and each hit costs a snippet.
 const SEARCH_DEFAULT_LIMIT: usize = 50;
 const SEARCH_MAX_LIMIT: usize = 200;
+
+/// A snippet is cut from at most this many chars of the stored body, taken
+/// with `substr` in SQL: a page of 200 hits on 1 MiB bodies must not copy
+/// and fold 200 MiB, least of all under the stash lock. A match further in
+/// is still found by FTS but not marked — a note's card then shows its
+/// preview (`hit_snippet`), a file's shows the start of its body.
+const SNIPPET_SOURCE_CHARS: usize = 64 * 1024;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -171,8 +179,77 @@ fn candidate_sql(
     (sql, values)
 }
 
-/// One page of hits from the database alone: see `Enrich` for the rest.
+/// A page as the database gave it, snippets not yet cut: `select_page` runs
+/// under the stash lock and does SQL only; `into_page` cuts the snippets
+/// after the lock is released, then `Enrich` reads the disk.
+pub struct PageDraft {
+    hits: Vec<DraftHit>,
+    /// Long terms, folded: what a snippet marks.
+    needles: Vec<String>,
+    total: usize,
+    next_cursor: Option<String>,
+}
+
+struct DraftHit {
+    entry: StashEntry,
+    /// The first `SNIPPET_SOURCE_CHARS` of the stored body; `None` in the
+    /// trash, which has no stored body (A8).
+    source: Option<String>,
+    note: bool,
+    score: f64,
+}
+
+impl PageDraft {
+    fn empty() -> Self {
+        Self {
+            hits: Vec::new(),
+            needles: Vec::new(),
+            total: 0,
+            next_cursor: None,
+        }
+    }
+
+    /// Cuts each hit's snippet. CPU only, bounded by the source cap: call it
+    /// with the stash lock released.
+    pub fn into_page(self) -> SearchPage {
+        let needles = self.needles;
+        let hits = self
+            .hits
+            .into_iter()
+            .map(|h| {
+                let (snippet, ranges) = match h.source {
+                    Some(source) => {
+                        let s = hit_snippet(&source, h.note, &needles);
+                        (s.text, s.ranges)
+                    }
+                    None => (String::new(), Vec::new()),
+                };
+                StashHit {
+                    entry: h.entry,
+                    snippet,
+                    ranges,
+                    score: h.score,
+                }
+            })
+            .collect();
+        SearchPage {
+            hits,
+            total: self.total,
+            next_cursor: self.next_cursor,
+        }
+    }
+}
+
+/// `select_page` then `into_page` in one call, on a connection nobody else
+/// holds: the tests' shorthand. The command releases the lock in between.
+#[cfg(test)]
 pub fn search(conn: &Connection, args: &SearchArgs) -> Result<SearchPage, String> {
+    select_page(conn, args).map(PageDraft::into_page)
+}
+
+/// One page of hits from the database alone, with each hit's snippet source
+/// capped in SQL: `into_page` and `Enrich` do the rest, after the lock.
+pub fn select_page(conn: &Connection, args: &SearchArgs) -> Result<PageDraft, String> {
     let offset = parse_cursor(args.cursor.as_deref())?;
     let limit = clamp_limit(args.limit);
     let parsed = parse_query(&args.query);
@@ -180,13 +257,7 @@ pub fn search(conn: &Connection, args: &SearchArgs) -> Result<SearchPage, String
     match args.tag.as_deref().map(normalize_tag).transpose()? {
         // Given but empty once normalized (`#`): a tag no entry can carry, so
         // nothing matches — as `stash_list` answers it.
-        Some(None) => {
-            return Ok(SearchPage {
-                hits: Vec::new(),
-                total: 0,
-                next_cursor: None,
-            })
-        }
+        Some(None) => return Ok(PageDraft::empty()),
         Some(Some(tag)) if !tags.contains(&tag) => tags.push(tag),
         _ => {}
     }
@@ -225,32 +296,31 @@ pub fn search(conn: &Connection, args: &SearchArgs) -> Result<SearchPage, String
     let mut hits = Vec::new();
     for c in candidates.iter().skip(offset).take(limit) {
         let entry = load_entry(conn, &c.id)?;
-        let (snippet, ranges) = if args.deleted {
+        let source = if args.deleted {
             // Not in the index (A8): there is no stored body to cut from.
-            (String::new(), Vec::new())
+            None
         } else {
-            let body: String = conn
+            let body: Option<String> = conn
                 .query_row(
-                    "SELECT body FROM entries_fts WHERE rowid = ?1",
-                    [c.rowid],
+                    "SELECT substr(body, 1, ?2) FROM entries_fts WHERE rowid = ?1",
+                    rusqlite::params![c.rowid, SNIPPET_SOURCE_CHARS as i64],
                     |r| r.get(0),
                 )
                 .optional()
-                .map_err(err)?
-                .unwrap_or_default();
-            let s = hit_snippet(&body, c.note, &needles);
-            (s.text, s.ranges)
+                .map_err(err)?;
+            Some(body.unwrap_or_default())
         };
-        hits.push(StashHit {
+        hits.push(DraftHit {
             entry,
-            snippet,
-            ranges,
+            source,
+            note: c.note,
             score: c.score,
         });
     }
     let next = offset + hits.len();
-    Ok(SearchPage {
+    Ok(PageDraft {
         hits,
+        needles,
         total,
         next_cursor: (next < total).then(|| next.to_string()),
     })
@@ -832,6 +902,50 @@ mod tests {
         assert!(hit("f2").ranges.is_empty());
         assert_eq!(hit("f1").snippet, "");
         assert!(hit("f1").ranges.is_empty());
+    }
+
+    #[test]
+    fn a_page_of_huge_bodies_fetches_a_bounded_piece_of_each() {
+        // Two notes near the 1 MiB body cap, and one whose only match lies
+        // past the snippet source: the lock covers SQL returning at most
+        // SNIPPET_SOURCE_CHARS of each body, and the snippet is cut after.
+        let d = db("huge-bodies");
+        let filler = "слово ".repeat(170_000);
+        for id in ["h1", "h2"] {
+            d.note(id, &format!("# Большая {id}\nтайник {filler}"), 1);
+        }
+        let deep = "слово ".repeat(SNIPPET_SOURCE_CHARS / 6 + 10);
+        d.note("deep", &format!("# Глубокая\n{deep}тайник"), 2);
+        let args = SearchArgs {
+            query: "тайник".into(),
+            ..Default::default()
+        };
+        let draft = select_page(&d.conn, &args).unwrap();
+        assert_eq!(draft.total, 3);
+        for hit in &draft.hits {
+            let source = hit.source.as_deref().unwrap();
+            assert!(
+                source.chars().count() <= SNIPPET_SOURCE_CHARS,
+                "{}: {} chars fetched",
+                hit.entry.id,
+                source.chars().count()
+            );
+        }
+        let p = draft.into_page();
+        for hit in &p.hits {
+            let expected = if hit.entry.id == "deep" { "" } else { "тайник" };
+            let marked = hit
+                .ranges
+                .first()
+                .map(|&(a, b)| slice16(&hit.snippet, a, b))
+                .unwrap_or_default();
+            assert_eq!(marked, expected, "{}", hit.entry.id);
+        }
+        let deep_hit = p.hits.iter().find(|h| h.entry.id == "deep").unwrap();
+        assert_eq!(
+            deep_hit.snippet, "",
+            "a match past the source is found, not marked: the card shows its preview"
+        );
     }
 
     #[test]

@@ -238,8 +238,10 @@ pub async fn stash_counts(
     .await
 }
 
-/// IPC `stash_search` (roadmap, plus `deleted` for the trash, A8): one search
-/// for the drawer and, from stage 07, for agents.
+/// IPC `stash_search` (roadmap, plus `deleted` for the trash, A8, and
+/// `enrich`, default `true`: `false` returns entries without the disk half —
+/// no preview, stored repo, no branch): one search for the drawer and, from
+/// stage 07, for agents.
 #[tauri::command]
 // The IPC contract passes the filters flat: `stash_search { query, repo?, … }`.
 #[allow(clippy::too_many_arguments)]
@@ -252,6 +254,7 @@ pub async fn stash_search(
     deleted: Option<bool>,
     limit: Option<usize>,
     cursor: Option<String>,
+    enrich: Option<bool>,
 ) -> Result<SearchPage, String> {
     let args = SearchArgs {
         query,
@@ -262,13 +265,22 @@ pub async fn stash_search(
         limit,
         cursor,
     };
-    search_page(&state, args).await
+    search_page(&state, args, enrich.unwrap_or(true)).await
 }
 
-/// The command without Tauri's `State`, for tests: only the SQL runs under
-/// the stash lock; hits are enriched from the disk after it (I3).
-async fn search_page(state: &StashState, args: SearchArgs) -> Result<SearchPage, String> {
-    run(state, move |s| search::search(&s.conn, &args)).await
+/// The command without Tauri's `State`, for tests. Only the SQL runs under
+/// the stash lock; the snippets are cut after it, and the hits enriched from
+/// the disk (I3) unless `enrich` is `false` — the drawer draws its cards from
+/// its own list copies and would discard every preview read and `.git` walk.
+async fn search_page(state: &StashState, args: SearchArgs, enrich: bool) -> Result<SearchPage, String> {
+    let state = state.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let draft = state.with(|s| search::select_page(&s.conn, &args))?;
+        let page = draft.into_page();
+        Ok(if enrich { page.enrich() } else { page })
+    })
+    .await
+    .map_err(|e| format!("stash task failed: {e}"))?
 }
 
 #[cfg(test)]
@@ -294,7 +306,7 @@ mod tests {
         let note = state
             .with(|s| s.create_note("# Тайник\nключи от серверной", None, T0, MSK))
             .unwrap();
-        let page = tauri::async_runtime::block_on(search_page(&state, args("серверн"))).unwrap();
+        let page = tauri::async_runtime::block_on(search_page(&state, args("серверн"), true)).unwrap();
         // The SQL half leaves `preview` empty; the disk half fills it.
         assert_eq!(page.hits[0].entry.preview, "# Тайник\nключи от серверной");
         let v = serde_json::to_value(&page).unwrap();
@@ -316,7 +328,21 @@ mod tests {
             cursor: Some("c.oops".into()),
             ..args("тайник")
         };
-        let err = tauri::async_runtime::block_on(search_page(&state, bad)).unwrap_err();
+        let err = tauri::async_runtime::block_on(search_page(&state, bad, true)).unwrap_err();
         assert!(err.contains("invalid cursor"), "{err}");
+    }
+
+    #[test]
+    fn a_search_without_enrich_leaves_the_disk_half_out() {
+        // The drawer draws cards from its own list copies: it asks for hits
+        // alone and skips the preview reads and `.git` walks it would discard.
+        let state = state_in("cmd-search-bare");
+        let note = state
+            .with(|s| s.create_note("# Тайник\nключи от серверной", None, T0, MSK))
+            .unwrap();
+        let page = tauri::async_runtime::block_on(search_page(&state, args("серверн"), false)).unwrap();
+        assert_eq!(page.hits[0].entry.id, note.id);
+        assert_eq!(page.hits[0].entry.preview, "", "no enrich, no preview");
+        assert!(page.hits[0].snippet.contains("серверной"), "the snippet is the index's");
     }
 }
