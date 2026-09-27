@@ -214,10 +214,16 @@ describe('stashView with search hits', () => {
     expect(v.text).toBe('');
   });
 
-  it('shows the list copy of an entry, the hit copy only when the list lacks it', () => {
+  it('shows the list copy of an entry, and never a hit the list lacks (M9)', () => {
+    // A hit's own copy is DB-only (`enrich: false`), and an id missing from
+    // the list is one just removed — or one the next reload brings.
     const stale = { ...a, title: 'old title' };
     const fresh = entry('n', { title: 'brand new' });
-    expect(view([a], [hit(stale), hit(fresh)]).rows.map((r) => r.entry.title)).toEqual(['a', 'brand new']);
+    expect(view([a], [hit(stale), hit(fresh)]).rows.map((r) => r.entry.title)).toEqual(['a']);
+  });
+
+  it('before the list has loaded, hits show nothing', () => {
+    expect(rowIds(view([], [hit(a), hit(b)]))).toEqual([]);
   });
 
   it("filters the hits by stage 04's tag rule: a prefix of a tag or of the repo", () => {

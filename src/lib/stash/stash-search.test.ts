@@ -292,12 +292,13 @@ describe('createSearchRunner', () => {
 
 describe('toArgs', () => {
   it('OmitsAbsentFiltersAndAsksForAWholePage', () => {
-    expect(toArgs(req('тай'))).toEqual({ query: 'тай', deleted: false, limit: SEARCH_LIMIT });
+    expect(toArgs(req('тай'))).toEqual({ query: 'тай', deleted: false, limit: SEARCH_LIMIT, enrich: false });
     expect(toArgs(req('тай', { tag: 'infra', deleted: true }))).toEqual({
       query: 'тай',
       tag: 'infra',
       deleted: true,
       limit: SEARCH_LIMIT,
+      enrich: false,
     });
   });
 

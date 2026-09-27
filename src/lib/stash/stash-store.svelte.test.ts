@@ -495,7 +495,7 @@ describe('stash store', () => {
       s.search(req('plan #ops'));
       expect(search).not.toHaveBeenCalled();
       await afterDebounce();
-      expect(search).toHaveBeenCalledWith({ query: 'plan', deleted: false, limit: 200 });
+      expect(search).toHaveBeenCalledWith({ query: 'plan', deleted: false, limit: 200, enrich: false });
       expect(s.hits?.map((h) => h.entry.id)).toEqual(['b']);
       expect(s.searchTotal).toBe(7);
     });

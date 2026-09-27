@@ -54,6 +54,11 @@ export interface StashSearchArgs {
   limit?: number;
   /** Opaque: the previous page's `nextCursor`, for the same query and filters. */
   cursor?: string;
+  /**
+   * Default `true`. `false`: the hits' entries are the database's alone —
+   * empty `preview`, the stored `repo`, no `branch`; nothing read from disk.
+   */
+  enrich?: boolean;
 }
 
 export interface StashSearchResult {

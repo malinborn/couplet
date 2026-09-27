@@ -46,7 +46,9 @@ export interface SearchRunner {
 }
 
 export function toArgs(r: SearchRequest): StashSearchArgs {
-  const args: StashSearchArgs = { query: searchText(r.query), deleted: r.deleted, limit: SEARCH_LIMIT };
+  // `enrich: false`: the drawer renders the list's copy of each hit's entry
+  // (`stashView`), so Rust need not touch the disk for the hits' own.
+  const args: StashSearchArgs = { query: searchText(r.query), deleted: r.deleted, limit: SEARCH_LIMIT, enrich: false };
   if (r.tag) args.tag = r.tag;
   return args;
 }

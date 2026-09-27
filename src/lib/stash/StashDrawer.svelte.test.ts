@@ -347,6 +347,13 @@ describe('StashDrawer', () => {
       ranges,
       score: 1,
     });
+    /** What the drawer asks for a query's text: a whole page, DB-only entries. */
+    const argsFor = (query: string): StashSearchArgs => ({
+      query,
+      deleted: false,
+      limit: STASH_RENDER_CAP,
+      enrich: false,
+    });
     /** The query's effect run, past the runner's debounce, and the answer rendered. */
     const searched = async () => {
       await settle();
@@ -371,7 +378,7 @@ describe('StashDrawer', () => {
       h = await setup({ list: () => list, search });
       for (const k of ['i', 't', 'l', 'e']) key(k);
       await searched();
-      expect(search).toHaveBeenCalledWith({ query: 'itle', deleted: false, limit: STASH_RENDER_CAP });
+      expect(search).toHaveBeenCalledWith(argsFor('itle'));
       expect(ids()).toEqual(['c', 'a']);
       const c = h.root.querySelector<HTMLElement>('[data-stash-id="c"]')!;
       expect(c.querySelector('.card-name mark')?.textContent).toBe('itle');
@@ -390,7 +397,7 @@ describe('StashDrawer', () => {
       h = await setup({ search });
       await setQuery('#op itle');
       await searched();
-      expect(search).toHaveBeenLastCalledWith({ query: 'itle', deleted: false, limit: STASH_RENDER_CAP });
+      expect(search).toHaveBeenLastCalledWith(argsFor('itle'));
       expect(ids()).toEqual(['c']);
       await setQuery('#op');
       await searched();
@@ -459,6 +466,21 @@ describe('StashDrawer', () => {
       expect(search.mock.calls[0][0].limit).toBe(STASH_RENDER_CAP);
       // Under the chip: the file ref stays, the other repo's note goes.
       expect(ids()).toEqual(['f']);
+    });
+
+    it('a removed entry leaves at once, though the hits still name it (M9)', async () => {
+      const search = vi.fn(async (_args: StashSearchArgs) => ({
+        hits: [hitOf(byId('a')), hitOf(byId('c'))],
+        total: 2,
+        nextCursor: null,
+      }));
+      h = await setup({ search });
+      await setQuery('itle');
+      await searched();
+      expect(ids()).toEqual(['a', 'c']);
+      h.store.remove('c');
+      await settle();
+      expect(ids()).toEqual(['a']);
     });
 
     it('a failed search leaves the local filter working', async () => {

@@ -129,12 +129,18 @@ export function stashView(input: ViewInput): StashView {
 
 /**
  * Each hit with the list's copy of its entry, so a tag change or a pulse shown
- * since the search answered stays on the card; the hit's own copy only for an
- * entry the list has not loaded yet.
+ * since the search answered stays on the card. A hit the list lacks is
+ * dropped, never rendered from its own copy: that copy is DB-only (the drawer
+ * searches with `enrich: false`), and the id is one just removed — or new,
+ * and the reload that brings it searches again. Before the first load the
+ * list is empty, so hits show nothing.
  */
 function listCopies(entries: readonly StashEntry[], hits: readonly StashHit[]): [StashEntry, StashHit][] {
   const byId = new Map(entries.map((e) => [e.id, e]));
-  return hits.map((h) => [byId.get(h.entry.id) ?? h.entry, h]);
+  return hits.flatMap((h): [StashEntry, StashHit][] => {
+    const listed = byId.get(h.entry.id);
+    return listed ? [[listed, h]] : [];
+  });
 }
 
 /** A note's preview without its first non-empty line — the title, already on the card. */
