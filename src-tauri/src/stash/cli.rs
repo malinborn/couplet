@@ -6,12 +6,17 @@
 //! An agent never gets the whole stash: search answers snippets, list answers
 //! metadata, and only `get` returns text — of one entry, capped.
 
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use super::{clock, entries, ListQuery, ListSort, Stash, StashEntry, StashKind, StashPaths};
+use super::{
+    clock, entries, ListQuery, ListSort, PutAway, PutAwayResult, Stash, StashEntry, StashKind,
+    StashPaths,
+};
 
 /// Answer to a write when the app data directory does not exist yet (A12).
 pub const NOT_RUN_YET: &str = "couplet has not run on this Mac yet — open it once, then try again";
@@ -127,8 +132,12 @@ pub struct Scope {
 /// on the spelling; the home comparison in `git_toplevel` does, hence the
 /// normalization.
 pub(crate) fn repo_of_dir(dir: &Path) -> Option<String> {
-    let dir = crate::path_norm::normalize_path(dir);
-    crate::git_info::git_toplevel(&dir).map(|top| crate::git_info::dir_name(&top))
+    toplevel_of(dir).map(|top| crate::git_info::dir_name(&top))
+}
+
+/// The repository toplevel of `dir`, in its one spelling.
+fn toplevel_of(dir: &Path) -> Option<PathBuf> {
+    crate::git_info::git_toplevel(&crate::path_norm::normalize_path(dir))
 }
 
 /// The scope of a call made from `cwd` (plan D5). A blank repo name counts
@@ -682,6 +691,188 @@ fn read_note(path: &Path) -> Result<String, String> {
         .read_to_string(&mut text)
         .map_err(|e| e.to_string())?;
     Ok(text)
+}
+
+/// The reason every CLI/MCP write gives a running app (roadmap A6).
+const NOTIFY_REASON: &str = "external";
+/// For each of the connect's write and read: an app that hangs costs the
+/// caller at most this, twice.
+const NOTIFY_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Tell a running couplet the stash changed under it, so its drawers reload
+/// and pulse `ids` (plan D12). Best effort by design: the write is already on
+/// disk, and an app that is not running reads the database fresh when it
+/// starts — there is nobody to tell and nothing to report. Never launches the
+/// app; a socket nobody listens on fails the connect at once.
+pub fn notify(loc: &StashLocation, ids: Vec<String>) {
+    let Some(socket) = &loc.socket else { return };
+    let Ok(mut stream) = UnixStream::connect(socket) else {
+        return;
+    };
+    let _ = stream.set_write_timeout(Some(NOTIFY_TIMEOUT));
+    let _ = stream.set_read_timeout(Some(NOTIFY_TIMEOUT));
+    let request = crate::ai_socket::AiRequest::StashChanged {
+        v: 1,
+        reason: NOTIFY_REASON.to_string(),
+        ids: Some(ids),
+    };
+    let Ok(mut line) = serde_json::to_string(&request) else {
+        return;
+    };
+    line.push('\n');
+    if stream.write_all(line.as_bytes()).is_err() {
+        return;
+    }
+    // Wait for the one answer line so the app's reply does not meet a closed
+    // socket; what it says does not matter.
+    let mut answer = String::new();
+    let _ = BufReader::new(stream).read_line(&mut answer);
+}
+
+/// The one result of a single-path put-away.
+fn first_result(results: Vec<PutAwayResult>, what: &str) -> Result<PutAwayResult, String> {
+    results
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("nothing was put away for {what}"))
+}
+
+/// Puts one path away: the disk half, then the SQL half (stage 02's one code
+/// path; this process holds no lock another thread could wait on).
+fn put_away_one(stash: &mut Stash, req: &PutAway, now: i64) -> Result<PutAwayResult, String> {
+    let notes_dir = super::notes_dir_spelled(&stash.paths);
+    let plan = entries::plan_put_away(req, &notes_dir, now)?;
+    first_result(stash.put_away_probed(plan, now)?, &req.paths.join(", "))
+}
+
+/// A write landed: the export and daily backup (as after every app write),
+/// then the running app is told.
+fn after_write(ctx: &Ctx, stash: &mut Stash, id: &str) {
+    stash.after_write(ctx.now_ms, offset_at(ctx.now_ms));
+    notify(ctx.loc, vec![id.to_string()]);
+}
+
+/// A new note from text, put away at once — «отложено только что» (plan
+/// D11) — in the repository of the caller's cwd. Blank text and bad tags are
+/// refused before anything is opened or created.
+pub fn add_note(ctx: &Ctx, text: &str, tags: &[String]) -> StashAnswer {
+    if text.trim().is_empty() {
+        return StashAnswer::error("refusing to add an empty note");
+    }
+    let tags = match agent_tags(tags) {
+        Ok(t) => t,
+        Err(e) => return StashAnswer::error(e),
+    };
+    let mut stash = match open_for_write(ctx.loc) {
+        Ok(s) => s,
+        Err(e) => return StashAnswer::error(e),
+    };
+    let repo = repo_of_dir(ctx.cwd);
+    let note = match stash.create_note(text, repo.as_deref(), ctx.now_ms, offset_at(ctx.now_ms)) {
+        Ok(n) => n,
+        Err(e) => return StashAnswer::error(e),
+    };
+    let req = PutAway {
+        paths: vec![note.path.clone()],
+        tags,
+        ..Default::default()
+    };
+    // The note already has its row, so this is stage 02's dedup update:
+    // `stashed_at = now` and the tags. It reports `created: false`; the
+    // answer knows better.
+    let put = put_away_one(&mut stash, &req, ctx.now_ms);
+    // Written either way: the note exists even if putting it away failed.
+    after_write(ctx, &mut stash, &note.id);
+    match put {
+        Ok(r) => StashAnswer {
+            ok: true,
+            entry: Some(agent_entry(&r.entry)),
+            created: Some(true),
+            ..Default::default()
+        },
+        // The note is in the stash (not put away, as if open in a tab); say
+        // where, so the text is never out of reach.
+        Err(e) => StashAnswer::error(format!(
+            "note {} ({}) was created but could not be put away: {e}",
+            note.id, note.path
+        )),
+    }
+}
+
+/// A reference to an existing regular file; the file itself is never
+/// touched. A relative path is the caller's cwd's. A file outside any
+/// repository takes the cwd's repository, as it takes a window's project
+/// (roadmap A3). Adding a path already in the stash answers `created: false`.
+pub fn add_path(ctx: &Ctx, path: &str, tags: &[String]) -> StashAnswer {
+    let tags = match agent_tags(tags) {
+        Ok(t) => t,
+        Err(e) => return StashAnswer::error(e),
+    };
+    let abs = crate::resolve_path(path, ctx.cwd.to_str());
+    match std::fs::metadata(&abs) {
+        Ok(m) if m.is_file() => {}
+        Ok(_) => return StashAnswer::error(format!("not a file: {abs}")),
+        Err(_) => return StashAnswer::error(format!("file does not exist: {abs}")),
+    }
+    let mut stash = match open_for_write(ctx.loc) {
+        Ok(s) => s,
+        Err(e) => return StashAnswer::error(e),
+    };
+    let req = PutAway {
+        paths: vec![abs],
+        tags,
+        project: toplevel_of(ctx.cwd).map(|top| top.to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    match put_away_one(&mut stash, &req, ctx.now_ms) {
+        Ok(r) => {
+            after_write(ctx, &mut stash, &r.entry.id);
+            StashAnswer {
+                ok: true,
+                entry: Some(agent_entry(&r.entry)),
+                created: Some(r.created),
+                ..Default::default()
+            }
+        }
+        Err(e) => StashAnswer::error(e),
+    }
+}
+
+/// Adds then removes tags. A call that leaves the tag set as it was writes
+/// nothing and tells nobody; a trashed entry is out of an agent's reach (A8).
+pub fn tag(ctx: &Ctx, id: &str, add: &[String], remove: &[String]) -> StashAnswer {
+    if add.is_empty() && remove.is_empty() {
+        return StashAnswer::error("tag needs something to add or remove");
+    }
+    let (add, remove) = match (agent_tags(add), agent_tags(remove)) {
+        (Ok(a), Ok(r)) => (a, r),
+        (Err(e), _) | (_, Err(e)) => return StashAnswer::error(e),
+    };
+    let mut stash = match open_for_write(ctx.loc) {
+        Ok(s) => s,
+        Err(e) => return StashAnswer::error(e),
+    };
+    // `Stash::tag` refuses a trashed entry too; this says it in `get`'s words.
+    match stash.get(id) {
+        Ok(e) if e.deleted_at.is_some() => {
+            return StashAnswer::error(format!("stash entry {id} is in the trash"))
+        }
+        Ok(_) => {}
+        Err(e) => return StashAnswer::error(e),
+    }
+    match stash.tag(id, &add, &remove) {
+        Ok(tagged) => {
+            if tagged.changed {
+                after_write(ctx, &mut stash, id);
+            }
+            StashAnswer {
+                ok: true,
+                entry: Some(agent_entry(&tagged.entry)),
+                ..Default::default()
+            }
+        }
+        Err(e) => StashAnswer::error(e),
+    }
 }
 
 #[cfg(test)]
@@ -1709,5 +1900,327 @@ mod tests {
             after.opened_at, None,
             "an agent reading is not the human opening"
         );
+    }
+
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    static SOCK_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// Under `/tmp`, not temp_dir(): a Unix socket path must fit in 104 bytes.
+    fn unique_socket() -> PathBuf {
+        let n = SOCK_COUNTER.fetch_add(1, Ordering::SeqCst);
+        PathBuf::from(format!("/tmp/couplet-sn-{}-{n}.sock", std::process::id()))
+    }
+
+    /// Accepts one connection, reports its request line, answers `{"ok":true}`.
+    fn spawn_fake_socket() -> (PathBuf, mpsc::Receiver<String>) {
+        let path = unique_socket();
+        let _ = fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).expect("bind fake socket");
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let _ = tx.send(line.trim().to_string());
+                let mut writer = stream;
+                let _ = writer.write_all(b"{\"ok\":true}\n");
+            }
+        });
+        (path, rx)
+    }
+
+    #[test]
+    fn add_puts_away_a_new_note_tagged_with_the_cwd_repository() {
+        let loc = temp_location("add", true);
+        let cwd = temp_repo("alpha").join("sub");
+        let answer = add_note(
+            &ctx(&loc, &cwd),
+            "# HDMI\n\nчерез адаптер",
+            &["#Infra".to_string()],
+        );
+        assert!(answer.ok, "{answer:?}");
+        let entry = answer.entry.unwrap();
+        assert_eq!(
+            (entry.repo.as_deref(), entry.tags.clone(), answer.created),
+            (Some("alpha"), vec!["infra".to_string()], Some(true))
+        );
+        assert!(entry.stashed_at.is_some(), "«отложено только что»");
+        let notes = crate::path_norm::normalize_path(&loc.paths.notes_dir);
+        assert!(Path::new(&entry.path).starts_with(&notes), "{}", entry.path);
+        assert_eq!(
+            fs::read_to_string(&entry.path).unwrap(),
+            "# HDMI\n\nчерез адаптер"
+        );
+        assert!(
+            loc.paths.export_path.is_file(),
+            "a write refreshes the export"
+        );
+        let found = search(
+            &ctx(&loc, &cwd),
+            &AgentSearchArgs {
+                query: "адаптер".to_string(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(found.total, Some(1));
+    }
+
+    #[test]
+    fn an_empty_note_is_refused_before_anything_is_created() {
+        let loc = temp_location("add-empty", true);
+        let cwd = outside_git();
+        assert!(!add_note(&ctx(&loc, &cwd), "  \n\t", &[]).ok);
+        assert!(
+            !add_note(&ctx(&loc, &cwd), "текст", &["#".to_string()]).ok,
+            "a bad tag too"
+        );
+        assert!(!loc.paths.notes_dir.exists());
+        assert!(!loc.paths.db_path.exists());
+    }
+
+    #[test]
+    fn adding_before_the_app_ever_ran_is_refused_and_creates_nothing() {
+        let loc = temp_location("add-early", false);
+        let cwd = outside_git();
+        let answer = add_note(&ctx(&loc, &cwd), "текст", &[]);
+        assert_eq!(answer.error.as_deref(), Some(NOT_RUN_YET));
+        fs::write(cwd.join("plan.md"), "# план").unwrap();
+        let path = add_path(&ctx(&loc, &cwd), "plan.md", &[]);
+        assert_eq!(path.error.as_deref(), Some(NOT_RUN_YET));
+        assert!(!loc.app_dir().exists() && !loc.paths.notes_dir.exists());
+    }
+
+    #[test]
+    fn adding_a_path_references_the_file_once() {
+        let loc = temp_location("add-path", true);
+        let cwd = outside_git();
+        fs::write(cwd.join("plan.md"), "# план").unwrap();
+        let first = add_path(&ctx(&loc, &cwd), "plan.md", &[]);
+        let again = add_path(
+            &ctx(&loc, &cwd),
+            &cwd.join("plan.md").to_string_lossy(),
+            &["infra".to_string()],
+        );
+        assert_eq!(
+            (first.created, again.created),
+            (Some(true), Some(false)),
+            "{first:?} {again:?}"
+        );
+        let (a, b) = (first.entry.unwrap(), again.entry.unwrap());
+        assert_eq!((a.id.clone(), a.kind), (b.id.clone(), StashKind::File));
+        assert_eq!(b.tags, vec!["infra".to_string()]);
+        assert_eq!(
+            fs::read_to_string(cwd.join("plan.md")).unwrap(),
+            "# план",
+            "the user's file is never changed"
+        );
+    }
+
+    #[test]
+    fn a_loose_file_takes_the_repository_of_the_cwd() {
+        let loc = temp_location("add-path-repo", true);
+        let loose = outside_git().join("loose.md");
+        fs::write(&loose, "# вне репо").unwrap();
+        let cwd = temp_repo("alpha").join("sub");
+        let answer = add_path(&ctx(&loc, &cwd), loose.to_str().unwrap(), &[]);
+        assert_eq!(
+            answer.entry.unwrap().repo.as_deref(),
+            Some("alpha"),
+            "like a window's project (A3)"
+        );
+        let outside = temp_location("add-path-norepo", true);
+        let nowhere = add_path(&ctx(&outside, &outside_git()), loose.to_str().unwrap(), &[]);
+        assert_eq!(nowhere.entry.unwrap().repo, None);
+    }
+
+    #[test]
+    fn adding_a_missing_file_or_a_directory_is_an_error() {
+        let loc = temp_location("add-bad", true);
+        let cwd = outside_git();
+        assert!(add_path(&ctx(&loc, &cwd), "nope.md", &[])
+            .error
+            .unwrap()
+            .contains("does not exist"));
+        assert!(add_path(&ctx(&loc, &cwd), cwd.to_str().unwrap(), &[])
+            .error
+            .unwrap()
+            .contains("not a file"));
+        assert!(
+            !loc.paths.db_path.exists(),
+            "refused before the database is opened"
+        );
+    }
+
+    #[test]
+    fn adding_a_trashed_note_is_an_error() {
+        // A trashed note keeps its row at its path inside `.trash/` (A8).
+        let loc = temp_location("add-trashed", true);
+        let id = seed(&loc, "# в корзину", None, &[]);
+        Stash::open(loc.paths.clone())
+            .unwrap()
+            .delete_entry(&id, clock::now_ms())
+            .unwrap();
+        let trashed = stored(&loc, &id).path;
+        let cwd = outside_git();
+        let again = add_path(&ctx(&loc, &cwd), &trashed, &[]);
+        assert!(
+            again.error.as_deref().unwrap_or("").contains("trash"),
+            "{again:?}"
+        );
+        assert!(stored(&loc, &id).deleted_at.is_some(), "still in the trash");
+    }
+
+    #[test]
+    fn a_removed_file_reference_can_be_added_again() {
+        // A file reference is unlinked, not trashed: its file is the user's.
+        let loc = temp_location("add-removed", true);
+        let cwd = outside_git();
+        fs::write(cwd.join("old.md"), "# старое").unwrap();
+        let id = add_path(&ctx(&loc, &cwd), "old.md", &[]).entry.unwrap().id;
+        Stash::open(loc.paths.clone())
+            .unwrap()
+            .delete_entry(&id, clock::now_ms())
+            .unwrap();
+        let again = add_path(&ctx(&loc, &cwd), "old.md", &[]);
+        assert_eq!(again.created, Some(true), "{again:?}");
+        assert_ne!(again.entry.unwrap().id, id);
+    }
+
+    #[test]
+    fn tag_adds_and_removes() {
+        let loc = temp_location("tag", true);
+        let id = seed(&loc, "# a", None, &["old"]);
+        let cwd = outside_git();
+        let answer = tag(
+            &ctx(&loc, &cwd),
+            &id,
+            &["#New".to_string()],
+            &["old".to_string()],
+        );
+        assert_eq!(answer.entry.unwrap().tags, vec!["new".to_string()]);
+        assert!(!tag(&ctx(&loc, &cwd), &id, &[], &[]).ok);
+        assert!(tag(&ctx(&loc, &cwd), "s0-none", &["x".to_string()], &[])
+            .error
+            .unwrap()
+            .contains("s0-none"));
+        Stash::open(loc.paths.clone())
+            .unwrap()
+            .delete_entry(&id, clock::now_ms())
+            .unwrap();
+        let trashed = tag(&ctx(&loc, &cwd), &id, &["x".to_string()], &[]);
+        assert_eq!(
+            trashed.error,
+            Some(format!("stash entry {id} is in the trash"))
+        );
+    }
+
+    #[test]
+    fn a_write_waits_for_a_busy_database_instead_of_failing() {
+        let loc = temp_location("busy", true);
+        let holder = crate::stash::db::open(&loc.paths.db_path).unwrap();
+        holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let loc2 = loc.clone();
+        let writer = std::thread::spawn(move || {
+            let cwd = outside_git();
+            add_note(&ctx(&loc2, &cwd), "под нагрузкой", &[])
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        holder.execute_batch("COMMIT").unwrap();
+        let answer = writer.join().unwrap();
+        assert!(answer.ok, "{answer:?}");
+    }
+
+    #[test]
+    fn a_write_tells_the_running_app() {
+        let (socket, rx) = spawn_fake_socket();
+        let mut loc = temp_location("notify", true);
+        loc.socket = Some(socket.clone());
+        let cwd = outside_git();
+        let answer = add_note(&ctx(&loc, &cwd), "текст", &[]);
+        assert!(answer.ok, "{answer:?}");
+        let line = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let _ = fs::remove_file(&socket);
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(
+            (v["cmd"].as_str(), v["reason"].as_str(), v["v"].as_u64()),
+            (Some("stash-changed"), Some("external"), Some(1))
+        );
+        assert_eq!(v["ids"], serde_json::json!([answer.entry.unwrap().id]));
+    }
+
+    #[test]
+    fn a_tag_that_changes_nothing_tells_nobody() {
+        let loc = temp_location("notify-tag", true);
+        let id = seed(&loc, "# a", None, &["infra"]);
+        let (socket, rx) = spawn_fake_socket();
+        let loc = StashLocation {
+            socket: Some(socket.clone()),
+            ..loc
+        };
+        let cwd = outside_git();
+        let answer = tag(&ctx(&loc, &cwd), &id, &["infra".to_string()], &[]);
+        assert_eq!(
+            answer.entry.map(|e| e.tags),
+            Some(vec!["infra".to_string()])
+        );
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+        assert!(tag(&ctx(&loc, &cwd), &id, &["later".to_string()], &[]).ok);
+        let line = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let _ = fs::remove_file(&socket);
+        assert!(line.contains("\"stash-changed\""), "{line}");
+    }
+
+    #[test]
+    fn no_running_app_is_not_an_error_and_costs_nothing() {
+        let mut loc = temp_location("notify-none", true);
+        loc.socket = Some(unique_socket()); // nobody listens there
+        let cwd = outside_git();
+        let started = Instant::now();
+        assert!(add_note(&ctx(&loc, &cwd), "текст", &[]).ok);
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn an_app_that_never_answers_costs_at_most_the_timeout() {
+        // Accepts and then says nothing: the notify gives up after its own
+        // read timeout, and the write it reports has already landed.
+        let path = unique_socket();
+        let _ = fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+        let held = std::thread::spawn(move || listener.accept().map(|(s, _)| s));
+        let loc = StashLocation {
+            socket: Some(path.clone()),
+            ..temp_location("notify-mute", true)
+        };
+        let cwd = outside_git();
+        let started = Instant::now();
+        assert!(add_note(&ctx(&loc, &cwd), "текст", &[]).ok);
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        drop(held.join());
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn reads_never_tell_the_app() {
+        let (socket, rx) = spawn_fake_socket();
+        let mut loc = temp_location("notify-read", true);
+        let id = seed(&loc, "# a", None, &[]);
+        loc.socket = Some(socket.clone());
+        let cwd = outside_git();
+        search(&ctx(&loc, &cwd), &search_all("a"));
+        list(&ctx(&loc, &cwd), &ListArgs::default());
+        get(&ctx(&loc, &cwd), &id, None);
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+        let _ = fs::remove_file(&socket);
     }
 }
