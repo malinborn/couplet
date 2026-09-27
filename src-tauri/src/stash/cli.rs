@@ -12,11 +12,16 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use super::{
     clock, entries, ListQuery, ListSort, PutAway, PutAwayResult, Stash, StashEntry, StashKind,
     StashPaths,
 };
+
+/// The clock every operation's `Ctx.now_ms` is read from — for the MCP
+/// adapter, which cannot reach the private `clock` module.
+pub(crate) use super::clock::now_ms;
 
 /// Answer to a write when the app data directory does not exist yet (A12).
 pub const NOT_RUN_YET: &str = "couplet has not run on this Mac yet — open it once, then try again";
@@ -1227,6 +1232,95 @@ pub fn run(args: &[String]) -> i32 {
     } else {
         1
     }
+}
+
+/// An optional string argument of an MCP call. Blank counts as absent: a
+/// client may fill every optional string with `""`, and that means "no
+/// filter", not an empty tag or a clash with `all`.
+fn str_field(v: &Value, key: &str) -> Option<String> {
+    v.get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string)
+}
+
+/// The strings of an array argument; anything else in it is ignored. A lone
+/// string is taken as a one-element array rather than dropped: a tag given
+/// as `"infra"` must not silently become no tag.
+pub fn string_array(v: &Value, key: &str) -> Vec<String> {
+    match v.get(key) {
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        Some(Value::String(s)) => vec![s.clone()],
+        _ => Vec::new(),
+    }
+}
+
+/// `tag`, `kind`, `repo` / `all` — the same rules as the CLI's flags.
+fn filter_from_json(v: &Value) -> Result<Filter, String> {
+    let all = v.get("all").and_then(Value::as_bool).unwrap_or(false);
+    let scope = match (all, str_field(v, "repo")) {
+        (true, Some(_)) => return Err("repo and all are mutually exclusive".to_string()),
+        (true, None) => ScopeArg::All,
+        (false, Some(r)) => ScopeArg::Repo(r),
+        (false, None) => ScopeArg::Default,
+    };
+    let kind = str_field(v, "kind").map(|k| parse_kind(&k)).transpose()?;
+    Ok(Filter {
+        tag: str_field(v, "tag"),
+        kind,
+        scope,
+    })
+}
+
+/// A positive integer, or absent. Clamped later by the operation, never
+/// refused for size.
+fn limit_from_json(v: &Value) -> Result<Option<usize>, String> {
+    match v.get("limit") {
+        None | Some(Value::Null) => Ok(None),
+        Some(l) => l
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| *n >= 1)
+            .map(Some)
+            .ok_or_else(|| "limit must be a positive integer".to_string()),
+    }
+}
+
+/// `stash_search`'s arguments. An error is a malformed call (JSON-RPC
+/// `-32602`); a blank query is `search`'s own refusal, a tool error.
+pub fn search_args_from_json(v: &Value) -> Result<AgentSearchArgs, String> {
+    let query = v
+        .get("query")
+        .and_then(Value::as_str)
+        .ok_or("stash_search requires query (a string)")?
+        .to_string();
+    Ok(AgentSearchArgs {
+        query,
+        filter: filter_from_json(v)?,
+        limit: limit_from_json(v)?,
+        cursor: str_field(v, "cursor"),
+    })
+}
+
+/// `stash_list`'s arguments. `since` may be a number (unix ms) as well as
+/// text; `parse_since` reads both from its text.
+pub fn list_args_from_json(v: &Value) -> Result<ListArgs, String> {
+    let since = match v.get("since") {
+        Some(Value::Number(n)) => Some(n.to_string()),
+        _ => str_field(v, "since"),
+    };
+    let sort = str_field(v, "sort").map(|s| parse_sort(&s)).transpose()?;
+    Ok(ListArgs {
+        filter: filter_from_json(v)?,
+        since,
+        sort,
+        limit: limit_from_json(v)?,
+        cursor: str_field(v, "cursor"),
+    })
 }
 
 #[cfg(test)]
@@ -2994,5 +3088,84 @@ mod tests {
         assert_eq!(run(&argv(&["dump"])), 2);
         assert_eq!(run(&argv(&["list", "--socket", "/tmp/nobody.sock"])), 2);
         assert_eq!(run(&argv(&["list", "--product", "../x", "--json"])), 2);
+    }
+
+    #[test]
+    fn mcp_search_arguments_read_like_the_cli_flags() {
+        let args = search_args_from_json(&serde_json::json!({
+            "query": "hdmi", "tag": "infra", "kind": "note", "all": true, "limit": 5, "cursor": "c1"
+        }))
+        .unwrap();
+        assert_eq!(
+            args,
+            AgentSearchArgs {
+                query: "hdmi".to_string(),
+                filter: Filter {
+                    tag: Some("infra".to_string()),
+                    kind: Some(StashKind::Note),
+                    scope: ScopeArg::All,
+                },
+                limit: Some(5),
+                cursor: Some("c1".to_string()),
+            }
+        );
+        assert!(search_args_from_json(&serde_json::json!({})).is_err());
+        assert!(search_args_from_json(&serde_json::json!({"query": 3})).is_err());
+        assert!(
+            search_args_from_json(&serde_json::json!({"query": "x", "repo": "a", "all": true}))
+                .is_err()
+        );
+        assert!(search_args_from_json(&serde_json::json!({"query": "x", "limit": 0})).is_err());
+        assert!(search_args_from_json(&serde_json::json!({"query": "x", "limit": "5"})).is_err());
+        assert!(search_args_from_json(&serde_json::json!({"query": "x", "kind": "dir"})).is_err());
+    }
+
+    #[test]
+    fn mcp_blank_optional_strings_count_as_absent() {
+        // An MCP client may fill every optional string with "": that is no
+        // filter, not an empty tag or a clash with `all`.
+        let args = search_args_from_json(&serde_json::json!({
+            "query": "x", "tag": "", "kind": " ", "repo": "", "all": true, "cursor": ""
+        }))
+        .unwrap();
+        assert_eq!(
+            (args.filter, args.cursor),
+            (
+                Filter {
+                    tag: None,
+                    kind: None,
+                    scope: ScopeArg::All
+                },
+                None
+            )
+        );
+        let list = list_args_from_json(&serde_json::json!({"since": "", "sort": ""})).unwrap();
+        assert_eq!((list.since, list.sort), (None, None));
+    }
+
+    #[test]
+    fn mcp_list_arguments_take_since_as_text_or_number() {
+        let text = list_args_from_json(
+            &serde_json::json!({"since": "yesterday", "sort": "kind", "repo": "couplet"}),
+        )
+        .unwrap();
+        assert_eq!(
+            (text.since.as_deref(), text.sort),
+            (Some("yesterday"), Some(ListSort::Kind))
+        );
+        assert_eq!(text.filter.scope, ScopeArg::Repo("couplet".to_string()));
+        let number = list_args_from_json(&serde_json::json!({"since": 1790000000000_i64})).unwrap();
+        assert_eq!(number.since.as_deref(), Some("1790000000000"));
+        assert!(list_args_from_json(&serde_json::json!({"sort": "size"})).is_err());
+        assert_eq!(
+            string_array(&serde_json::json!({"tags": ["a", 3, "b"]}), "tags"),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        // One tag given as a plain string is that tag, not silently none.
+        assert_eq!(
+            string_array(&serde_json::json!({"tags": "infra"}), "tags"),
+            vec!["infra".to_string()]
+        );
+        assert!(string_array(&serde_json::json!({}), "tags").is_empty());
     }
 }
