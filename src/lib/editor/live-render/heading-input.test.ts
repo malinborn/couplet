@@ -33,6 +33,11 @@ function type(doc: string, cursor: number, insert: string): { doc: string; caret
 }
 
 describe('headingSpaceRedirect', () => {
+  it('supplies the space inside a blockquote too', () => {
+    expect(type('> #', 3, 'x')).toEqual({ doc: '> # x', caret: 5 });
+    expect(type('> > ##', 6, 'x')).toEqual({ doc: '> > ## x', caret: 8 });
+  });
+
   it('supplies the space that makes a single # a heading', () => {
     expect(type('#', 1, 'п')).toEqual({ doc: '# п', caret: 3 });
   });

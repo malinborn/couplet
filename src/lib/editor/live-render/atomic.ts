@@ -13,6 +13,7 @@ import {
 import { syntaxTree } from '@codemirror/language';
 import type { SyntaxNode } from '@lezer/common';
 import { isRenderedLink } from '../preview/link-refs';
+import { blockquoteLayout, insideBlockquote } from '../preview/lists';
 
 /**
  * Lezer node names whose ranges are hidden under the live-render flavour
@@ -23,8 +24,9 @@ import { isRenderedLink } from '../preview/link-refs';
  * NOT "every node with one of these names" — several sites hide more (or
  * less) than the bare node range, and some nodes with these names are
  * never hidden at all depending on context (an ordered-list `ListMark`,
- * a `LinkMark` that belongs to a checkbox look-alike, a `QuoteMark` on a
- * nested blockquote). `hiddenMarkRanges` below mirrors `preview/plugin.ts`'s
+ * a `LinkMark` that belongs to a checkbox look-alike; a `QuoteMark` is hidden
+ * together with the space after it, merged with a marker it touches).
+ * `hiddenMarkRanges` below mirrors `preview/plugin.ts`'s
  * actual traversal and each decorator's actual algorithm node-by-node —
  * see the inline comments and the accompanying report for the specific
  * traps found while building this.
@@ -188,11 +190,11 @@ function isChecklistLookalikeLink(doc: Text, link: SyntaxNode): boolean {
  * hidden range (not the bare node range, where they differ).
  *
  * Mirroring the traversal (not just grepping the tree for node names) is
- * load-bearing: `plugin.ts` stops descending at `Emphasis`, `StrongEmphasis`,
- * `Strikethrough`, `InlineCode`, `Link`, `FencedCode`, `Table`, and
- * `Blockquote`, so content nested inside any of those is never
- * independently decorated today (see the report — this affects nested
- * inline formatting and anything inside a blockquote or table cell).
+ * load-bearing: `plugin.ts` stops descending at `InlineCode`, a rendered
+ * `Link`, `FencedCode` and `Table`, so markup nested inside any of those is
+ * never independently decorated (a table inside a blockquote is not decorated
+ * at all). It *does* descend into emphasis, strikethrough, headings, list
+ * items and blockquotes, so markup inside those is hidden like anywhere else.
  * Atomic ranges must agree with that, or the caret would be blocked from
  * entering text that is, in fact, rendered as plain visible characters.
  */
@@ -285,6 +287,9 @@ function collectMarkupModel(state: EditorState): { spans: RawSpan[]; pairs: Mark
         }
         case 'FencedCode':
         case 'Table':
+          // A Table inside a blockquote is not decorated at all (plugin.ts
+          // leaves it raw), and descends no further there either; its quote
+          // markers are covered by the Blockquote case.
           // Both are always-rendered widgets over the whole block.
           // FencedCode's fence lines are hidden via a `Decoration.line`
           // CSS class (blocks.ts), not a character-level replace — the
@@ -295,7 +300,7 @@ function collectMarkupModel(state: EditorState): { spans: RawSpan[]; pairs: Mark
           // this module's. Neither contributes character-level hidden
           // spans, so just don't descend (inline markup inside a fence or
           // a table cell is never independently decorated either — same
-          // "mirror the traversal" reasoning as Blockquote below).
+          // "mirror the traversal" reasoning as everywhere else here).
           return false;
         case 'ListItem': {
           // Mirror lists.ts decorateListItem's actual branch order: the
@@ -314,20 +319,18 @@ function collectMarkupModel(state: EditorState): { spans: RawSpan[]; pairs: Mark
           // visited too).
         }
         case 'Blockquote': {
-          // Mirror lists.ts decorateBlockquote's per-line regex exactly:
-          // ONE combined match per line, hiding the OUTERMOST leading `>`
-          // (+ one optional trailing space). plugin.ts returns false here
-          // too, so a NESTED Blockquote's own QuoteMark is never
-          // independently visited/decorated — it stays visible. Mirrored,
-          // not fixed; see report.
-          const startLine = doc.lineAt(node.from);
-          const endLine = doc.lineAt(node.to);
-          for (let i = startLine.number; i <= endLine.number; i++) {
-            const line = doc.line(i);
-            const match = /^(\s*>)\s?/.exec(line.text);
-            if (match) push(spans, line.from, line.from + match[0].length, 'from');
+          // Mirror lists.ts decorateBlockquote: the OUTERMOST quote hides
+          // every QuoteMark in its subtree, at every level, through the same
+          // `blockquoteLayout` — touching markers already merged into one
+          // range, so `> > x` has no atomic stop between its two `>`. A
+          // nested quote adds nothing of its own. Both descend, so what is
+          // inside the quote is visited by its own case below.
+          if (!insideBlockquote(node.node)) {
+            for (const r of blockquoteLayout(doc, node.node).hidden) {
+              push(spans, r.from, r.to, 'from');
+            }
           }
-          return false;
+          break;
         }
       }
       return undefined;

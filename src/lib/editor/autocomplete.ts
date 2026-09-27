@@ -56,18 +56,41 @@ function handleEnterInList(view: EditorView): boolean {
   }
 
   // Code fence auto-close
-  const fenceMatch = text.match(/^(\s*)(`{3,})(\w*)\s*$/);
-  if (fenceMatch && from === line.to) {
-    const [, indent, ticks] = fenceMatch;
-    const insert = `\n${indent}\n${indent}${ticks}`;
+  const close = computeFenceAutoClose(text, from - line.from);
+  if (close) {
     view.dispatch({
-      changes: { from, insert },
-      selection: { anchor: from + 1 + indent.length },
+      changes: { from, insert: close.insert },
+      selection: { anchor: line.from + close.caret },
     });
     return true;
   }
 
   return false;
+}
+
+/**
+ * Enter at the end of an opening fence line (`column` is the caret's offset in
+ * `text`): the empty content line and the closing fence to insert after it,
+ * and the caret as an offset in `text + insert` — on the empty line.
+ *
+ * A fence inside a blockquote carries its quote prefix onto both new lines.
+ * Without it the new lines are outside the quote, which ends the quote and
+ * leaves the fence unterminated. An unquoted fence has an empty prefix and is
+ * closed exactly as it always was.
+ */
+export function computeFenceAutoClose(
+  text: string,
+  column: number
+): { insert: string; caret: number } | null {
+  if (column !== text.length) return null;
+  const m = text.match(/^((?:[ \t]*>[ \t]?)*)(\s*)(`{3,})(\w*)\s*$/);
+  if (!m) return null;
+  const [, quote, indent, ticks] = m;
+  const prefix = (quote && !/[ \t]$/.test(quote) ? `${quote} ` : quote) + indent;
+  return {
+    insert: `\n${prefix}\n${prefix}${ticks}`,
+    caret: text.length + 1 + prefix.length,
+  };
 }
 
 const LIST_LINE_RE = /^\s*([-*+]|\d+\.)\s/;

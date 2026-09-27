@@ -161,6 +161,47 @@
   cursor: pointer;
 }
 
+/* Formatting inside a quote is muted: every accent is pulled 80% of the way to the
+ * quote's own grey text, so `**bold**` in a quote reads a shade apart from
+ * `**bold**` in the body. A mix rather than `filter: saturate()` because a
+ * filter would also dull the bar, and does nothing to a near-black bold —
+ * there is no saturation to take away from grey.
+ *
+ * Placed before the ticked-task rule below on purpose: same specificity, so a
+ * done task inside a quote still turns fully grey. */
+.cm-md-blockquote {
+  --quote-keep: 20%;
+  --quote-veil-amount: 80%;
+}
+.cm-md-blockquote .cm-md-bold { color: color-mix(in oklab, var(--color-bold) var(--quote-keep), var(--text-subtle)); }
+.cm-md-blockquote .cm-md-italic { color: color-mix(in oklab, var(--color-italic) var(--quote-keep), var(--text-subtle)); }
+.cm-md-blockquote .cm-md-strikethrough { color: color-mix(in oklab, var(--color-strikethrough) var(--quote-keep), var(--text-subtle)); }
+.cm-md-blockquote .cm-md-link {
+  color: color-mix(in oklab, var(--color-link) var(--quote-keep), var(--text-subtle));
+  text-decoration-color: currentColor;
+}
+.cm-md-blockquote .cm-md-inline-code {
+  background: color-mix(in oklab, var(--color-code-bg) var(--quote-keep), transparent);
+}
+.cm-md-blockquote .cm-md-bullet { color: color-mix(in oklab, var(--color-list-marker) var(--quote-keep), var(--text-subtle)); }
+.cm-md-blockquote .cm-md-checkbox { filter: saturate(0.2); }
+
+/* A heading's colour is a background clipped to its glyphs, often a gradient,
+ * which `color-mix` cannot reach. A translucent layer of the quote grey on top
+ * of it does the same mix, and follows the gradient wherever it goes. */
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .cm-content .cm-line.cm-md-blockquote:is(.cm-md-h1, .cm-md-h2, .cm-md-h3, .cm-md-h4, .cm-md-h5, .cm-md-h6) {
+    --quote-veil: color-mix(in srgb, var(--text-subtle) var(--quote-veil-amount), transparent);
+    background-size: 100% 100%, var(--heading-grad-span, 18em) 100%;
+  }
+  .cm-content .cm-line.cm-md-blockquote.cm-md-h1 { background-image: linear-gradient(var(--quote-veil), var(--quote-veil)), var(--heading-grad-1, none); }
+  .cm-content .cm-line.cm-md-blockquote.cm-md-h2 { background-image: linear-gradient(var(--quote-veil), var(--quote-veil)), var(--heading-grad-2, none); }
+  .cm-content .cm-line.cm-md-blockquote.cm-md-h3 { background-image: linear-gradient(var(--quote-veil), var(--quote-veil)), var(--heading-grad-3, none); }
+  .cm-content .cm-line.cm-md-blockquote.cm-md-h4 { background-image: linear-gradient(var(--quote-veil), var(--quote-veil)), var(--heading-grad-4, none); }
+  .cm-content .cm-line.cm-md-blockquote.cm-md-h5 { background-image: linear-gradient(var(--quote-veil), var(--quote-veil)), var(--heading-grad-5, none); }
+  .cm-content .cm-line.cm-md-blockquote.cm-md-h6 { background-image: linear-gradient(var(--quote-veil), var(--quote-veil)), var(--heading-grad-6, none); }
+}
+
 /* Lists
  *
  * Nesting indent. One depth is one step of `--list-indent-step`, and nothing
@@ -179,11 +220,13 @@
 .cm-content {
   --list-indent-step: 1.7em;
 }
-.cm-line.cm-md-list-d2 { padding-left: calc(6px + var(--list-indent-step)); }
-.cm-line.cm-md-list-d3 { padding-left: calc(6px + 2 * var(--list-indent-step)); }
-.cm-line.cm-md-list-d4 { padding-left: calc(6px + 3 * var(--list-indent-step)); }
-.cm-line.cm-md-list-d5 { padding-left: calc(6px + 4 * var(--list-indent-step)); }
-.cm-line.cm-md-list-d6 { padding-left: calc(6px + 5 * var(--list-indent-step)); }
+/* `--quote-indent` is set by the blockquote rules below; a list inside a quote
+ * steps on from the quote's text column instead of from the line edge. */
+.cm-line.cm-md-list-d2 { padding-left: calc(6px + var(--quote-indent, 0px) + var(--list-indent-step)); }
+.cm-line.cm-md-list-d3 { padding-left: calc(6px + var(--quote-indent, 0px) + 2 * var(--list-indent-step)); }
+.cm-line.cm-md-list-d4 { padding-left: calc(6px + var(--quote-indent, 0px) + 3 * var(--list-indent-step)); }
+.cm-line.cm-md-list-d5 { padding-left: calc(6px + var(--quote-indent, 0px) + 4 * var(--list-indent-step)); }
+.cm-line.cm-md-list-d6 { padding-left: calc(6px + var(--quote-indent, 0px) + 5 * var(--list-indent-step)); }
 
 .cm-md-list-indent {
   font-size: 0;
@@ -351,12 +394,72 @@
   }
 }
 
-/* Blockquotes */
+/* Blockquotes
+ *
+ * One line decoration per line, carrying the depth of the innermost quote on
+ * it (`preview/lists.ts`, `blockquoteLayout`). The first bar is the line's own
+ * border, exactly as before nesting was drawn; every deeper level adds one bar
+ * and one `--quote-step` of indent. The extra bars are a single `::before`
+ * repeated with `box-shadow` copies, which is why they survive what a
+ * `background-image` would not: a heading inside a quote clips its background
+ * to the glyphs, and a code line paints its own background over the line.
+ *
+ * Two class names deep, like the list depths, to beat CM6's `.ͼ1 .cm-line` —
+ * the old one-class `padding-left: 1em` here never applied, so depth 1 keeps
+ * the 6px it actually had. Lists inside a quote add `--quote-indent` to their
+ * own padding (see the list depths above), which is why the variable, not the
+ * padding, is what each depth sets.
+ */
+.cm-content {
+  --quote-step: 0.9em;
+}
 .cm-md-blockquote {
   border-left: 3px solid var(--color-blockquote-border);
-  padding-left: 1em;
   color: var(--text-subtle);
 }
+.cm-line.cm-md-blockquote {
+  --quote-indent: 0px;
+  position: relative;
+}
+/* A nested list item's own depth rule already adds `--quote-indent`; this one
+ * would otherwise win on source order and drop the list step. */
+.cm-line.cm-md-blockquote:not(.cm-md-list-d2, .cm-md-list-d3, .cm-md-list-d4, .cm-md-list-d5, .cm-md-list-d6) {
+  padding-left: calc(6px + var(--quote-indent));
+}
+.cm-line.cm-md-blockquote-d2 { --quote-indent: var(--quote-step); }
+.cm-line.cm-md-blockquote-d3 { --quote-indent: calc(2 * var(--quote-step)); }
+.cm-line.cm-md-blockquote-d4 { --quote-indent: calc(3 * var(--quote-step)); }
+
+/* Bars 2..4. The containing block is the padding box, which starts right
+ * after the 3px border, so bar N sits at `(N-1) * step - 3px` from it. */
+:is(.cm-md-blockquote-d2, .cm-md-blockquote-d3, .cm-md-blockquote-d4)::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--quote-step) - 3px);
+  width: 3px;
+  background: var(--color-blockquote-border);
+  pointer-events: none;
+}
+.cm-md-blockquote-d3::before {
+  box-shadow: var(--quote-step) 0 0 0 var(--color-blockquote-border);
+}
+.cm-md-blockquote-d4::before {
+  box-shadow:
+    var(--quote-step) 0 0 0 var(--color-blockquote-border),
+    calc(2 * var(--quote-step)) 0 0 0 var(--color-blockquote-border);
+}
+
+/* A rule inside a quote starts at the quote's text column, not at its bar. */
+.cm-line.cm-md-blockquote.cm-md-hr::after {
+  left: calc(6px + var(--quote-indent));
+}
+
+/* A code block inside a quote hangs off the bar: its left corners stay
+ * square, or the radius would bend the bar at the top and bottom. */
+.cm-line.cm-md-blockquote.cm-md-code-block-start { border-top-left-radius: 0; }
+.cm-line.cm-md-blockquote.cm-md-code-block-end { border-bottom-left-radius: 0; }
 
 /* Horizontal Rule — line decoration with pseudo-element */
 .cm-md-hr {

@@ -3,14 +3,43 @@ import type { EditorView } from '@codemirror/view';
 import type { RangeSetBuilder } from '@codemirror/state';
 import type { SyntaxNode } from '@lezer/common';
 import { shouldReveal } from './flavour';
+import { insideBlockquote } from './lists';
 import type { DecoSink } from './utils';
 import { t } from '../../i18n';
+
+/** How many quotes `node` sits in. */
+function quoteDepth(node: SyntaxNode): number {
+  let depth = 0;
+  for (let p: SyntaxNode | null = node.parent; p; p = p.parent) {
+    if (p.name === 'Blockquote') depth++;
+  }
+  return depth;
+}
+
+/**
+ * The code a quoted block holds, without the quote prefixes its lines carry:
+ * exactly `depth` levels of `>` (plus the one space after each), which is what
+ * the parser strips too. A deeper `>` is the code's own text and stays.
+ */
+export function stripQuotePrefix(text: string, depth: number): string {
+  if (depth === 0) return text;
+  const level = /^[ \t]*>[ \t]?/;
+  return text
+    .split('\n')
+    .map((line) => {
+      let out = line;
+      for (let i = 0; i < depth; i++) out = out.replace(level, '');
+      return out;
+    })
+    .join('\n');
+}
 
 class CodeBlockHeaderWidget extends WidgetType {
   constructor(
     private language: string,
     private codeFrom: number,
-    private codeTo: number
+    private codeTo: number,
+    private quoteDepth: number
   ) {
     super();
   }
@@ -32,7 +61,10 @@ class CodeBlockHeaderWidget extends WidgetType {
     copyBtn.addEventListener('mousedown', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      const code = view.state.doc.sliceString(this.codeFrom, this.codeTo);
+      const code = stripQuotePrefix(
+        view.state.doc.sliceString(this.codeFrom, this.codeTo),
+        this.quoteDepth
+      );
       navigator.clipboard.writeText(code);
       copyBtn.textContent = t('ui.copied');
       setTimeout(() => {
@@ -48,7 +80,8 @@ class CodeBlockHeaderWidget extends WidgetType {
     return (
       this.language === other.language &&
       this.codeFrom === other.codeFrom &&
-      this.codeTo === other.codeTo
+      this.codeTo === other.codeTo &&
+      this.quoteDepth === other.quoteDepth
     );
   }
 
@@ -66,7 +99,9 @@ export function decorateHorizontalRule(
 
   const line = view.state.doc.lineAt(node.from);
   builder.add(line.from, line.from, Decoration.line({ class: 'cm-md-hr' }));
-  builder.add(line.from, line.to, Decoration.replace({}));
+  // Inside a quote the line starts with `> `, which the quote hides itself;
+  // replacing from the line start would overlap that range.
+  builder.add(insideBlockquote(node) ? node.from : line.from, line.to, Decoration.replace({}));
 }
 
 export function decorateFencedCode(
@@ -80,40 +115,44 @@ export function decorateFencedCode(
   const startLine = doc.lineAt(node.from);
   const endLine = doc.lineAt(node.to);
 
-  // Extract language from the opening fence line (e.g., ```javascript)
-  const fenceText = doc.sliceString(startLine.from, startLine.to);
+  // Extract language from the opening fence line (e.g., ```javascript). From
+  // the fence itself inside a quote, where the line starts with `> `.
+  const depth = quoteDepth(node);
+  const fenceText = doc.sliceString(depth > 0 ? node.from : startLine.from, startLine.to);
   const langMatch = fenceText.match(/^`{3,}(\w+)/);
   const language = langMatch ? langMatch[1] : '';
 
+  // The closing fence is the line of the last CodeMark, and only when there
+  // are two: an unterminated fence has one, runs to the end of its container,
+  // and its last line is content — usually the line being typed. Reading the
+  // closing line from `node.to` hid that line.
+  const marks = node.getChildren('CodeMark');
+  const closeLineNum = marks.length >= 2 ? doc.lineAt(marks[marks.length - 1].from).number : null;
+
   // Content range: lines between the fence markers (exclusive)
   const firstContentLineNum = startLine.number + 1;
-  const lastContentLineNum = endLine.number - 1;
+  const lastContentLineNum = closeLineNum !== null ? closeLineNum - 1 : endLine.number;
   const hasContent = firstContentLineNum <= lastContentLineNum;
 
   const codeFrom = hasContent ? doc.line(firstContentLineNum).from : startLine.to;
   const codeTo = hasContent ? doc.line(lastContentLineNum).to : startLine.to;
 
-  // Collect all line numbers in this code block
-  const totalLines = endLine.number - startLine.number + 1;
-
   for (let i = startLine.number; i <= endLine.number; i++) {
     const line = doc.line(i);
     const isFirst = i === startLine.number;
-    const isLast = i === endLine.number;
+    const isLast = i === closeLineNum;
 
     if (isFirst || isLast) {
       // Hide opening and closing fence lines via CSS
       builder.add(line.from, line.from, Decoration.line({ class: 'cm-md-code-fence-hidden' }));
     } else {
-      // Code content lines — apply background + optional radius classes
-      const isFirstCode = i === startLine.number + 1;
-      const isLastCode = i === endLine.number - 1;
+      // Code content lines — apply background + radius classes on the ends
+      const isFirstCode = i === firstContentLineNum;
+      const isLastCode = i === lastContentLineNum;
 
       let cls = 'cm-md-code-line';
-      if (isFirstCode && totalLines > 2) cls += ' cm-md-code-block-start';
-      if (isLastCode && totalLines > 2) cls += ' cm-md-code-block-end';
-      // Single-line code block (only content between fences)
-      if (totalLines === 3 && isFirstCode) cls = 'cm-md-code-line cm-md-code-block-start cm-md-code-block-end';
+      if (isFirstCode) cls += ' cm-md-code-block-start';
+      if (isLastCode) cls += ' cm-md-code-block-end';
 
       // Line decoration FIRST (lower startSide), then widget
       builder.add(line.from, line.from, Decoration.line({ class: cls }));
@@ -124,7 +163,7 @@ export function decorateFencedCode(
           line.from,
           line.from,
           Decoration.widget({
-            widget: new CodeBlockHeaderWidget(language, codeFrom, codeTo),
+            widget: new CodeBlockHeaderWidget(language, codeFrom, codeTo, depth),
             side: -1,
           })
         );

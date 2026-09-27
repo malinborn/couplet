@@ -15,7 +15,7 @@ import {
   decorateInlineCode,
   decorateLink,
 } from './inline';
-import { decorateListItem, decorateBlockquote } from './lists';
+import { decorateListItem, decorateBlockquote, insideBlockquote } from './lists';
 import { decorateHorizontalRule, decorateFencedCode } from './blocks';
 import { decorateTable } from './tables';
 import { decorateMermaidBlock, mermaidRendered } from './mermaid';
@@ -52,7 +52,7 @@ class SortingSink implements DecoSink {
   }
 }
 
-function buildDecorations(view: EditorView): DecorationSet {
+export function buildDecorations(view: EditorView): DecorationSet {
   const builder = new SortingSink();
 
   syntaxTree(view.state).iterate({
@@ -97,6 +97,8 @@ function buildDecorations(view: EditorView): DecorationSet {
           const fenceLine = doc.lineAt(node.from);
           const fenceText = doc.sliceString(fenceLine.from, fenceLine.to);
           const langMatch = fenceText.match(/^`{3,}(\w+)/);
+          // Never inside a quote: `langMatch` reads the line, which there
+          // starts with `>`, so a quoted mermaid fence is a code block.
           if (langMatch && langMatch[1].toLowerCase() === 'mermaid') {
             decorateMermaidBlock(view, node.node, builder);
           } else {
@@ -105,7 +107,11 @@ function buildDecorations(view: EditorView): DecorationSet {
           return false;
         }
         case 'Table':
-          decorateTable(view, node.node, builder);
+          // A table inside a quote stays raw text. Its rows carry `> `, which
+          // the widget would render as part of the first cell, and every
+          // table operation rewrites the source without the prefix — deleting
+          // a row would take the table out of the quote.
+          if (!insideBlockquote(node.node)) decorateTable(view, node.node, builder);
           return false;
         case 'HorizontalRule':
           decorateHorizontalRule(view, node.node, builder);
@@ -114,8 +120,12 @@ function buildDecorations(view: EditorView): DecorationSet {
           decorateListItem(view, node.node, builder);
           break;
         case 'Blockquote':
+          // Descends: what is inside a quote is decorated by its own case,
+          // exactly as it would be outside one. `decorateBlockquote` draws the
+          // bars and hides the markers of the whole quote from its outermost
+          // node, and does nothing for a nested one.
           decorateBlockquote(view, node.node, builder);
-          return false;
+          break;
       }
     },
   });
