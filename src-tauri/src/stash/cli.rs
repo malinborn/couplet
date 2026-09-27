@@ -6,7 +6,7 @@
 //! An agent never gets the whole stash: search answers snippets, list answers
 //! metadata, and only `get` returns text — of one entry, capped.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -1048,6 +1048,185 @@ pub fn parse_stash_args(args: &[String]) -> Result<StashCli, String> {
         product,
         socket,
     })
+}
+
+/// One parsed verb, run. `stdin_text` is the text of a note to add.
+pub fn execute(ctx: &Ctx, verb: &StashVerb, stdin_text: Option<&str>) -> StashAnswer {
+    match verb {
+        StashVerb::Search(args) => search(ctx, args),
+        StashVerb::List(args) => list(ctx, args),
+        StashVerb::Get { id, lines } => get(ctx, id, *lines),
+        StashVerb::Add {
+            tags,
+            path: Some(path),
+        } => add_path(ctx, path, tags),
+        StashVerb::Add { tags, path: None } => add_note(ctx, stdin_text.unwrap_or(""), tags),
+        StashVerb::Tag { id, add, remove } => tag(ctx, id, add, remove),
+    }
+}
+
+/// `2026-09-27T01:55:12+03:00` → `2026-09-27 01:55`.
+fn short_time(iso: &str) -> String {
+    iso.get(..16)
+        .map(|s| s.replacen('T', " ", 1))
+        .unwrap_or_else(|| iso.to_string())
+}
+
+fn entry_line(e: &AgentEntry) -> String {
+    let mut line = format!(
+        "{}  {}  {}",
+        e.id,
+        e.kind.as_str(),
+        e.title.as_deref().unwrap_or("(untitled)")
+    );
+    for t in &e.tags {
+        line.push_str(&format!("  #{t}"));
+    }
+    if let Some(r) = &e.repo {
+        line.push_str(&format!("  [{r}]"));
+    }
+    if let Some(s) = &e.stashed_at {
+        line.push_str(&format!("  {}", short_time(s)));
+    }
+    line
+}
+
+/// Search/list as text: a row per entry (a hit adds its snippet on one
+/// indented line), then `N of TOTAL in <scope>` with the next page's cursor,
+/// then the hint.
+fn render_rows(a: &StashAnswer) -> String {
+    let mut out = Vec::new();
+    for h in a.hits.iter().flatten() {
+        out.push(entry_line(&h.entry));
+        out.push(format!("    {}", h.snippet.replace('\n', " ")));
+    }
+    for e in a.entries.iter().flatten() {
+        out.push(entry_line(e));
+    }
+    let shown = a
+        .hits
+        .as_ref()
+        .map(Vec::len)
+        .or_else(|| a.entries.as_ref().map(Vec::len))
+        .unwrap_or(0);
+    let scope = match &a.scope {
+        Some(Scope { repo: Some(r), .. }) => format!(" in repo {r}"),
+        _ => " in the whole stash".to_string(),
+    };
+    let mut footer = format!("{shown} of {}{scope}", a.total.unwrap_or(0));
+    if let Some(c) = &a.next_cursor {
+        footer.push_str(&format!(" · next page: --cursor {c}"));
+    }
+    out.push(footer);
+    out.extend(a.hint.clone());
+    out.join("\n")
+}
+
+/// `(stdout, stderr)` for one answer (plan D13). JSON: the answer, one line,
+/// even on failure — exactly the MCP tool result text. Text: rows for
+/// search/list, the raw note for get (so `couplet stash get ID > file`
+/// works; the "more lines" hint goes to stderr), one row for add/tag; an
+/// error is words on stderr and nothing on stdout.
+pub fn render(answer: &StashAnswer, verb: &StashVerb, json: bool) -> (String, String) {
+    if json {
+        let line = serde_json::to_string(answer).unwrap_or_else(|_| {
+            r#"{"ok":false,"error":"failed to encode the answer"}"#.to_string()
+        });
+        return (line, String::new());
+    }
+    if !answer.ok {
+        return (
+            String::new(),
+            format!("couplet: {}", answer.error.as_deref().unwrap_or("failed")),
+        );
+    }
+    let hint_err = || {
+        answer
+            .hint
+            .as_ref()
+            .map(|h| format!("couplet: {h}"))
+            .unwrap_or_default()
+    };
+    match verb {
+        StashVerb::Search(_) | StashVerb::List(_) => (render_rows(answer), String::new()),
+        StashVerb::Get { .. } => match (&answer.text, &answer.entry) {
+            (Some(text), _) => (text.clone(), hint_err()),
+            (None, Some(e)) => (e.path.clone(), hint_err()),
+            (None, None) => (String::new(), String::new()),
+        },
+        StashVerb::Add { .. } | StashVerb::Tag { .. } => {
+            let mut line = answer.entry.as_ref().map(entry_line).unwrap_or_default();
+            if answer.created == Some(false) {
+                line.push_str("  (already in the stash)");
+            }
+            (line, String::new())
+        }
+    }
+}
+
+fn print(out: &str, err: &str) {
+    if !out.is_empty() {
+        println!("{out}");
+    }
+    if !err.is_empty() {
+        eprintln!("{err}");
+    }
+}
+
+/// `couplet stash …` — reached as `couplet ai stash …` (plan D13). `args` is
+/// everything after `stash`. Returns the exit code: 0 ok, 1 rejected
+/// (`ok:false`, including "couplet has not run on this Mac yet"), 2 usage
+/// error, no text on stdin, or bad location flags. Never launches the app.
+pub fn run(args: &[String]) -> i32 {
+    let cli = match parse_stash_args(args) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let fail = |msg: &str| {
+        let (out, err) = render(&StashAnswer::error(msg), &cli.verb, cli.json);
+        print(&out, &err);
+        2
+    };
+    let loc = match location_from_flags(cli.product.as_deref(), cli.socket.as_deref()) {
+        Ok(l) => l,
+        Err(e) => return fail(&e),
+    };
+    let stdin_text = if matches!(cli.verb, StashVerb::Add { path: None, .. }) {
+        // A terminal would wait for text nobody knows to type.
+        if std::io::stdin().is_terminal() {
+            return fail("pipe the note's text on stdin (or add a file with --path)");
+        }
+        let mut buf = String::new();
+        if std::io::stdin().read_to_string(&mut buf).is_err() {
+            return fail("failed to read stdin (the note must be UTF-8 text)");
+        }
+        if buf.trim().is_empty() {
+            return fail("refusing to add an empty note (pipe its text on stdin)");
+        }
+        Some(buf)
+    } else {
+        None
+    };
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(e) => return fail(&format!("cannot read the current directory: {e}")),
+    };
+    let ctx = Ctx {
+        loc: &loc,
+        cwd: &cwd,
+        now_ms: clock::now_ms(),
+    };
+    let answer = execute(&ctx, &cli.verb, stdin_text.as_deref());
+    let (out, err) = render(&answer, &cli.verb, cli.json);
+    print(&out, &err);
+    if answer.ok {
+        0
+    } else {
+        1
+    }
 }
 
 #[cfg(test)]
@@ -2603,5 +2782,217 @@ mod tests {
         assert!(parse_stash_args(&[])
             .unwrap_err()
             .contains("couplet stash search"));
+    }
+
+    fn sample_entry() -> AgentEntry {
+        AgentEntry {
+            id: "s1-a".to_string(),
+            kind: StashKind::Note,
+            title: Some("HDMI в переговорке".to_string()),
+            path: "/Users/me/couplet/2026-09-27-0155-a3f9.md".to_string(),
+            repo: Some("couplet".to_string()),
+            tags: vec!["infra".to_string()],
+            stashed_at: Some("2026-09-27T01:55:12+03:00".to_string()),
+            modified_at: "2026-09-27T01:50:00+03:00".to_string(),
+        }
+    }
+
+    fn search_verb() -> StashVerb {
+        StashVerb::Search(AgentSearchArgs {
+            query: "hdmi".to_string(),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn json_is_exactly_one_line_on_stdout() {
+        let answer = StashAnswer {
+            ok: true,
+            text: Some("a\nb".to_string()),
+            ..Default::default()
+        };
+        let (out, err) = render(
+            &answer,
+            &StashVerb::Get {
+                id: "x".to_string(),
+                lines: None,
+            },
+            true,
+        );
+        assert_eq!((out.lines().count(), err.as_str()), (1, ""));
+        assert_eq!(
+            serde_json::from_str::<StashAnswer>(&out).unwrap(),
+            answer,
+            "exactly the answer: the MCP tool result text"
+        );
+        let failed = render(
+            &StashAnswer::error("no stash entry x"),
+            &search_verb(),
+            true,
+        );
+        assert_eq!(
+            failed,
+            (
+                r#"{"ok":false,"error":"no stash entry x"}"#.to_string(),
+                String::new()
+            )
+        );
+    }
+
+    #[test]
+    fn without_json_an_error_is_words_on_stderr_only() {
+        let (out, err) = render(
+            &StashAnswer::error("no stash entry x"),
+            &search_verb(),
+            false,
+        );
+        assert_eq!(
+            (out.as_str(), err.as_str()),
+            ("", "couplet: no stash entry x")
+        );
+    }
+
+    #[test]
+    fn search_text_is_one_row_per_hit_with_its_snippet_and_a_footer() {
+        let answer = StashAnswer {
+            ok: true,
+            scope: Some(Scope {
+                repo: Some("couplet".to_string()),
+                all: false,
+            }),
+            total: Some(7),
+            hits: Some(vec![AgentHit {
+                entry: sample_entry(),
+                snippet: "…HDMI\nчерез адаптер…".to_string(),
+            }]),
+            next_cursor: Some("c2".to_string()),
+            ..Default::default()
+        };
+        let (out, _) = render(&answer, &search_verb(), false);
+        assert_eq!(
+            out,
+            "s1-a  note  HDMI в переговорке  #infra  [couplet]  2026-09-27 01:55\n    …HDMI через адаптер…\n1 of 7 in repo couplet · next page: --cursor c2"
+        );
+    }
+
+    #[test]
+    fn an_empty_list_says_why() {
+        let answer = StashAnswer {
+            ok: true,
+            scope: Some(Scope {
+                repo: None,
+                all: true,
+            }),
+            total: Some(0),
+            entries: Some(vec![]),
+            hint: Some("the stash is empty".to_string()),
+            ..Default::default()
+        };
+        let (out, err) = render(&answer, &StashVerb::List(ListArgs::default()), false);
+        assert_eq!(
+            (out.as_str(), err.as_str()),
+            ("0 of 0 in the whole stash\nthe stash is empty", "")
+        );
+    }
+
+    #[test]
+    fn get_text_prints_the_note_raw_and_the_rest_hint_on_stderr() {
+        let answer = StashAnswer {
+            ok: true,
+            entry: Some(sample_entry()),
+            text: Some("# HDMI\n\nтекст".to_string()),
+            hint: Some("showing lines 1–500 of 1200; the rest with lines 501:".to_string()),
+            ..Default::default()
+        };
+        let (out, err) = render(
+            &answer,
+            &StashVerb::Get {
+                id: "s1-a".to_string(),
+                lines: None,
+            },
+            false,
+        );
+        assert_eq!(
+            (out.as_str(), err.as_str()),
+            (
+                "# HDMI\n\nтекст",
+                "couplet: showing lines 1–500 of 1200; the rest with lines 501:"
+            )
+        );
+    }
+
+    #[test]
+    fn a_repeated_add_says_it_was_already_there() {
+        let answer = StashAnswer {
+            ok: true,
+            entry: Some(sample_entry()),
+            created: Some(false),
+            ..Default::default()
+        };
+        let (out, _) = render(
+            &answer,
+            &StashVerb::Add {
+                tags: vec![],
+                path: Some("x".to_string()),
+            },
+            false,
+        );
+        assert!(out.ends_with("(already in the stash)"), "{out}");
+    }
+
+    #[test]
+    fn execute_routes_each_verb_to_its_operation() {
+        let loc = temp_location("execute", true);
+        let cwd = outside_git();
+        let added = execute(
+            &ctx(&loc, &cwd),
+            &StashVerb::Add {
+                tags: vec![],
+                path: None,
+            },
+            Some("# из stdin"),
+        );
+        let id = added.entry.unwrap().id;
+        let got = execute(
+            &ctx(&loc, &cwd),
+            &StashVerb::Get {
+                id: id.clone(),
+                lines: None,
+            },
+            None,
+        );
+        assert_eq!(got.text.as_deref(), Some("# из stdin"));
+        let tagged = execute(
+            &ctx(&loc, &cwd),
+            &StashVerb::Tag {
+                id: id.clone(),
+                add: vec!["x".to_string()],
+                remove: vec![],
+            },
+            None,
+        );
+        assert_eq!(tagged.entry.map(|e| e.tags), Some(vec!["x".to_string()]));
+        let listed = execute(
+            &ctx(&loc, &cwd),
+            &StashVerb::List(ListArgs::default()),
+            None,
+        );
+        assert_eq!(listed.total, Some(1));
+        let found = execute(
+            &ctx(&loc, &cwd),
+            &StashVerb::Search(search_all("stdin")),
+            None,
+        );
+        assert_eq!(found.total, Some(1));
+    }
+
+    #[test]
+    fn the_command_line_fails_before_any_disk_access_on_bad_input() {
+        // Usage errors and bad location flags: exit 2, read before stdin or
+        // disk (the process cwd and real stash are never reached).
+        assert_eq!(run(&argv(&[])), 2);
+        assert_eq!(run(&argv(&["dump"])), 2);
+        assert_eq!(run(&argv(&["list", "--socket", "/tmp/nobody.sock"])), 2);
+        assert_eq!(run(&argv(&["list", "--product", "../x", "--json"])), 2);
     }
 }

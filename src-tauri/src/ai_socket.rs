@@ -1321,7 +1321,7 @@ enum CliVerb {
     Watch,
 }
 
-const USAGE: &str = "usage: couplet ai show <file> [--line N | --find TEXT] [-t N] [-b | -f] [--transient] [--socket PATH]\n       couplet ai edit <file> [--show] [--allow-empty] [-t N] [--socket PATH]\n       couplet ai ask <file> --question TEXT --option TEXT [--option TEXT ...] [--multi] [--free-text] [--at-line N | --at-find TEXT] [--timeout SECS] [-t N] [--socket PATH]\n       couplet ai open <file>... [-t N] [-b | -f] [--socket PATH]\n       couplet ai ls [--json] [--socket PATH]\n       couplet ai close <file> [--socket PATH]\n       couplet ai help\n       couplet ai agent [--mcp]\n       couplet ai question [<file>]\n       couplet ai answer <file> --id ID\n       couplet ai watch [<dir>]";
+const USAGE: &str = "usage: couplet ai show <file> [--line N | --find TEXT] [-t N] [-b | -f] [--transient] [--socket PATH]\n       couplet ai edit <file> [--show] [--allow-empty] [-t N] [--socket PATH]\n       couplet ai ask <file> --question TEXT --option TEXT [--option TEXT ...] [--multi] [--free-text] [--at-line N | --at-find TEXT] [--timeout SECS] [-t N] [--socket PATH]\n       couplet ai open <file>... [-t N] [-b | -f] [--socket PATH]\n       couplet ai ls [--json] [--socket PATH]\n       couplet ai close <file> [--socket PATH]\n       couplet ai help\n       couplet ai agent [--mcp]\n       couplet ai question [<file>]\n       couplet ai answer <file> --id ID\n       couplet ai watch [<dir>]\n       couplet ai stash search|list|get|add|tag ... (couplet ai stash for its usage)";
 
 /// `-t N` / `--window N`: a window number, plain digits from 1 (spec §3: the
 /// CLI has no `#`).
@@ -1645,7 +1645,12 @@ USAGE
   couplet question [<file>]
   couplet answer <file> --id ID < reply-text
   couplet watch [<dir>]
-  couplet mcp [--socket PATH]
+  couplet stash search <query> [--tag T] [--repo R | --all] [--kind note|file] [--limit N] [--cursor C] [--json]
+  couplet stash list [--since S] [--tag T] [--repo R | --all] [--kind note|file] [--sort changed|opened|kind] [--json]
+  couplet stash get <id> [--lines A:B] [--json]
+  couplet stash add [--tag T ...] < text  |  couplet stash add --path <file> [--tag T ...]
+  couplet stash tag <id> [--add T ...] [--remove T ...]
+  couplet mcp [--socket PATH] [--product NAME]
   couplet help
   couplet agent [--mcp]
 
@@ -1803,6 +1808,46 @@ COMMENTS — the reverse direction: the user comments, you answer
     couplet question docs/spec.md
     echo "Because nginx was broken on that host." | couplet answer docs/spec.md --id c-7f3a2c
 
+STASH — the notes and file references the user put away («тайник»)
+  couplet stash search <query> ...    Best matches: id, title, kind, tags, when
+                                      put away, path, and a ~200-character
+                                      snippet around the match. Never full text.
+  couplet stash list [--since S] ...  Metadata only: what was put away, when,
+                                      with which tags. S: today, yesterday, 12h,
+                                      7d, YYYY-MM-DD or unix ms.
+  couplet stash get <id> [--lines A:B]
+                                      The text of ONE note — at most 500 lines
+                                      without --lines; a file entry prints its
+                                      path. Nothing is marked as opened.
+  couplet stash add [--tag T ...] < text
+  couplet stash add --path <file> [--tag T ...]
+                                      A new note from stdin, or a reference to a
+                                      file (the file is never changed). Adding a
+                                      file twice keeps one entry.
+  couplet stash tag <id> --add T --remove U
+
+  LOCAL: these read and write the stash database directly — couplet does not
+  need to be running (a running couplet is told about writes and refreshes).
+  A write before couplet has ever been opened on this Mac is refused.
+  Scope: the git repository of the current directory; --all for everything,
+  --repo NAME (or a path inside a repository) for another. Search/list print
+  the scope, and a hint when widening might help. The trash is never shown.
+  Search first, get one, never dump: read the snippets, then get only the
+  entry you need.
+  --json prints one line: {"ok":true,"scope":{"repo":"couplet"},"total":7,
+  "hits":[{"id":…,"snippet":…}],"next_cursor":"…"} — the same text the MCP
+  stash_* tools return. No next_cursor: the last page. A search's next page
+  re-runs the search: an entry changed between pages may be
+  skipped or repeated (list pages are stable).
+  Exit codes: 0 ok, 1 rejected ("ok":false), 2 usage error, no text on
+  stdin, or bad --product/--socket. Without --json an error is one line on
+  stderr, "couplet: <error>".
+
+  Examples:
+    couplet stash search "HDMI переговорка" --tag infra --limit 5 --json
+    couplet stash get s1790378408605-3f9a --lines 1:80
+    echo "# Идея" | couplet stash add --tag ideas
+
 JSON RESPONSE CONTRACT
   show, edit, ask, close, ls --json and a routed open each print exactly one
   line of JSON to stdout. Without CLAUDECODE (a human), the error of a routed
@@ -1835,12 +1880,13 @@ EXIT CODES
         didn't start in time.
 
 MCP — stdio MCP server exposing show/edit/ask as tools, for agents that speak MCP
-  couplet mcp [--socket PATH]
+  couplet mcp [--socket PATH] [--product NAME]
       Runs a Model Context Protocol server on stdin/stdout instead of the CLI
       verbs above: same show/edit/ask operations, wrapped as MCP tools over
       JSON-RPC 2.0. Launches couplet via `open` if the command socket is down
       (skipped when --socket is given explicitly). Register once with:
         claude mcp add --scope user couplet -- couplet mcp
+      couplet mcp --product couplet-dev targets a dev build (socket and stash).
       See docs/ai-interface.md ("MCP server") for the generic mcpServers JSON
       shape and the full method/tool reference.
 
@@ -1865,6 +1911,9 @@ DEV BUILDS
     Release (couplet)   /tmp/couplet_cmd.sock
     Dev (couplet-dev)   /tmp/couplet_dev_cmd.sock
   Pass --socket explicitly to target a dev build's socket.
+  For stash verbs pass --product couplet-dev instead: it names the dev
+  build's stash database, notes folder and socket together. --socket alone
+  is refused there, so a dev call can never write into the release stash.
 
 See docs/ai-interface.md in the couplet repository for the full protocol,
 routing behavior, and troubleshooting."###
@@ -2120,6 +2169,11 @@ fn run_ls(socket_path: &Path, json: bool) -> i32 {
 /// binary path, `args[1]` is `"ai"`); everything from `args[2]` on is the verb
 /// and its flags. Returns the process exit code.
 pub fn run_ai_cli(args: Vec<String>) -> i32 {
+    // `stash` has its own parser and talks to stash.db directly (plan D13) —
+    // no command socket except the best-effort notify, never a launch.
+    if args.get(2).map(String::as_str) == Some("stash") {
+        return crate::stash::cli::run(&args[3..]);
+    }
     let parsed = match parse_cli_args(&args[2.min(args.len())..]) {
         Ok(p) => p,
         Err(e) => {
@@ -3655,5 +3709,41 @@ mod tests {
         assert_eq!(stash_ids(Some(vec!["x".to_string()])), None, "nothing valid: no ids at all");
         let many: Vec<String> = (0..80).map(|i| format!("s{i}-00ab")).collect();
         assert_eq!(stash_ids(Some(many)).map(|v| v.len()), Some(STASH_CHANGED_MAX_IDS));
+    }
+
+    #[test]
+    fn ai_stash_is_handed_to_the_stash_cli_before_the_verb_parser() {
+        // The `ai` parser does not know `stash`…
+        assert!(parse_cli_args(&args(&["stash", "list"])).unwrap_err().contains("unknown command"));
+        // …so a bare `stash` is the stash parser's usage error (exit 2, read
+        // before any stdin or disk)…
+        assert_eq!(run_ai_cli(args(&["couplet", "ai", "stash"])), 2);
+        // …and only the stash CLI answers a search with exit 0: a product
+        // whose stash does not exist reads as an empty page and creates
+        // nothing (A12). Its name is this test's own, never a real build's.
+        let product = format!("couplet-handoff-test-{}", std::process::id());
+        let app_dir = dirs::data_dir().unwrap().join(&product);
+        let notes_dir = dirs::home_dir().unwrap().join(&product);
+        assert!(!app_dir.exists() && !notes_dir.exists());
+        assert_eq!(run_ai_cli(args(&["couplet", "ai", "stash", "search", "x", "--all", "--product", &product, "--json"])), 0);
+        assert!(!app_dir.exists() && !notes_dir.exists(), "a read creates nothing");
+    }
+
+    #[test]
+    fn help_and_usage_teach_the_stash_verbs() {
+        let help = help_text();
+        for needle in [
+            "couplet stash search",
+            "couplet stash list",
+            "couplet stash get",
+            "couplet stash add",
+            "couplet stash tag",
+            "Search first, get one, never dump",
+            "--product couplet-dev",
+            "skipped or repeated",
+        ] {
+            assert!(help.contains(needle), "help missing {needle}");
+        }
+        assert!(USAGE.contains("couplet ai stash"));
     }
 }
