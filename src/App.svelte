@@ -81,7 +81,7 @@
   import { showStash } from './lib/stash/stash-state';
   import { handleStashDropTab } from './lib/stash/stash-drop';
   import { entryTitle } from './lib/stash/stash-view';
-  import { isStandingStashNote, type StashToastNote } from './lib/stash/stash-toast';
+  import { isStandingStashNote, trashFailureNote, type StashToastNote } from './lib/stash/stash-toast';
   import type { StashEntry, TagChange } from './lib/stash/types';
   import { moveIds } from './lib/tabs/drawer-geometry';
   import { createStashMarks } from './lib/stash/stash-marks.svelte';
@@ -1070,7 +1070,7 @@
     const title = entryTitle(entry, stashUntitled());
     const outcome = await stashStore.restoreEntry(entry);
     if (outcome.kind === 'restored') stashNotice({ what: 'restored', title, hiddenBy: outcome.hiddenBy });
-    else if (outcome.kind === 'failed') stashNotice({ what: 'error', message: outcome.message });
+    else if (outcome.kind === 'failed') stashNotice(trashFailureNote('restore', title, outcome.message));
   }
 
   /** «удалить навсегда» (stage 06): no confirmation (plan D15). */
@@ -1078,7 +1078,7 @@
     const title = entryTitle(entry, stashUntitled());
     const outcome = await stashStore.purgeEntry(entry);
     if (outcome.kind === 'purged') stashNotice({ what: 'purged', title });
-    else if (outcome.kind === 'failed') stashNotice({ what: 'error', message: outcome.message });
+    else if (outcome.kind === 'failed') stashNotice(trashFailureNote('purge', title, outcome.message));
   }
 
   /** A tag chip added or removed on a card; the drawer pops its own additions (`markNewTags`). */

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { TRASH_DAYS, filterTrash, sortTrash, trashDaysLeft } from './trash-view';
+import { TRASH_DAYS, TRASH_HELD_ERROR, filterTrash, sortTrash, trashDaysLeft } from './trash-view';
 import { formatWhen, whenOf } from './stash-view';
 import type { StashEntry } from './types';
 
@@ -100,5 +100,14 @@ describe('filterTrash', () => {
 
   it('keeps the input order (the trash is sorted before it is filtered)', () => {
     expect(filterTrash(list, 'с', untitled).map((e) => e.id)).toEqual(['vpn', 'shop', 'ideas']);
+  });
+});
+
+describe('TRASH_HELD_ERROR', () => {
+  it('is the exact string stash_restore / stash_purge reject with while a tab holds the note', () => {
+    const rust = readFileSync(RUST, 'utf8');
+    const m = /pub(?:\(crate\))? const HELD_ERROR: &str = "([^"]*)";/.exec(rust);
+    expect(m).not.toBeNull();
+    expect(m?.[1]).toBe(TRASH_HELD_ERROR);
   });
 });

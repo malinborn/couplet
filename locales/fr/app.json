@@ -375,5 +375,7 @@
   "toast.stash.kept_unsaved": "{title} is open in #{number} and not saved yet — not deleted",
   "toast.stash.kept_timeout": "Window #{number} did not answer — {title} not deleted",
   "toast.stash.kept_open": "{title} was opened again in #{number} — not deleted",
-  "toast.stash.kept_busy": "{title} in #{number} is waiting for your answer to an agent — not deleted"
+  "toast.stash.kept_busy": "{title} in #{number} is waiting for your answer to an agent — not deleted",
+  "toast.stash.held_restore": "{title} is open in a tab — close it to restore",
+  "toast.stash.held_purge": "{title} is open in a tab — close it to delete forever"
 }

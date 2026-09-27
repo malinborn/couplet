@@ -11,7 +11,7 @@
  * a drawer IPC call that failed (list, tag, delete, move).
  */
 import { plural, t } from '../i18n';
-import { TRASH_DAYS } from './trash-view';
+import { TRASH_DAYS, TRASH_HELD_ERROR } from './trash-view';
 import type { KeptReason } from './types';
 
 export type StashToastNote =
@@ -55,13 +55,29 @@ export type StashToastNote =
    * A delete that did not happen: a tab in window `label` still holds the
    * note. Stands until dismissed; «Перейти» shows that window.
    */
-  | { what: 'kept'; reason: KeptReason; title: string; label: string; number: number | null };
+  | { what: 'kept'; reason: KeptReason; title: string; label: string; number: number | null }
+  /**
+   * «вернуть» / «удалить навсегда» refused: a tab holds the trashed note
+   * (`TRASH_HELD_ERROR`). Stands until dismissed: the human has to close it.
+   */
+  | { what: 'held'; action: TrashAction; title: string };
+
+/** The two actions on a trash card. */
+export type TrashAction = 'restore' | 'purge';
 
 /** The notes that stand until dismissed: something failed or was refused, and the human has to act. */
-export type StandingStashNote = Extract<StashToastNote, { what: 'error' | 'kept' | 'pull-failed' }>;
+export type StandingStashNote = Extract<StashToastNote, { what: 'error' | 'kept' | 'pull-failed' | 'held' }>;
 
 export function isStandingStashNote(note: StashToastNote): note is StandingStashNote {
-  return note.what === 'error' || note.what === 'kept' || note.what === 'pull-failed';
+  return note.what === 'error' || note.what === 'kept' || note.what === 'pull-failed' || note.what === 'held';
+}
+
+/**
+ * A trash card's action failed: Rust's «a tab holds it» refusal becomes words
+ * the human can act on; anything else stays the plain error with its message.
+ */
+export function trashFailureNote(action: TrashAction, title: string, message: string): StashToastNote {
+  return message === TRASH_HELD_ERROR ? { what: 'held', action, title } : { what: 'error', message };
 }
 
 export interface StashToastText {
@@ -130,5 +146,7 @@ export function stashToastText(note: StashToastNote): StashToastText {
       return { text: t('toast.stash.purged', { title: note.title }), dim: '' };
     case 'kept':
       return { text: t(`toast.stash.kept_${note.reason}`, { title: note.title, number: note.number ?? '?' }), dim: '' };
+    case 'held':
+      return { text: t(`toast.stash.held_${note.action}`, { title: note.title }), dim: '' };
   }
 }

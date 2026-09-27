@@ -12,6 +12,13 @@ import type { StashEntry } from './types';
 export const TRASH_DAYS = 30;
 
 /**
+ * Mirrors `stash::trash::HELD_ERROR`: `stash_restore` / `stash_purge` refuse
+ * with exactly this while a tab holds the trashed note. `trash-view.test.ts`
+ * reads the Rust file.
+ */
+export const TRASH_HELD_ERROR = 'the note is open in a tab';
+
+/**
  * «удалится через N дн.» (mockup `daysLeft`): the retention minus the calendar
  * days since the deletion, never below 1 — the purge runs once a day, so an
  * overdue note is still there until it does.

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { installCatalog } from '../i18n';
-import { isStandingStashNote, stashToastText, type StashToastNote } from './stash-toast';
+import { isStandingStashNote, stashToastText, trashFailureNote, type StashToastNote } from './stash-toast';
+import { TRASH_HELD_ERROR } from './trash-view';
 import type { KeptReason } from './types';
 
 beforeEach(() => installCatalog('ru'));
@@ -124,6 +125,7 @@ describe('isStandingStashNote (review M3)', () => {
       { what: 'error', message: 'x' },
       { what: 'kept', reason: 'busy', title: 'a', label: 'editor-2', number: 2 },
       { what: 'pull-failed', number: 2, label: 'editor-2' },
+      { what: 'held', action: 'restore', title: 'a' },
     ];
     const quiet: StashToastNote[] = [
       put({}),
@@ -136,5 +138,25 @@ describe('isStandingStashNote (review M3)', () => {
     ];
     for (const note of standing) expect(isStandingStashNote(note)).toBe(true);
     for (const note of quiet) expect(isStandingStashNote(note)).toBe(false);
+  });
+});
+
+describe('trashFailureNote', () => {
+  it('a note a tab holds says so and what to do, in its own words for restore and purge', () => {
+    installCatalog('ru');
+    const restore = trashFailureNote('restore', 'Планы', TRASH_HELD_ERROR);
+    const purge = trashFailureNote('purge', 'Планы', TRASH_HELD_ERROR);
+    expect(stashToastText(restore)).toEqual({
+      text: 'Заметка Планы открыта во вкладке — закройте её, чтобы вернуть',
+      dim: '',
+    });
+    expect(stashToastText(purge).text).toBe('Заметка Планы открыта во вкладке — закройте её, чтобы удалить навсегда');
+    expect(isStandingStashNote(restore)).toBe(true);
+    installCatalog('en');
+    expect(stashToastText(purge).text).toBe('Планы is open in a tab — close it to delete forever');
+  });
+
+  it('any other failure stays the plain error with its message', () => {
+    expect(trashFailureNote('purge', 'Планы', 'disk full')).toEqual({ what: 'error', message: 'disk full' });
   });
 });
