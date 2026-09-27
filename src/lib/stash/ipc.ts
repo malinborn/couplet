@@ -1,5 +1,13 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { PutAwayResult, StashEntry, StashKind, WindowProject } from './types';
+import type {
+  DeleteOutcome,
+  PullAnswer,
+  PutAwayResult,
+  StashEntry,
+  StashKind,
+  TabHolder,
+  WindowProject,
+} from './types';
 
 /**
  * Typed wrappers over the stash commands (roadmap «Tauri commands»), one per
@@ -72,4 +80,47 @@ export function stashEntryForPath(path: string): Promise<StashEntry | null> {
 /** The calling window's project; its `repo` is a new note's `repo` (roadmap A3). */
 export function windowProject(): Promise<WindowProject> {
   return invoke<WindowProject>('window_project');
+}
+
+// --- stash stage 04: the drawer ---
+
+/** «убрать из тайника»: a file reference goes, the file stays. A note is refused until stage 06's trash. */
+export function stashDelete(id: string): Promise<DeleteOutcome> {
+  return invoke<DeleteOutcome>('stash_delete', { id });
+}
+
+/** Per path, the other window holding it («открыта в #N»); `null` for nobody or this window. */
+export function tabHolders(paths: string[]): Promise<(TabHolder | null)[]> {
+  return invoke<(TabHolder | null)[]>('tab_holders', { paths });
+}
+
+/** Open an entry here: our own tab is activated, another window's is asked to move here (`tab-pull`). */
+export function requestTabMove(path: string): Promise<PullAnswer> {
+  return invoke<PullAnswer>('tab_request_move', { path });
+}
+
+/** `stash_list`'s own page maximum (`MAX_LIMIT`, `entries.rs`). */
+export const LIST_PAGE = 500;
+/** 20 000 entries: a cursor that never ends must not spin forever. */
+export const LIST_MAX_PAGES = 40;
+
+/**
+ * The whole live stash — the drawer filters and sorts on the client. Every page
+ * keeps the default sort: a cursor is mode-prefixed (roadmap A9) and valid only
+ * for the sort that issued it.
+ */
+export async function listAllEntries(
+  page: (query: StashListQuery) => Promise<StashListPage> = stashList
+): Promise<StashEntry[]> {
+  const out: StashEntry[] = [];
+  let cursor: string | undefined;
+  for (let i = 0; i < LIST_MAX_PAGES; i++) {
+    const query: StashListQuery = { limit: LIST_PAGE, deleted: false };
+    if (cursor !== undefined) query.cursor = cursor;
+    const res = await page(query);
+    out.push(...res.entries);
+    if (!res.nextCursor) break;
+    cursor = res.nextCursor;
+  }
+  return out;
 }

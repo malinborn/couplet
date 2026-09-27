@@ -138,6 +138,20 @@ export function onStashChanged(
   });
 }
 
+/** Stash stage 04: another window asks for the tab holding `path` (`tab_request_move`). */
+export interface TabPullRequest {
+  path: string;
+  /** The window label the tab should move to. */
+  target: string;
+}
+
+/** Targeted at the holder alone; listened to per window like every targeted event here. */
+export function onTabPull(handler: (request: TabPullRequest) => void): Promise<() => void> {
+  return getCurrentWebviewWindow().listen<TabPullRequest>('tab-pull', (event) => {
+    handler(event.payload);
+  });
+}
+
 /** Emitted by Rust after windows from the previous session have been reopened. */
 export function onSessionRestored(handler: (count: number) => void): Promise<() => void> {
   return listen<number>('session-restored', (event) => {

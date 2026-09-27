@@ -47,3 +47,27 @@ export interface WindowProject {
   root: string | null;
   repo: string | null;
 }
+
+/** A card's tag edit (`stash_tag`'s `add` / `remove`, stash stage 04). */
+export interface TagChange {
+  add?: string[];
+  remove?: string[];
+}
+
+/** `tab_holders` (stash stage 04): the other window holding an entry's file — «открыта в #N». */
+export interface TabHolder {
+  label: string;
+  number: number | null;
+}
+
+/** `tab_request_move` (stash stage 04): what opening an entry from this window means. */
+export type PullAnswer =
+  | { kind: 'not-open' }
+  | { kind: 'this-window'; tabId: string }
+  | { kind: 'requested'; label: string; number: number | null };
+
+/**
+ * `stash_delete`'s answer. Stage 04 removes file references only; stage 06
+ * widens this to roadmap A7's union (`trashed` with the entry, `kept` with why).
+ */
+export type DeleteOutcome = { kind: 'removed' };
