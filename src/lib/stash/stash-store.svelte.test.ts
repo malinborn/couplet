@@ -216,6 +216,26 @@ describe('stash store', () => {
     expect(s.pulse.has('a')).toBe(false);
   });
 
+  it('«открыта в #N» is re-read alone on request, and again on every reopen (M9)', async () => {
+    let held: (TabHolder | null)[] = [null, null];
+    const d = deps();
+    d.holders.mockImplementation(async () => held);
+    const s = createStashStore(d);
+    s.open();
+    await flush();
+    expect(s.holders.size).toBe(0);
+    held = [{ label: 'editor-4', number: 4 }, null];
+    await s.refreshHolders();
+    expect(s.holders.get('/n/a.md')).toEqual({ label: 'editor-4', number: 4 });
+    expect(d.list, 'the list is not read again').toHaveBeenCalledTimes(1);
+    held = [null, { label: 'editor-5', number: 5 }];
+    s.close();
+    s.open();
+    await flush();
+    expect(s.holders.get('/n/a.md')).toBeUndefined();
+    expect(s.holders.get('/n/b.md')).toEqual({ label: 'editor-5', number: 5 });
+  });
+
   it('a repeat pulse runs its full length and restarts the animation (M7)', () => {
     const s = createStashStore(deps());
     s.markPulse(['a', 'b']);

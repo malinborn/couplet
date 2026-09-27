@@ -2277,6 +2277,8 @@
 
   function handleWindowFocus(): void {
     void tabs.windowFocusChanged(true);
+    // A tab may have moved between windows meanwhile: «открыта в #N» (M9).
+    if (stashStore.state.open) void stashStore.refreshHolders();
   }
 
   onMount(() => {

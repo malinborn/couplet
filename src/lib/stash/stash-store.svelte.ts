@@ -263,6 +263,12 @@ export function createStashStore(deps: StashStoreDeps) {
     },
     reload,
     refreshCounts,
+    /**
+     * «открыта в #N» only (`tab_holders`), not the list: tabs move between
+     * windows without a `stash-changed`. App calls it when the window gains
+     * focus; a (re)open reads it with the list.
+     */
+    refreshHolders: (): Promise<void> => refreshHolders(),
     /** The tabs drawer opened or closed: its stash bar's counts are read on open and kept fresh only while shown. */
     setTabsOpen(open: boolean): void {
       const opening = open && !tabsOpen;
