@@ -42,6 +42,10 @@ pub(crate) struct DraftDirs<'a> {
 pub(crate) struct ImportReport {
     /// Drafts that became a new note on this run.
     pub imported: usize,
+    /// The entry ids of those notes, one per `imported` — what
+    /// `stash-changed` (`imported`) names. A reused note is not here: it was
+    /// made by an earlier run.
+    pub ids: Vec<String>,
     /// Drafts whose note an earlier, interrupted run had already made.
     pub reused: usize,
     /// Drafts moved into `session/.trash/`.
@@ -288,6 +292,7 @@ pub(crate) fn import_drafts(
                 }
                 if created {
                     report.imported += 1;
+                    report.ids.push(entry.id.clone());
                 } else {
                     report.reused += 1;
                 }
@@ -405,6 +410,12 @@ pub(crate) fn run_at_startup(app: &tauri::AppHandle, loaded: Option<Session>) ->
                 for e in &report.errors {
                     eprintln!("stash: draft import: {e}");
                 }
+            }
+            // Best effort: in `setup` no window listens yet, and a drawer
+            // reads the stash when it opens anyway. The event is for any
+            // listener that is already there.
+            if !report.ids.is_empty() {
+                super::emit_changed(app, "imported", Some(report.ids));
             }
             session
         }
@@ -746,6 +757,46 @@ mod tests {
         assert_eq!(again, ImportReport::default());
         assert_eq!(rows(&stash, "entries"), 1);
         assert_eq!(rows(&stash, "draft_imports"), 1);
+    }
+
+    #[test]
+    fn the_report_names_the_entries_it_imported_and_a_no_op_run_names_none() {
+        let (mut stash, _root) = stash_in("drafts-ids");
+        let d = dirs("ids");
+        write_draft(&d, "draft-1.md", b"referenced");
+        write_draft(&d, "untitled-main.md", b"orphaned");
+        let session = one_window(None, vec![untitled("1", "draft-1.md")]);
+
+        let (session, first) = import_drafts(&mut stash, &draft_dirs(&d), Some(session), NOW);
+
+        let mut all: Vec<String> = stash
+            .conn
+            .prepare("SELECT id FROM entries")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        all.sort();
+        let mut ids = first.ids.clone();
+        ids.sort();
+        assert_eq!(first.imported, 2, "{first:?}");
+        assert_eq!(ids, all, "every entry made on this run, once each");
+
+        let (_, again) = import_drafts(&mut stash, &draft_dirs(&d), session, NOW);
+        assert!(again.ids.is_empty(), "{again:?}");
+    }
+
+    #[test]
+    fn a_reused_note_is_not_reported_as_imported() {
+        let (mut stash, _root) = stash_in("drafts-ids-reused");
+        let d = dirs("ids-reused");
+        write_draft(&d, "draft-9.md", b"half done");
+        import_one(&mut stash, &only_draft(&d), None, NOW).unwrap();
+
+        let (_, report) = import_drafts(&mut stash, &draft_dirs(&d), None, NOW);
+        assert_eq!((report.imported, report.reused), (0, 1), "{report:?}");
+        assert!(report.ids.is_empty(), "{report:?}");
     }
 
     #[test]
