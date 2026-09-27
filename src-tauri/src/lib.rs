@@ -198,6 +198,7 @@ pub fn run() {
             stash::commands::stash_tag,
             stash::commands::stash_touch_opened,
             stash::commands::stash_counts,
+            stash::commands::stash_delete,
             recovery::save_recovery,
             recovery::delete_recovery,
             recovery::check_recovery,

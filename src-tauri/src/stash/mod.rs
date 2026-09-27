@@ -143,6 +143,12 @@ impl Enrich for StashCounts {
     }
 }
 
+impl Enrich for DeleteOutcome {
+    fn enrich(self) -> Self {
+        self
+    }
+}
+
 impl Enrich for bool {
     fn enrich(self) -> Self {
         self
@@ -224,6 +230,16 @@ pub struct StashCounts {
     pub stashed_today: usize,
     /// Trashed notes, whatever the repo (roadmap A8).
     pub deleted: usize,
+}
+
+/// `stash_delete`'s answer (roadmap A7). Stage 04 has only the file branch;
+/// stage 06 adds `Trashed { entry }` and `Kept { reason, label, number }` —
+/// not declared yet, because nothing could construct them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum DeleteOutcome {
+    /// A file reference left the stash; the file itself was not touched.
+    Removed,
 }
 
 /// The stash: one database connection and where things live. Synchronous and
@@ -644,6 +660,14 @@ mod tests {
         assert_eq!(
             with_ids,
             serde_json::json!({ "reason": "tagged", "ids": ["s1-0000"] })
+        );
+    }
+
+    #[test]
+    fn delete_outcome_is_tagged_by_kind() {
+        assert_eq!(
+            serde_json::to_value(DeleteOutcome::Removed).unwrap(),
+            serde_json::json!({ "kind": "removed" })
         );
     }
 }

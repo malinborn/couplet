@@ -12,8 +12,8 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use super::db::{self, EntryRow, ENTRY_COLUMNS};
 use super::{
-    ids, notes, ListQuery, ListResult, ListSort, PutAway, PutAwayResult, Stash, StashCounts,
-    StashEntry, StashKind, Tagged,
+    ids, notes, DeleteOutcome, ListQuery, ListResult, ListSort, PutAway, PutAwayResult, Stash,
+    StashCounts, StashEntry, StashKind, Tagged,
 };
 
 /// Preview length in characters (roadmap: "first ~400 chars").
@@ -656,6 +656,47 @@ impl Stash {
         })
     }
 
+    /// «убрать из тайника» for a file reference (stage 04, D13): the entry, its
+    /// tags and its search row go, in one transaction; the file itself is never
+    /// touched. A trashed row refuses (roadmap A8). A note refuses too: its
+    /// text is the user's and leaves only through the trash — stage 06 turns
+    /// this refusal into that move (roadmap A7's `Trashed`/`Kept`).
+    pub fn remove_file_ref(&mut self, id: &str) -> Result<DeleteOutcome, String> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db::err)?;
+        let (rowid, kind, deleted_at): (i64, String, Option<i64>) = tx
+            .query_row(
+                "SELECT rowid, kind, deleted_at FROM entries WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(db::err)?
+            .ok_or_else(|| format!("no stash entry {id}"))?;
+        if deleted_at.is_some() {
+            return Err(format!("in the trash: {id}"));
+        }
+        if kind != StashKind::File.as_str() {
+            return Err(format!(
+                "stash entry {id} is a note: notes leave the stash through the trash (stage 06)"
+            ));
+        }
+        // Unindex before delete: FTS5 has no foreign key to cascade from.
+        // Stage 05 swaps this line for its `unindex_entry`.
+        tx.execute("DELETE FROM entries_fts WHERE rowid = ?1", [rowid])
+            .map_err(db::err)?;
+        // Explicit although `tags` cascades: the cascade holds only while this
+        // connection has `foreign_keys = ON`, and orphan tags would be silent.
+        tx.execute("DELETE FROM tags WHERE entry_id = ?1", [id])
+            .map_err(db::err)?;
+        tx.execute("DELETE FROM entries WHERE id = ?1", [id])
+            .map_err(db::err)?;
+        tx.commit().map_err(db::err)?;
+        Ok(DeleteOutcome::Removed)
+    }
+
     /// Records that a document was opened from the stash. `false` when the
     /// path is not a stash entry (opening any other file is not stash news),
     /// and for a trashed one, which stays inert (roadmap A8).
@@ -861,7 +902,7 @@ mod tests {
     use crate::atomic_write::testkit::scratch;
     use crate::stash::testkit::*;
     use crate::stash::PutAway;
-    use crate::stash::{Enrich, ListQuery, ListResult, ListSort, StashCounts};
+    use crate::stash::{DeleteOutcome, Enrich, ListQuery, ListResult, ListSort, StashCounts};
 
     #[test]
     fn creating_a_note_writes_its_file_and_its_entry() {
@@ -2269,5 +2310,93 @@ mod tests {
                 deleted: 1
             }
         );
+    }
+
+    // --- remove_file_ref (stash stage 04, D13; roadmap A7/A8) ---
+
+    #[test]
+    fn removing_a_file_ref_takes_its_tags_and_leaves_the_file_byte_identical() {
+        let (mut stash, root) = stash_in("remove-ref");
+        let text = "# keep me\n\u{0}\u{00e9}\r\nlast line without newline";
+        let file = user_file(&root, "a.md", text);
+        let before = fs::read(&file).unwrap();
+        let other = user_file(&root, "b.md", "b");
+        let ids: Vec<String> = stash
+            .put_away(&put(vec![file.clone(), other]), T0)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.entry.id)
+            .collect();
+        stash.tag(&ids[0], &["infra".into(), "later".into()], &[]).unwrap();
+        stash.tag(&ids[1], &["keep".into()], &[]).unwrap();
+
+        assert_eq!(stash.remove_file_ref(&ids[0]).unwrap(), DeleteOutcome::Removed);
+
+        assert!(stash.get(&ids[0]).is_err(), "the entry is gone");
+        assert_eq!(rows(&stash, "entries"), 1);
+        assert_eq!(rows(&stash, "tags"), 1, "only the other entry's tag is left");
+        assert_eq!(stash.get(&ids[1]).unwrap().tags, vec!["keep"]);
+        assert_eq!(fs::read(&file).unwrap(), before, "the user's file is never touched");
+    }
+
+    #[test]
+    fn removing_a_file_ref_drops_its_search_row() {
+        let (mut stash, root) = stash_in("remove-ref-fts");
+        let file = user_file(&root, "a.md", "a");
+        let id = stash.put_away(&put(vec![file]), T0).unwrap().remove(0).entry.id;
+        let rowid: i64 = stash
+            .conn
+            .query_row("SELECT rowid FROM entries WHERE id = ?1", [&id], |r| r.get(0))
+            .unwrap();
+        stash
+            .conn
+            .execute(
+                "INSERT INTO entries_fts (rowid, title, body) VALUES (?1, 'a.md', 'a')",
+                [rowid],
+            )
+            .unwrap();
+        stash.remove_file_ref(&id).unwrap();
+        assert_eq!(rows(&stash, "entries_fts"), 0);
+    }
+
+    #[test]
+    fn removing_a_note_is_refused_and_nothing_changes() {
+        let (mut stash, _root) = stash_in("remove-note");
+        let note = stash.create_note("# Мысль\nтекст", None, T0, MSK).unwrap();
+        stash.tag(&note.id, &["ideas".into()], &[]).unwrap();
+        let text = fs::read(&note.path).unwrap();
+
+        let err = stash.remove_file_ref(&note.id).unwrap_err();
+
+        assert!(err.contains("note"), "{err}");
+        assert_eq!(rows(&stash, "entries"), 1);
+        assert_eq!(rows(&stash, "tags"), 1);
+        assert_eq!(fs::read(&note.path).unwrap(), text, "the note's file stays");
+    }
+
+    #[test]
+    fn removing_a_trashed_row_is_refused() {
+        // Roadmap A8: a trashed row is inert.
+        let (mut stash, root) = stash_in("remove-trashed");
+        let file = user_file(&root, "a.md", "a");
+        let id = stash.put_away(&put(vec![file]), T0).unwrap().remove(0).entry.id;
+        set_columns(&stash, &id, &format!("deleted_at = {}", T0 + 1));
+
+        let err = stash.remove_file_ref(&id).unwrap_err();
+
+        assert_eq!(err, format!("in the trash: {id}"));
+        assert_eq!(rows(&stash, "entries"), 1);
+    }
+
+    #[test]
+    fn removing_an_unknown_id_is_refused() {
+        let (mut stash, root) = stash_in("remove-unknown");
+        let file = user_file(&root, "a.md", "a");
+        stash.put_away(&put(vec![file]), T0).unwrap();
+        assert_eq!(
+            stash.remove_file_ref("s1-nope").unwrap_err(),
+            "no stash entry s1-nope"
+        );
+        assert_eq!(rows(&stash, "entries"), 1);
     }
 }

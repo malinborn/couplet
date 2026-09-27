@@ -12,7 +12,7 @@ use tauri::{AppHandle, State};
 
 use super::entries::plan_put_away;
 use super::{
-    clock, emit_changed, Enrich, ListQuery, ListResult, ListSort, PutAway, PutAwayResult, Stash,
+    clock, emit_changed, DeleteOutcome, Enrich, ListQuery, ListResult, ListSort, PutAway, PutAwayResult, Stash,
     StashCounts, StashEntry, StashKind, StashState,
 };
 
@@ -193,6 +193,27 @@ pub async fn stash_touch_opened(
         emit_changed(&app, "opened", None);
     }
     Ok(())
+}
+
+/// «убрать из тайника» (stage 04: file references only; stage 06 adds the
+/// note trash, roadmap A7). The user's file is never touched. Emits `deleted`
+/// with the id, so an open tab drops its «in the stash» mark at once.
+#[tauri::command]
+pub async fn stash_delete(
+    app: AppHandle,
+    state: State<'_, StashState>,
+    id: String,
+) -> Result<DeleteOutcome, String> {
+    let removed_id = id.clone();
+    let outcome = run(&state, move |s| {
+        let now = clock::now_ms();
+        let outcome = s.remove_file_ref(&id)?;
+        s.after_write(now, offset_at(now));
+        Ok(outcome)
+    })
+    .await?;
+    emit_changed(&app, "deleted", Some(vec![removed_id]));
+    Ok(outcome)
 }
 
 #[tauri::command]
