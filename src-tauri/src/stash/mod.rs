@@ -254,6 +254,9 @@ pub enum KeptReason {
     Timeout,
     /// A tab held it again by the time the file was about to move.
     Open,
+    /// The window could not leave that tab: an agent's live question is on
+    /// screen there (review M2).
+    Busy,
 }
 
 /// `stash_delete`'s answer (roadmap A7).
@@ -780,6 +783,7 @@ mod tests {
             serde_json::json!({ "kind": "kept", "reason": "timeout", "label": "main", "number": null })
         );
         assert_eq!(serde_json::to_value(KeptReason::Open).unwrap(), serde_json::json!("open"));
+        assert_eq!(serde_json::to_value(KeptReason::Busy).unwrap(), serde_json::json!("busy"));
     }
 
     #[test]

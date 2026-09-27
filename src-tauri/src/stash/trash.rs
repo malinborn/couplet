@@ -1075,8 +1075,31 @@ pub(crate) enum DropReply {
     Dropped,
     /// The tab's save had not landed; the window kept it (and said so there).
     Refused,
+    /// The window could not leave the tab: an agent's live question is on
+    /// screen there.
+    Busy,
     /// No answer in `DROP_REPLY_TIMEOUT`, or the event could not be sent.
     Timeout,
+}
+
+/// `stash_drop_done`'s optional `reason` for a tab kept (review M2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum DropRefusal {
+    Unsaved,
+    Busy,
+}
+
+impl DropReply {
+    /// The window's answer: `dropped` wins; a refusal without a reason is
+    /// «not saved», as before `reason` existed.
+    pub(crate) fn answered(dropped: bool, reason: Option<DropRefusal>) -> Self {
+        match (dropped, reason) {
+            (true, _) => DropReply::Dropped,
+            (false, Some(DropRefusal::Busy)) => DropReply::Busy,
+            (false, _) => DropReply::Refused,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1114,6 +1137,9 @@ pub(crate) fn delete_flow(env: &impl DeleteEnv, id: &str) -> Result<FlowOutcome,
                 DropReply::Dropped => {}
                 DropReply::Refused => {
                     return Ok(FlowOutcome::Kept { reason: KeptReason::Unsaved, owner })
+                }
+                DropReply::Busy => {
+                    return Ok(FlowOutcome::Kept { reason: KeptReason::Busy, owner })
                 }
                 DropReply::Timeout => {
                     return Ok(FlowOutcome::Kept { reason: KeptReason::Timeout, owner })
@@ -1164,7 +1190,7 @@ pub(crate) struct DropRequests(Mutex<DropInner>);
 #[derive(Default)]
 struct DropInner {
     next: u64,
-    waiting: HashMap<u64, (String, mpsc::Sender<bool>)>,
+    waiting: HashMap<u64, (String, mpsc::Sender<DropReply>)>,
 }
 
 impl DropRequests {
@@ -1173,7 +1199,7 @@ impl DropRequests {
     }
 
     /// A new request to window `label`, and where its answer arrives.
-    pub(crate) fn register(&self, label: &str) -> (u64, mpsc::Receiver<bool>) {
+    pub(crate) fn register(&self, label: &str) -> (u64, mpsc::Receiver<DropReply>) {
         let (tx, rx) = mpsc::channel();
         let mut inner = self.inner();
         inner.next += 1;
@@ -1184,14 +1210,14 @@ impl DropRequests {
 
     /// `false` for an unknown or already answered request, or one asked of
     /// another window — only the window asked may say its tab is gone.
-    pub(crate) fn answer(&self, from_label: &str, request_id: u64, dropped: bool) -> bool {
+    pub(crate) fn answer(&self, from_label: &str, request_id: u64, reply: DropReply) -> bool {
         let mut inner = self.inner();
         match inner.waiting.get(&request_id) {
             Some((label, _)) if label == from_label => {
                 let Some((_, tx)) = inner.waiting.remove(&request_id) else {
                     return false;
                 };
-                tx.send(dropped).is_ok()
+                tx.send(reply).is_ok()
             }
             _ => false,
         }
@@ -2945,6 +2971,7 @@ mod tests {
         for (reply, owners) in [
             (DropReply::Refused, vec![owner("main", 1)]),
             (DropReply::Timeout, vec![owner("main", 1)]),
+            (DropReply::Busy, vec![owner("main", 1)]),
             (DropReply::Dropped, vec![owner("main", 1), owner("editor-2", 2)]),
         ] {
             let (state, _root) = state_in("trash-flow-kept");
@@ -3012,13 +3039,48 @@ mod tests {
     fn drop_requests_accept_an_answer_only_from_the_window_asked() {
         let reqs = DropRequests::default();
         let (id, rx) = reqs.register("editor-2");
-        assert!(!reqs.answer("main", id, true));
-        assert!(reqs.answer("editor-2", id, true));
-        assert!(rx.recv_timeout(std::time::Duration::from_millis(50)).unwrap());
-        assert!(!reqs.answer("editor-2", id, true), "answered twice");
+        assert!(!reqs.answer("main", id, DropReply::Dropped));
+        assert!(reqs.answer("editor-2", id, DropReply::Busy));
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_millis(50)).unwrap(),
+            DropReply::Busy
+        );
+        assert!(!reqs.answer("editor-2", id, DropReply::Dropped), "answered twice");
         let (id2, _rx2) = reqs.register("main");
         reqs.abandon(id2);
-        assert!(!reqs.answer("main", id2, false));
+        assert!(!reqs.answer("main", id2, DropReply::Refused));
+    }
+
+    #[test]
+    fn a_drop_answer_says_why_the_tab_was_kept() {
+        // M2: `stash_drop_done { dropped, reason? }`; `dropped` wins, a
+        // refusal without a reason is the old «not saved».
+        assert_eq!(DropReply::answered(true, None), DropReply::Dropped);
+        assert_eq!(DropReply::answered(true, Some(DropRefusal::Busy)), DropReply::Dropped);
+        assert_eq!(DropReply::answered(false, None), DropReply::Refused);
+        assert_eq!(DropReply::answered(false, Some(DropRefusal::Unsaved)), DropReply::Refused);
+        assert_eq!(DropReply::answered(false, Some(DropRefusal::Busy)), DropReply::Busy);
+        let parse = |v: serde_json::Value| serde_json::from_value::<DropRefusal>(v).unwrap();
+        assert_eq!(parse(serde_json::json!("unsaved")), DropRefusal::Unsaved);
+        assert_eq!(parse(serde_json::json!("busy")), DropRefusal::Busy);
+        assert!(serde_json::from_value::<DropRefusal>(serde_json::json!("timeout")).is_err());
+    }
+
+    #[test]
+    fn a_tab_busy_with_an_agent_question_keeps_the_note_as_busy() {
+        let env = FakeEnv {
+            owners: RefCell::new(vec![owner("editor-2", 2)]),
+            reply: Some(DropReply::Busy),
+            ..Default::default()
+        };
+        assert_eq!(
+            delete_flow(&env, "id").unwrap(),
+            FlowOutcome::Kept {
+                reason: KeptReason::Busy,
+                owner: owner("editor-2", 2).unwrap()
+            }
+        );
+        assert!(!logged(&env).contains(&"trash".to_string()));
     }
 
     #[test]
@@ -3030,7 +3092,7 @@ mod tests {
         assert!(reqs.pending("editor-2", id));
         assert!(!reqs.pending("main", id), "only the window asked");
         assert!(!reqs.pending("editor-2", id + 1), "an unknown id");
-        assert!(reqs.answer("editor-2", id, true));
+        assert!(reqs.answer("editor-2", id, DropReply::Dropped));
         assert!(!reqs.pending("editor-2", id), "answered");
         let (late, _rx2) = reqs.register("main");
         reqs.abandon(late);

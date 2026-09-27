@@ -250,8 +250,7 @@ impl trash::DeleteEnv for AppDeleteEnv {
             return trash::DropReply::Timeout;
         }
         match rx.recv_timeout(trash::DROP_REPLY_TIMEOUT) {
-            Ok(true) => trash::DropReply::Dropped,
-            Ok(false) => trash::DropReply::Refused,
+            Ok(reply) => reply,
             Err(_) => {
                 reqs.abandon(request_id);
                 trash::DropReply::Timeout
@@ -382,15 +381,19 @@ pub async fn stash_note_saved_as(
 
 /// The answer to `stash-drop-tab`. Accepted only from the window the request
 /// went to; a late one (after the timeout) is dropped on purpose — that
-/// delete has already answered `kept`.
+/// delete has already answered `kept`. `reason` says why a tab was kept
+/// (`unsaved`, the default, or `busy`: an agent's question is on screen);
+/// it is ignored when `dropped`.
 #[tauri::command]
 pub async fn stash_drop_done(
     window: tauri::WebviewWindow,
     requests: State<'_, DropRequests>,
     request_id: u64,
     dropped: bool,
+    reason: Option<trash::DropRefusal>,
 ) -> Result<(), String> {
-    if !requests.answer(window.label(), request_id, dropped) {
+    let reply = trash::DropReply::answered(dropped, reason);
+    if !requests.answer(window.label(), request_id, reply) {
         eprintln!(
             "[stash] stash_drop_done {request_id} from {} ignored (late, unknown or not asked)",
             window.label()
