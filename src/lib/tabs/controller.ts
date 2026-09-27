@@ -55,6 +55,17 @@ export interface NoteDeps {
 
 export type NoteBirth = { kind: 'born'; path: string } | { kind: 'skipped' } | { kind: 'failed'; error: string };
 
+/**
+ * The tab's only text is a `/word` still being typed — a slash command, whose
+ * apply removes it (`/theme`, `/stash`). Waited out before a birth, or every
+ * command typed into a new tab would leave a note behind. Once a space or a
+ * line break follows, it is text (`/usr/local/bin` + Enter) and is born; a
+ * close does not wait at all (`becomeNoteNow` does not ask this).
+ */
+export function isSlashCommandBeingTyped(text: string): boolean {
+  return /^\/\S*$/.test(text.trimStart());
+}
+
 /** File → «Короткие показы без ответа через час». */
 export type TransientPolicy = 'keep' | 'close';
 
@@ -499,7 +510,7 @@ export function createTabController(deps: TabControllerDeps) {
     const failedAt = birthFailedAt.get(tabId);
     if (failedAt !== undefined && deps.now() - failedAt < NOTE_RETRY_MS) return false;
     const text = heldText(tabId);
-    return text !== null && !isBlankText(text);
+    return text !== null && !isBlankText(text) && !isSlashCommandBeingTyped(text);
   }
 
   /**

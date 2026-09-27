@@ -229,6 +229,11 @@ function makeHarness(initialFiles: Record<string, string>, opts: { notes?: boole
     doc,
     notes,
     live: () => live,
+    /** The whole live text replaced — a slash command applying itself. */
+    setText(text: string) {
+      live = live.update({ changes: { from: 0, to: live.doc.length, insert: text } }).state;
+      doc.dirty = true;
+    },
     /** A keystroke: the live state changes and the document becomes dirty. */
     type(text: string) {
       live = live.update({ changes: { from: live.doc.length, insert: text } }).state;
@@ -2277,6 +2282,61 @@ describe('notes', () => {
     expect(h.doc.dirty).toBe(false);
     expect(h.files.get('/notes/n1.md')).toBe('H');
     expect(h.deps.rust.activate).toHaveBeenCalledWith('u');
+  });
+
+  it('TypingASlashCommandIntoANewTabMakesNoNote', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    for (const ch of '/theme') {
+      h.type(ch);
+      h.controller.noteTyped();
+    }
+    await h.controller.drain();
+    expect(h.notes.create).not.toHaveBeenCalled();
+    // Applying the command removes what was typed: a blank tab again.
+    h.setText('');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).not.toHaveBeenCalled();
+    expect(h.controller.list.tabs[0].path).toBeNull();
+  });
+
+  it('ASlashCommandTypedAfterLeadingBlankLinesMakesNoNoteEither', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.type('\n\n/tone');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).not.toHaveBeenCalled();
+  });
+
+  it('SlashTextFollowedByASpaceIsANote', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.type('/foo');
+    h.controller.noteTyped();
+    h.type(' bar');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledTimes(1);
+    expect(h.files.get('/notes/n1.md')).toBe('/foo bar');
+  });
+
+  it('SlashTextFollowedByEnterIsANote', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.type('/usr/local/bin');
+    h.controller.noteTyped();
+    h.type('\n');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.files.get('/notes/n1.md')).toBe('/usr/local/bin\n');
+  });
+
+  it('ClosingATabHoldingOnlySlashTextStillMakesItANote', async () => {
+    // Only typing waits for the command to finish; a close is the last chance.
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.type('/foo');
+    h.controller.noteTyped();
+    await h.controller.putAwayActive();
+    expect(h.files.get('/notes/n1.md')).toBe('/foo');
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), null, true);
   });
 
   it('WhitespaceIsStillABlankNewNote', async () => {

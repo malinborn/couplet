@@ -49,6 +49,7 @@
   } from './lib/tabs/window-number';
   import { ctrlTabHandler } from './lib/tabs/tab-cycle-keys';
   import { stashCreateNote, stashEntryForPath, windowProject } from './lib/stash/ipc';
+  import { slashInProgress } from './lib/editor/slash-in-progress';
   import { noteTitle } from './lib/stash/note-title';
   import { createStashMarks } from './lib/stash/stash-marks.svelte';
   import { stashKeysHandler } from './lib/stash/stash-keys';
@@ -352,8 +353,9 @@
     if (isHumanEdit(update)) tabs.humanEdited();
     // The window title of an untitled tab or a note follows its first line.
     fileState.noteName = noteTitle(doc);
-    // Stash plan 03: the first non-blank character makes the tab a note.
-    if (fileState.filePath === null) tabs.noteTyped();
+    // Stash plan 03: the first non-blank character makes the tab a note — not
+    // a slash command's filter, which its apply removes again.
+    if (fileState.filePath === null && !slashInProgress(update.state)) tabs.noteTyped();
   }
 
   // --- Auto-save (300ms debounce). `performSave` is declared below, but
