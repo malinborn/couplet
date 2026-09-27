@@ -4,6 +4,7 @@ import type {
   PullAnswer,
   PutAwayResult,
   StashEntry,
+  StashHit,
   StashKind,
   TabHolder,
   WindowProject,
@@ -38,6 +39,29 @@ export interface StashCounts {
   total: number;
   stashedToday: number;
   deleted: number;
+}
+
+/** `stash_search`'s arguments (stash stage 05). */
+export interface StashSearchArgs {
+  /** Words, `"phrases"` and `#tags` (exact stored tags, unlike the drawer's own prefix rule). */
+  query: string;
+  repo?: string;
+  tag?: string;
+  kind?: StashKind;
+  /** Search the trash («Удалённые», title only) instead of the stash (roadmap A8). */
+  deleted?: boolean;
+  /** Rust caps it at 200. */
+  limit?: number;
+  /** Opaque: the previous page's `nextCursor`, for the same query and filters. */
+  cursor?: string;
+}
+
+export interface StashSearchResult {
+  /** Relevance order. */
+  hits: StashHit[];
+  /** Matching entries across all pages. */
+  total: number;
+  nextCursor: string | null;
 }
 
 export function stashCreateNote(text: string, repo: string | null): Promise<StashEntry> {
@@ -97,6 +121,12 @@ export function tabHolders(paths: string[]): Promise<(TabHolder | null)[]> {
 /** Open an entry here: our own tab is activated, another window's is asked to move here (`tab-pull`). */
 export function requestTabMove(path: string): Promise<PullAnswer> {
   return invoke<PullAnswer>('tab_request_move', { path });
+}
+
+// --- stash stage 05: search ---
+
+export function stashSearch(args: StashSearchArgs): Promise<StashSearchResult> {
+  return invoke<StashSearchResult>('stash_search', { ...args });
 }
 
 /** `stash_list`'s own page maximum (`MAX_LIMIT`, `entries.rs`). */

@@ -15,6 +15,7 @@ import {
   stashGet,
   stashList,
   stashPutAway,
+  stashSearch,
   stashTag,
   stashTouchOpened,
   tabHolders,
@@ -105,6 +106,19 @@ describe('stash ipc for the drawer (stage 04)', () => {
     expect(call()).toEqual(['tab_holders', { paths: ['/a.md', '/b.md'] }]);
     await requestTabMove('/a.md');
     expect(call()).toEqual(['tab_request_move', { path: '/a.md' }]);
+  });
+});
+
+describe('stash ipc for search (stage 05)', () => {
+  beforeEach(() => vi.mocked(invoke).mockClear());
+
+  it('passes the search filters flat and hands back the page as Rust answers it', async () => {
+    const page = { hits: [], total: 0, nextCursor: null };
+    vi.mocked(invoke).mockResolvedValueOnce(page);
+    await expect(stashSearch({ query: 'тай', repo: 'md-mini', deleted: false, limit: 200 })).resolves.toEqual(page);
+    expect(call()).toEqual(['stash_search', { query: 'тай', repo: 'md-mini', deleted: false, limit: 200 }]);
+    await stashSearch({ query: 'x', tag: 'infra', kind: 'note', cursor: '50' });
+    expect(call()).toEqual(['stash_search', { query: 'x', tag: 'infra', kind: 'note', cursor: '50' }]);
   });
 });
 
