@@ -2896,7 +2896,7 @@ describe('dropPath (stash stage 06: a note is being deleted)', () => {
   it('LeavesTheActiveNoteTabTheNormalWayThenReleasesItNeverClosesIt', async () => {
     const h = await started(files, both(), 'a');
     h.type(' edited');
-    expect(await h.controller.dropPath('/n/a.md')).toBe(true);
+    expect(await h.controller.dropPath('/n/a.md')).toBe('dropped');
     const flush = h.calls.indexOf('flush');
     const activate = h.calls.indexOf('activate b');
     const release = h.calls.indexOf('release a');
@@ -2915,7 +2915,7 @@ describe('dropPath (stash stage 06: a note is being deleted)', () => {
     const h = await started(files, both(), 'a');
     h.type('x');
     h.setSaveSucceeds(false);
-    expect(await h.controller.dropPath('/n/a.md')).toBe(false);
+    expect(await h.controller.dropPath('/n/a.md')).toBe('kept');
     expect(h.calls.some((c) => c.startsWith('release '))).toBe(false);
     expect(h.ids()).toEqual(['a', 'b']);
     expect(h.active()).toBe('a');
@@ -2924,7 +2924,7 @@ describe('dropPath (stash stage 06: a note is being deleted)', () => {
 
   it('GivesTheWindowAFreshEmptyTabWhenTheNoteWasItsOnlyTab', async () => {
     const h = await started(files, [fileTab('a', '/n/a.md')]);
-    expect(await h.controller.dropPath('/n/a.md')).toBe(true);
+    expect(await h.controller.dropPath('/n/a.md')).toBe('dropped');
     const open = vi.mocked(h.deps.rust.open).mock.invocationCallOrder[0];
     const release = vi.mocked(h.deps.rust.release).mock.invocationCallOrder[0];
     expect(open).toBeLessThan(release);
@@ -2941,7 +2941,7 @@ describe('dropPath (stash stage 06: a note is being deleted)', () => {
     const h = await started(files, [fileTab('a', '/n/a.md')]);
     h.type('x');
     h.setSaveSucceeds(false);
-    expect(await h.controller.dropPath('/n/a.md')).toBe(false);
+    expect(await h.controller.dropPath('/n/a.md')).toBe('kept');
     expect(h.deps.rust.release).not.toHaveBeenCalled();
     expect(h.ids()).toEqual(['a']);
   });
@@ -2949,7 +2949,7 @@ describe('dropPath (stash stage 06: a note is being deleted)', () => {
   it('FallsBackToAnEmptyTabWhenTheNeighbourCannotBeRead', async () => {
     const h = await started(files, both(), 'a');
     h.unreadable.add('/n/b.md');
-    expect(await h.controller.dropPath('/n/a.md')).toBe(true);
+    expect(await h.controller.dropPath('/n/a.md')).toBe('dropped');
     expect(h.deps.rust.release).toHaveBeenCalledWith('a');
     expect(h.ids()).not.toContain('a');
     expect(h.doc.path).toBeNull();
@@ -2957,7 +2957,7 @@ describe('dropPath (stash stage 06: a note is being deleted)', () => {
 
   it('ReleasesABackgroundNoteTabWithoutFlushingAnything', async () => {
     const h = await started(files, both(), 'a');
-    expect(await h.controller.dropPath('/n/b.md')).toBe(true);
+    expect(await h.controller.dropPath('/n/b.md')).toBe('dropped');
     expect(h.calls).not.toContain('flush');
     expect(h.calls).not.toContain('swap');
     expect(h.calls).toContain('release b');
@@ -2969,7 +2969,7 @@ describe('dropPath (stash stage 06: a note is being deleted)', () => {
 
   it('IsANoOpForAPathThisWindowDoesNotHold', async () => {
     const h = await started(files, [fileTab('a', '/n/a.md')]);
-    expect(await h.controller.dropPath('/n/zzz.md')).toBe(true);
+    expect(await h.controller.dropPath('/n/zzz.md')).toBe('dropped');
     expect(h.calls).toEqual([]);
   });
 
@@ -2985,5 +2985,40 @@ describe('dropPath (stash stage 06: a note is being deleted)', () => {
     await h.controller.dropPath('/n/b.md');
     expect(h.deps.rust.close).not.toHaveBeenCalled();
     expect(h.notes.create).not.toHaveBeenCalled();
+  });
+
+  it('KeepsTheTabWhenRustNoLongerWaitsForTheDrop', async () => {
+    const h = await started(files, both(), 'a');
+    h.type(' edited');
+    const stillWanted = vi.fn(async () => false);
+    expect(await h.controller.dropPath('/n/a.md', stillWanted)).toBe('unwanted');
+    expect(stillWanted).toHaveBeenCalledTimes(1);
+    expect(h.calls.some((c) => c.startsWith('release ') || c.startsWith('activate '))).toBe(false);
+    expect(h.ids()).toEqual(['a', 'b']);
+    expect(h.active()).toBe('a');
+    expect(h.deps.ai.forget).not.toHaveBeenCalled();
+  });
+
+  it('AsksWhetherTheDropIsStillWantedOnlyWhenItsQueueSlotComes', async () => {
+    const h = await started(files, both(), 'a');
+    let unblock!: () => void;
+    const blocker = h.controller.runExclusive(() => new Promise<void>((resolve) => (unblock = resolve)));
+    const stillWanted = vi.fn(async () => true);
+    const drop = h.controller.dropPath('/n/b.md', stillWanted);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(stillWanted).not.toHaveBeenCalled();
+    unblock();
+    await blocker;
+    expect(await drop).toBe('dropped');
+    expect(stillWanted).toHaveBeenCalledTimes(1);
+    expect(h.calls).toContain('release b');
+  });
+
+  it('DoesNotAskAboutAPathThisWindowDoesNotHold', async () => {
+    const h = await started(files, [fileTab('a', '/n/a.md')]);
+    const stillWanted = vi.fn(async () => false);
+    expect(await h.controller.dropPath('/n/zzz.md', stillWanted)).toBe('dropped');
+    expect(stillWanted).not.toHaveBeenCalled();
   });
 });

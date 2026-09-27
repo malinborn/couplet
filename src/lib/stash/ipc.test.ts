@@ -13,6 +13,7 @@ import {
   stashDelete,
   stashCreateNote,
   stashDropDone,
+  stashDropPending,
   stashEntryForPath,
   stashGet,
   stashList,
@@ -143,6 +144,12 @@ describe('stash ipc for the trash (stage 06)', () => {
     expect(call()).toEqual(['stash_purge', { id: 's2' }]);
     await stashDropDone(7, true);
     expect(call()).toEqual(['stash_drop_done', { requestId: 7, dropped: true }]);
+  });
+
+  it('asks whether a drop is still wanted, camelCased (review M1)', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(false);
+    await expect(stashDropPending(9)).resolves.toBe(false);
+    expect(call()).toEqual(['stash_drop_pending', { requestId: 9 }]);
   });
 
   it('reports a Save As with both paths, camelCased', async () => {

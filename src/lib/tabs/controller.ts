@@ -190,6 +190,13 @@ export type OpenAnswer =
 
 export type ActivateResult = 'ok' | 'noop' | 'refused' | 'busy' | 'failed';
 
+/**
+ * `dropPath` (stash stage 06). `dropped`: no tab here holds the path any more;
+ * `kept`: the tab stays (its save did not land); `unwanted`: the drop's own
+ * `stillWanted` check said no, in its queue slot — nothing was touched.
+ */
+export type DropResult = 'dropped' | 'kept' | 'unwanted';
+
 /** What `EditorHandle.swapState` takes, always spelled out by the controller. */
 export interface SwapOptions {
   /** A just-built state: blur it like a file load always did. */
@@ -1221,18 +1228,20 @@ export function createTabController(deps: TabControllerDeps) {
    * released`. An active tab is first left the normal way (`activateNow`, or
    * `newTabNow` when it is the only one — the window stays, D4): flushed, and
    * refused if the save did not land, so the file holds the last keystroke
-   * when it moves and no autosave is bound to its path afterwards. `true`
-   * when no tab here holds `path` any more.
+   * when it moves and no autosave is bound to its path afterwards.
+   * `stillWanted` runs first, here in the queue slot, so a drop that waited
+   * behind a long task can learn it is no longer asked for (review M1).
    */
-  async function dropNow(path: string): Promise<boolean> {
+  async function dropNow(path: string, stillWanted?: () => Promise<boolean>): Promise<DropResult> {
     const tab = findByPath(list, path);
-    if (!tab) return true;
+    if (!tab) return 'dropped';
+    if (stillWanted && !(await stillWanted())) return 'unwanted';
     if (tab.id === list.activeId) {
       const next = removeTab(list, tab.id).nextActiveId;
       const result = next === null ? 'failed' : await activateNow(next);
       // No neighbour, or one that cannot be read: a fresh empty tab instead.
       if (result === 'failed') await newTabNow();
-      if (list.activeId === tab.id) return false;
+      if (list.activeId === tab.id) return 'kept';
     }
     // In the background now, and clean by construction: it was left the
     // normal way (or never shown since it was last left).
@@ -1242,7 +1251,7 @@ export function createTabController(deps: TabControllerDeps) {
     publish(removeTab(list, tab.id).state);
     await deps.rust.release(tab.id);
     deps.settled();
-    return true;
+    return 'dropped';
   }
 
   /** Background tabs first, the active one last: at most one swap for a group. */
@@ -1772,11 +1781,12 @@ export function createTabController(deps: TabControllerDeps) {
       }),
     /**
      * `stash-drop-tab` (stash stage 06): a stash note is being deleted — drop
-     * its tab from this window (`dropNow`). `false`: its save did not land,
-     * the tab stays and the note is kept. Never call it from inside
+     * its tab from this window (`dropNow`). `kept`: its save did not land,
+     * the tab stays and the note is kept. `stillWanted` is asked once the
+     * queue slot comes, before anything is left. Never call it from inside
      * `runExclusive` or a queued method: it waits for the tab queue.
      */
-    dropPath: (path: string) => queue.run(() => dropNow(path)),
+    dropPath: (path: string, stillWanted?: () => Promise<boolean>) => queue.run(() => dropNow(path, stillWanted)),
     /** Move `ids` (in this window's order) to another window or a new one (plan 05). */
     moveTabs: (ids: readonly string[], target: MoveTarget) => queue.run(() => moveNow(ids, target)),
     /** Tabs another window moved here (`tabs-arrive`). */

@@ -59,6 +59,7 @@
     stashDelete,
     stashEntryForPath,
     stashDropDone,
+    stashDropPending,
     stashNoteSavedAs,
     stashPurge,
     stashRestore,
@@ -2371,7 +2372,14 @@
     // Not a tab source either; it waits for the tab list like the pull above.
     const unlistenStashDropTab = onStashDropTab((request) => {
       void tabSourcesReady.then(() =>
-        handleStashDropTab({ dropPath: (path) => tabs.dropPath(path), done: stashDropDone }, request)
+        handleStashDropTab(
+          {
+            dropPath: (path, stillWanted) => tabs.dropPath(path, stillWanted),
+            pending: stashDropPending,
+            done: stashDropDone,
+          },
+          request
+        )
       );
     });
 

@@ -142,6 +142,14 @@ export function stashDropDone(requestId: number, dropped: boolean): Promise<void
 }
 
 /**
+ * Whether Rust still waits for `stash-drop-tab` `requestId` from this window
+ * (review M1): asked right before the drop leaves the tab, after its queue wait.
+ */
+export function stashDropPending(requestId: number): Promise<boolean> {
+  return invoke<boolean>('stash_drop_pending', { requestId });
+}
+
+/**
  * A Save As moved `oldPath` to `newPath` (A14). Rust trashes `oldPath` only if
  * it was a live note whose bytes the new file holds; `true` = moved. Fire and
  * forget, never awaited in the tab queue: Rust reads both files.

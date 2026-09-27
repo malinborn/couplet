@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { DropResult } from '../tabs/controller';
 import { handleStashDropTab, type StashDropDeps } from './stash-drop';
 
 afterEach(() => vi.restoreAllMocks());
@@ -8,8 +9,9 @@ function deps(over: Partial<StashDropDeps> = {}) {
   const d: StashDropDeps = {
     dropPath: vi.fn(async (path: string) => {
       order.push(`drop ${path}`);
-      return true;
+      return 'dropped' as const;
     }),
+    pending: vi.fn(async () => true),
     done: vi.fn(async (requestId: number, dropped: boolean) => {
       order.push(`done ${requestId} ${dropped}`);
     }),
@@ -20,11 +22,11 @@ function deps(over: Partial<StashDropDeps> = {}) {
 
 describe('handleStashDropTab', () => {
   it('drops the tab, then answers dropped: true — never before the drop has settled', async () => {
-    let release!: (v: boolean) => void;
+    let release!: (v: DropResult) => void;
     const { d, order } = deps({
       dropPath: vi.fn(
         (path: string) =>
-          new Promise<boolean>((resolve) => {
+          new Promise<DropResult>((resolve) => {
             order.push(`drop ${path}`);
             release = resolve;
           })
@@ -33,13 +35,13 @@ describe('handleStashDropTab', () => {
     const running = handleStashDropTab(d, { requestId: 7, path: '/n/a.md' });
     await Promise.resolve();
     expect(d.done).not.toHaveBeenCalled();
-    release(true);
+    release('dropped');
     await running;
     expect(order).toEqual(['drop /n/a.md', 'done 7 true']);
   });
 
   it('a tab that stayed answers dropped: false', async () => {
-    const { d } = deps({ dropPath: vi.fn(async () => false) });
+    const { d } = deps({ dropPath: vi.fn(async () => 'kept' as const) });
     await handleStashDropTab(d, { requestId: 3, path: '/n/b.md' });
     expect(d.done).toHaveBeenCalledWith(3, false);
   });
@@ -70,5 +72,53 @@ describe('handleStashDropTab', () => {
     });
     await expect(handleStashDropTab(d, { requestId: 5, path: '/n/d.md' })).resolves.toBeUndefined();
     expect(error).toHaveBeenCalled();
+  });
+
+  describe('a drop Rust no longer waits for (review M1)', () => {
+    /** A `dropPath` that asks `stillWanted` the way the controller does: in its queue slot. */
+    function asking(order: string[]) {
+      return vi.fn(async (path: string, stillWanted: () => Promise<boolean>): Promise<DropResult> => {
+        order.push('slot');
+        if (!(await stillWanted())) return 'unwanted';
+        order.push(`drop ${path}`);
+        return 'dropped';
+      });
+    }
+
+    it('asks Rust about this very request, from inside the drop — after the queue wait', async () => {
+      const order: string[] = [];
+      const { d } = deps({
+        dropPath: asking(order),
+        pending: vi.fn(async (id: number) => {
+          order.push(`pending ${id}`);
+          return true;
+        }),
+      });
+      await handleStashDropTab(d, { requestId: 8, path: '/n/a.md' });
+      expect(order).toEqual(['slot', 'pending 8', 'drop /n/a.md']);
+      expect(d.done).toHaveBeenCalledWith(8, true);
+    });
+
+    it('a request already answered (timed out) keeps the tab and answers nothing', async () => {
+      const order: string[] = [];
+      const { d } = deps({ dropPath: asking(order), pending: vi.fn(async () => false) });
+      await handleStashDropTab(d, { requestId: 9, path: '/n/a.md' });
+      expect(order).toEqual(['slot']);
+      expect(d.done).not.toHaveBeenCalled();
+    });
+
+    it('a pending check that fails keeps the tab and answers dropped: false', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const order: string[] = [];
+      const { d } = deps({
+        dropPath: asking(order),
+        pending: vi.fn(async () => {
+          throw new Error('ipc closed');
+        }),
+      });
+      await handleStashDropTab(d, { requestId: 10, path: '/n/a.md' });
+      expect(order).toEqual(['slot']);
+      expect(d.done).toHaveBeenCalledWith(10, false);
+    });
   });
 });
