@@ -3,10 +3,11 @@
 //! ⌃T, `/stash`, an agent's close, an expired quick look), a window's red
 //! button and a quit all come through `documents_left`.
 //!
-//! Lock discipline (I3, A11): the stash lock covers SQL only. Each document
-//! goes lookup (SQL) → the user's disk (unlocked) → write (SQL); the caller
-//! runs all of it off the main thread with no other lock held — except a
-//! quit, which runs it on the main thread because the process is ending.
+//! Lock discipline (I3, A11): the stash lock covers SQL only. Documents go
+//! lookup (SQL) → the user's disk (unlocked) → write (SQL); the caller runs
+//! all of it off the main thread with no other lock held — except a quit,
+//! which runs it on the main thread because the process is ending, bounded
+//! by `QUIT_BUDGET`.
 
 use std::fs;
 use std::io::Read;
@@ -15,6 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use rusqlite::{params, TransactionBehavior};
 use tauri::{AppHandle, Manager};
 
 use crate::session::{Session, SessionState, WindowSnapshot};
@@ -182,24 +184,189 @@ impl Stash {
             .map_err(db::err)?;
         Ok(())
     }
+
+    /// The write half of `notes_left`, one IMMEDIATE transaction: the rows of
+    /// `discarded` notes (their blank files already gone) dropped, every note
+    /// in `stamps` — `(id, caret, top_line)` — stamped put away at `now`, then
+    /// one export/backup. By id, SQL only: a note keeps the repo it was
+    /// written in, so nothing on disk is asked. A row trashed meanwhile is
+    /// left alone (A8). Answers the ids actually stamped.
+    fn settle_left(
+        &mut self,
+        discarded: &[String],
+        stamps: &[(String, i64, i64)],
+        now: i64,
+    ) -> Result<Vec<String>, String> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db::err)?;
+        for id in discarded {
+            tx.execute(
+                "DELETE FROM entries WHERE id = ?1 AND kind = 'note' AND deleted_at IS NULL",
+                [id],
+            )
+            .map_err(db::err)?;
+        }
+        let mut stamped = Vec::with_capacity(stamps.len());
+        for (id, caret, top_line) in stamps {
+            let changed = tx
+                .execute(
+                    "UPDATE entries SET stashed_at = ?1, caret = ?2, top_line = ?3 \
+                     WHERE id = ?4 AND kind = 'note' AND deleted_at IS NULL",
+                    params![now, caret, top_line, id],
+                )
+                .map_err(db::err)?;
+            if changed > 0 {
+                stamped.push(id.clone());
+            }
+        }
+        tx.commit().map_err(db::err)?;
+        if !discarded.is_empty() || !stamped.is_empty() {
+            self.after_write(now, clock::local_offset_secs(now.div_euclid(1000)));
+        }
+        Ok(stamped)
+    }
 }
 
-/// One document left the tabs at `cursor` / `top_line`.
+/// `StashState::with`, or — with a `deadline` — `with_until`, with SQLite's
+/// own wait (the CLI or MCP holding the file) cut to what is left of it, and
+/// the usual busy timeout put back afterwards.
+fn locked<T>(
+    state: &StashState,
+    deadline: Option<Instant>,
+    f: impl FnOnce(&mut Stash) -> Result<T, String>,
+) -> Result<T, String> {
+    let Some(deadline) = deadline else {
+        return state.with(f);
+    };
+    state.with_until(deadline, |s| {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err("stash busy: out of time".to_string());
+        }
+        s.conn.busy_timeout(left).map_err(db::err)?;
+        let out = f(s);
+        if let Err(e) = s.conn.busy_timeout(db::BUSY_TIMEOUT) {
+            eprintln!("stash: busy timeout not restored: {e}");
+        }
+        out
+    })
+}
+
+/// ⌘W (`Closed`), the red button and a quit (`WithWindow`) for `docs`, in two
+/// SQL phases with the user's disk between them, whatever their number:
 ///
-/// A live note is put away — or, a note whose file holds only whitespace,
-/// discarded (spec: «пустой документ при закрытии просто исчезает»; D6: only
-/// here, after the frontend flushed). Discarding deletes no user text: the
-/// file is re-read just before it goes and is blank. Only a couplet-named file
-/// directly in the notes folder is ever removed, and the file goes before the
-/// row, so a file that will not go keeps its entry and is put away instead.
-/// A file enters the stash only on `PutAway`; a trashed entry is never
-/// touched (A8). `WithWindow` only ever puts a live note away.
-pub(crate) fn document_left(
+/// 1. one lock: every path's entry (`entry_for_path`);
+/// 2. unlocked, `Closed` only: a live note whose file — a couplet-named file
+///    directly in the notes folder — holds only whitespace is discarded
+///    (`remove_if_blank`; spec: «пустой документ при закрытии просто
+///    исчезает»; D6: only after the frontend flushed — the red button and ⌘Q
+///    leave the last ≤300 ms unflushed, so a blank file proves nothing then);
+/// 3. one lock, one transaction: `settle_left`.
+///
+/// Files are never touched here — a file enters the stash only on `PutAway`
+/// — and neither is a trashed entry (A8). Discarding deletes no user text:
+/// the file goes before the row, and only once re-read blank.
+///
+/// With a `deadline` (the quit path, on the main thread) each lock and each
+/// SQLite wait gives up when it passes: the session file already names the
+/// notes, and a quit may not hang on a busy stash.
+fn notes_left(
+    state: &StashState,
+    docs: &[(String, usize, usize)],
+    leaving: Leaving,
+    now: i64,
+    deadline: Option<Instant>,
+) -> LeftReport {
+    let looked = locked(state, deadline, |s| {
+        // Each document's live note entry, if it has one.
+        let mut looked: Vec<Option<String>> = Vec::with_capacity(docs.len());
+        for (path, ..) in docs {
+            looked.push(
+                s.entry_for_path(path)?
+                    .filter(|e| e.kind == StashKind::Note && e.deleted_at.is_none())
+                    .map(|e| e.id),
+            );
+        }
+        // Named under the lock, spelled outside it (A11: SQL only).
+        Ok((looked, s.paths.notes_dir.clone()))
+    });
+    let (looked, notes_dir) = match looked {
+        Ok(found) => found,
+        Err(e) => {
+            eprintln!("stash: {} documents left the tabs: {e}", docs.len());
+            return LeftReport::failed_all(docs, &e);
+        }
+    };
+    let mut notes_dir_spelled: Option<PathBuf> = None;
+    let now_secs = u64::try_from(now.div_euclid(1000)).unwrap_or(0);
+    let mut discarded: Vec<(String, String)> = Vec::new();
+    let mut stamps: Vec<(String, i64, i64)> = Vec::new();
+    let mut stamped_paths: Vec<String> = Vec::new();
+    for ((path, cursor, top_line), id) in docs.iter().zip(looked) {
+        let Some(id) = id else {
+            continue;
+        };
+        if leaving == Leaving::Closed {
+            let notes_dir = notes_dir_spelled
+                .get_or_insert_with(|| crate::path_norm::normalize_path(&notes_dir));
+            if kind_of_new(Path::new(path), notes_dir) == StashKind::Note {
+                match remove_if_blank(Path::new(path), now_secs) {
+                    Blank::Removed => {
+                        discarded.push((path.clone(), id));
+                        continue;
+                    }
+                    Blank::Recovered(kept) => eprintln!(
+                        "stash: {path} changed while it was being discarded; its earlier text is kept at {}",
+                        kept.display()
+                    ),
+                    Blank::Stays => {}
+                }
+            }
+        }
+        stamps.push((
+            id,
+            i64::try_from(*cursor).unwrap_or(0),
+            i64::try_from(*top_line).unwrap_or(1),
+        ));
+        stamped_paths.push(path.clone());
+    }
+    let mut report = LeftReport {
+        discarded: discarded.iter().map(|(_, id)| id.clone()).collect(),
+        ..LeftReport::default()
+    };
+    if discarded.is_empty() && stamps.is_empty() {
+        return report;
+    }
+    let ids: Vec<String> = report.discarded.clone();
+    match locked(state, deadline, |s| s.settle_left(&ids, &stamps, now)) {
+        Ok(stamped) => report.put_away = stamped,
+        Err(e) => {
+            // The discarded files are gone whatever the database says, so they
+            // stay in `discarded` (nothing to reopen); every document failed.
+            eprintln!("stash: {} documents left the tabs: {e}", docs.len());
+            report.failed = discarded
+                .into_iter()
+                .map(|(path, _)| path)
+                .chain(stamped_paths)
+                .map(|path| (path, e.clone()))
+                .collect();
+        }
+    }
+    report
+}
+
+/// ⌃T / `/stash` / the menu item on one document: a file becomes a reference,
+/// a live note is put away — or discarded when its file holds only
+/// whitespace (as on ⌘W, after the frontend flushed). The full put-away path
+/// (`plan_put_away`: metadata, a title, a `.git` walk — the user's disk,
+/// unlocked). A trashed entry refuses (A8).
+fn put_away_one(
     state: &StashState,
     path: &str,
     cursor: usize,
     top_line: usize,
-    leaving: Leaving,
     now: i64,
 ) -> Result<Left, String> {
     // The folder's spelling asks the file system: named under the lock,
@@ -208,15 +375,7 @@ pub(crate) fn document_left(
         state.with(|s| Ok((s.entry_for_path(path)?, s.paths.notes_dir.clone())))?;
     let notes_dir = crate::path_norm::normalize_path(&notes_dir);
     match &entry {
-        Some(e) if e.deleted_at.is_some() => {
-            return match leaving {
-                Leaving::Closed | Leaving::WithWindow => Ok(Left::Untouched),
-                Leaving::PutAway => Err(format!("in the trash: {path}")),
-            };
-        }
-        // The red button and ⌘Q leave the last ≤300 ms of typing unflushed:
-        // a blank file is no proof of a blank buffer (D6).
-        Some(e) if e.kind == StashKind::Note && leaving == Leaving::WithWindow => {}
+        Some(e) if e.deleted_at.is_some() => return Err(format!("in the trash: {path}")),
         Some(e) if e.kind == StashKind::Note => {
             let is_note_file = kind_of_new(Path::new(path), &notes_dir) == StashKind::Note;
             let now_secs = u64::try_from(now.div_euclid(1000)).unwrap_or(0);
@@ -237,7 +396,6 @@ pub(crate) fn document_left(
                 return Ok(Left::Discarded(id));
             }
         }
-        _ if leaving != Leaving::PutAway => return Ok(Left::Untouched),
         _ => {}
     }
     let req = PutAway {
@@ -246,7 +404,6 @@ pub(crate) fn document_left(
         top_line: i64::try_from(top_line).ok(),
         tags: Vec::new(),
     };
-    // Metadata, a title, a `.git` walk: the user's disk, unlocked.
     let plan = plan_put_away(&req, &notes_dir, now)?;
     let results = state.with(|s| s.put_away_probed(plan, now))?;
     results
@@ -254,6 +411,36 @@ pub(crate) fn document_left(
         .next()
         .map(|r| Left::PutAway(r.entry.id))
         .ok_or_else(|| format!("nothing put away for {path}"))
+}
+
+/// One document left the tabs at `cursor` / `top_line` — `put_away_one` for
+/// `PutAway`, `notes_left` otherwise.
+pub(crate) fn document_left(
+    state: &StashState,
+    path: &str,
+    cursor: usize,
+    top_line: usize,
+    leaving: Leaving,
+    now: i64,
+) -> Result<Left, String> {
+    if leaving == Leaving::PutAway {
+        return put_away_one(state, path, cursor, top_line, now);
+    }
+    let mut report = notes_left(
+        state,
+        &[(path.to_string(), cursor, top_line)],
+        leaving,
+        now,
+        None,
+    );
+    if let Some((_, e)) = report.failed.pop() {
+        return Err(e);
+    }
+    Ok(match (report.put_away.pop(), report.discarded.pop()) {
+        (Some(id), _) => Left::PutAway(id),
+        (None, Some(id)) => Left::Discarded(id),
+        (None, None) => Left::Untouched,
+    })
 }
 
 /// What the stash did with the documents that left, by entry id, and what it
@@ -303,15 +490,19 @@ impl LeftReport {
     }
 }
 
-/// `document_left` for each of `docs`. Blocking. One export/backup for all of
-/// them; a document the stash could not take is in `failed`, logged, and
-/// fails nothing else.
+/// What leaving means for each of `docs`. Blocking. An explicit put-away
+/// goes document by document (`put_away_one`), then one export/backup; ⌘W
+/// and a window closing go all at once (`notes_left`). A document the stash
+/// could not take is in `failed`, logged, and fails nothing else.
 pub(crate) fn documents_left_in(
     state: &StashState,
     docs: &[(String, usize, usize)],
     leaving: Leaving,
     now: i64,
 ) -> LeftReport {
+    if leaving != Leaving::PutAway {
+        return notes_left(state, docs, leaving, now, None);
+    }
     let mut report = LeftReport::default();
     for (path, cursor, top_line) in docs {
         match document_left(state, path, *cursor, *top_line, leaving, now) {
@@ -332,6 +523,37 @@ pub(crate) fn documents_left_in(
         });
     }
     report
+}
+
+/// How long a quit may spend on the stash, locks and SQLite waits included.
+const QUIT_BUDGET: Duration = Duration::from_secs(1);
+
+/// The quit path (`save_session_on_exit`, main thread): the live windows'
+/// notes stamped put away (never discarded, D6/D8), by id, in one
+/// transaction, within `QUIT_BUDGET`. A stash busy past it is skipped — the
+/// session file just written names the notes. No event: nothing is left to
+/// refresh.
+pub(crate) fn documents_left_at_quit(app: &AppHandle, docs: &[(String, usize, usize)]) {
+    if docs.is_empty() {
+        return;
+    }
+    let Some(state) = app.try_state::<StashState>() else {
+        return;
+    };
+    let deadline = Instant::now() + QUIT_BUDGET;
+    let report = notes_left(
+        &state,
+        docs,
+        Leaving::WithWindow,
+        clock::now_ms(),
+        Some(deadline),
+    );
+    if !report.failed.is_empty() {
+        eprintln!(
+            "stash: quitting with {} notes not stamped put away; the session names them",
+            report.failed.len()
+        );
+    }
 }
 
 /// The `stash-changed` events a report makes (A6): the entries put away under
@@ -1007,6 +1229,127 @@ mod tests {
         assert_eq!(ids.discarded, vec![blank.id.clone()]);
         assert!(ids.failed.is_empty());
         assert_eq!(state.with(|s| Ok(rows(s, "entries"))).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_window_stamps_its_live_notes_together_and_leaves_the_rest_alone() {
+        let (state, root) = state_in("stamp-all");
+        let a = note(&state, "# a");
+        let b = note(&state, "b");
+        std::fs::write(&b.path, "").unwrap();
+        let file = user_file(&root, "open.md", "f");
+        let trashed = note(&state, "t");
+        state
+            .with(|s| {
+                set_columns(s, &trashed.id, "deleted_at = 5, stashed_at = NULL");
+                Ok(())
+            })
+            .unwrap();
+        let report = documents_left_in(
+            &state,
+            &[
+                (a.path.clone(), 7, 3),
+                (file.clone(), 1, 1),
+                (trashed.path.clone(), 2, 2),
+                (b.path.clone(), 4, 2),
+            ],
+            Leaving::WithWindow,
+            NOW,
+        );
+        assert_eq!(report.put_away, vec![a.id.clone(), b.id.clone()]);
+        assert!(report.discarded.is_empty() && report.failed.is_empty());
+        let a = state.with(|s| s.get(&a.id)).unwrap();
+        assert_eq!((a.stashed_at, a.caret, a.top_line), (Some(NOW), 7, 3));
+        let b = state.with(|s| s.get(&b.id)).unwrap();
+        assert_eq!((b.stashed_at, b.caret, b.top_line), (Some(NOW), 4, 2));
+        assert!(by_path(&state, &file).is_none());
+        let t = state.with(|s| s.get(&trashed.id)).unwrap();
+        assert_eq!((t.deleted_at, t.stashed_at, t.caret), (Some(5), None, 0));
+    }
+
+    #[test]
+    fn a_stamp_never_revives_a_note_trashed_after_the_lookup() {
+        let (state, _root) = state_in("stamp-trashed");
+        let n = note(&state, "x");
+        state
+            .with(|s| {
+                set_columns(s, &n.id, "deleted_at = 5, stashed_at = NULL");
+                Ok(())
+            })
+            .unwrap();
+        let stamped = state
+            .with(|s| s.settle_left(&[], &[(n.id.clone(), 9, 9)], NOW))
+            .unwrap();
+        assert!(stamped.is_empty());
+        let e = state.with(|s| s.get(&n.id)).unwrap();
+        assert_eq!((e.stashed_at, e.caret), (None, 0));
+    }
+
+    #[test]
+    fn a_quit_gives_up_on_a_stash_lock_held_elsewhere() {
+        let (state, _root) = state_in("quit-lock");
+        let n = note(&state, "x");
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::scope(|scope| {
+            let holder = state.clone();
+            scope.spawn(move || {
+                holder
+                    .with(|_| {
+                        held_tx.send(()).unwrap();
+                        let _ = release_rx.recv_timeout(Duration::from_secs(5));
+                        Ok(())
+                    })
+                    .unwrap();
+            });
+            held_rx.recv().unwrap();
+            let started = Instant::now();
+            let report = notes_left(
+                &state,
+                &[(n.path.clone(), 1, 1)],
+                Leaving::WithWindow,
+                NOW,
+                Some(started + Duration::from_millis(100)),
+            );
+            let waited = started.elapsed();
+            release_tx.send(()).unwrap();
+            assert_eq!(report.failed.len(), 1, "{report:?}");
+            assert!(report.put_away.is_empty());
+            assert!(waited < Duration::from_secs(1), "{waited:?}");
+        });
+        let e = state.with(|s| s.get(&n.id)).unwrap();
+        assert_eq!(e.stashed_at, None, "not stamped; the session names it");
+    }
+
+    #[test]
+    fn a_quit_gives_up_on_a_database_another_process_is_writing() {
+        let (state, root) = state_in("quit-busy");
+        let n = note(&state, "x");
+        let other = rusqlite::Connection::open(paths_in(&root).db_path).unwrap();
+        other.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        let started = Instant::now();
+        let report = notes_left(
+            &state,
+            &[(n.path.clone(), 1, 1)],
+            Leaving::WithWindow,
+            NOW,
+            Some(started + Duration::from_millis(200)),
+        );
+        let waited = started.elapsed();
+        other.execute_batch("ROLLBACK;").unwrap();
+        assert_eq!(report.failed.len(), 1, "{report:?}");
+        assert!(
+            waited < Duration::from_secs(2),
+            "not the 5 s busy timeout: {waited:?}"
+        );
+        let timeout: i64 = state
+            .with(|s| {
+                s.conn
+                    .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+                    .map_err(db::err)
+            })
+            .unwrap();
+        assert_eq!(timeout, 5000, "the usual busy timeout is back");
     }
 
     #[test]

@@ -664,12 +664,11 @@ fn save_session_on_exit(app: &tauri::AppHandle) {
         // stamped put away, never discarded — the last ≤300 ms of typing may
         // not be on disk (stash plan 03, D6/D8). Synchronously, on the main
         // thread: a task handed to the pool here would race the process exit.
-        // Bounded in practice — a lookup and a stamp per note, a note's own
-        // metadata; a file tab is left untouched before any disk work.
-        stash::lifecycle::documents_left(
+        // Bounded: one lookup and one transaction, by id, no disk; skipped
+        // after ~1 s of a busy stash (the session file names the notes).
+        stash::lifecycle::documents_left_at_quit(
             app,
             &stash::lifecycle::left_at_quit(&snapshot, live),
-            stash::lifecycle::Leaving::WithWindow,
         );
     }
     // A red button on the last window destroys it and exits right behind

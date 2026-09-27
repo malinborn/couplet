@@ -398,6 +398,33 @@ impl StashState {
         }
     }
 
+    /// `with`, for a caller that may not wait: gives up once `deadline`
+    /// passes with the lock still held elsewhere, and never retries opening an
+    /// unavailable stash (a try can wait out the whole busy timeout). The quit
+    /// path runs on the main thread with the process ending.
+    pub(crate) fn with_until<T>(
+        &self,
+        deadline: Instant,
+        f: impl FnOnce(&mut Stash) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut guard = loop {
+            match self.0.slot.try_lock() {
+                Ok(guard) => break guard,
+                Err(std::sync::TryLockError::Poisoned(p)) => break p.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    if Instant::now() >= deadline {
+                        return Err("stash busy: its lock was not free in time".to_string());
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        };
+        match &mut *guard {
+            Slot::Ready(stash) => f(stash),
+            Slot::Unavailable { reason, .. } => Err(format!("stash unavailable: {reason}")),
+        }
+    }
+
     #[cfg(test)]
     fn is_available(&self) -> bool {
         matches!(

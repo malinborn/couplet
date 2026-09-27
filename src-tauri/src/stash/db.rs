@@ -18,7 +18,7 @@ use rusqlite::{Connection, ErrorCode, Row, TransactionBehavior};
 use super::StashKind;
 
 pub(crate) const SCHEMA_VERSION: i64 = 2;
-const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Between two tries of the WAL switch (`switch_to_wal`).
 const WAL_RETRY_PAUSE: Duration = Duration::from_millis(5);
 
