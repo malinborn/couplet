@@ -23,7 +23,7 @@ use super::{
 /// adapter, which cannot reach the private `clock` module.
 pub(crate) use super::clock::now_ms;
 
-/// Answer to a write when the app data directory does not exist yet (A12).
+/// Answer to a write before the app has created `stash.db` (A12).
 pub const NOT_RUN_YET: &str = "couplet has not run on this Mac yet — open it once, then try again";
 
 /// Where one couplet build keeps its stash, resolved without a Tauri context.
@@ -36,9 +36,11 @@ pub struct StashLocation {
     pub socket: Option<PathBuf>,
 }
 
+#[cfg(test)]
 impl StashLocation {
-    /// `~/Library/Application Support/<product>/`: the directory whose
-    /// existence says the app has run on this Mac (plan D4).
+    /// `~/Library/Application Support/<product>/`, the folder of `stash.db`
+    /// — what tests check was never created. Not what says the app has run:
+    /// that is `stash.db` itself (`open_for_write`).
     pub fn app_dir(&self) -> &Path {
         self.paths.db_path.parent().unwrap_or(Path::new("/"))
     }
@@ -124,13 +126,16 @@ fn open_for_read(loc: &StashLocation) -> Result<Option<Stash>, String> {
         .map_err(|e| e.to_string())
 }
 
-/// The stash for writing. Refused while the app data directory does not
-/// exist: one file in a freshly created `couplet/` before the app's first
-/// launch makes `migration.rs` skip an installed md-mini's data for good
-/// (plan D4). Checked before anything else touches the disk — no note file,
-/// no notes folder. `stash.db` itself may be created inside the existing dir.
+/// The stash for writing. Refused until `stash.db` exists — the app creates
+/// it in `setup` on every launch, so the CLI never creates it. An existing
+/// directory is not proof enough: `migration.rs` counts an empty `couplet/`
+/// as free to migrate into, and one file there before the app's first
+/// launch makes it skip an installed md-mini's data for good (plan D4); and
+/// `--product Code` names VS Code's folder. Checked before anything else
+/// touches the disk — no note file, no notes folder. The cost: after an
+/// upgrade from a build without the stash, writes wait for one launch.
 fn open_for_write(loc: &StashLocation) -> Result<Stash, String> {
-    if !loc.app_dir().is_dir() {
+    if !loc.paths.db_path.is_file() {
         return Err(NOT_RUN_YET.to_string());
     }
     Stash::open(loc.paths.clone()).map_err(|e| e.to_string())
@@ -1558,7 +1563,8 @@ mod tests {
     }
 
     /// A location under a scratch dir, laid out like `testkit::paths_in`.
-    /// `app_ran`: the app data dir exists, as it does once couplet has run.
+    /// `app_ran`: `stash.db` exists, as the app creates it in `setup` on
+    /// every launch.
     fn temp_location(tag: &str, app_ran: bool) -> StashLocation {
         let root = scratch(&format!("stash-cli-{tag}"));
         let loc = StashLocation {
@@ -1566,8 +1572,17 @@ mod tests {
             socket: None,
         };
         if app_ran {
-            fs::create_dir_all(loc.app_dir()).unwrap();
+            drop(Stash::open(loc.paths.clone()).unwrap());
         }
+        loc
+    }
+
+    /// The app data dir exists and holds nothing: an empty `couplet/`
+    /// `migration.rs` still counts as free to migrate into, or another app's
+    /// folder named by `--product`.
+    fn temp_location_dir_only(tag: &str) -> StashLocation {
+        let loc = temp_location(tag, false);
+        fs::create_dir_all(loc.app_dir()).unwrap();
         loc
     }
 
@@ -1664,8 +1679,8 @@ mod tests {
     }
 
     #[test]
-    fn reading_before_the_first_write_does_not_create_the_database() {
-        let loc = temp_location("read-no-db", true);
+    fn reading_an_app_dir_without_a_database_does_not_create_it() {
+        let loc = temp_location_dir_only("read-no-db");
         assert!(open_for_read(&loc).unwrap().is_none());
         assert!(!loc.paths.db_path.exists());
         assert!(!loc.paths.notes_dir.exists());
@@ -1676,6 +1691,25 @@ mod tests {
         let loc = temp_location("write-early", false);
         assert_eq!(open_for_write(&loc).err().as_deref(), Some(NOT_RUN_YET));
         assert!(!loc.app_dir().exists());
+        assert!(!loc.paths.notes_dir.exists());
+    }
+
+    #[test]
+    fn writing_into_an_app_dir_without_a_database_is_refused_and_creates_nothing() {
+        // The CLI never creates stash.db: the app does, in `setup`. A first
+        // file in an empty `couplet/` would make `migration.rs` skip md-mini's
+        // data, and `--product Code` would write into VS Code's folder.
+        let loc = temp_location_dir_only("write-no-db");
+        assert_eq!(open_for_write(&loc).err().as_deref(), Some(NOT_RUN_YET));
+        let cwd = outside_git();
+        let note = add_note(&ctx(&loc, &cwd), "текст", &[]);
+        assert_eq!(note.error.as_deref(), Some(NOT_RUN_YET));
+        fs::write(cwd.join("plan.md"), "# план").unwrap();
+        let path = add_path(&ctx(&loc, &cwd), "plan.md", &[]);
+        assert_eq!(path.error.as_deref(), Some(NOT_RUN_YET));
+        let tagged = tag(&ctx(&loc, &cwd), "s1-00ab", &["x".to_string()], &[]);
+        assert_eq!(tagged.error.as_deref(), Some(NOT_RUN_YET));
+        assert_eq!(fs::read_dir(loc.app_dir()).unwrap().count(), 0, "the app dir stays empty");
         assert!(!loc.paths.notes_dir.exists());
     }
 
@@ -2462,7 +2496,7 @@ mod tests {
 
     #[test]
     fn an_empty_note_is_refused_before_anything_is_created() {
-        let loc = temp_location("add-empty", true);
+        let loc = temp_location_dir_only("add-empty");
         let cwd = outside_git();
         assert!(!add_note(&ctx(&loc, &cwd), "  \n\t", &[]).ok);
         assert!(
@@ -2530,7 +2564,7 @@ mod tests {
 
     #[test]
     fn adding_a_missing_file_or_a_directory_is_an_error() {
-        let loc = temp_location("add-bad", true);
+        let loc = temp_location_dir_only("add-bad");
         let cwd = outside_git();
         assert!(add_path(&ctx(&loc, &cwd), "nope.md", &[])
             .error

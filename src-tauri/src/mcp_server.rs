@@ -1342,20 +1342,21 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// A stash under a scratch root: the app has "run" (its data dir exists)
-    /// unless `app_ran` is false; the server's cwd is `root/alpha`, a git
-    /// repository. The notify socket is `notify`, or nobody.
+    /// A stash under a scratch root: the app has "run" (`stash.db` exists,
+    /// as the app creates it on every launch) unless `app_ran` is false; the
+    /// server's cwd is `root/alpha`, a git repository. The notify socket is
+    /// `notify`, or nobody.
     fn stash_config_in(tag: &str, notify: Option<PathBuf>, app_ran: bool) -> (McpConfig, PathBuf) {
         let root = crate::atomic_write::testkit::scratch(&format!("mcp-stash-{tag}"));
-        if app_ran {
-            std::fs::create_dir_all(root.join("app")).unwrap();
-        }
         let repo = root.join("alpha");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         let loc = crate::stash::cli::StashLocation {
             paths: crate::stash::StashPaths::from_bases(&root.join("home"), &root.join("app"), "couplet-test"),
             socket: notify,
         };
+        if app_ran {
+            drop(crate::stash::Stash::open(loc.paths.clone()).unwrap());
+        }
         let config = McpConfig {
             // Stash tools must never dial this.
             socket_path: PathBuf::from("/tmp/couplet_mcp_test_should_not_be_dialed.sock"),
@@ -1498,6 +1499,16 @@ mod tests {
         assert_eq!((found.ok, found.total), (true, Some(0)));
         assert!(!root.join("app").exists(), "the app data dir is never created");
         assert!(!root.join("home").exists(), "nor the notes folder");
+    }
+
+    #[test]
+    fn a_stash_write_into_an_app_dir_without_a_database_creates_nothing() {
+        let (config, root) = stash_config_in("no-db", None, false);
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        let v = call("stash_add", json!({"text": "текст"}), &config);
+        assert_eq!(answer_of(&v).error.as_deref(), Some(crate::stash::cli::NOT_RUN_YET));
+        assert_eq!(std::fs::read_dir(root.join("app")).unwrap().count(), 0, "no stash.db either");
+        assert!(!root.join("home").exists());
     }
 
     #[test]
