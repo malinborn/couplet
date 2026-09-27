@@ -2774,3 +2774,93 @@ describe('notes', () => {
     expect(h.controller.list.tabs[0].path).toBeNull();
   });
 });
+
+describe('putting a selection away (stash stage 04)', () => {
+  /** Notes wired after init, so no settle-time birth runs before the put-away. */
+  async function window5(): Promise<Harness> {
+    const h = makeHarness({ '/a.md': 'A', '/notes/old.md': 'old note', '/z.md': 'Z' });
+    await h.controller.init(
+      [
+        fileTab('a', '/a.md'),
+        fileTab('n', '/notes/old.md'),
+        untitledTab('u', 'draft'),
+        untitledTab('b'),
+        fileTab('z', '/z.md'),
+      ],
+      'a'
+    );
+    Object.assign(h.deps, { notes: h.notes });
+    vi.clearAllMocks();
+    h.calls.length = 0;
+    return h;
+  }
+  const putAwayFlags = (h: Harness): string[] =>
+    vi.mocked(h.deps.rust.close).mock.calls.map(([tabId, , , putAway]) => `${tabId}:${putAway}`);
+
+  it('EachTabGoesTheWayCtrlTGoes_BackgroundFirst', async () => {
+    const h = await window5();
+    const outcome = await h.controller.putAwayTabs(['a', 'n', 'u', 'b']);
+    expect(putAwayFlags(h)).toEqual(['n:true', 'u:true', 'b:true', 'a:true']);
+    expect(outcome).toEqual({ closed: ['n', 'u', 'b', 'a'], notStashed: [] });
+    expect(h.ids()).toEqual(['z']);
+    // The untitled tab with text became a note before its close put it away.
+    expect(h.files.get('/notes/n1.md')).toBe('draft');
+    expect(h.calls.indexOf('claim u /notes/n1.md')).toBeLessThan(h.calls.indexOf('close u'));
+    // The blank one had nothing to keep: no note.
+    expect(h.notes.create).toHaveBeenCalledTimes(1);
+    // The active tab leaves with its caret, as with ⌃T.
+    expect(h.deps.rust.close).toHaveBeenCalledWith('a', expect.objectContaining({ topLine: 1 }), null, true);
+    expect(h.notes.notPutAway).not.toHaveBeenCalled();
+  });
+
+  it('AnUntitledTabWhoseNoteCouldNotBeBornKeepsItsTab', async () => {
+    const h = await window5();
+    h.notes.create.mockRejectedValue(new Error('EPERM'));
+    const outcome = await h.controller.putAwayTabs(['a', 'u']);
+    expect(outcome).toEqual({ closed: ['a'], notStashed: [] });
+    expect(h.ids()).toEqual(['n', 'u', 'b', 'z']);
+    expect(putAwayFlags(h)).toEqual(['a:true']);
+    // Still there, so "safe in the tab" is true.
+    expect(h.notes.failed).toHaveBeenCalledWith('EPERM');
+  });
+
+  it('WhatRustCouldNotStashIsAnsweredAndSaidOnce', async () => {
+    const h = await window5();
+    vi.mocked(h.deps.rust.close)
+      .mockResolvedValueOnce('stash unavailable: locked')
+      .mockResolvedValueOnce('stash unavailable: locked');
+    const outcome = await h.controller.putAwayTabs(['n', 'z', 'a']);
+    // Closed either way: Rust has already let them go.
+    expect(outcome).toEqual({
+      closed: ['n', 'z', 'a'],
+      notStashed: [
+        { id: 'n', message: 'stash unavailable: locked' },
+        { id: 'z', message: 'stash unavailable: locked' },
+      ],
+    });
+    expect(h.notes.notPutAway).toHaveBeenCalledTimes(1);
+    expect(h.notes.notPutAway).toHaveBeenCalledWith('stash unavailable: locked');
+  });
+
+  it('DifferentReasonsAreJoinedIntoOneToast', async () => {
+    const h = await window5();
+    vi.mocked(h.deps.rust.close).mockResolvedValueOnce('locked').mockResolvedValueOnce('disk full');
+    await h.controller.putAwayTabs(['n', 'z']);
+    expect(h.notes.notPutAway).toHaveBeenCalledTimes(1);
+    expect(h.notes.notPutAway).toHaveBeenCalledWith('locked; disk full');
+  });
+
+  it('IdsThatAreNotTabsHereAreSkipped', async () => {
+    const h = await window5();
+    expect(await h.controller.putAwayTabs(['ghost'])).toEqual({ closed: [], notStashed: [] });
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+  });
+
+  it('ASingleCtrlTStillToastsItsOwnRefusal', async () => {
+    // Only the batch collects: ⌃T on the active tab keeps its own toast.
+    const h = await window5();
+    vi.mocked(h.deps.rust.close).mockResolvedValueOnce('locked');
+    await h.controller.putAwayActive();
+    expect(h.notes.notPutAway).toHaveBeenCalledWith('locked');
+  });
+});

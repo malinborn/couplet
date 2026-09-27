@@ -55,6 +55,23 @@ export interface NoteDeps {
 
 export type NoteBirth = { kind: 'born'; path: string } | { kind: 'skipped' } | { kind: 'failed'; error: string };
 
+/** A tab a put-away closed but the stash did not take (`message`: Rust's answer, why). */
+export interface NotStashed {
+  id: string;
+  message: string;
+}
+
+/**
+ * `putAwayTabs`' answer. `closed`: the ids whose tab closed, in closing
+ * order; a selected tab missing from it was refused and is still here.
+ * `notStashed`: closed tabs Rust could not put into the stash — still on disk
+ * where they were, already said by `notPutAway`.
+ */
+export interface PutAwayTabsOutcome {
+  closed: string[];
+  notStashed: NotStashed[];
+}
+
 /**
  * The tab's only text is a `/word` still being typed — a slash command, whose
  * apply removes it (`/theme`, `/stash`). Waited out before a birth, or every
@@ -1069,14 +1086,17 @@ export function createTabController(deps: TabControllerDeps) {
    * first, so a close puts it away instead of dropping it. If that fails, a
    * put-away refuses (`false`: nothing was put away, the tab keeps its text),
    * while ⌘W closes as before, with its rescue copy and no toast — the tab
-   * the "safe in the tab" message speaks of is gone.
+   * the "safe in the tab" message speaks of is gone. `refusals`: a batch
+   * put-away collects Rust's "not stashed" answers here and says them once,
+   * instead of one toast per tab replacing the last.
    */
   async function closeNow(
     tabId: string,
     how: 'close' | 'release' = 'close',
     onLastTab?: () => Promise<void>,
     quiet = false,
-    putAway = false
+    putAway = false,
+    refusals?: string[]
   ): Promise<boolean> {
     if (!findById(list, tabId)) return false;
     // Set when this close made the tab a note: it held text, so like
@@ -1094,7 +1114,10 @@ export function createTabController(deps: TabControllerDeps) {
     const finish = async (position: Position, discarded: string | null): Promise<void> => {
       if (how === 'close' || born || discarded?.trim()) {
         const refused = await deps.rust.close(tabId, position, discarded, putAway);
-        if (putAway && refused !== null) deps.notes?.notPutAway(refused);
+        if (putAway && refused !== null) {
+          if (refusals) refusals.push(refused);
+          else deps.notes?.notPutAway(refused);
+        }
       } else {
         await deps.rust.release(tabId);
       }
@@ -1668,6 +1691,31 @@ export function createTabController(deps: TabControllerDeps) {
     closeTabs: (ids: readonly string[]) =>
       queue.run(async () => {
         for (const id of backgroundFirst(ids)) await closeNow(id, 'close');
+      }),
+    /**
+     * Put a ⇧-selection away (the stash drawer's drop zone, «В тайник», ⌃T
+     * with targets — stash stage 04): each tab goes the way ⌃T goes
+     * (`closeNow` with `putAway`), so a file keeps its own caret, a note is
+     * put away once, by its close, and an untitled tab whose note could not
+     * be born keeps its tab and its text. Rust's "not stashed" answers are
+     * said once for the batch (`notPutAway`) — the tabs closed either way.
+     */
+    putAwayTabs: (ids: readonly string[]) =>
+      queue.run(async (): Promise<PutAwayTabsOutcome> => {
+        const closed: string[] = [];
+        const notStashed: NotStashed[] = [];
+        const refusals: string[] = [];
+        try {
+          for (const id of backgroundFirst(ids)) {
+            const before = refusals.length;
+            const gone = await closeNow(id, 'close', undefined, false, true, refusals);
+            if (gone) closed.push(id);
+            for (const message of refusals.slice(before)) notStashed.push({ id, message });
+          }
+        } finally {
+          if (refusals.length > 0) deps.notes?.notPutAway([...new Set(refusals)].join('; '));
+        }
+        return { closed, notStashed };
       }),
     /** Move `ids` (in this window's order) to another window or a new one (plan 05). */
     moveTabs: (ids: readonly string[], target: MoveTarget) => queue.run(() => moveNow(ids, target)),
