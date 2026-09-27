@@ -191,6 +191,7 @@ pub fn run() {
             stash::commands::stash_put_away,
             stash::commands::stash_list,
             stash::commands::stash_get,
+            stash::commands::stash_entry_for_path,
             stash::commands::stash_tag,
             stash::commands::stash_touch_opened,
             stash::commands::stash_counts,

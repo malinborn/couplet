@@ -127,6 +127,12 @@ impl<T: Enrich> Enrich for Vec<T> {
     }
 }
 
+impl<T: Enrich> Enrich for Option<T> {
+    fn enrich(self) -> Self {
+        self.map(Enrich::enrich)
+    }
+}
+
 /// Nothing from the disk in these.
 impl Enrich for StashCounts {
     fn enrich(self) -> Self {

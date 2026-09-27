@@ -128,6 +128,22 @@ pub async fn stash_get(state: State<'_, StashState>, id: String) -> Result<Stash
     run(&state, move |s| s.get(&id)).await
 }
 
+/// The stash entry of a tab's file, if it has one (stash plan 03), trashed or
+/// not. Only the frontend's display cache asks this; what a close does to the
+/// stash is decided in `tab_close` from the database itself.
+#[tauri::command]
+pub async fn stash_entry_for_path(
+    state: State<'_, StashState>,
+    path: String,
+) -> Result<Option<StashEntry>, String> {
+    off_lock(&state, move |state| {
+        // Outside the lock: normalizing asks the file system.
+        let path = crate::path_norm::normalize_str(&path);
+        state.with(|s| s.entry_for_path(&path))
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn stash_tag(
     app: AppHandle,

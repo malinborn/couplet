@@ -502,6 +502,22 @@ impl Stash {
         Ok(entry_from(row, tags))
     }
 
+    /// The entry whose `path` is exactly `path` — the `path_norm` spelling
+    /// the tab registry uses — trashed or not: a caller deciding what a close
+    /// means needs `deleted_at` to leave a trashed note alone (A8), which a
+    /// lookup that hid it would turn into "not in the stash". `None`: not in
+    /// the stash. Database alone, like `get`.
+    pub fn entry_for_path(&self, path: &str) -> Result<Option<StashEntry>, String> {
+        let id: Option<String> = self
+            .conn
+            .query_row("SELECT id FROM entries WHERE path = ?1", [path], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(db::err)?;
+        id.map(|id| self.get(&id)).transpose()
+    }
+
     /// `plan_put_away` and `put_away_probed` in one call, all under the lock:
     /// the tests' shorthand. The command splits them so the probing runs
     /// with no lock held.
@@ -948,6 +964,44 @@ mod tests {
     fn an_unknown_id_is_an_error() {
         let (stash, _root) = stash_in("unknown");
         assert_eq!(stash.get("s1-dead").unwrap_err(), "no stash entry s1-dead");
+    }
+
+    #[test]
+    fn entry_for_path_finds_an_entry_by_its_exact_path_only() {
+        let (mut stash, _root) = stash_in("by-path");
+        let note = stash.create_note("# Plan\nbody", None, T0, MSK).unwrap();
+
+        let found = stash
+            .entry_for_path(&note.path)
+            .unwrap()
+            .expect("the note is found");
+        assert_eq!(found.id, note.id);
+        assert!(stash.entry_for_path("/nowhere/else.md").unwrap().is_none());
+        assert!(
+            stash
+                .entry_for_path(&format!("{}x", note.path))
+                .unwrap()
+                .is_none(),
+            "exact match only — the registry and the stash share one spelling"
+        );
+    }
+
+    #[test]
+    fn entry_for_path_answers_a_trashed_entry_with_its_deletion_stamp() {
+        let (mut stash, _root) = stash_in("by-path-trashed");
+        let note = stash.create_note("# Gone\nbody", None, T0, MSK).unwrap();
+        set_columns(&stash, &note.id, &format!("deleted_at = {}", T0 + 1));
+
+        let found = stash
+            .entry_for_path(&note.path)
+            .unwrap()
+            .expect("a trashed row is still answered");
+        assert_eq!(found.deleted_at, Some(T0 + 1));
+    }
+
+    #[test]
+    fn an_absent_entry_stays_absent_through_enrich() {
+        assert!(None::<StashEntry>.enrich().is_none());
     }
 
     #[test]
