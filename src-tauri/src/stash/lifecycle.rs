@@ -202,8 +202,11 @@ pub(crate) fn document_left(
     leaving: Leaving,
     now: i64,
 ) -> Result<Left, String> {
+    // The folder's spelling asks the file system: named under the lock,
+    // spelled outside it — only SQL under the stash lock (A11).
     let (entry, notes_dir) =
-        state.with(|s| Ok((s.entry_for_path(path)?, s.notes_dir_spelling())))?;
+        state.with(|s| Ok((s.entry_for_path(path)?, s.paths.notes_dir.clone())))?;
+    let notes_dir = crate::path_norm::normalize_path(&notes_dir);
     match &entry {
         Some(e) if e.deleted_at.is_some() => {
             return match leaving {
