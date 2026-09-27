@@ -61,6 +61,19 @@ describe('openFromStash', () => {
     expect(d.touch).not.toHaveBeenCalled();
   });
 
+  it('a card dropped while another window holds it lands where it was dropped once it arrives', async () => {
+    const d = deps({ kind: 'requested', label: 'editor-19', number: 19 });
+    await openFromStash(entry, 'tab-3', d);
+    expect(d.place).toHaveBeenCalledWith('/r/a.md', 'tab-3');
+    expect(d.place.mock.invocationCallOrder[0]).toBeGreaterThan(d.wait.mock.invocationCallOrder[0]);
+    const click = deps({ kind: 'requested', label: 'editor-19', number: 19 });
+    await openFromStash(entry, undefined, click);
+    expect(click.place).not.toHaveBeenCalled();
+    const lost = deps({ kind: 'requested', label: 'editor-19', number: 19 }, false, false);
+    await openFromStash(entry, null, lost);
+    expect(lost.place).not.toHaveBeenCalled();
+  });
+
   it('the wait watches this window for the path', async () => {
     const d = deps({ kind: 'requested', label: 'editor-19', number: 19 });
     await openFromStash(entry, undefined, d);

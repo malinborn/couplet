@@ -4,7 +4,7 @@
  * it → that window was asked (`tab-pull`) to move it here — the holder runs
  * its own move, with its own dirty checks (`handOverPulled`) — and this one
  * watches for the arrival (`awaitPull`); nobody has it → open it here at its
- * caret and, for a drop, put it where it was dropped. `stash_touch_opened`
+ * caret. A drop puts the tab where it was dropped either way. `stash_touch_opened`
  * after every success («открытие» sort) — for a pull only once the tab is
  * here: a pull that never lands opened nothing. The touch is
  * fire-and-forget: a stash that cannot record the time must not undo an open
@@ -70,6 +70,8 @@ export async function openFromStash(
     // The holder runs the move (`tab-pull`); the tab comes in through `tabs-arrive`.
     const arrived = await (deps.wait ?? awaitPull)(() => deps.has(entry.path));
     if (!arrived) return { kind: 'pull-failed', label, number };
+    // An arrival lands right after the active tab, as any does: a drop goes where it was let go.
+    if (before !== undefined) deps.place(entry.path, before);
     touch();
     return { kind: 'pulled', label, number };
   }
