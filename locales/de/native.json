@@ -11,6 +11,7 @@
   "menu.file.save": "Speichern",
   "menu.file.save_as": "Speichern als...",
   "menu.file.close": "Tab schließen",
+  "menu.file.stash_put_away": "Put Away in Stash",
   "menu.file.recent_files": "Zuletzt verwendet...",
   "menu.file.transient_title": "Unbeantwortete Kurzansichten nach einer Stunde",
   "menu.file.transient_keep": "Behalten",

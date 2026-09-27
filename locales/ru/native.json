@@ -11,6 +11,7 @@
   "menu.file.save": "Сохранить",
   "menu.file.save_as": "Сохранить как...",
   "menu.file.close": "Закрыть вкладку",
+  "menu.file.stash_put_away": "Отложить в тайник",
   "menu.file.recent_files": "Последние файлы...",
   "menu.file.transient_title": "Короткие показы без ответа через час",
   "menu.file.transient_keep": "Оставить",

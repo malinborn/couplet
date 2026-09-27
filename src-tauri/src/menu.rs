@@ -258,6 +258,9 @@ pub fn build_menu(
                 .accelerator("CmdOrCtrl+W")
                 .build(app)?,
         )
+        // ⌃T is a page key (`src/lib/stash/stash-keys.ts`): a Ctrl-only
+        // accelerator never fires from the keyboard in this app. No key here.
+        .item(&MenuItemBuilder::with_id("stash_put_away", t("menu.file.stash_put_away")).build(app)?)
         .separator()
         .item(&MenuItemBuilder::with_id("recent_files", t("menu.file.recent_files")).build(app)?)
         .item(&transient_submenu)

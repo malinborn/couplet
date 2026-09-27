@@ -11,6 +11,7 @@
   "menu.file.save": "Save",
   "menu.file.save_as": "Save As...",
   "menu.file.close": "Close Tab",
+  "menu.file.stash_put_away": "Put Away in Stash",
   "menu.file.recent_files": "Recent Files...",
   "menu.file.transient_title": "Unanswered Quick Looks After an Hour",
   "menu.file.transient_keep": "Keep",
