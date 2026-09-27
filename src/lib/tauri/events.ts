@@ -1,5 +1,6 @@
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+import type { StashChanged } from '../stash/types';
 import type { RecentSnapshot } from '../stores.svelte';
 import type { PendingTab } from './commands';
 
@@ -49,6 +50,7 @@ export type MenuAction =
   | 'toggle_tabs_dates:off'
   | 'transient_ignored_keep'
   | 'transient_ignored_close'
+  | 'stash_put_away'
   | `select_tab_${'1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'}`;
 
 /**
@@ -118,6 +120,20 @@ export function onFileChangedExternally(handler: (path: string) => void): Promis
 export function onWindowNumber(handler: (n: number) => void): Promise<() => void> {
   return getCurrentWebviewWindow().listen<number>('window-number', (event) => {
     handler(event.payload);
+  });
+}
+
+/**
+ * Something in the stash changed (roadmap «Event», payload A6). Rust emits it
+ * once with `app.emit`; listened to per window, because a global `listen`'s
+ * target is `Any` and would also catch emits targeted at other windows.
+ * `ids` is `undefined` when Rust did not say which entries changed.
+ */
+export function onStashChanged(
+  handler: (reason: string, ids: string[] | undefined) => void
+): Promise<() => void> {
+  return getCurrentWebviewWindow().listen<StashChanged>('stash-changed', (event) => {
+    handler(event.payload.reason, event.payload.ids);
   });
 }
 
