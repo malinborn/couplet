@@ -1628,3 +1628,126 @@ describe('TabDrawer — a blank tab in Compact (stage-03 carry-over)', () => {
     expect(card('u').querySelector('.card-meta')?.textContent).toContain('empty — vanishes when closed');
   });
 });
+
+describe('TabDrawer — one keyboard for two drawers (stash stage 04)', () => {
+  let stash: StashStore;
+  const onstashopen = vi.fn();
+
+  beforeEach(async () => {
+    h?.destroy();
+    stash = fakeStash();
+    onstashopen.mockClear();
+    h = setup(initialList(), {}, { stash, onstashopen, onputaway: vi.fn(), onstashremove: vi.fn(), onstashtag: vi.fn() });
+    h.handle().toggle();
+    await settle();
+  });
+
+  const page = () => h.root().parentElement!;
+  const stashQuery = () => page().querySelector('.stash-drawer .s-q')?.textContent ?? '';
+
+  function shiftClick(id: string): void {
+    pointer(card(id), 'pointerdown', { button: 0, shiftKey: true, clientX: 100, clientY: 100 });
+    pointer(window, 'pointerup', { button: 0, clientX: 100, clientY: 100 });
+  }
+
+  it('→ opens the stash with the keys; letters filter the stash, not the tabs', async () => {
+    press('ArrowRight');
+    await settleLong();
+    expect(page().querySelector('.stash-drawer.focused')).not.toBeNull();
+    expect(page().querySelector('#tab-drawer.focused')).toBeNull();
+    press('b');
+    await settle();
+    expect(stashQuery()).toBe('b');
+    expect(query()).toBe('');
+    expect(h.editorKeys).toEqual([]);
+  });
+
+  it('DOM focus follows the drawer that has the keys (D5)', async () => {
+    press('ArrowRight');
+    await settleLong();
+    expect(page().querySelector('.stash-drawer')?.contains(document.activeElement)).toBe(true);
+    press('ArrowLeft');
+    await settleLong();
+    expect(el('#tab-drawer').contains(document.activeElement)).toBe(true);
+  });
+
+  it('← gives the keys back; the tabs drawer glows and filters', async () => {
+    press('ArrowRight');
+    await settleLong();
+    press('ArrowLeft');
+    await settle();
+    expect(page().querySelector('#tab-drawer.focused')).not.toBeNull();
+    expect(page().querySelector('.stash-drawer.focused')).toBeNull();
+    press('g');
+    await settle();
+    expect(query()).toBe('g');
+    expect(stashQuery()).toBe('');
+  });
+
+  it('a modified arrow moves no keys between the drawers', async () => {
+    press('ArrowRight', { shiftKey: true });
+    await settleLong();
+    expect(stash.state.open).toBe(false);
+  });
+
+  it('Esc in the stash clears its query, then closes the stash alone', async () => {
+    press('ArrowRight');
+    await settleLong();
+    press('o');
+    await settle();
+    press('Escape');
+    await settle();
+    expect(stashQuery()).toBe('');
+    expect(stash.state.open).toBe(true);
+    press('Escape');
+    await settle();
+    expect(stash.state.open).toBe(false);
+    expect(h.root().classList.contains('open')).toBe(true);
+  });
+
+  it('Esc in the tabs drawer closes both', async () => {
+    press('ArrowRight');
+    await settleLong();
+    press('ArrowLeft');
+    await settle();
+    press('Escape');
+    await settle();
+    expect(h.root().classList.contains('open')).toBe(false);
+    expect(stash.state.open).toBe(false);
+  });
+
+  it('Enter opens the stash top result here and closes both drawers', async () => {
+    press('ArrowRight');
+    await settleLong();
+    press('b');
+    await settle();
+    press('Enter');
+    await settle();
+    expect(onstashopen).toHaveBeenCalledWith(expect.objectContaining({ id: 's2' }), undefined);
+    expect(h.root().classList.contains('open')).toBe(false);
+  });
+
+  it('⌃T targets: the selection, the ring, the active tab — nothing while the stash has the keys', async () => {
+    expect(h.handle().putAwayTargets()).toEqual(['a']);
+    shiftClick('c');
+    await settle();
+    expect(h.handle().putAwayTargets()).toEqual(['c']);
+    press('ArrowRight');
+    await settleLong();
+    expect(h.handle().putAwayTargets()).toBeNull();
+    h.handle().close();
+    await settle();
+    expect(h.handle().putAwayTargets()).toBeUndefined();
+  });
+
+  it('⌃T targets the card under the keyboard ring when nothing is selected', async () => {
+    press('ArrowDown');
+    await settle();
+    press('ArrowDown');
+    await settle();
+    const ringed = h.root().querySelector<HTMLElement>('[data-tab-id].kb');
+    expect(ringed?.dataset.tabId).toBeDefined();
+    expect(ringed?.dataset.tabId).not.toBe('a');
+    expect(h.handle().putAwayTargets()).toEqual([ringed?.dataset.tabId]);
+  });
+});

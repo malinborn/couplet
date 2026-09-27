@@ -62,7 +62,7 @@
   import type { StashStore } from '../stash/stash-store.svelte';
   import type { StashEntry, TagChange } from '../stash/types';
   import { drawerLayout } from '../stash/drawer-width';
-  import { focusDrawer, type DrawerFocus } from '../stash/stash-state';
+  import { arrowFocus, focusDrawer, type DrawerFocus } from '../stash/stash-state';
   import {
     GOT_MS,
     carouselItems,
@@ -88,6 +88,14 @@
     shortcutTarget(n: number): string | null | undefined;
     /** ⌃S and View → Tabs → Stash (stash stage 04): open both drawers with the stash focused, or close the stash. */
     toggleStash(): void;
+    /**
+     * ⌃T while the drawer is open (mockup `stashByKey`): the ⇧-selection, else
+     * the card under the keyboard ring, else the active tab. `null`: the stash
+     * has the keys — ⌃T does nothing. `undefined`: the drawer is closed — ⌃T
+     * puts away the active document as before. Stage 03's capture handler stops
+     * ⌃T before this drawer's listener sees it, so App asks here instead.
+     */
+    putAwayTargets(): string[] | null | undefined;
   }
 
   let {
@@ -352,6 +360,15 @@
       close: () => closeDrawer(),
       shortcutTarget: (n) => (ds.open ? (visible[n - 1] ?? null) : undefined),
       toggleStash: () => toggleStash(),
+      putAwayTargets: () => {
+        if (!ds.open) return undefined;
+        if (focusStash) return null;
+        const chosen = selectedIds();
+        if (chosen.length > 0) return chosen;
+        const kb = kbTarget(ds, visible);
+        if (kb) return [kb];
+        return list.activeId ? [list.activeId] : [];
+      },
     };
   });
 
@@ -392,6 +409,22 @@
   // land in the editor behind it and edit a document nobody can see.
   $effect(() => {
     if (isOpen) focusList();
+  });
+
+  // Stash stage 04 (D5): DOM focus follows the drawer that has the keys, so
+  // keys the drawers do not use (Space, Tab) still land in a drawer, never in
+  // the document behind them. Routing itself reads the store, not the DOM.
+  $effect(() => {
+    if (!stash || !ds.open) return;
+    const toStash = focusStash;
+    void tick().then(() => {
+      if (!ds.open) return;
+      const active = document.activeElement;
+      if (toStash) stashHandle?.focus();
+      else if (!(active instanceof Element && (asideEl?.contains(active) || active.closest('.notch-edit')))) {
+        listEl?.focus({ preventScroll: true });
+      }
+    });
   });
 
   // Tabs that arrive while the drawer is open get their text too.
@@ -720,8 +753,8 @@
 
   function onKeyDown(e: KeyboardEvent): void {
     trackShift(e);
-    // The notch's number input takes digits, Enter, Esc and Backspace itself.
-    if (e.target instanceof Element && e.target.closest('.notch-edit')) return;
+    // The notch's number input and a stash card's tag input take their keys themselves.
+    if (e.target instanceof Element && e.target.closest('.notch-edit, .tag-edit')) return;
     // The IME owns the key: a composed character is not a search letter.
     if (e.isComposing || e.keyCode === 229) return;
     // While ⌘G's carousel is up every key is its own (D10) — not during the
@@ -737,6 +770,31 @@
       e.stopPropagation();
       if (e.key === 'Escape') endGesture?.();
       return;
+    }
+    // Stash stage 04 (D6): bare ←/→ move the keys between the drawers — → opens
+    // the stash — and while the stash has them every key is routed to it. Esc
+    // there is the stash's own (D7: query, then the stash alone); Esc in the
+    // tabs drawer stays `escapeState` → `closeDrawer`, which closes both.
+    if (stash && car === null) {
+      const side = arrowFocus(e);
+      if (side) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (side === 'right') {
+          if (!stash.state.open) openStash();
+          else focusSide('stash');
+        } else {
+          focusSide('tabs');
+        }
+        return;
+      }
+      if (focusStash) {
+        if (stashHandle?.key(e)) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        return;
+      }
     }
     const action = drawerKeyAction(e, ds.query, mac, selected.size > 0 && car === null && gesture === null);
     if (action.kind === 'none') return;
@@ -1164,6 +1222,7 @@
     <aside
       class="drawer"
       id="tab-drawer"
+      class:focused={stashOpen && !focusStash}
       aria-label={listLabel}
       inert={!ds.open}
       bind:this={asideEl}
@@ -1185,6 +1244,7 @@
             aria-hidden="true">{t('tabs.drawer.select_hint')}</small
           >
           <small class="type-hint" class:off={!!ds.query}>{@render magnifier()}{t('tabs.drawer.type_hint')}</small>
+          {#if stash}<small class="focus-hint"><kbd>←</kbd> {t('stash.drawer.focus_tabs')}</small>{/if}
         </div>
         <div class="sorts">
           <span class="lbl">{t('tabs.drawer.sort_label')}</span>
@@ -1478,6 +1538,53 @@
     box-shadow:
       14px 0 44px rgba(var(--tabs-shadow-rgb), calc(var(--tabs-shadow-a) * 1.4)),
       2px 0 8px rgba(var(--tabs-shadow-rgb), var(--tabs-shadow-a));
+  }
+
+  .drawer {
+    --acc: var(--tabs-brand-a);
+  }
+
+  /* Stash stage 04: with both drawers open, the one with the keys shows a rim
+     in its own colour (mockup `.drawer::after`); the other is not dimmed. */
+  .drawer::after {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s;
+    box-shadow:
+      inset 0 0 0 1.5px color-mix(in oklab, var(--acc) 65%, transparent),
+      0 0 16px 1px color-mix(in oklab, var(--acc) 30%, transparent);
+  }
+
+  .stash-open .drawer.focused::after {
+    opacity: 1;
+  }
+
+  .drawer-title .focus-hint {
+    display: none;
+  }
+
+  .focus-hint kbd {
+    font-size: 11px;
+    color: var(--text-subtle);
+  }
+
+  /* Without the keys, the header says how to get them back. */
+  .stash-open .drawer:not(.focused) .drawer-title .focus-hint {
+    display: block;
+  }
+
+  .stash-open .drawer:not(.focused) .type-hint,
+  .stash-open .drawer:not(.focused) .sel-hint {
+    display: none;
+  }
+
+  .narrow.stash-open .sorts .lbl,
+  .narrow.stash-open .sorts kbd {
+    display: none;
   }
 
   .drawer-head {
@@ -1993,7 +2100,8 @@
       animation: none;
     }
     .drawer-wrap,
-    .scrim {
+    .scrim,
+    .drawer::after {
       transition-duration: 0.01s !important;
     }
     .ghost,
