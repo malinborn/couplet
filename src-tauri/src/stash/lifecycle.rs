@@ -367,6 +367,7 @@ fn put_away_one(
     path: &str,
     cursor: usize,
     top_line: usize,
+    project: Option<&str>,
     now: i64,
 ) -> Result<Left, String> {
     // The folder's spelling asks the file system: named under the lock,
@@ -403,6 +404,7 @@ fn put_away_one(
         caret: i64::try_from(cursor).ok(),
         top_line: i64::try_from(top_line).ok(),
         tags: Vec::new(),
+        project: project.map(str::to_string),
     };
     let plan = plan_put_away(&req, &notes_dir, now)?;
     let results = state.with(|s| s.put_away_probed(plan, now))?;
@@ -414,17 +416,19 @@ fn put_away_one(
 }
 
 /// One document left the tabs at `cursor` / `top_line` — `put_away_one` for
-/// `PutAway`, `notes_left` otherwise.
+/// `PutAway`, `notes_left` otherwise. `project`: the window's project root,
+/// a put-away file's repo outside any git repository (A3).
 pub(crate) fn document_left(
     state: &StashState,
     path: &str,
     cursor: usize,
     top_line: usize,
     leaving: Leaving,
+    project: Option<&str>,
     now: i64,
 ) -> Result<Left, String> {
     if leaving == Leaving::PutAway {
-        return put_away_one(state, path, cursor, top_line, now);
+        return put_away_one(state, path, cursor, top_line, project, now);
     }
     let mut report = notes_left(
         state,
@@ -498,6 +502,7 @@ pub(crate) fn documents_left_in(
     state: &StashState,
     docs: &[(String, usize, usize)],
     leaving: Leaving,
+    project: Option<&str>,
     now: i64,
 ) -> LeftReport {
     if leaving != Leaving::PutAway {
@@ -505,7 +510,7 @@ pub(crate) fn documents_left_in(
     }
     let mut report = LeftReport::default();
     for (path, cursor, top_line) in docs {
-        match document_left(state, path, *cursor, *top_line, leaving, now) {
+        match document_left(state, path, *cursor, *top_line, leaving, project, now) {
             Ok(Left::Untouched) => {}
             Ok(Left::PutAway(id)) => report.put_away.push(id),
             Ok(Left::Discarded(id)) => report.discarded.push(id),
@@ -577,6 +582,7 @@ pub(crate) fn documents_left(
     app: &AppHandle,
     docs: &[(String, usize, usize)],
     leaving: Leaving,
+    project: Option<&str>,
 ) -> LeftReport {
     if docs.is_empty() {
         return LeftReport::default();
@@ -584,7 +590,7 @@ pub(crate) fn documents_left(
     let Some(state) = app.try_state::<StashState>() else {
         return LeftReport::failed_all(docs, "stash unavailable");
     };
-    let report = documents_left_in(&state, docs, leaving, clock::now_ms());
+    let report = documents_left_in(&state, docs, leaving, project, clock::now_ms());
     let quitting = app
         .try_state::<SessionState>()
         .is_some_and(|s| s.is_quitting());
@@ -687,7 +693,8 @@ pub(crate) fn documents_left_later(
     tauri::async_runtime::spawn_blocking(move || {
         let _pending = pending;
         // Best effort: `documents_left_in` logged whatever failed.
-        let _ = documents_left(&app, &docs, leaving);
+        // A closing window stamps notes only; no file is put away, so no project.
+        let _ = documents_left(&app, &docs, leaving, None);
     });
 }
 
@@ -750,7 +757,7 @@ mod tests {
         let (state, _root) = state_in("note");
         let note = note(&state, "# Plan\nbody");
         assert_eq!(
-            document_left(&state, &note.path, 7, 3, Leaving::Closed, NOW).unwrap(),
+            document_left(&state, &note.path, 7, 3, Leaving::Closed, None, NOW).unwrap(),
             Left::PutAway(note.id.clone())
         );
         let e = state.with(|s| s.get(&note.id)).unwrap();
@@ -764,7 +771,7 @@ mod tests {
         let note = note(&state, "x");
         std::fs::write(&note.path, " \n\t\n").unwrap();
         assert_eq!(
-            document_left(&state, &note.path, 0, 1, Leaving::Closed, NOW).unwrap(),
+            document_left(&state, &note.path, 0, 1, Leaving::Closed, None, NOW).unwrap(),
             Left::Discarded(note.id.clone())
         );
         assert!(!Path::new(&note.path).exists(), "the empty file is gone");
@@ -777,7 +784,7 @@ mod tests {
         let note = note(&state, "x");
         std::fs::write(&note.path, "").unwrap();
         assert_eq!(
-            document_left(&state, &note.path, 0, 1, Leaving::PutAway, NOW).unwrap(),
+            document_left(&state, &note.path, 0, 1, Leaving::PutAway, None, NOW).unwrap(),
             Left::Discarded(note.id.clone())
         );
         assert!(!Path::new(&note.path).exists());
@@ -789,7 +796,7 @@ mod tests {
         let note = note(&state, "keep");
         std::fs::remove_file(&note.path).unwrap();
         assert_eq!(
-            document_left(&state, &note.path, 0, 1, Leaving::Closed, NOW).unwrap(),
+            document_left(&state, &note.path, 0, 1, Leaving::Closed, None, NOW).unwrap(),
             Left::PutAway(note.id.clone()),
             "an unreadable file proves nothing; the entry stays"
         );
@@ -801,7 +808,7 @@ mod tests {
         let note = note(&state, "x");
         std::fs::write(&note.path, [0xff, b' ', b'\n']).unwrap();
         assert_eq!(
-            document_left(&state, &note.path, 0, 1, Leaving::Closed, NOW).unwrap(),
+            document_left(&state, &note.path, 0, 1, Leaving::Closed, None, NOW).unwrap(),
             Left::PutAway(note.id.clone())
         );
         assert!(Path::new(&note.path).exists());
@@ -821,7 +828,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            document_left(&state, &blank, 0, 1, Leaving::Closed, NOW).unwrap(),
+            document_left(&state, &blank, 0, 1, Leaving::Closed, None, NOW).unwrap(),
             Left::PutAway(note.id.clone())
         );
         assert!(Path::new(&blank).exists(), "the user's file stays");
@@ -837,7 +844,7 @@ mod tests {
         // Put away, not discarded. (Which entry is stamped is `plan_put_away`'s
         // business: its normalization resolves the link to the target.)
         assert!(matches!(
-            document_left(&state, &note.path, 0, 1, Leaving::Closed, NOW).unwrap(),
+            document_left(&state, &note.path, 0, 1, Leaving::Closed, None, NOW).unwrap(),
             Left::PutAway(_)
         ));
         assert!(Path::new(&target).exists());
@@ -856,11 +863,11 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            document_left(&state, &note.path, 3, 2, Leaving::Closed, NOW).unwrap(),
+            document_left(&state, &note.path, 3, 2, Leaving::Closed, None, NOW).unwrap(),
             Left::Untouched
         );
         assert!(
-            document_left(&state, &note.path, 3, 2, Leaving::PutAway, NOW).is_err(),
+            document_left(&state, &note.path, 3, 2, Leaving::PutAway, None, NOW).is_err(),
             "⌃T on a trashed note refuses"
         );
         let e = state.with(|s| s.get(&note.id)).unwrap();
@@ -877,7 +884,7 @@ mod tests {
         let file = user_file(&root, "plan.md", "# plan");
 
         assert_eq!(
-            document_left(&state, &file, 0, 1, Leaving::Closed, NOW).unwrap(),
+            document_left(&state, &file, 0, 1, Leaving::Closed, None, NOW).unwrap(),
             Left::Untouched
         );
         assert!(
@@ -885,7 +892,7 @@ mod tests {
             "an open file never enters the stash by itself"
         );
 
-        let Left::PutAway(id) = document_left(&state, &file, 4, 2, Leaving::PutAway, NOW).unwrap()
+        let Left::PutAway(id) = document_left(&state, &file, 4, 2, Leaving::PutAway, None, NOW).unwrap()
         else {
             panic!("⌃T puts a file away");
         };
@@ -896,12 +903,25 @@ mod tests {
     }
 
     #[test]
+    fn a_loose_file_put_away_by_ctrl_t_takes_the_windows_project_name() {
+        // Roadmap A3, `tab_close`'s path: the window's project reaches the put-away.
+        let (state, root) = state_in("put-away-project");
+        let file = user_file(&root, "loose.md", "l");
+        document_left(&state, &file, 0, 1, Leaving::PutAway, Some("/x/proj"), NOW).unwrap();
+        assert_eq!(by_path(&state, &file).unwrap().repo.as_deref(), Some("proj"));
+        // ⌘W is no put-away: the project is not even looked at.
+        let other = user_file(&root, "other.md", "o");
+        document_left(&state, &other, 0, 1, Leaving::Closed, Some("/x/proj"), NOW).unwrap();
+        assert!(by_path(&state, &other).is_none());
+    }
+
+    #[test]
     fn a_stashed_file_closed_with_cmd_w_keeps_its_stamp() {
         let (state, root) = state_in("stashed-file");
         let file = user_file(&root, "plan.md", "");
-        document_left(&state, &file, 4, 2, Leaving::PutAway, NOW).unwrap();
+        document_left(&state, &file, 4, 2, Leaving::PutAway, None, NOW).unwrap();
         assert_eq!(
-            document_left(&state, &file, 9, 9, Leaving::Closed, NOW + 1).unwrap(),
+            document_left(&state, &file, 9, 9, Leaving::Closed, None, NOW + 1).unwrap(),
             Left::Untouched
         );
         let e = by_path(&state, &file).unwrap();
@@ -920,7 +940,7 @@ mod tests {
         let note = note(&state, "x");
         std::fs::write(&note.path, "").unwrap();
         assert_eq!(
-            document_left(&state, &note.path, 5, 2, Leaving::WithWindow, NOW).unwrap(),
+            document_left(&state, &note.path, 5, 2, Leaving::WithWindow, None, NOW).unwrap(),
             Left::PutAway(note.id.clone())
         );
         assert!(Path::new(&note.path).exists());
@@ -933,7 +953,7 @@ mod tests {
         let (state, root) = state_in("window-files");
         let open = user_file(&root, "open.md", "a");
         assert_eq!(
-            document_left(&state, &open, 1, 1, Leaving::WithWindow, NOW).unwrap(),
+            document_left(&state, &open, 1, 1, Leaving::WithWindow, None, NOW).unwrap(),
             Left::Untouched
         );
         assert!(
@@ -942,9 +962,9 @@ mod tests {
         );
 
         let stashed = user_file(&root, "stashed.md", "b");
-        document_left(&state, &stashed, 4, 2, Leaving::PutAway, NOW).unwrap();
+        document_left(&state, &stashed, 4, 2, Leaving::PutAway, None, NOW).unwrap();
         assert_eq!(
-            document_left(&state, &stashed, 9, 9, Leaving::WithWindow, NOW + 1).unwrap(),
+            document_left(&state, &stashed, 9, 9, Leaving::WithWindow, None, NOW + 1).unwrap(),
             Left::Untouched
         );
         let e = by_path(&state, &stashed).unwrap();
@@ -962,7 +982,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            document_left(&state, &trashed.path, 3, 2, Leaving::WithWindow, NOW).unwrap(),
+            document_left(&state, &trashed.path, 3, 2, Leaving::WithWindow, None, NOW).unwrap(),
             Left::Untouched
         );
         let e = state.with(|s| s.get(&trashed.id)).unwrap();
@@ -1223,6 +1243,7 @@ mod tests {
                 (file.clone(), 0, 1),
             ],
             Leaving::Closed,
+            None,
             NOW,
         );
         assert_eq!(ids.put_away, vec![kept.id.clone()]);
@@ -1254,6 +1275,7 @@ mod tests {
                 (b.path.clone(), 4, 2),
             ],
             Leaving::WithWindow,
+            None,
             NOW,
         );
         assert_eq!(report.put_away, vec![a.id.clone(), b.id.clone()]);
@@ -1361,14 +1383,15 @@ mod tests {
         let kept = note(&state, "# kept");
         let unavailable = StashState::open(Err("no stash here".into()));
 
-        let r = documents_left_in(&state, &[(blank.path.clone(), 0, 1)], Leaving::Closed, NOW);
+        let r = documents_left_in(&state, &[(blank.path.clone(), 0, 1)], Leaving::Closed, None, NOW);
         assert!(!r.reopenable(), "{r:?}");
-        let r = documents_left_in(&state, &[(kept.path.clone(), 0, 1)], Leaving::Closed, NOW);
+        let r = documents_left_in(&state, &[(kept.path.clone(), 0, 1)], Leaving::Closed, None, NOW);
         assert!(r.reopenable(), "{r:?}");
         let r = documents_left_in(
             &unavailable,
             &[(kept.path.clone(), 0, 1)],
             Leaving::Closed,
+            None,
             NOW,
         );
         assert!(r.reopenable(), "a stash failure discards nothing: {r:?}");
@@ -1405,7 +1428,7 @@ mod tests {
         let root = crate::atomic_write::testkit::scratch("lifecycle-unavailable");
         let state = StashState::open(Err("no stash here".into()));
         let file = user_file(&root, "plan.md", "# plan");
-        let report = documents_left_in(&state, &[(file.clone(), 0, 1)], Leaving::PutAway, NOW);
+        let report = documents_left_in(&state, &[(file.clone(), 0, 1)], Leaving::PutAway, None, NOW);
         assert_eq!(report.failed.len(), 1, "{report:?}");
         assert_eq!(report.failed[0].0, file);
         let answer = report.failure(Leaving::PutAway).expect("⌃T says it failed");
@@ -1422,6 +1445,7 @@ mod tests {
             &unavailable,
             &[(note.path.clone(), 0, 1)],
             Leaving::Closed,
+            None,
             NOW,
         );
         assert_eq!(report.failed.len(), 1, "{report:?}");
@@ -1438,7 +1462,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        let report = documents_left_in(&state, &[(note.path.clone(), 0, 1)], Leaving::PutAway, NOW);
+        let report = documents_left_in(&state, &[(note.path.clone(), 0, 1)], Leaving::PutAway, None, NOW);
         let answer = report.failure(Leaving::PutAway).expect("reported");
         assert!(answer.contains("in the trash"), "{answer}");
         assert!(report.put_away.is_empty() && report.discarded.is_empty());
@@ -1451,7 +1475,7 @@ mod tests {
         let blank = note(&state, "x");
         std::fs::write(&blank.path, "").unwrap();
         for doc in [(file, 0, 1), (blank.path.clone(), 0, 1)] {
-            let report = documents_left_in(&state, &[doc], Leaving::PutAway, NOW);
+            let report = documents_left_in(&state, &[doc], Leaving::PutAway, None, NOW);
             assert_eq!(report.failure(Leaving::PutAway), None, "{report:?}");
         }
     }

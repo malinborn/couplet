@@ -169,6 +169,17 @@ fn window_project_of(reg: &TabRegistry, label: &str) -> WindowProject {
     WindowProject { root, repo }
 }
 
+/// A window's project root, bound first if it was not yet — for a put-away
+/// of a file outside any git repository (roadmap A3). Binding walks the file
+/// system: call it off the async runtime. Only the registry lock, released
+/// before this returns (A11).
+pub(crate) fn project_root_of(app: &AppHandle, label: &str) -> Option<String> {
+    crate::routing::bind_missing_projects(app);
+    let open_files = app.state::<OpenFiles>();
+    let reg = open_files.0.lock().unwrap();
+    window_project_of(&reg, label).root
+}
+
 /// The calling window's project, read just before `stash_create_note` and on
 /// every stash open (the repo chip, stash stage 04).
 #[tauri::command]
@@ -303,17 +314,21 @@ pub async fn tab_close(
     put_away: Option<bool>,
 ) -> Result<Option<String>, String> {
     let label = window.label().to_string();
-    let (removed, number) = {
+    let (removed, number, project) = {
         let open_files = app.state::<OpenFiles>();
         let mut reg = open_files.0.lock().unwrap();
         let was_active =
             reg.window(&label).and_then(|w| w.active.as_deref()) == Some(tab_id.as_str());
         let number = reg.window(&label).and_then(|w| w.number);
+        // A put-away's repo for a file outside any git repository (A3). Not
+        // bound here if it was not yet: the heartbeat binds a window within
+        // seconds of its first file, and a close is no place for a disk walk.
+        let project = reg.window(&label).and_then(|w| w.project.clone());
         let removed = reg.remove_tab(&label, &tab_id);
         if removed.is_some() && was_active {
             window::set_watcher(&app, &label, None);
         }
-        (removed, number)
+        (removed, number, project)
     };
     let Some(tab) = removed else {
         return Ok(None);
@@ -350,7 +365,7 @@ pub async fn tab_close(
         let pending = crate::stash::lifecycle::pending();
         let stashed = tauri::async_runtime::spawn_blocking(move || {
             let _pending = pending;
-            crate::stash::lifecycle::documents_left(&stash_app, &[doc], leaving)
+            crate::stash::lifecycle::documents_left(&stash_app, &[doc], leaving, project.as_deref())
         })
         .await;
         let (failure, reopenable) = match stashed {

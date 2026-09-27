@@ -164,6 +164,10 @@ pub struct PutAway {
     /// Only with exactly one path.
     pub top_line: Option<i64>,
     pub tags: Vec<String>,
+    /// The calling window's project root: the repo of a file outside any git
+    /// repository is its directory name (roadmap A3). Not an IPC argument —
+    /// Rust reads it from the registry for the window that asked.
+    pub project: Option<String>,
 }
 
 /// One put-away path's outcome. `created == false`: it was already in the

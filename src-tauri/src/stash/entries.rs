@@ -139,11 +139,14 @@ fn file_title(path: &str) -> String {
         .unwrap_or_default()
 }
 
-/// A file reference's repo as stored (roadmap A3): the git toplevel's name,
-/// `None` outside a repository — the file's own folder is not a repo tag.
-fn file_repo(path: &str) -> Option<String> {
-    let info = crate::git_info::repo_info(Path::new(path))?;
-    normalize_repo(Some(&info.project))
+/// A file reference's repo as stored (roadmap A3): the git toplevel's name;
+/// outside a repository the window's project name (`project`, already
+/// reduced), else `None` — the file's own folder is not a repo tag.
+fn file_repo(path: &str, project: Option<&str>) -> Option<String> {
+    match crate::git_info::repo_info(Path::new(path)) {
+        Some(info) => normalize_repo(Some(&info.project)),
+        None => project.map(str::to_string),
+    }
 }
 
 /// What a path not yet in the stash becomes (plan D5). A note only when it is
@@ -173,7 +176,7 @@ struct Probe {
     /// `Err`: why it cannot become a new entry (an existing one is raised
     /// without looking at the file).
     new: Result<NewEntry, String>,
-    /// The git toplevel's name; re-stored for an existing file reference too.
+    /// `file_repo`'s answer; re-stored for an existing file reference too.
     repo: Option<String>,
 }
 
@@ -218,9 +221,9 @@ fn probe_new(path: &str, notes_dir: &Path, now: i64) -> Result<NewEntry, String>
 }
 
 /// Everything `put_away` needs from the disk for `path`, off the lock.
-fn probe(path: String, notes_dir: &Path, now: i64) -> Probe {
+fn probe(path: String, notes_dir: &Path, project: Option<&str>, now: i64) -> Probe {
     let new = probe_new(&path, notes_dir, now);
-    let repo = file_repo(&path);
+    let repo = file_repo(&path, project);
     Probe { path, new, repo }
 }
 
@@ -292,10 +295,11 @@ pub(crate) fn plan_put_away(
     if let Some(path) = paths.iter().find(|p| !Path::new(p).is_absolute()) {
         return Err(format!("path must be absolute: {path}"));
     }
+    let project = normalize_repo(req.project.as_deref());
     Ok(PutAwayPlan {
         probes: paths
             .into_iter()
-            .map(|path| probe(path, notes_dir, now))
+            .map(|path| probe(path, notes_dir, project.as_deref(), now))
             .collect(),
         tags,
         caret: req.caret,
@@ -403,14 +407,17 @@ fn unique_id(conn: &Connection) -> Result<String, String> {
 
 /// Fills what an entry shows from the disk: the preview, and for a file
 /// reference its live repository and branch in place of the name stored at
-/// put-away (a note keeps its stored project). Never under the stash lock
-/// (`Enrich`, I3).
+/// put-away. With no repository found the stored name stays — the window
+/// project's name a loose file was put away under (roadmap A3), which the
+/// repo chip matches too; a note keeps its stored project. Never under the
+/// stash lock (`Enrich`, I3).
 pub(crate) fn enrich_entry(e: &mut StashEntry) {
     if e.kind == StashKind::File {
-        (e.repo, e.branch) = match crate::git_info::repo_info(Path::new(&e.path)) {
-            Some(info) => (Some(info.project), info.branch),
-            None => (None, None),
-        };
+        if let Some(info) = crate::git_info::repo_info(Path::new(&e.path)) {
+            (e.repo, e.branch) = (Some(info.project), info.branch);
+        } else {
+            e.branch = None;
+        }
     }
     e.preview = read_preview(Path::new(&e.path));
 }
@@ -1294,6 +1301,7 @@ mod tests {
             caret: Some(7),
             top_line: Some(3),
             tags: vec!["#Infra".into(), "infra".into()],
+            project: None,
         };
         let r = stash.put_away(&req, T0).unwrap();
         assert_eq!(r.len(), 1);
@@ -1321,6 +1329,7 @@ mod tests {
                     caret: Some(1),
                     top_line: Some(3),
                     tags: vec!["a".into()],
+                    project: None,
                 },
                 T0,
             )
@@ -1332,6 +1341,7 @@ mod tests {
                     caret: Some(9),
                     top_line: None,
                     tags: vec!["B".into()],
+                    project: None,
                 },
                 T0 + 60_000,
             )
@@ -1432,6 +1442,7 @@ mod tests {
             caret: Some(4),
             top_line: Some(1),
             tags: vec![],
+            project: None,
         };
         let r = stash.put_away(&req, T0 + 5).unwrap();
         assert!(!r[0].created);
@@ -1628,6 +1639,61 @@ mod tests {
             .put_away(&put(vec![note.path.clone()]), T0 + 2)
             .unwrap();
         assert_eq!(stored_repo(&stash, &note.id).as_deref(), Some("couplet"));
+    }
+
+    fn put_from(paths: Vec<String>, project: &str) -> PutAway {
+        PutAway {
+            paths,
+            project: Some(project.to_string()),
+            ..PutAway::default()
+        }
+    }
+
+    #[test]
+    fn a_file_outside_any_repository_takes_the_windows_project_name() {
+        // Roadmap A3: «or of the window project root when not a repo».
+        let (mut stash, root) = stash_in("put-repo-project");
+        let loose = user_file(&root, "loose.md", "l");
+        let r = stash.put_away(&put_from(vec![loose], "/x/proj"), T0).unwrap();
+        assert_eq!(stored_repo(&stash, &r[0].entry.id).as_deref(), Some("proj"));
+        let e = r[0].entry.clone().enrich();
+        assert_eq!(
+            (e.repo.as_deref(), e.branch.as_deref()),
+            (Some("proj"), None),
+            "shown as the filter matches it: no repository to name it live"
+        );
+    }
+
+    #[test]
+    fn a_files_git_repository_wins_over_the_windows_project() {
+        let (mut stash, root) = stash_in("put-repo-git-wins");
+        let repo = root.join("work/proj");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let inside = user_file(&root, "proj/docs/a.md", "a");
+        let r = stash.put_away(&put_from(vec![inside], "/x/other"), T0).unwrap();
+        assert_eq!(stored_repo(&stash, &r[0].entry.id).as_deref(), Some("proj"));
+    }
+
+    #[test]
+    fn a_second_put_away_refreshes_the_project_fallback_too() {
+        let (mut stash, root) = stash_in("put-repo-project-again");
+        let loose = user_file(&root, "loose.md", "l");
+        let first = stash.put_away(&put(vec![loose.clone()]), T0).unwrap();
+        assert_eq!(stored_repo(&stash, &first[0].entry.id), None, "no project: NULL");
+        stash.put_away(&put_from(vec![loose.clone()], "/x/proj"), T0 + 1).unwrap();
+        assert_eq!(stored_repo(&stash, &first[0].entry.id).as_deref(), Some("proj"));
+        stash.put_away(&put_from(vec![loose], "/y/next/"), T0 + 2).unwrap();
+        assert_eq!(stored_repo(&stash, &first[0].entry.id).as_deref(), Some("next"));
+    }
+
+    #[test]
+    fn a_new_note_keeps_no_project_from_the_put_away() {
+        // A note's repo is the project it was written in (create_note), not the put-away's window.
+        let (mut stash, _root) = stash_in("put-note-project");
+        let note = stash.create_note("# Заметка", None, T0, MSK).unwrap();
+        stash.put_away(&put_from(vec![note.path.clone()], "/x/proj"), T0 + 1).unwrap();
+        assert_eq!(stored_repo(&stash, &note.id), None);
     }
 
     #[test]
@@ -2070,7 +2136,11 @@ mod tests {
             .unwrap()
             .enrich();
         assert_eq!(ids(&gone), vec![stored_only.clone()]);
-        assert_eq!(gone.entries[0].repo, None, "shown as it is now");
+        assert_eq!(
+            gone.entries[0].repo.as_deref(),
+            Some("gone"),
+            "no repository now: shown by the stored name, as the filter matches it"
+        );
         assert_eq!(stash.counts(Some("gone"), 0).unwrap().total, 1);
 
         let later = stash

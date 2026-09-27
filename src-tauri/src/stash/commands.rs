@@ -62,19 +62,25 @@ pub async fn stash_create_note(
 #[tauri::command]
 pub async fn stash_put_away(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     state: State<'_, StashState>,
     paths: Vec<String>,
     caret: Option<i64>,
     top_line: Option<i64>,
     tags: Option<Vec<String>>,
 ) -> Result<Vec<PutAwayResult>, String> {
-    let req = PutAway {
-        paths,
-        caret,
-        top_line,
-        tags: tags.unwrap_or_default(),
-    };
+    let (project_app, label) = (app.clone(), window.label().to_string());
     let results = off_lock(&state, move |state| {
+        // The calling window's project: a loose file's repo (A3). Binding
+        // walks the file system, so it runs here on the pool; the registry
+        // lock is released before the stash's is taken (A11).
+        let req = PutAway {
+            paths,
+            caret,
+            top_line,
+            tags: tags.unwrap_or_default(),
+            project: crate::tab_commands::project_root_of(&project_app, &label),
+        };
         let now = clock::now_ms();
         // The folder's spelling asks the file system: named under the lock,
         // spelled outside it — only SQL under the stash lock (A11).
