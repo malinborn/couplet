@@ -2,14 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   createSearchRunner,
   toArgs,
-  visibleFromHits,
   SEARCH_DEBOUNCE_MS,
   SEARCH_LIMIT,
   type SearchRequest,
 } from './stash-search';
 import { STASH_RENDER_CAP } from './stash-view';
 import type { StashSearchArgs, StashSearchResult } from './ipc';
-import type { StashEntry, StashHit } from './types';
+import type { StashEntry } from './types';
 
 function entry(id: string, path = `/n/${id}.md`): StashEntry {
   return {
@@ -254,12 +253,5 @@ describe('toArgs', () => {
 
   it('APageIsWhatTheDrawerRenders', () => {
     expect(SEARCH_LIMIT).toBe(STASH_RENDER_CAP);
-  });
-});
-
-describe('visibleFromHits', () => {
-  it('KeepsRelevanceOrderAndDropsHiddenEntries', () => {
-    const hits: StashHit[] = result('a', 'b', 'c').hits;
-    expect(visibleFromHits(hits, (e) => e.id === 'b').map((h) => h.entry.id)).toEqual(['a', 'c']);
   });
 });

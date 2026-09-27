@@ -15,7 +15,6 @@ import { searchText } from './stash-query';
 // A value import: `stash-view` must not import this module's values back, or
 // whichever loads second meets the other's constants uninitialised.
 import { STASH_RENDER_CAP } from './stash-view';
-import type { StashEntry, StashHit } from './types';
 
 export const SEARCH_DEBOUNCE_MS = 120;
 /** One page is what the drawer renders; Rust caps `limit` at 200 too. */
@@ -108,9 +107,4 @@ export function createSearchRunner(deps: {
       last = null;
     },
   };
-}
-
-/** Hits in relevance order, minus entries the drawer hides (open as a tab here). */
-export function visibleFromHits(hits: readonly StashHit[], hidden: (entry: StashEntry) => boolean): StashHit[] {
-  return hits.filter((h) => !hidden(h.entry));
 }
