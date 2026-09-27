@@ -520,7 +520,9 @@ pub fn on_file_written(path: &str, text: &str) {
     let Some(hook) = WRITE_HOOK.get() else {
         return;
     };
-    let now = clock::now_ms();
+    // Taken here, in save order, and never backwards: a task that runs late
+    // carries an older stamp and cannot roll a title back (`file_written`).
+    let now = clock::save_stamp_ms();
     // The title, not the text: `title_of` stops at the first non-blank line,
     // so it is cheap here on the save's thread, and the task does not carry a
     // copy of every autosaved document — most of which are not in the stash.
@@ -559,7 +561,7 @@ fn saved(
     if written.stamped {
         // Unreadable now (logged by `read`): the index keeps the last body.
         if let Some(text) = read(&path) {
-            if let Err(e) = state.with(|s| s.reindex_written(&path, &text, now)) {
+            if let Err(e) = state.with(|s| s.reindex_written(&path, &text, written.stamp)) {
                 eprintln!("stash search: reindex {path}: {e}");
             }
         }

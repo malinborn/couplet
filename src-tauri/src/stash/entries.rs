@@ -29,13 +29,14 @@ pub(crate) const MAX_LIMIT: usize = 500;
 /// What one save did to the stash (`Stash::file_written`).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Written {
-    /// A live entry took this save's time: its search body is now due. Not
-    /// in the stash, trashed, or older than the row — nothing more to do,
-    /// and nothing is read.
+    /// A live entry took a new stamp: its search body is now due. Not in the
+    /// stash, or trashed — nothing more to do, and nothing is read.
     pub(crate) stamped: bool,
     /// A note's title changed — the one case worth a
     /// `stash-changed { reason: "title" }` (roadmap A6).
     pub(crate) title_changed: bool,
+    /// The `modified_at` the row took, for `reindex_written`; 0 unstamped.
+    pub(crate) stamp: i64,
 }
 
 /// What `candidates` filters on, each already in its stored spelling.
@@ -791,10 +792,17 @@ impl Stash {
     /// The save hook's first step: a stash entry's `modified_at`, and a note's
     /// title (a file reference keeps its file name, plan D18). `path` must be
     /// in `path_norm`'s spelling — the hook normalizes it with no lock held,
-    /// since normalizing asks the file system. Only moves forward in time, so
-    /// a late, older save cannot roll a title back (plan D9); a trashed row is
-    /// left alone (roadmap A8). `title` is `notes::title_of` of the saved text,
-    /// taken by the caller so the save hook never has to copy the document.
+    /// since normalizing asks the file system. A trashed row is left alone
+    /// (roadmap A8). `title` is `notes::title_of` of the saved text, taken by
+    /// the caller so the save hook never has to copy the document.
+    ///
+    /// The stamp is `max(now, modified_at + 1)`: every save gets a stamp of
+    /// its own, strictly after the row's, even two in one millisecond or one
+    /// after the clock stepped back — so the stamp guard in `reindex_written`
+    /// always lets exactly the last stamper through, and that task re-reads
+    /// the file as it is by then. The title, though, only moves forward in
+    /// time: a late, older save (`now < modified_at`) cannot roll it back
+    /// (plan D9).
     pub(crate) fn file_written(
         &mut self,
         path: &str,
@@ -819,25 +827,35 @@ impl Stash {
             old_title.clone()
         };
         // `deleted_at IS NULL` again: the row may have been trashed between the
-        // read and this write by another connection (CLI, MCP).
-        let changed = self
+        // read and this write by another connection (CLI, MCP). SET reads the
+        // row as it was, so both expressions see the old `modified_at`.
+        let stamped: Option<(i64, String)> = self
             .conn
-            .execute(
-                "UPDATE entries SET modified_at = ?1, title = ?2 \
-                 WHERE path = ?3 AND modified_at <= ?1 AND deleted_at IS NULL",
+            .query_row(
+                "UPDATE entries \
+                 SET title = CASE WHEN ?1 >= modified_at THEN ?2 ELSE title END, \
+                     modified_at = max(?1, modified_at + 1) \
+                 WHERE path = ?3 AND deleted_at IS NULL \
+                 RETURNING modified_at, title",
                 params![now, title, path],
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
+            .optional()
             .map_err(db::err)?;
-        Ok(Written {
-            stamped: changed > 0,
-            title_changed: changed > 0 && title != old_title,
+        Ok(match stamped {
+            Some((stamp, title)) => Written {
+                stamped: true,
+                title_changed: title != old_title,
+                stamp,
+            },
+            None => Written::default(),
         })
     }
 
     /// The save hook's last step: the search body of the live entry at `path`
     /// (normalized) from `text`, the file as the hook re-read it with no lock
     /// held — but only while `modified_at` is still `stamp`, this save's own
-    /// stamp. Pool tasks can finish out of order: once a newer save has
+    /// stamp (`Written::stamp`, which may be past the save's `now`). Pool tasks can finish out of order: once a newer save has
     /// stamped the row, its own task indexes the newer text, and this older
     /// read must not land over it. `true` when it indexed.
     pub(crate) fn reindex_written(
@@ -1974,15 +1992,51 @@ mod tests {
             "same title: no event"
         );
         assert_eq!(stash.get(&note.id).unwrap().modified_at, T0 + 20);
+        // An older save landing late keeps the newer title. It is still
+        // stamped, just past the row: its task re-reads the file as it is
+        // now, so the index gets the newest text whichever task is last.
         assert_eq!(
             stash
                 .file_written(&note.path, Some("Stale"), T0 + 15)
                 .unwrap(),
-            Written::default(),
-            "an older save landing late changes nothing, not even the index"
+            Written {
+                stamped: true,
+                title_changed: false,
+                stamp: T0 + 21
+            },
         );
         let e = stash.get(&note.id).unwrap();
-        assert_eq!((e.title.as_deref(), e.modified_at), (Some("New"), T0 + 20));
+        assert_eq!((e.title.as_deref(), e.modified_at), (Some("New"), T0 + 21));
+    }
+
+    #[test]
+    fn two_saves_with_one_stamp_are_ordered() {
+        // Same millisecond: the second save gets the next one, so its reindex
+        // is the one the stamp guard lets through.
+        let (mut stash, _root) = stash_in("written-same-ms");
+        let note = stash.create_note("# Old", None, T0, MSK).unwrap();
+        let a = stash.file_written(&note.path, Some("A"), T0 + 10).unwrap();
+        let b = stash.file_written(&note.path, Some("B"), T0 + 10).unwrap();
+        assert_eq!((a.stamp, b.stamp), (T0 + 10, T0 + 11));
+        assert!(b.stamped && b.title_changed);
+        assert_eq!(stash.get(&note.id).unwrap().title.as_deref(), Some("B"));
+        assert!(!stash.reindex_written(&note.path, "первая", a.stamp).unwrap());
+        assert!(stash.reindex_written(&note.path, "вторая", b.stamp).unwrap());
+        assert_eq!(crate::stash::search::found(&stash.conn, "вторая"), vec![note.id]);
+    }
+
+    #[test]
+    fn a_save_after_the_clock_stepped_back_is_still_indexed() {
+        let (mut stash, _root) = stash_in("written-clock-back");
+        let note = stash.create_note("# Old", None, T0, MSK).unwrap();
+        stash.file_written(&note.path, Some("Old"), T0 + 100).unwrap();
+        let back = stash.file_written(&note.path, Some("Old"), T0 + 50).unwrap();
+        assert!(back.stamped, "an earlier clock does not drop the save");
+        assert_eq!(back.stamp, T0 + 101);
+        assert!(stash
+            .reindex_written(&note.path, "после перевода часов", back.stamp)
+            .unwrap());
+        assert_eq!(crate::stash::search::found(&stash.conn, "перевода"), vec![note.id]);
     }
 
     #[test]
@@ -2018,7 +2072,8 @@ mod tests {
                 .unwrap(),
             Written {
                 stamped: true,
-                title_changed: false
+                title_changed: false,
+                stamp: Y2100
             }
         );
         let e = stash.get(&id).unwrap();

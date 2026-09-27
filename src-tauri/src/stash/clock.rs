@@ -4,6 +4,7 @@
 //! database (`localtime_r`), the calendar arithmetic from Howard Hinnant's
 //! `civil_from_days` (http://howardhinnant.github.io/date_algorithms.html).
 
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DAY_SECS: i64 = 86_400;
@@ -13,6 +14,27 @@ pub(crate) fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
         .unwrap_or(0)
+}
+
+/// The last stamp `save_stamp_ms` handed out in this process.
+static LAST_SAVE_STAMP: AtomicI64 = AtomicI64::new(0);
+
+/// `now_ms` for the save hook, strictly increasing within the process: two
+/// saves in one millisecond, or one after the wall clock stepped back, still
+/// come out in the order they were made.
+pub(crate) fn save_stamp_ms() -> i64 {
+    next_stamp(&LAST_SAVE_STAMP, now_ms())
+}
+
+fn next_stamp(last: &AtomicI64, now: i64) -> i64 {
+    let mut prev = last.load(Ordering::Relaxed);
+    loop {
+        let next = now.max(prev.saturating_add(1));
+        match last.compare_exchange_weak(prev, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return next,
+            Err(seen) => prev = seen,
+        }
+    }
 }
 
 /// Seconds east of UTC in the user's time zone at `unix_secs`. `0` when the C
@@ -127,6 +149,15 @@ mod tests {
         assert_eq!(local_day_start_ms(T, 10_800), 1_790_370_000_000);
         assert_eq!(local_day_start_ms(T, 0), 1_790_294_400_000);
         assert_eq!(local_day_start_ms(T, -18_000), 1_790_312_400_000);
+    }
+
+    #[test]
+    fn save_stamps_only_move_forward() {
+        let last = AtomicI64::new(0);
+        assert_eq!(next_stamp(&last, T), T);
+        assert_eq!(next_stamp(&last, T), T + 1, "the same millisecond twice");
+        assert_eq!(next_stamp(&last, T - 60_000), T + 2, "the clock stepped back");
+        assert_eq!(next_stamp(&last, T + 10), T + 10, "the clock caught up");
     }
 
     #[test]

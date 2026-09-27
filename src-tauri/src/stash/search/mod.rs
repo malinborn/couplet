@@ -145,6 +145,35 @@ mod hooks_tests {
     }
 
     #[test]
+    fn two_saves_in_one_millisecond_index_the_later_text() {
+        // Save A stamps and reads the first text; before its reindex, save B
+        // (same millisecond) writes, stamps, reads and reindexes the second.
+        // A's reindex must not land over B's: B's row stamp is `now + 1`, and
+        // each task reindexes under the stamp its row took.
+        let (state, _root) = state_in("hook-same-ms");
+        let note = state
+            .with(|s| s.create_note("# Заметка\nначало", None, T0, MSK))
+            .unwrap();
+        fs::write(&note.path, "# Заметка\nпервая правка").unwrap();
+        let path = note.path.clone();
+        saved(
+            &state,
+            &note.path,
+            Some("Заметка"),
+            T0 + 10,
+            |p: &str| {
+                let first = super::read_saved(p);
+                fs::write(&path, "# Заметка\nвторая правка").unwrap();
+                saved(&state, &path, Some("Заметка"), T0 + 10, super::read_saved, &|_: &str| {});
+                first
+            },
+            &|_: &str| {},
+        );
+        assert_eq!(found_in(&state, "вторая"), vec![note.id]);
+        assert!(found_in(&state, "первая").is_empty());
+    }
+
+    #[test]
     fn saving_a_file_outside_the_stash_is_not_stamped() {
         let (mut stash, root) = stash_in("hook-outside");
         let file = user_file(&root, "x.md", "x");
