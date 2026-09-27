@@ -29,7 +29,7 @@ describe('parseSearchQuery', () => {
   it('reads the fixture Rust reads', () => {
     // Pinned exactly, like `parses_every_shared_fixture_case` in query.rs: a
     // case lost from the file must fail in both suites.
-    expect(cases.length).toBe(28);
+    expect(cases.length).toBe(37);
   });
 
   it.each(cases)('parses like Rust %j', (c) => {

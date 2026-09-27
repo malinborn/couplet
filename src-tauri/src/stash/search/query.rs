@@ -152,11 +152,11 @@ mod tests {
         let cases: Vec<Case> =
             serde_json::from_str(include_str!("../../../tests/fixtures/stash-queries.json"))
                 .unwrap();
-        // Pinned exactly, like `note-titles.json`: the TS mirror's test says 28
+        // Pinned exactly, like `note-titles.json`: the TS mirror's test says 37
         // too, so a case lost from the file fails here instead of passing.
         assert_eq!(
             cases.len(),
-            28,
+            37,
             "the fixture is the TS mirror's contract too; keep both counts in step"
         );
         for case in cases {
@@ -170,6 +170,19 @@ mod tests {
         Term {
             text: text.to_string(),
             phrase: false,
+        }
+    }
+
+    #[test]
+    fn separators_are_exactly_the_agreed_set() {
+        // The TS mirror splits on these and nothing else. Every "no" is
+        // Unicode White_Space or a lookalike that one side could easily
+        // start treating as a space on its own.
+        for c in [' ', '\t', '\n', '\r', '\u{0}', '\u{1b}', '\u{1f}', '\u{7f}', '\u{a0}', '\u{3000}'] {
+            assert!(is_separator(c), "U+{:04X} separates", c as u32);
+        }
+        for c in ['\u{2009}', '\u{85}', '\u{feff}', '\u{2028}', '\u{200b}', '\u{80}', 'a', '"', '#'] {
+            assert!(!is_separator(c), "U+{:04X} does not separate", c as u32);
         }
     }
 
