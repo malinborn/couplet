@@ -193,9 +193,10 @@ pub(crate) fn move_into(
     Err(format!("could not find a free name for {file_name} in {}", dir.display()))
 }
 
-/// The purge guard (D9). `Ok(Some(canonical))`: a regular file directly inside
-/// `trash_dir`, itself a real directory — safe to delete. `Ok(None)`: nothing
-/// there any more, nothing to delete. `Err`: anything else — never delete it.
+/// The purge guard (D9), and restore's. `Ok(Some(canonical))`: a regular file
+/// directly inside `trash_dir`, itself a real directory — safe to delete or
+/// move out. `Ok(None)`: nothing there any more. `Err`: anything else —
+/// never delete or move it.
 pub(crate) fn purgeable_file(trash_dir: &Path, path: &Path) -> Result<Option<PathBuf>, String> {
     let meta = match fs::symlink_metadata(path) {
         Ok(m) => m,
@@ -328,18 +329,20 @@ impl Stash {
     }
 
     /// The live note `id`, whose row names `path`, into the trash. A file
-    /// already gone just marks the row (its path stays). The row changes only
-    /// while it still names `path` and is live.
+    /// already gone just marks the row — with a free trash name as its path
+    /// all the same (D1): a row left naming the notes folder would claim
+    /// whatever file appears there later. The row changes only while it
+    /// still names `path` and is live.
     fn trash_note(&mut self, id: &str, path: &str, now: i64) -> Result<(), String> {
         // The notes folder in its one spelling: `trash_dir` follows it, so
         // the stored trash path needs no `path_norm` call under the lock.
         self.notes_dir()?;
         let src = PathBuf::from(path);
+        let trash = self.paths.trash_dir.clone();
+        let name = file_name(&src)?;
         let moved = if occupied(&src) {
-            let trash = self.paths.trash_dir.clone();
             fs::create_dir_all(&trash).map_err(|e| format!("{}: {e}", trash.display()))?;
             crate::session::require_real_trash_dir(&trash)?;
-            let name = file_name(&src)?;
             let conn = &self.conn;
             let dest = move_into(&trash, &name, &src, |p| path_taken(conn, p))?;
             move_sidecar(&src, &dest);
@@ -347,10 +350,15 @@ impl Stash {
         } else {
             None
         };
-        let new_path = moved
-            .as_deref()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.to_string());
+        let new_path = match &moved {
+            Some(dest) => dest.to_string_lossy().into_owned(),
+            None => {
+                let conn = &self.conn;
+                unique_target(&trash, &name, |p| path_taken(conn, p))?
+                    .to_string_lossy()
+                    .into_owned()
+            }
+        };
         if let Err(e) = self.mark_trashed(id, path, &new_path, now) {
             if let Some(dest) = &moved {
                 move_back(dest, &src, &format!("delete of {id}"), &e);
@@ -393,10 +401,11 @@ impl Stash {
             return Err(format!("stash entry {id} is not in the trash"));
         }
         let src = PathBuf::from(&r.path);
-        let meta = fs::symlink_metadata(&src)
-            .map_err(|_| format!("the note's file is gone from the trash ({})", src.display()))?;
-        if !meta.file_type().is_file() {
-            return Err(format!("{} is not a regular file", src.display()));
+        // The purge guard: only a regular file directly inside the real trash
+        // folder is moved out — never a file a tampered row, or a note
+        // trashed without its file, names elsewhere (M5).
+        if purgeable_file(&self.paths.trash_dir, &src)?.is_none() {
+            return Err(format!("the note's file is gone from the trash ({})", src.display()));
         }
         let dir = self.notes_dir()?;
         let name = file_name(&src)?;
@@ -1560,14 +1569,35 @@ mod tests {
 
     #[test]
     fn delete_of_a_note_whose_file_is_gone_still_leaves_the_stash() {
+        // D1 holds without a file: the row names a trash path, never the
+        // notes folder, where a file of that name may appear later.
         let (mut stash, _root) = stash_in("trash-del-gone");
         let e = note(&mut stash, "x");
+        let name = PathBuf::from(&e.path).file_name().unwrap().to_owned();
         fs::remove_file(&e.path).unwrap();
         assert_eq!(stash.delete_entry(&e.id, T0).unwrap(), Deleted::Trashed);
         let (path, deleted_at, _) = row(&stash, &e.id).unwrap();
-        assert_eq!(path, e.path);
+        assert_eq!(PathBuf::from(&path), stash.paths.trash_dir.join(&name));
         assert_eq!(deleted_at, Some(T0));
         assert!(!indexed(&stash, &e.id));
+        assert!(!stash.paths.trash_dir.exists(), "nothing to move, no folder made");
+    }
+
+    #[test]
+    fn delete_of_a_note_whose_file_is_gone_takes_a_free_trash_name() {
+        let (mut stash, _root) = stash_in("trash-del-gone-collide");
+        let e = note(&mut stash, "x");
+        let name = PathBuf::from(&e.path).file_name().unwrap().to_owned();
+        let trash = stash.paths.trash_dir.clone();
+        fs::create_dir_all(&trash).unwrap();
+        fs::write(trash.join(&name), "leftover").unwrap();
+        fs::remove_file(&e.path).unwrap();
+
+        stash.delete_entry(&e.id, T0).unwrap();
+
+        let (path, _, _) = row(&stash, &e.id).unwrap();
+        assert!(path.ends_with("-2.md"), "{path}");
+        assert_eq!(fs::read_to_string(trash.join(&name)).unwrap(), "leftover");
     }
 
     #[test]
@@ -1806,6 +1836,30 @@ mod tests {
     }
 
     #[test]
+    fn restore_refuses_a_row_that_names_a_file_outside_the_trash() {
+        let (mut stash, root) = stash_in("trash-restore-outside");
+        let e = note(&mut stash, "x");
+        stash.delete_entry(&e.id, T0).unwrap();
+        // In the notes folder itself (restore would "move" it to a -2
+        // name) and anywhere else.
+        let in_notes = stash.paths.notes_dir.join("plan.md");
+        fs::write(&in_notes, "mine").unwrap();
+        let elsewhere = root.join("doc.md");
+        fs::write(&elsewhere, "theirs").unwrap();
+        let before = names_in(&stash.paths.notes_dir);
+
+        for target in [&in_notes, &elsewhere] {
+            repoint(&stash, &e.id, target);
+            assert!(stash.restore_entry(&e.id, T0 + 1).is_err());
+            assert!(row(&stash, &e.id).unwrap().1.is_some());
+        }
+
+        assert_eq!(fs::read_to_string(&in_notes).unwrap(), "mine");
+        assert_eq!(fs::read_to_string(&elsewhere).unwrap(), "theirs");
+        assert_eq!(names_in(&stash.paths.notes_dir), before, "nothing moved");
+    }
+
+    #[test]
     fn restore_moves_the_file_back_into_the_trash_when_the_row_cannot_be_updated() {
         let (mut stash, _root) = stash_in("trash-restore-rollback");
         let e = note(&mut stash, "x");
@@ -1990,24 +2044,25 @@ mod tests {
     }
 
     #[test]
-    fn purge_of_a_note_trashed_without_its_file_removes_only_the_row() {
-        // Deleted while its file was already gone: the row still names the
-        // notes folder, where a file of that name may appear again later.
+    fn a_note_trashed_without_its_file_ignores_a_new_file_under_its_old_name() {
+        // Deleted while its file was already gone, then a file of that name
+        // appears in the notes folder: purge removes only the row, restore
+        // refuses — neither touches the newcomer (M5).
         let (mut stash, _root) = stash_in("trash-purge-gone-live-path");
         let e = note(&mut stash, "x");
         fs::remove_file(&e.path).unwrap();
         stash.delete_entry(&e.id, T0).unwrap();
         fs::write(&e.path, "a new file under the old name").unwrap();
 
-        assert!(stash.purge_entry(&e.id).is_err());
+        assert!(stash.restore_entry(&e.id, T0 + 1).is_err());
+        assert_eq!(names_in(&stash.paths.notes_dir).len(), 1, "nothing moved to a -2 name");
+        stash.purge_entry(&e.id).unwrap();
+
+        assert_eq!(row(&stash, &e.id), None);
         assert_eq!(
             fs::read_to_string(&e.path).unwrap(),
             "a new file under the old name"
         );
-
-        fs::remove_file(&e.path).unwrap();
-        stash.purge_entry(&e.id).unwrap();
-        assert_eq!(row(&stash, &e.id), None);
     }
 
     #[test]
