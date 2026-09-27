@@ -43,6 +43,11 @@ export function toArgs(r: SearchRequest): StashSearchArgs {
   return args;
 }
 
+function sameArgs(a: StashSearchArgs, b: StashSearchArgs): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)] as (keyof StashSearchArgs)[]);
+  return [...keys].every((k) => a[k] === b[k]);
+}
+
 export function createSearchRunner(deps: {
   search: (args: StashSearchArgs) => Promise<StashSearchResult>;
   /** `null`: no text to search — show stage 04's list. */
@@ -53,6 +58,13 @@ export function createSearchRunner(deps: {
   const latest = latestOnly();
   let timer: ReturnType<typeof setTimeout> | null = null;
   let last: StashSearchArgs | null = null;
+  /**
+   * What became of `last`: waiting (debounce or in flight), answered, or
+   * failed. Only a failure lets the same arguments search again — the drawer
+   * re-requests on every store update, and an unchanged query must neither
+   * search again nor retire the answer on its way.
+   */
+  let phase: 'pending' | 'answered' | 'failed' = 'answered';
 
   function cancelTimer(): void {
     if (timer !== null) {
@@ -71,12 +83,17 @@ export function createSearchRunner(deps: {
     } catch (error: unknown) {
       answer = Promise.reject(error);
     }
+    phase = 'pending';
     answer.then(
       (res) => {
-        if (current()) deps.onResult(res);
+        if (!current()) return;
+        phase = 'answered';
+        deps.onResult(res);
       },
       (error: unknown) => {
-        if (current()) deps.onError(error);
+        if (!current()) return;
+        phase = 'failed';
+        deps.onError(error);
       }
     );
   }
@@ -84,6 +101,7 @@ export function createSearchRunner(deps: {
   return {
     request(r) {
       const args = toArgs(r);
+      if (last !== null && phase !== 'failed' && sameArgs(args, last)) return;
       cancelTimer();
       latest.invalidate();
       if (args.query === '') {
@@ -92,6 +110,7 @@ export function createSearchRunner(deps: {
         return;
       }
       last = args;
+      phase = 'pending';
       timer = setTimeout(() => {
         timer = null;
         run(args);

@@ -106,6 +106,12 @@
   /** The query's text: what `stash_search` matches and the cards mark. Tags stay stage 04's client rule. */
   const terms = $derived(drawerTerms(stash.state.query));
   const searchQuery = $derived(termsText(terms));
+  /**
+   * `stash.state` is `$state.raw`, replaced on every update (↑/↓, focus,
+   * sort): read through a `$derived`, an unchanged value stops there instead
+   * of re-running the search effect.
+   */
+  const repoChip = $derived(stash.state.repoChip);
   const view = $derived(
     stashView({
       entries: stash.entries,
@@ -166,8 +172,9 @@
 
   // Closed, the query is empty (`closeStash`), so this also drops the hits.
   // The store searches again after every list load, so no listener here.
+  // Primitives only (`searchQuery`, `repoChip`): see `repoChip`.
   $effect(() => {
-    stash.search({ query: searchQuery, repo: stash.state.repoChip, tag: null, deleted: false });
+    stash.search({ query: searchQuery, repo: repoChip, tag: null, deleted: false });
   });
 
   // What is on screen: only a card the human can see pulses after a reload.

@@ -6,7 +6,7 @@ import StashDrawer, { type StashDrawerHandle } from './StashDrawer.svelte';
 import { RELOAD_COALESCE_MS, createStashStore, type StashStore } from './stash-store.svelte';
 import type { StashSearchArgs, StashSearchResult } from './ipc';
 import { SEARCH_DEBOUNCE_MS } from './stash-search';
-import { setStashQuery } from './stash-state';
+import { focusDrawer, setStashQuery } from './stash-state';
 import { STASH_RENDER_CAP } from './stash-view';
 import type { StashEntry, StashHit, TabHolder } from './types';
 
@@ -416,6 +416,26 @@ describe('StashDrawer', () => {
       expect(h.root.querySelector('.s-n')?.textContent).toContain(
         `${STASH_RENDER_CAP + 30} из ${STASH_RENDER_CAP + 50}`
       );
+    });
+
+    it('↑/↓ with an active query search nothing again (I3)', async () => {
+      const search = vi.fn(async (_args: StashSearchArgs) => ({
+        hits: [hitOf(byId('a')), hitOf(byId('c')), hitOf(byId('d'))],
+        total: 3,
+        nextCursor: null,
+      }));
+      h = await setup({ search });
+      await setQuery('itle');
+      await searched();
+      expect(search).toHaveBeenCalledTimes(1);
+      h.store.update((s) => focusDrawer(s, 'stash'));
+      for (const k of ['ArrowDown', 'ArrowDown', 'ArrowUp']) {
+        expect(key(k)).toBe(true);
+        await settle();
+      }
+      await searched();
+      expect(search).toHaveBeenCalledTimes(1);
+      expect(ids()).toEqual(['a', 'c', 'd']);
     });
 
     it('a failed search leaves the local filter working', async () => {

@@ -213,6 +213,62 @@ describe('createSearchRunner', () => {
     expect(onResult.mock.calls[0][0].hits[0].entry.id).toBe('after');
   });
 
+  it('SameArgs_DuringTheDebounceKeepTheTimer', () => {
+    const { search } = manualSearch();
+    const runner = createSearchRunner({ search, onResult: vi.fn(), onError: vi.fn() });
+    runner.request(req('тай'));
+    vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS - 20);
+    runner.request(req('тай'));
+    vi.advanceTimersByTime(20);
+    expect(search).toHaveBeenCalledTimes(1);
+  });
+
+  it('SameArgs_InFlightOrAnsweredAskNothingAndKeepTheAnswer', async () => {
+    // The drawer re-requests on every store update (arrows, focus, sort): an
+    // unchanged query must neither search again nor retire the answer coming.
+    const { search, pending } = manualSearch();
+    const onResult = vi.fn();
+    const runner = createSearchRunner({ search, onResult, onError: vi.fn() });
+    runner.request(req('тай'));
+    vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+    runner.request(req('тай'));
+    vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+    expect(search).toHaveBeenCalledTimes(1);
+    pending[0].resolve(result('a'));
+    await vi.runAllTimersAsync();
+    expect(onResult).toHaveBeenCalledTimes(1);
+    runner.request(req('тай'));
+    vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(onResult).toHaveBeenCalledTimes(1);
+  });
+
+  it('SameArgs_AfterAnErrorSearchAgain', async () => {
+    const { search, pending } = manualSearch();
+    const onError = vi.fn();
+    const runner = createSearchRunner({ search, onResult: vi.fn(), onError });
+    runner.request(req('тай'));
+    vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+    pending[0].reject(new Error('busy'));
+    await vi.runAllTimersAsync();
+    expect(onError).toHaveBeenCalledTimes(1);
+    runner.request(req('тай'));
+    vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+    expect(search).toHaveBeenCalledTimes(2);
+  });
+
+  it('SameArgs_AfterADifferentQueryAreANewRequest', () => {
+    const { search } = manualSearch();
+    const runner = createSearchRunner({ search, onResult: vi.fn(), onError: vi.fn() });
+    runner.request(req('тай'));
+    vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+    runner.request(req('тайн'));
+    runner.request(req('тай'));
+    vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+    expect(search).toHaveBeenCalledTimes(2);
+    expect(search.mock.calls[1][0].query).toBe('тай');
+  });
+
   it('Dispose_APendingSearchNeverRuns', () => {
     const { search } = manualSearch();
     const runner = createSearchRunner({ search, onResult: vi.fn(), onError: vi.fn() });
