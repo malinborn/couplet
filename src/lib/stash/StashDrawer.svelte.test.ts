@@ -333,6 +333,15 @@ describe('StashDrawer', () => {
     });
   });
 
+  it('the footer hint: the #tag segment is its own element, so squeezed drawers can drop it (Task 24)', async () => {
+    h = await setup();
+    const foot = h.root.querySelector<HTMLElement>('.st-foot')!;
+    expect(foot.textContent?.replace(/\s+/g, ' ').trim()).toBe(
+      'тяните во вкладки — открыть · #тег — фильтр · ← → — ящики'
+    );
+    expect(foot.querySelector('.f-tag')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('#тег — фильтр ·');
+  });
+
   it('closed: off screen, inert, and no drop target', async () => {
     h = await setup({ closed: true, dropHot: true });
     const drawer = h.root.querySelector<HTMLElement>('.stash-drawer')!;

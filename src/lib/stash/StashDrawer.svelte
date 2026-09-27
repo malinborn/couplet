@@ -479,8 +479,10 @@
 
     <div class="st-foot">
       <span
-        ><b>{t('stash.foot.drag')}</b> {t('stash.foot.drag_tail')} · <b>{t('stash.foot.tag')}</b>
-        {t('stash.foot.tag_tail')} · <b>{t('stash.foot.keys')}</b> {t('stash.foot.keys_tail')}</span
+        ><b>{t('stash.foot.drag')}</b> {t('stash.foot.drag_tail')} ·
+        <span class="f-tag"><b>{t('stash.foot.tag')}</b> {t('stash.foot.tag_tail')} ·</span>
+        <b>{t('stash.foot.keys')}</b>
+        {t('stash.foot.keys_tail')}</span
       >
     </div>
 
@@ -890,6 +892,19 @@
   .st-foot b {
     color: var(--text-subtle);
     font-weight: 600;
+  }
+
+  /* Past what fits it trails off rather than cutting a word in half. */
+  .st-foot > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Squeezed (320–380 px) the whole hint does not fit — the mockup clips it too.
+     «#тег — фильтр» goes: the head's «печатайте · #тег» already says it. */
+  .narrow .st-foot .f-tag {
+    display: none;
   }
 
   /* A tab card dragged anywhere: a dashed outline says the drawer takes it; over it, the label. */
