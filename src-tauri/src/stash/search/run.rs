@@ -10,7 +10,7 @@ use rusqlite::types::Value;
 use rusqlite::{params_from_iter, Connection, OptionalExtension};
 use serde::Serialize;
 
-use super::query::{fts_match, parse_query, short_terms, Term};
+use super::query::{fts_match, parse_query, short_terms, SearchQuery, Term};
 use super::snippet::hit_snippet;
 use crate::stash::db::err;
 use crate::stash::entries::{load_entry, normalize_repo, normalize_tag};
@@ -36,6 +36,15 @@ const SEARCH_MAX_LIMIT: usize = 200;
 /// is still found by FTS but not marked — a note's card then shows its
 /// preview (`hit_snippet`), a file's shows the start of its body.
 const SNIPPET_SOURCE_CHARS: usize = 64 * 1024;
+
+/// The query is checked at the API boundary, where an agent may send
+/// anything (stage 07): past this many chars it is cut before parsing…
+const QUERY_MAX_CHARS: usize = 1024;
+/// …and only its first this-many terms and first this-many tags count. Each
+/// is a MATCH operand, an `instr` scan or an EXISTS: unbounded, one call
+/// could hold the stash lock for as long as it liked. Dropping a term widens
+/// the result — the answer to a query nobody types by hand.
+const QUERY_MAX_TERMS: usize = 32;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,6 +82,7 @@ impl Enrich for SearchPage {
 
 #[derive(Debug, Clone, Default)]
 pub struct SearchArgs {
+    /// Cut to `QUERY_MAX_CHARS`; its first `QUERY_MAX_TERMS` terms and tags.
     pub query: String,
     /// A project's directory name (a path is reduced to it, roadmap A3).
     pub repo: Option<String>,
@@ -114,6 +124,15 @@ struct Candidate {
     /// A note's snippet skips its title line (`hit_snippet`).
     note: bool,
     score: f64,
+}
+
+/// `query` parsed within `QUERY_MAX_CHARS` and `QUERY_MAX_TERMS`.
+fn bounded_query(query: &str) -> SearchQuery {
+    let cut: String = query.chars().take(QUERY_MAX_CHARS).collect();
+    let mut parsed = parse_query(&cut);
+    parsed.terms.truncate(QUERY_MAX_TERMS);
+    parsed.tags.truncate(QUERY_MAX_TERMS);
+    parsed
 }
 
 /// Pushes `v` and returns its placeholder.
@@ -257,7 +276,7 @@ pub fn search(conn: &Connection, args: &SearchArgs) -> Result<SearchPage, String
 pub fn select_page(conn: &Connection, args: &SearchArgs) -> Result<PageDraft, String> {
     let offset = parse_cursor(args.cursor.as_deref())?;
     let limit = clamp_limit(args.limit);
-    let parsed = parse_query(&args.query);
+    let parsed = bounded_query(&args.query);
     let mut tags = parsed.tags;
     match args.tag.as_deref().map(normalize_tag).transpose()? {
         // Given but empty once normalized (`#`): a tag no entry can carry, so
@@ -1034,6 +1053,29 @@ mod tests {
         let before = snapshot(&d);
         rebuild_index(&d.conn).unwrap();
         assert_eq!(snapshot(&d), before);
+    }
+
+    #[test]
+    fn an_oversized_query_is_cut_to_its_first_terms() {
+        let d = db("query-caps");
+        let words: Vec<String> = (0..QUERY_MAX_TERMS).map(|i| format!("слово{i:02}")).collect();
+        d.note("n1", &words.join(" "), 1);
+        // Terms past the cap are dropped, not ANDed: they would find nothing.
+        let many = format!("{} отсутствует", words.join(" "));
+        assert_eq!(ids(&d, &many), vec!["n1"]);
+        let tags: Vec<String> = (0..=QUERY_MAX_TERMS).map(|i| format!("#t{i}")).collect();
+        d.conn
+            .execute_batch(
+                &(0..QUERY_MAX_TERMS)
+                    .map(|i| format!("INSERT INTO tags (entry_id, tag) VALUES ('n1', 't{i}');"))
+                    .collect::<String>(),
+            )
+            .unwrap();
+        assert_eq!(ids(&d, &tags.join(" ")), vec!["n1"], "tags are capped alike");
+        // Chars past the cap are cut before parsing.
+        let long = format!("слово00{}отсутствует", " ".repeat(QUERY_MAX_CHARS));
+        assert_eq!(ids(&d, &long), vec!["n1"]);
+        assert!(ids(&d, "слово00 отсутствует").is_empty(), "under the caps, all terms count");
     }
 
     #[test]

@@ -29,11 +29,19 @@ describe('parseSearchQuery', () => {
   it('reads the fixture Rust reads', () => {
     // Pinned exactly, like `parses_every_shared_fixture_case` in query.rs: a
     // case lost from the file must fail in both suites.
-    expect(cases.length).toBe(25);
+    expect(cases.length).toBe(28);
   });
 
   it.each(cases)('parses like Rust %j', (c) => {
     expect(parseSearchQuery(c.input)).toEqual({ tags: c.tags, terms: c.terms });
+  });
+
+  it('splits at every C0 control and DEL, as Rust does', () => {
+    const codes = [...Array.from({ length: 0x20 }, (_, i) => i), 0x7f];
+    for (const code of codes) {
+      const c = String.fromCharCode(code);
+      expect(parseSearchQuery(`ab${c}cd`).terms, `U+${code.toString(16)}`).toEqual([t('ab'), t('cd')]);
+    }
   });
 
   it('turns a word into a tag exactly when Rust would store it as one', () => {

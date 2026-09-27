@@ -122,12 +122,13 @@ export interface SearchQuery {
   terms: SearchTerm[];
 }
 
-// Rust's `is_separator`. Not `\s`: JavaScript's `\s` and Rust's White_Space
-// disagree (U+FEFF, U+0085), and the two parsers must split identically.
-const SEPARATORS = new Set([' ', '\t', '\n', '\r', ' ', '　']);
-
+// Rust's `is_separator`: space, NBSP, U+3000 and every C0 control with DEL
+// (tab, newline and CR among them). Not `\s`: JavaScript's `\s` and Rust's
+// White_Space disagree (U+FEFF, U+0085), and the two parsers must split
+// identically.
 function isSeparator(c: string): boolean {
-  return SEPARATORS.has(c);
+  const code = c.codePointAt(0) ?? 0;
+  return code <= 0x1f || code === 0x20 || code === 0x7f || code === 0xa0 || code === 0x3000;
 }
 
 function trimSeparators(chars: string[]): string {

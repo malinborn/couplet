@@ -23,5 +23,8 @@
   {"input": "#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "tags": [], "terms": [{"text": "#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "phrase": false}]},
   {"input": "#a\u0085b", "tags": [], "terms": [{"text": "#a\u0085b", "phrase": false}]},
   {"input": "#a\ufeffb", "tags": ["a\ufeffb"], "terms": []},
-  {"input": "#Ёлка", "tags": ["ёлка"], "terms": []}
+  {"input": "#Ёлка", "tags": ["ёлка"], "terms": []},
+  {"input": "a\u0001b", "tags": [], "terms": [{"text": "a", "phrase": false}, {"text": "b", "phrase": false}]},
+  {"input": "\u0000тайник\u007f", "tags": [], "terms": [{"text": "тайник", "phrase": false}]},
+  {"input": "#infra\u001bhdmi", "tags": ["infra"], "terms": [{"text": "hdmi", "phrase": false}]}
 ]

@@ -48,11 +48,13 @@ pub struct SearchQuery {
     pub terms: Vec<Term>,
 }
 
-/// The separators both parsers agree on. Not `char::is_whitespace`: Rust's
-/// White_Space and JavaScript's `\s` disagree (U+FEFF, U+0085), and the two
-/// parsers must split identically.
+/// The separators both parsers agree on: space, NBSP, U+3000 and every C0
+/// control with DEL — tab, newline and CR among them; the rest can arrive
+/// pasted or from an agent and would only make a term that matches nothing.
+/// Not `char::is_whitespace`: Rust's White_Space and JavaScript's `\s`
+/// disagree (U+FEFF, U+0085), and the two parsers must split identically.
 fn is_separator(c: char) -> bool {
-    matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{a0}' | '\u{3000}')
+    c <= '\u{1f}' || matches!(c, ' ' | '\u{7f}' | '\u{a0}' | '\u{3000}')
 }
 
 pub fn parse_query(input: &str) -> SearchQuery {
@@ -150,11 +152,11 @@ mod tests {
         let cases: Vec<Case> =
             serde_json::from_str(include_str!("../../../tests/fixtures/stash-queries.json"))
                 .unwrap();
-        // Pinned exactly, like `note-titles.json`: the TS mirror's test says 25
+        // Pinned exactly, like `note-titles.json`: the TS mirror's test says 28
         // too, so a case lost from the file fails here instead of passing.
         assert_eq!(
             cases.len(),
-            25,
+            28,
             "the fixture is the TS mirror's contract too; keep both counts in step"
         );
         for case in cases {
@@ -168,6 +170,16 @@ mod tests {
         Term {
             text: text.to_string(),
             phrase: false,
+        }
+    }
+
+    #[test]
+    fn control_chars_separate_words() {
+        // A pasted query can carry C0 controls; none may reach a term — an
+        // FTS string or a `stash_fold` needle — where it could match nothing.
+        for c in (0u32..=0x1f).chain([0x7f]).filter_map(char::from_u32) {
+            let q = parse_query(&format!("ab{c}cd"));
+            assert_eq!(q.terms, vec![term("ab"), term("cd")], "U+{:04X}", c as u32);
         }
     }
 
