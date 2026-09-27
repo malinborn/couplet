@@ -377,6 +377,15 @@
       toggleStash: () => toggleStash(),
       putAwayTargets: () => {
         if (!ds.open) return undefined;
+        // ⌘G's carousel has the keys (D10), and a stash card in flight is not a tab.
+        if (car?.mode === 'keys' || drag?.src === 'stash') return null;
+        // Tab cards in flight are what the hand holds: those go, and the drag
+        // ends as a cancel — no drop under a pointer that has not let go.
+        if (drag?.src === 'tabs') {
+          const held = drag.ids.filter((id) => byId.has(id));
+          endGesture?.();
+          return held;
+        }
         if (focusStash) return null;
         const chosen = selectedIds();
         if (chosen.length > 0) return chosen;

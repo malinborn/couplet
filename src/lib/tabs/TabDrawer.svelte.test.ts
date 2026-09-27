@@ -1928,6 +1928,37 @@ describe('TabDrawer — cards cross between the drawers (stash stage 04)', () =>
     }
   });
 
+  it('⌃T mid-drag of tab cards puts those away and ends the drag with no drop (I3)', async () => {
+    el('.tab-list').getBoundingClientRect = () => new DOMRect(0, 0, 300, 600);
+    drag(card('b'), { x: 100, y: 300 });
+    expect(page().querySelector('.ghost')).not.toBeNull();
+    expect(h.handle().putAwayTargets()).toEqual(['b']);
+    await settle();
+    expect(page().querySelector('.ghost'), 'the drag is over').toBeNull();
+    pointer(window, 'pointerup', { clientX: 101, clientY: 300 });
+    await settle();
+    expect(h.onreorder).not.toHaveBeenCalled();
+    expect(onputaway).not.toHaveBeenCalled();
+  });
+
+  it('⌃T mid-drag of a stash card, or with ⌘G’s carousel up, targets nothing (I3)', async () => {
+    h.handle().toggleStash();
+    await settleLong();
+    const s2 = page().querySelector('[data-stash-id="s2"]')!;
+    drag(s2, { x: 600, y: 300 }, { x: 700, y: 100 });
+    expect(page().querySelector('.ghost')).not.toBeNull();
+    expect(h.handle().putAwayTargets()).toBeNull();
+    expect(page().querySelector('.ghost'), 'the stash drag goes on').not.toBeNull();
+    pointer(window, 'pointerup', { clientX: 601, clientY: 300 });
+    await settle();
+    press('ArrowLeft');
+    await settle();
+    press('g', { metaKey: true, ctrlKey: true });
+    await settle();
+    expect(page().querySelector('.carousel')).not.toBeNull();
+    expect(h.handle().putAwayTargets()).toBeNull();
+  });
+
   it('⌘G with the stash open in narrow mode closes the stash first (D20)', async () => {
     const restore = withViewport(800);
     try {
