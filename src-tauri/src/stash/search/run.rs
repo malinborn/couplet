@@ -87,7 +87,12 @@ pub struct SearchArgs {
 }
 
 /// The cursor is an offset into the ranked list, opaque to callers: relevance
-/// order has no stable key to build a keyset cursor from.
+/// order has no stable key to build a keyset cursor from. So paging is not
+/// snapshot-consistent: every page re-runs the query, and an entry created,
+/// retitled, reindexed or trashed between two pages shifts the ones after it
+/// — the next page can skip a hit or repeat one. The drawer asks for one
+/// page and re-searches on `stash-changed`; an agent paging through (stage
+/// 07) must tolerate a repeat and may miss an entry that moved meanwhile.
 pub fn parse_cursor(cursor: Option<&str>) -> Result<usize, String> {
     match cursor {
         None => Ok(0),
