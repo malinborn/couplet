@@ -195,8 +195,17 @@ export function whenOf(at: number, now: number): When {
     return { kind: 'today', time: `${pad(d.getHours())}:${pad(d.getMinutes())}` };
   }
   if (at >= dayStart(now, -1)) return { kind: 'yesterday' };
+  return { kind: 'days', days: calendarDaysAgo(at, now) };
+}
+
+/**
+ * Local midnights between `at`'s day and `now`'s: 0 today (or ahead of `now`),
+ * 1 yesterday — the count «N дней назад» shows, so the trash's «удалится через
+ * N дн.» built on it always pairs with «удалена …».
+ */
+export function calendarDaysAgo(at: number, now: number): number {
   // Round, not floor: a DST day is 23 or 25 hours long.
-  return { kind: 'days', days: Math.round((dayStart(now) - dayStart(at)) / DAY_MS) };
+  return Math.max(0, Math.round((dayStart(now) - dayStart(at)) / DAY_MS));
 }
 
 export function formatWhen(w: When): string {

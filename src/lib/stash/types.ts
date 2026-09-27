@@ -67,7 +67,23 @@ export type PullAnswer =
   | { kind: 'requested'; label: string; number: number | null };
 
 /**
- * `stash_delete`'s answer. Stage 04 removes file references only; stage 06
- * widens this to roadmap A7's union (`trashed` with the entry, `kept` with why).
+ * Why a note stayed in the stash (stage 06): its tab's save had not landed,
+ * the window holding it did not answer in time, or it was opened again.
  */
-export type DeleteOutcome = { kind: 'removed' };
+export type KeptReason = 'unsaved' | 'timeout' | 'open';
+
+/**
+ * `stash_delete`'s answer (roadmap A7): a note went to the trash (`entry` is
+ * the trashed row, its `path` inside `.trash/`), a file reference went (the
+ * file stays), or a tab in window `label` still holds the note.
+ */
+export type DeleteOutcome =
+  | { kind: 'trashed'; entry: StashEntry }
+  | { kind: 'removed' }
+  | { kind: 'kept'; reason: KeptReason; label: string; number: number | null };
+
+/**
+ * Which list the stash drawer shows (stage 06): the stash, or «Удалённые».
+ * Not `StashView` — that is `stash-view.ts`'s row model.
+ */
+export type StashMode = 'stash' | 'trash';

@@ -7,14 +7,18 @@ import {
   LIST_MAX_PAGES,
   LIST_PAGE,
   listAllEntries,
+  listTrash,
   requestTabMove,
   stashCounts,
   stashDelete,
   stashCreateNote,
+  stashDropDone,
   stashEntryForPath,
   stashGet,
   stashList,
+  stashPurge,
   stashPutAway,
+  stashRestore,
   stashSearch,
   stashTag,
   stashTouchOpened,
@@ -122,6 +126,25 @@ describe('stash ipc for search (stage 05)', () => {
   });
 });
 
+describe('stash ipc for the trash (stage 06)', () => {
+  beforeEach(() => vi.mocked(invoke).mockClear());
+
+  it('hands back every delete outcome as Rust tags it', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ kind: 'kept', reason: 'unsaved', label: 'editor-2', number: 2 });
+    await expect(stashDelete('s1')).resolves.toEqual({ kind: 'kept', reason: 'unsaved', label: 'editor-2', number: 2 });
+    expect(call()).toEqual(['stash_delete', { id: 's1' }]);
+  });
+
+  it('names restore, purge and the drop answer, camelCased', async () => {
+    await stashRestore('s1');
+    expect(call()).toEqual(['stash_restore', { id: 's1' }]);
+    await stashPurge('s2');
+    expect(call()).toEqual(['stash_purge', { id: 's2' }]);
+    await stashDropDone(7, true);
+    expect(call()).toEqual(['stash_drop_done', { requestId: 7, dropped: true }]);
+  });
+});
+
 const e = (id: string) => ({ id }) as unknown as StashEntry;
 
 describe('listAllEntries', () => {
@@ -148,5 +171,19 @@ describe('listAllEntries', () => {
     vi.mocked(invoke).mockResolvedValueOnce({ entries: [e('a')], total: 1, nextCursor: null });
     expect((await listAllEntries()).map((x) => x.id)).toEqual(['a']);
     expect(call()).toEqual(['stash_list', { limit: 500, deleted: false }]);
+  });
+});
+
+describe('listTrash', () => {
+  beforeEach(() => vi.mocked(invoke).mockClear());
+
+  it('is the same paged walk over the trash: every page asks for deleted entries', async () => {
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({ entries: [e('t1')], total: 2, nextCursor: 'trash:c1' })
+      .mockResolvedValueOnce({ entries: [e('t2')], total: 2, nextCursor: null });
+    expect((await listTrash()).map((x) => x.id)).toEqual(['t1', 't2']);
+    const calls = vi.mocked(invoke).mock.calls;
+    expect(calls[0]).toEqual(['stash_list', { limit: LIST_PAGE, deleted: true }]);
+    expect(calls[1]).toEqual(['stash_list', { limit: LIST_PAGE, deleted: true, cursor: 'trash:c1' }]);
   });
 });

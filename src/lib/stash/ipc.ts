@@ -113,9 +113,32 @@ export function windowProject(): Promise<WindowProject> {
 
 // --- stash stage 04: the drawer ---
 
-/** «убрать из тайника»: a file reference goes, the file stays. A note is refused until stage 06's trash. */
+/**
+ * «убрать из тайника» / «удалить»: a file reference goes (the file stays), a
+ * note moves to the trash — after the window holding its tab, if any, let go
+ * of it. That wait can take up to ~10 s: never await this inside the tab queue
+ * (`runExclusive` or a queued controller method) — the drop it waits for runs
+ * in that queue.
+ */
 export function stashDelete(id: string): Promise<DeleteOutcome> {
   return invoke<DeleteOutcome>('stash_delete', { id });
+}
+
+// --- stash stage 06: the trash ---
+
+/** «вернуть»: back into the notes folder with its tags, on top (`stashedAt` = now). */
+export function stashRestore(id: string): Promise<StashEntry> {
+  return invoke<StashEntry>('stash_restore', { id });
+}
+
+/** «удалить навсегда»: trashed notes only; Rust refuses anything else. */
+export function stashPurge(id: string): Promise<void> {
+  return invoke<void>('stash_purge', { id });
+}
+
+/** The answer to `stash-drop-tab`; Rust hears it only from the window it asked. */
+export function stashDropDone(requestId: number, dropped: boolean): Promise<void> {
+  return invoke<void>('stash_drop_done', { requestId, dropped });
 }
 
 /** Per path, the other window holding it («открыта в #N»); `null` for nobody or this window. */
@@ -140,17 +163,19 @@ export const LIST_PAGE = 500;
 export const LIST_MAX_PAGES = 40;
 
 /**
- * The whole live stash — the drawer filters and sorts on the client. Every page
- * keeps the default sort: a cursor is mode-prefixed (roadmap A9) and valid only
- * for the sort that issued it.
+ * The whole live stash — or, with `deleted`, the whole trash — as the drawer
+ * filters and sorts on the client. Every page keeps the default sort: a cursor
+ * is mode-prefixed (roadmap A9) and valid only for the sort and mode that
+ * issued it.
  */
 export async function listAllEntries(
-  page: (query: StashListQuery) => Promise<StashListPage> = stashList
+  page: (query: StashListQuery) => Promise<StashListPage> = stashList,
+  deleted = false
 ): Promise<StashEntry[]> {
   const out: StashEntry[] = [];
   let cursor: string | undefined;
   for (let i = 0; i < LIST_MAX_PAGES; i++) {
-    const query: StashListQuery = { limit: LIST_PAGE, deleted: false };
+    const query: StashListQuery = { limit: LIST_PAGE, deleted };
     if (cursor !== undefined) query.cursor = cursor;
     const res = await page(query);
     out.push(...res.entries);
@@ -158,4 +183,9 @@ export async function listAllEntries(
     cursor = res.nextCursor;
   }
   return out;
+}
+
+/** Every trashed note, newest deletion first as Rust sorts the trash (30 days at most). */
+export function listTrash(page: (query: StashListQuery) => Promise<StashListPage> = stashList): Promise<StashEntry[]> {
+  return listAllEntries(page, true);
 }
