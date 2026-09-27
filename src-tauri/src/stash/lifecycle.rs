@@ -328,10 +328,23 @@ pub(crate) fn documents_left_in(
     report
 }
 
-/// `documents_left_in` in the live app, then one `stash-changed` (A6:
-/// `put-away`, naming every entry put away or discarded) — unless the app is
-/// quitting, when no drawer is left to refresh. Blocking: call it on the
-/// blocking pool (a quit excepted), with no other lock held.
+/// The `stash-changed` events a report makes (A6): the entries put away under
+/// `put-away`, the discarded ones — their rows are gone — under `deleted`.
+fn changed_events(report: &LeftReport) -> Vec<(&'static str, Vec<String>)> {
+    [
+        ("put-away", &report.put_away),
+        ("deleted", &report.discarded),
+    ]
+    .into_iter()
+    .filter(|(_, ids)| !ids.is_empty())
+    .map(|(reason, ids)| (reason, ids.clone()))
+    .collect()
+}
+
+/// `documents_left_in` in the live app, then its `stash-changed` events
+/// (`changed_events`) — unless the app is quitting, when no drawer is left to
+/// refresh. Blocking: call it on the blocking pool (a quit excepted), with no
+/// other lock held.
 pub(crate) fn documents_left(
     app: &AppHandle,
     docs: &[(String, usize, usize)],
@@ -347,14 +360,10 @@ pub(crate) fn documents_left(
     let quitting = app
         .try_state::<SessionState>()
         .is_some_and(|s| s.is_quitting());
-    if report.changed() && !quitting {
-        let ids = report
-            .put_away
-            .iter()
-            .chain(&report.discarded)
-            .cloned()
-            .collect();
-        emit_changed(app, "put-away", Some(ids));
+    if !quitting {
+        for (reason, ids) in changed_events(&report) {
+            emit_changed(app, reason, Some(ids));
+        }
     }
     report
 }
@@ -992,6 +1001,32 @@ mod tests {
         assert_eq!(ids.discarded, vec![blank.id.clone()]);
         assert!(ids.failed.is_empty());
         assert_eq!(state.with(|s| Ok(rows(s, "entries"))).unwrap(), 1);
+    }
+
+    #[test]
+    fn discarded_entries_are_announced_as_deleted_and_the_rest_as_put_away() {
+        // A6: a drawer drops a `deleted` id and raises a `put-away` one.
+        let report = LeftReport {
+            put_away: vec!["a".into(), "b".into()],
+            discarded: vec!["c".into()],
+            failed: vec![("/x.md".into(), "no".into())],
+        };
+        assert_eq!(
+            changed_events(&report),
+            vec![
+                ("put-away", vec!["a".to_string(), "b".to_string()]),
+                ("deleted", vec!["c".to_string()]),
+            ]
+        );
+        let only_discarded = LeftReport {
+            discarded: vec!["c".into()],
+            ..LeftReport::default()
+        };
+        assert_eq!(
+            changed_events(&only_discarded),
+            vec![("deleted", vec!["c".to_string()])]
+        );
+        assert!(changed_events(&LeftReport::default()).is_empty());
     }
 
     #[test]
