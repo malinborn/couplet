@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { isCtrlT, stashKeysHandler } from './stash-keys';
+import { isCtrlS, isCtrlT, stashKeysHandler } from './stash-keys';
 import { ctrlTab } from '../tabs/tab-cycle-keys';
 import { ctrlDigit } from '../tabs/window-number';
 import { NATIVE_MENU_ACCELERATORS } from '../editor/native-menu-accelerators';
@@ -21,7 +21,7 @@ describe('isCtrlT', () => {
     expect(isCtrlT(key('KeyT', { ctrlKey: true, shiftKey: true }))).toBe(false);
     expect(isCtrlT(key('KeyT', { ctrlKey: true, altKey: true }))).toBe(false);
     expect(isCtrlT(key('KeyT', { ctrlKey: true, metaKey: true }))).toBe(false);
-    expect(isCtrlT(key('KeyS', { ctrlKey: true }))).toBe(false); // ⌃S is stage 04
+    expect(isCtrlT(key('KeyS', { ctrlKey: true }))).toBe(false); // ⌃S is isCtrlS
   });
 
   it('never overlaps ⌃Tab or ⌃1…⌃9', () => {
@@ -70,7 +70,7 @@ describe('stashKeysHandler', () => {
     expect(e.defaultPrevented).toBe(true);
   });
 
-  it('leaves every other key alone', () => {
+  it('leaves every other key alone — ⌃S too while no toggleStash is given', () => {
     const putAway = vi.fn();
     const later = vi.fn();
     listen(stashKeysHandler({ putAway }));
@@ -87,6 +87,81 @@ describe('stashKeysHandler', () => {
     }
     expect(putAway).not.toHaveBeenCalled();
     expect(later).toHaveBeenCalledTimes(5);
+  });
+});
+
+describe('isCtrlS', () => {
+  it('is ⌃S by the physical key, ⌃ alone', () => {
+    expect(isCtrlS(key('KeyS', { ctrlKey: true }))).toBe(true);
+    expect(isCtrlS(new KeyboardEvent('keydown', { code: 'KeyS', key: 'ы', ctrlKey: true }))).toBe(true);
+    expect(isCtrlS(key('KeyS'))).toBe(false);
+    expect(isCtrlS(key('KeyS', { metaKey: true }))).toBe(false); // ⌘S is Save
+    expect(isCtrlS(key('KeyS', { ctrlKey: true, shiftKey: true }))).toBe(false);
+    expect(isCtrlS(key('KeyS', { ctrlKey: true, altKey: true }))).toBe(false);
+    expect(isCtrlS(key('KeyS', { ctrlKey: true, metaKey: true }))).toBe(false);
+    expect(isCtrlS(key('KeyT', { ctrlKey: true }))).toBe(false);
+  });
+});
+
+describe('stashKeysHandler — ⌃S toggles the stash', () => {
+  const installed: Array<(e: KeyboardEvent) => void> = [];
+  function listen(fn: (e: KeyboardEvent) => void): void {
+    window.addEventListener('keydown', fn, true);
+    installed.push(fn);
+  }
+  afterEach(() => {
+    for (const fn of installed.splice(0)) window.removeEventListener('keydown', fn, true);
+  });
+
+  it('toggles once and keeps the key from the drawer and the editor', () => {
+    const putAway = vi.fn();
+    const toggleStash = vi.fn();
+    const later = vi.fn();
+    listen(stashKeysHandler({ putAway, toggleStash }));
+    listen(later);
+    const e = key('KeyS', { ctrlKey: true });
+    document.body.dispatchEvent(e);
+    expect(toggleStash).toHaveBeenCalledTimes(1);
+    expect(putAway).not.toHaveBeenCalled();
+    expect(e.defaultPrevented).toBe(true);
+    expect(later).not.toHaveBeenCalled();
+  });
+
+  it('⌃T still puts away, and does not toggle', () => {
+    const putAway = vi.fn();
+    const toggleStash = vi.fn();
+    stashKeysHandler({ putAway, toggleStash })(key('KeyT', { ctrlKey: true }));
+    expect(putAway).toHaveBeenCalledTimes(1);
+    expect(toggleStash).not.toHaveBeenCalled();
+  });
+
+  it('swallows a held ⌃S without flapping the drawer', () => {
+    const toggleStash = vi.fn();
+    const e = key('KeyS', { ctrlKey: true, repeat: true });
+    stashKeysHandler({ putAway: vi.fn(), toggleStash })(e);
+    expect(toggleStash).not.toHaveBeenCalled();
+    expect(e.defaultPrevented).toBe(true);
+  });
+
+  it('leaves ⌃S to an IME that is composing, still out of CodeMirror', () => {
+    const toggleStash = vi.fn();
+    const e = key('KeyS', { ctrlKey: true, isComposing: true });
+    stashKeysHandler({ putAway: vi.fn(), toggleStash })(e);
+    expect(toggleStash).not.toHaveBeenCalled();
+    expect(e.defaultPrevented).toBe(true);
+  });
+
+  it('lets ⌘S, ⌃⇧S and plain S through', () => {
+    const toggleStash = vi.fn();
+    const later = vi.fn();
+    listen(stashKeysHandler({ putAway: vi.fn(), toggleStash }));
+    listen(later);
+    for (const e of [key('KeyS'), key('KeyS', { metaKey: true }), key('KeyS', { ctrlKey: true, shiftKey: true })]) {
+      document.body.dispatchEvent(e);
+      expect(e.defaultPrevented, e.code).toBe(false);
+    }
+    expect(toggleStash).not.toHaveBeenCalled();
+    expect(later).toHaveBeenCalledTimes(3);
   });
 });
 
