@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::{entries, Stash, StashPaths};
+use super::{clock, entries, Stash, StashPaths};
 
 /// Answer to a write when the app data directory does not exist yet (A12).
 pub const NOT_RUN_YET: &str = "couplet has not run on this Mac yet — open it once, then try again";
@@ -159,6 +159,190 @@ pub fn resolve_scope(arg: &ScopeArg, cwd: &Path) -> Scope {
             },
         },
     }
+}
+
+/// `get` without a range returns at most this many lines…
+pub const GET_MAX_LINES: usize = 500;
+/// …and at most this many bytes (a single longer first line comes back whole).
+pub const GET_MAX_BYTES: usize = 64 * 1024;
+
+const DAY_MS: i64 = 86_400_000;
+const HOUR_MS: i64 = 3_600_000;
+
+fn offset_at(ms: i64) -> i64 {
+    clock::local_offset_secs(ms.div_euclid(1000))
+}
+
+/// `2026-09-27T01:55:12+03:00` in the machine's local zone — readable to a
+/// model, unlike unix ms, and still unambiguous (plan D7).
+pub fn iso_local(ms: i64) -> String {
+    let offset = offset_at(ms);
+    let local = ms.div_euclid(1000) + offset;
+    let (year, month, day) = clock::civil_from_days(local.div_euclid(86_400));
+    let secs = local.rem_euclid(86_400);
+    let sign = if offset < 0 { '-' } else { '+' };
+    let off = offset.abs();
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}{sign}{:02}:{:02}",
+        secs / 3600,
+        secs % 3600 / 60,
+        secs % 60,
+        off / 3600,
+        off % 3600 / 60
+    )
+}
+
+/// `--since` / `since`: `today`, `yesterday` (local midnight — the drawer's
+/// «сегодня», `clock::local_day_start_ms`), `12h`, `7d`, `YYYY-MM-DD` (local
+/// midnight of that date), or unix ms.
+pub fn parse_since(s: &str, now_ms: i64) -> Result<i64, String> {
+    let bad = || {
+        format!("invalid since: {s:?} (expected today, yesterday, 12h, 7d, YYYY-MM-DD or unix ms)")
+    };
+    let t = s.trim();
+    let digits = |x: &str| !x.is_empty() && x.bytes().all(|b| b.is_ascii_digit());
+    let back = |n: &str, unit: i64| {
+        n.parse::<i64>()
+            .ok()
+            .and_then(|n| n.checked_mul(unit))
+            .and_then(|d| now_ms.checked_sub(d))
+            .ok_or_else(bad)
+    };
+    match t {
+        "today" => return Ok(clock::local_day_start_ms(now_ms, offset_at(now_ms))),
+        "yesterday" => {
+            let today = clock::local_day_start_ms(now_ms, offset_at(now_ms));
+            return Ok(clock::local_day_start_ms(today - 1, offset_at(today - 1)));
+        }
+        _ => {}
+    }
+    if let Some(n) = t.strip_suffix('h').filter(|n| digits(n)) {
+        return back(n, HOUR_MS);
+    }
+    if let Some(n) = t.strip_suffix('d').filter(|n| digits(n)) {
+        return back(n, DAY_MS);
+    }
+    let b = t.as_bytes();
+    if t.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && digits(&t[0..4])
+        && digits(&t[5..7])
+        && digits(&t[8..10])
+    {
+        let num = |r: std::ops::Range<usize>| t[r].parse::<i32>().map_err(|_| bad());
+        return clock::local_midnight(num(0..4)?, num(5..7)?, num(8..10)?).ok_or_else(bad);
+    }
+    if digits(t) {
+        return t.parse().map_err(|_| bad());
+    }
+    Err(bad())
+}
+
+/// A 1-based inclusive line range; `to: None` runs to the last line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineRange {
+    pub from: usize,
+    pub to: Option<usize>,
+}
+
+/// `A:B`, `A:` or `:B`.
+pub fn parse_lines(s: &str) -> Result<LineRange, String> {
+    let bad = || format!("invalid line range: {s:?} (expected A:B, A: or :B, 1-based)");
+    let (a, b) = s.trim().split_once(':').ok_or_else(bad)?;
+    let num = |t: &str| -> Result<Option<usize>, String> {
+        if t.is_empty() {
+            return Ok(None);
+        }
+        if !t.bytes().all(|c| c.is_ascii_digit()) {
+            return Err(bad());
+        }
+        t.parse::<usize>().map(Some).map_err(|_| bad())
+    };
+    let from = num(a)?.unwrap_or(1);
+    let to = num(b)?;
+    if from == 0 || to == Some(0) || to.is_some_and(|t| t < from) {
+        return Err(bad());
+    }
+    Ok(LineRange { from, to })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Sliced {
+    pub text: String,
+    /// The lines actually returned; `[0, 0]` for an empty note.
+    pub lines: [usize; 2],
+    pub total_lines: usize,
+    /// Fewer lines than asked for came back (a cap was hit).
+    pub truncated: bool,
+}
+
+/// The asked-for lines of `text` (all of them by default), within
+/// `GET_MAX_LINES` / `GET_MAX_BYTES` (plan D8). Line endings come back `\n`.
+pub fn slice_lines(text: &str, range: Option<LineRange>) -> Result<Sliced, String> {
+    let all: Vec<&str> = text.lines().collect();
+    let total = all.len();
+    let range = range.unwrap_or(LineRange { from: 1, to: None });
+    if total == 0 && range.from == 1 {
+        return Ok(Sliced {
+            text: String::new(),
+            lines: [0, 0],
+            total_lines: 0,
+            truncated: false,
+        });
+    }
+    if range.from > total {
+        return Err(format!(
+            "line {} is past the end of the note ({total} lines)",
+            range.from
+        ));
+    }
+    let wanted_to = range.to.unwrap_or(total).min(total);
+    let mut out = String::new();
+    let mut last = range.from - 1;
+    for (i, line) in all[range.from - 1..wanted_to].iter().enumerate() {
+        let over_lines = i >= GET_MAX_LINES;
+        let over_bytes = !out.is_empty() && out.len() + 1 + line.len() > GET_MAX_BYTES;
+        if over_lines || over_bytes {
+            break;
+        }
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(line);
+        last = range.from + i;
+    }
+    Ok(Sliced {
+        text: out,
+        lines: [range.from, last],
+        total_lines: total,
+        truncated: last < wanted_to,
+    })
+}
+
+/// Tags as an agent gives them, in stage 02's one rule set
+/// (`entries::normalize_tag`: trim, strip `#`, lower-case, one word, ≤ 64
+/// chars), duplicates dropped. Unlike `entries::normalize_tags`, a tag that
+/// comes out empty is an error: an agent that sent `#` meant something.
+pub fn agent_tags(raw: &[String]) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in raw {
+        let tag = entries::normalize_tag(t)?.ok_or_else(|| format!("empty tag: {t:?}"))?;
+        if !out.contains(&tag) {
+            out.push(tag);
+        }
+    }
+    Ok(out)
+}
+
+/// At most `max` characters, with `…` when cut.
+pub fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max).collect();
+    out.push('…');
+    out
 }
 
 #[cfg(test)]
@@ -493,5 +677,208 @@ mod tests {
             "opening touches the app dir only"
         );
         assert!(open_for_read(&loc).unwrap().is_some());
+    }
+
+    #[test]
+    fn local_iso_times_have_a_date_a_time_and_an_offset() {
+        let s = iso_local(1_790_378_408_605);
+        assert_eq!(s.len(), 25, "{s}");
+        assert_eq!(
+            (
+                &s[4..5],
+                &s[7..8],
+                &s[10..11],
+                &s[13..14],
+                &s[16..17],
+                &s[22..23]
+            ),
+            ("-", "-", "T", ":", ":", ":"),
+            "{s}"
+        );
+        assert!(matches!(&s[19..20], "+" | "-"), "{s}");
+    }
+
+    #[test]
+    fn a_date_since_is_local_midnight() {
+        let ms = parse_since("2026-09-27", 0).unwrap();
+        assert!(
+            iso_local(ms).starts_with("2026-09-27T00:00:00"),
+            "{}",
+            iso_local(ms)
+        );
+    }
+
+    #[test]
+    fn relative_and_named_sinces() {
+        let now = 1_790_378_408_605;
+        assert_eq!(parse_since("12h", now).unwrap(), now - 12 * 3_600_000);
+        assert_eq!(parse_since("7d", now).unwrap(), now - 7 * 86_400_000);
+        assert_eq!(parse_since(" 7d ", now).unwrap(), now - 7 * 86_400_000);
+        assert_eq!(
+            parse_since("1790000000000", now).unwrap(),
+            1_790_000_000_000
+        );
+        let today = parse_since("today", now).unwrap();
+        let yesterday = parse_since("yesterday", now).unwrap();
+        assert!(today <= now && now - today < 25 * 3_600_000);
+        // 23–25 h: a DST change may sit between the two midnights.
+        assert!((23 * 3_600_000..=25 * 3_600_000).contains(&(today - yesterday)));
+        assert!(
+            iso_local(today).contains("T00:00:00"),
+            "{}",
+            iso_local(today)
+        );
+    }
+
+    #[test]
+    fn a_bad_since_is_an_error() {
+        for bad in [
+            "soon",
+            "-3h",
+            "2026-13-01",
+            "2026-02-32",
+            "2026-02-31",
+            "",
+            "h",
+            "99999999999999999h",
+        ] {
+            assert!(parse_since(bad, 0).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn line_ranges_parse_one_based_and_inclusive() {
+        assert_eq!(
+            parse_lines("120:180").unwrap(),
+            LineRange {
+                from: 120,
+                to: Some(180)
+            }
+        );
+        assert_eq!(
+            parse_lines("501:").unwrap(),
+            LineRange {
+                from: 501,
+                to: None
+            }
+        );
+        assert_eq!(
+            parse_lines(":40").unwrap(),
+            LineRange {
+                from: 1,
+                to: Some(40)
+            }
+        );
+        for bad in ["0:5", "5:4", "5", "a:b", "1:0", "+1:3"] {
+            assert!(parse_lines(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    fn numbered(n: usize) -> String {
+        (1..=n)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_short_note_comes_back_whole() {
+        let s = slice_lines("a\r\nb\nc", None).unwrap();
+        assert_eq!(
+            s,
+            Sliced {
+                text: "a\nb\nc".to_string(),
+                lines: [1, 3],
+                total_lines: 3,
+                truncated: false
+            }
+        );
+        assert_eq!(
+            slice_lines("", None).unwrap(),
+            Sliced {
+                text: String::new(),
+                lines: [0, 0],
+                total_lines: 0,
+                truncated: false
+            }
+        );
+    }
+
+    #[test]
+    fn a_long_note_stops_at_the_line_cap() {
+        let s = slice_lines(&numbered(1200), None).unwrap();
+        assert_eq!(
+            (s.lines, s.total_lines, s.truncated),
+            ([1, GET_MAX_LINES], 1200, true)
+        );
+        assert_eq!(s.text.lines().count(), GET_MAX_LINES);
+    }
+
+    #[test]
+    fn a_range_is_honoured_and_an_open_end_runs_to_the_last_line() {
+        let text = numbered(1200);
+        let s = slice_lines(
+            &text,
+            Some(LineRange {
+                from: 501,
+                to: Some(1000),
+            }),
+        )
+        .unwrap();
+        assert_eq!((s.lines, s.truncated), ([501, 1000], false));
+        assert!(s.text.starts_with("line 501\n"));
+        let tail = slice_lines(
+            &text,
+            Some(LineRange {
+                from: 1190,
+                to: None,
+            }),
+        )
+        .unwrap();
+        assert_eq!((tail.lines, tail.truncated), ([1190, 1200], false));
+        let err = slice_lines(
+            &text,
+            Some(LineRange {
+                from: 1300,
+                to: None,
+            }),
+        )
+        .unwrap_err();
+        assert!(err.contains("past the end"), "{err}");
+    }
+
+    #[test]
+    fn a_note_of_long_lines_stops_at_the_byte_cap() {
+        let text = vec!["x".repeat(1000); 300].join("\n");
+        let s = slice_lines(&text, None).unwrap();
+        assert!(s.truncated);
+        assert!(s.text.len() <= GET_MAX_BYTES);
+        assert!(s.lines[1] < 300);
+        let huge = "y".repeat(GET_MAX_BYTES * 2);
+        let one = slice_lines(&huge, None).unwrap();
+        assert_eq!(
+            (one.text.len(), one.truncated),
+            (GET_MAX_BYTES * 2, false),
+            "one line comes back whole"
+        );
+    }
+
+    #[test]
+    fn tags_are_normalised_one_word_each() {
+        let raw = ["#Infra", " infra ", "HDMI"].map(String::from);
+        assert_eq!(
+            agent_tags(&raw).unwrap(),
+            vec!["infra".to_string(), "hdmi".to_string()]
+        );
+        assert!(agent_tags(&["two words".to_string()]).is_err());
+        assert!(agent_tags(&["#".to_string()]).is_err());
+        assert!(agent_tags(&[" ".to_string()]).is_err());
+    }
+
+    #[test]
+    fn clipping_counts_characters_not_bytes() {
+        assert_eq!(clip("тайник", 10), "тайник");
+        assert_eq!(clip("тайник", 6), "тайник");
+        assert_eq!(clip("тайник", 3), "тай…");
     }
 }

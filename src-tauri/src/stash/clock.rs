@@ -57,6 +57,31 @@ pub(crate) fn local_offset_secs(unix_secs: i64) -> i64 {
     }
 }
 
+/// Unix ms of the local midnight that starts `year-month-day`, by the time
+/// zone's rules for that date (DST included, unlike `local_day_start_ms`'s one
+/// offset). `None` for a date that does not exist — `mktime` would roll
+/// 2026-02-31 over into March — or one the C library cannot place. In a zone
+/// whose clocks skip midnight that day, the first instant of the day.
+pub(crate) fn local_midnight(year: i32, month: i32, day: i32) -> Option<i64> {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    // SAFETY: an all-zero `tm` is a valid value (its one pointer field is null).
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    tm.tm_year = year.checked_sub(1900)?;
+    tm.tm_mon = month - 1;
+    tm.tm_mday = day;
+    // Let the zone decide whether DST is in effect on that date.
+    tm.tm_isdst = -1;
+    // SAFETY: the pointer is valid for the call; `mktime` reads `tm` and
+    // normalizes it in place.
+    let t: libc::time_t = unsafe { libc::mktime(&mut tm) };
+    if t == -1 || tm.tm_mday != day || tm.tm_mon != month - 1 {
+        return None;
+    }
+    t.checked_mul(1000)
+}
+
 /// `(year, month 1–12, day 1–31)` of the proleptic Gregorian calendar for a
 /// count of days since 1970-01-01 (negative before it).
 pub(crate) fn civil_from_days(days: i64) -> (i64, u32, u32) {
@@ -164,5 +189,30 @@ mod tests {
     fn local_date_is_iso() {
         assert_eq!(local_date(T, 10_800), "2026-09-26");
         assert_eq!(local_date(T, 0), "2026-09-25");
+    }
+
+    #[test]
+    fn local_midnight_starts_that_local_date() {
+        let ms = local_midnight(2026, 9, 27).unwrap();
+        let offset = local_offset_secs(ms.div_euclid(1000));
+        let at = LocalTime { year: 2026, month: 9, day: 27, hour: 0, minute: 0 };
+        assert_eq!(local_time(ms, offset), at);
+        assert_eq!(ms.rem_euclid(1000), 0);
+        assert!(local_midnight(2024, 2, 29).is_some(), "a leap day exists");
+    }
+
+    #[test]
+    fn a_date_that_does_not_exist_has_no_midnight() {
+        let missing = [
+            (2026, 2, 29),
+            (2026, 2, 31),
+            (2026, 4, 31),
+            (2026, 13, 1),
+            (2026, 0, 1),
+            (2026, 1, 0),
+        ];
+        for (y, m, d) in missing {
+            assert_eq!(local_midnight(y, m, d), None, "{y}-{m}-{d}");
+        }
     }
 }
