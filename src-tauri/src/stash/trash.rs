@@ -9,6 +9,10 @@ use std::io::{ErrorKind, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+
+use super::{db, search, Stash, StashKind};
+
 const MAX_SUFFIX: u32 = 999;
 /// A name taken between `unique_target` and the move is retried this often.
 const MOVE_ATTEMPTS: u32 = 5;
@@ -195,6 +199,164 @@ pub(crate) fn purgeable_file(trash_dir: &Path, path: &Path) -> Result<Option<Pat
     Ok(Some(canon_parent.join(name)))
 }
 
+/// What `Stash::delete_entry` did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Deleted {
+    /// A note is in the trash (now or already).
+    Trashed,
+    /// A file reference is gone; the file itself was not touched.
+    Removed,
+}
+
+struct Row {
+    kind: String,
+    path: String,
+    deleted_at: Option<i64>,
+}
+
+fn row(conn: &Connection, id: &str) -> Result<Row, String> {
+    conn.query_row(
+        "SELECT kind, path, deleted_at FROM entries WHERE id = ?1",
+        [id],
+        |r| {
+            Ok(Row {
+                kind: r.get(0)?,
+                path: r.get(1)?,
+                deleted_at: r.get(2)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(db::err)?
+    .ok_or_else(|| format!("no stash entry {id}"))
+}
+
+/// Whether a row already names `path`: UNIQUE(path) would fail the
+/// transaction after the file moved. An unreadable answer counts as taken.
+fn path_taken(conn: &Connection, path: &Path) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM entries WHERE path = ?1",
+        [path.to_string_lossy().as_ref()],
+        |_| Ok(()),
+    )
+    .optional()
+    .map_or(true, |hit| hit.is_some())
+}
+
+fn file_name(path: &Path) -> Result<String, String> {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or_else(|| format!("{} has no file name", path.display()))
+}
+
+/// The comment sidecar follows its note (D16), renamed to match a suffixed
+/// name. Best effort: a sidecar that cannot move stays where it was and only
+/// the log says so — the note's own move is what matters.
+fn move_sidecar(from_doc: &Path, to_doc: &Path) {
+    let (Some(from), Some(to)) = (
+        crate::comments::sidecar_path(from_doc),
+        crate::comments::sidecar_path(to_doc),
+    ) else {
+        return;
+    };
+    if !occupied(&from) {
+        return;
+    }
+    if let Err(e) = move_no_clobber(&from, &to) {
+        eprintln!("[stash::trash] sidecar {} not moved: {e}", from.display());
+    }
+}
+
+/// Moves `dest` back to `src` after the transaction that should have
+/// followed the move failed. `what` names the operation for the log.
+fn move_back(dest: &Path, src: &Path, what: &str, e: &str) {
+    match move_no_clobber(dest, src) {
+        Ok(()) => move_sidecar(dest, src),
+        Err(back) => eprintln!(
+            "[stash::trash] {what} failed ({e}); the file stays at {} ({back})",
+            dest.display()
+        ),
+    }
+}
+
+impl Stash {
+    /// Stage 06 delete. A note's file moves into the trash (no-clobber), then
+    /// its row takes the new path and `deleted_at` and leaves the search
+    /// index, in one transaction; a failed transaction moves the file back. A
+    /// note already trashed is left as it is. A file reference loses its row
+    /// and tags (`remove_file_ref`); the file is not touched. The caller has
+    /// made sure no tab holds a note's path (`delete_flow`, stage 06 D2).
+    ///
+    /// The move runs under the stash lock: one rename inside couplet's own
+    /// folder, no read of the user's text. The copy fallback cannot run —
+    /// a symlinked `.trash`, the only way off the volume, is refused.
+    pub(crate) fn delete_entry(&mut self, id: &str, now: i64) -> Result<Deleted, String> {
+        let r = row(&self.conn, id)?;
+        if r.kind == StashKind::File.as_str() {
+            self.remove_file_ref(id)?;
+            return Ok(Deleted::Removed);
+        }
+        if r.deleted_at.is_some() {
+            return Ok(Deleted::Trashed);
+        }
+        self.trash_note(id, &r.path, now)?;
+        Ok(Deleted::Trashed)
+    }
+
+    /// The live note `id`, whose row names `path`, into the trash. A file
+    /// already gone just marks the row (its path stays). The row changes only
+    /// while it still names `path` and is live.
+    fn trash_note(&mut self, id: &str, path: &str, now: i64) -> Result<(), String> {
+        // The notes folder in its one spelling: `trash_dir` follows it, so
+        // the stored trash path needs no `path_norm` call under the lock.
+        self.notes_dir()?;
+        let src = PathBuf::from(path);
+        let moved = if occupied(&src) {
+            let trash = self.paths.trash_dir.clone();
+            fs::create_dir_all(&trash).map_err(|e| format!("{}: {e}", trash.display()))?;
+            crate::session::require_real_trash_dir(&trash)?;
+            let name = file_name(&src)?;
+            let conn = &self.conn;
+            let dest = move_into(&trash, &name, &src, |p| path_taken(conn, p))?;
+            move_sidecar(&src, &dest);
+            Some(dest)
+        } else {
+            None
+        };
+        let new_path = moved
+            .as_deref()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string());
+        if let Err(e) = self.mark_trashed(id, path, &new_path, now) {
+            if let Some(dest) = &moved {
+                move_back(dest, &src, &format!("delete of {id}"), &e);
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    fn mark_trashed(&mut self, id: &str, old: &str, new: &str, now: i64) -> Result<(), String> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db::err)?;
+        let n = tx
+            .execute(
+                "UPDATE entries SET path = ?2, deleted_at = ?3 \
+                 WHERE id = ?1 AND path = ?4 AND deleted_at IS NULL",
+                params![id, new, now, old],
+            )
+            .map_err(db::err)?;
+        if n != 1 {
+            return Err(format!("stash entry {id} changed while it was being deleted"));
+        }
+        // Same transaction (A8): a trashed row is never in the index.
+        search::unindex_entry(&tx, id)?;
+        tx.commit().map_err(db::err)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +383,84 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::set_permissions(self.0, fs::Permissions::from_mode(0o755));
         }
+    }
+
+    use crate::stash::testkit::{set_columns, stash_in, user_file, MSK, T0};
+    use crate::stash::{PutAway, Stash, StashEntry};
+    use rusqlite::params;
+
+    const DAY: i64 = 24 * 60 * 60 * 1000;
+
+    /// A note through the stash's own path, so the file and the row are real
+    /// (and indexed: `insert_note_row` indexes from the text).
+    fn note(stash: &mut Stash, text: &str) -> StashEntry {
+        stash.create_note(text, None, T0, MSK).unwrap()
+    }
+
+    fn file_ref(stash: &mut Stash, root: &Path, rel: &str, text: &str) -> (StashEntry, PathBuf) {
+        let path = user_file(root, rel, text);
+        let req = PutAway {
+            paths: vec![path.clone()],
+            ..Default::default()
+        };
+        let got = stash.put_away(&req, T0).unwrap();
+        (got[0].entry.clone(), PathBuf::from(path))
+    }
+
+    fn tags(stash: &Stash, id: &str) -> Vec<String> {
+        let mut st = stash
+            .conn
+            .prepare("SELECT tag FROM tags WHERE entry_id = ?1 ORDER BY tag")
+            .unwrap();
+        st.query_map(params![id], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    /// `(path, deleted_at, stashed_at)`.
+    fn row(stash: &Stash, id: &str) -> Option<(String, Option<i64>, Option<i64>)> {
+        stash
+            .conn
+            .query_row(
+                "SELECT path, deleted_at, stashed_at FROM entries WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .ok()
+    }
+
+    fn indexed(stash: &Stash, id: &str) -> bool {
+        stash
+            .conn
+            .query_row(
+                "SELECT count(*) FROM entries_fts \
+                 WHERE rowid = (SELECT rowid FROM entries WHERE id = ?1)",
+                params![id],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+            > 0
+    }
+
+    /// Every UPDATE of `entries` on this connection fails from now on.
+    fn fail_next_update(stash: &Stash) {
+        stash
+            .conn
+            .execute_batch(
+                "CREATE TEMP TRIGGER boom BEFORE UPDATE ON entries \
+                 BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+            )
+            .unwrap();
+    }
+
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
     }
 
     #[test]
@@ -486,5 +726,223 @@ mod tests {
         let root = scratch("trash-guard-nodir");
         fs::write(root.join("a.md"), "x").unwrap();
         assert!(purgeable_file(&root.join(".trash"), &root.join("a.md")).is_err());
+    }
+
+    // ---- delete ----
+
+    #[test]
+    fn delete_moves_a_note_into_the_trash_byte_for_byte() {
+        let (mut stash, _root) = stash_in("trash-del-note");
+        let e = note(&mut stash, "# План\n\nтекст\r\n");
+        let original = PathBuf::from(&e.path);
+        let bytes = fs::read(&original).unwrap();
+
+        assert_eq!(stash.delete_entry(&e.id, T0 + 5).unwrap(), Deleted::Trashed);
+
+        assert!(!original.exists());
+        let (path, deleted_at, _) = row(&stash, &e.id).unwrap();
+        let moved = PathBuf::from(&path);
+        assert_eq!(
+            moved.parent().unwrap(),
+            fs::canonicalize(&stash.paths.trash_dir).unwrap()
+        );
+        assert_eq!(moved.file_name(), original.file_name());
+        assert_eq!(fs::read(&moved).unwrap(), bytes);
+        assert_eq!(deleted_at, Some(T0 + 5));
+    }
+
+    #[test]
+    fn delete_stores_the_path_in_the_registry_spelling() {
+        let (mut stash, _root) = stash_in("trash-del-spelling");
+        let e = note(&mut stash, "x");
+        stash.delete_entry(&e.id, T0).unwrap();
+        let (path, _, _) = row(&stash, &e.id).unwrap();
+        assert_eq!(path, crate::path_norm::normalize_str(&path));
+    }
+
+    #[test]
+    fn delete_removes_the_note_from_the_search_index() {
+        let (mut stash, _root) = stash_in("trash-del-fts");
+        let e = note(&mut stash, "# искомое\n");
+        assert!(indexed(&stash, &e.id));
+        stash.delete_entry(&e.id, T0).unwrap();
+        assert!(!indexed(&stash, &e.id));
+    }
+
+    #[test]
+    fn delete_keeps_tags() {
+        let (mut stash, _root) = stash_in("trash-del-tags");
+        let e = note(&mut stash, "x");
+        stash.tag(&e.id, &["infra".into()], &[]).unwrap();
+        stash.delete_entry(&e.id, T0).unwrap();
+        assert_eq!(tags(&stash, &e.id), vec!["infra".to_string()]);
+    }
+
+    #[test]
+    fn delete_suffixes_a_name_already_in_the_trash() {
+        let (mut stash, _root) = stash_in("trash-del-collide");
+        let e = note(&mut stash, "mine");
+        let name = PathBuf::from(&e.path).file_name().unwrap().to_owned();
+        let trash = stash.paths.trash_dir.clone();
+        fs::create_dir_all(&trash).unwrap();
+        fs::write(trash.join(&name), "leftover").unwrap();
+
+        stash.delete_entry(&e.id, T0).unwrap();
+
+        let (path, _, _) = row(&stash, &e.id).unwrap();
+        assert!(path.ends_with("-2.md"), "{path}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "mine");
+        assert_eq!(fs::read_to_string(trash.join(&name)).unwrap(), "leftover");
+    }
+
+    #[test]
+    fn delete_suffixes_a_name_another_row_holds() {
+        // No file at the name, but a row names it: UNIQUE(path) would fail the
+        // transaction after the file moved.
+        let (mut stash, _root) = stash_in("trash-del-row-collide");
+        let e = note(&mut stash, "mine");
+        let other = note(&mut stash, "other");
+        let name = PathBuf::from(&e.path).file_name().unwrap().to_owned();
+        let trash = stash.paths.trash_dir.clone();
+        let held = trash.join(&name);
+        set_columns(
+            &stash,
+            &other.id,
+            &format!("path = '{}', deleted_at = 1", held.to_string_lossy()),
+        );
+
+        stash.delete_entry(&e.id, T0).unwrap();
+
+        let (path, deleted_at, _) = row(&stash, &e.id).unwrap();
+        assert!(path.ends_with("-2.md"), "{path}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "mine");
+        assert_eq!(deleted_at, Some(T0));
+    }
+
+    #[test]
+    fn delete_of_a_file_ref_removes_row_and_tags_and_never_touches_the_file() {
+        let (mut stash, root) = stash_in("trash-del-ref");
+        let (e, file) = file_ref(&mut stash, &root, "report.md", "их текст");
+        stash.tag(&e.id, &["review".into()], &[]).unwrap();
+
+        assert_eq!(stash.delete_entry(&e.id, T0).unwrap(), Deleted::Removed);
+
+        assert_eq!(row(&stash, &e.id), None);
+        assert!(tags(&stash, &e.id).is_empty());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "их текст");
+        assert!(!stash.paths.trash_dir.exists());
+    }
+
+    #[test]
+    fn delete_twice_is_a_no_op() {
+        let (mut stash, _root) = stash_in("trash-del-twice");
+        let e = note(&mut stash, "x");
+        stash.delete_entry(&e.id, T0).unwrap();
+        let first = row(&stash, &e.id).unwrap();
+        assert_eq!(
+            stash.delete_entry(&e.id, T0 + DAY).unwrap(),
+            Deleted::Trashed
+        );
+        assert_eq!(row(&stash, &e.id).unwrap(), first);
+        assert_eq!(fs::read_to_string(&first.0).unwrap(), "x");
+    }
+
+    #[test]
+    fn delete_of_a_note_whose_file_is_gone_still_leaves_the_stash() {
+        let (mut stash, _root) = stash_in("trash-del-gone");
+        let e = note(&mut stash, "x");
+        fs::remove_file(&e.path).unwrap();
+        assert_eq!(stash.delete_entry(&e.id, T0).unwrap(), Deleted::Trashed);
+        let (path, deleted_at, _) = row(&stash, &e.id).unwrap();
+        assert_eq!(path, e.path);
+        assert_eq!(deleted_at, Some(T0));
+        assert!(!indexed(&stash, &e.id));
+    }
+
+    #[test]
+    fn delete_moves_the_file_back_when_the_row_cannot_be_updated() {
+        let (mut stash, _root) = stash_in("trash-del-rollback");
+        let e = note(&mut stash, "keep");
+        let side = crate::comments::sidecar_path(Path::new(&e.path)).unwrap();
+        fs::write(&side, "threads").unwrap();
+        fail_next_update(&stash);
+
+        assert!(stash.delete_entry(&e.id, T0).is_err());
+
+        assert_eq!(fs::read_to_string(&e.path).unwrap(), "keep");
+        assert_eq!(fs::read_to_string(&side).unwrap(), "threads");
+        assert_eq!(row(&stash, &e.id).unwrap().1, None);
+        assert!(indexed(&stash, &e.id));
+        assert!(names_in(&stash.paths.trash_dir).is_empty());
+    }
+
+    #[test]
+    fn delete_leaves_everything_when_the_trash_refuses_the_file() {
+        let (mut stash, _root) = stash_in("trash-del-readonly");
+        let e = note(&mut stash, "keep");
+        let trash = stash.paths.trash_dir.clone();
+        fs::create_dir_all(&trash).unwrap();
+        let result = {
+            let _ro = ReadOnly::new(&trash);
+            stash.delete_entry(&e.id, T0)
+        };
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&e.path).unwrap(), "keep");
+        assert_eq!(row(&stash, &e.id).unwrap(), (e.path.clone(), None, None));
+        assert!(names_in(&trash).is_empty());
+    }
+
+    #[test]
+    fn delete_refuses_a_symlinked_trash_folder() {
+        let (mut stash, root) = stash_in("trash-del-symlinked");
+        let e = note(&mut stash, "keep");
+        let elsewhere = root.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        symlink(&elsewhere, &stash.paths.trash_dir).unwrap();
+
+        assert!(stash.delete_entry(&e.id, T0).is_err());
+
+        assert_eq!(fs::read_to_string(&e.path).unwrap(), "keep");
+        assert_eq!(row(&stash, &e.id).unwrap().1, None);
+        assert!(names_in(&elsewhere).is_empty());
+    }
+
+    #[test]
+    fn delete_takes_the_comment_sidecar_along() {
+        let (mut stash, _root) = stash_in("trash-del-sidecar");
+        let e = note(&mut stash, "x");
+        let side = crate::comments::sidecar_path(Path::new(&e.path)).unwrap();
+        fs::write(&side, "threads").unwrap();
+        stash.delete_entry(&e.id, T0).unwrap();
+        let (path, _, _) = row(&stash, &e.id).unwrap();
+        let moved_side = crate::comments::sidecar_path(Path::new(&path)).unwrap();
+        assert!(!side.exists());
+        assert_eq!(fs::read_to_string(moved_side).unwrap(), "threads");
+    }
+
+    #[test]
+    fn delete_renames_the_sidecar_with_a_suffixed_note() {
+        let (mut stash, _root) = stash_in("trash-del-sidecar-suffix");
+        let e = note(&mut stash, "x");
+        let name = PathBuf::from(&e.path).file_name().unwrap().to_owned();
+        let trash = stash.paths.trash_dir.clone();
+        fs::create_dir_all(&trash).unwrap();
+        fs::write(trash.join(&name), "leftover").unwrap();
+        let side = crate::comments::sidecar_path(Path::new(&e.path)).unwrap();
+        fs::write(&side, "threads").unwrap();
+
+        stash.delete_entry(&e.id, T0).unwrap();
+
+        let (path, _, _) = row(&stash, &e.id).unwrap();
+        assert!(path.ends_with("-2.md"), "{path}");
+        let moved_side = crate::comments::sidecar_path(Path::new(&path)).unwrap();
+        assert_eq!(fs::read_to_string(moved_side).unwrap(), "threads");
+        assert!(!side.exists());
+    }
+
+    #[test]
+    fn delete_of_an_unknown_id_is_an_error() {
+        let (mut stash, _root) = stash_in("trash-del-unknown");
+        assert!(stash.delete_entry("nope", T0).is_err());
     }
 }
