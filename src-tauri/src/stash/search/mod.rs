@@ -8,4 +8,5 @@
 // Siblings reach the parser as `super::query::…`. No re-export until code
 // outside `search` needs one: an unused `pub use` is a warning of its own.
 mod query;
+mod snippet;
 mod text;
