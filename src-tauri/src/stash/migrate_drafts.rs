@@ -149,9 +149,11 @@ fn project_of_draft(session: Option<&Session>, name: &str) -> Option<String> {
 /// one — created at the draft's mtime, stashed then, recorded in
 /// `draft_imports` in the same transaction. `true`: created now.
 ///
-/// An earlier note is reused only while it is live and its file is there: a
-/// note trashed in the stash or gone from disk no longer holds this text, and
-/// the draft may be its only copy.
+/// An earlier note is reused only while it is live and its file still holds
+/// exactly the draft's text: a note trashed in the stash, gone from disk or
+/// edited since no longer holds this text, and the draft may be its only
+/// copy — a fresh note takes it (the edited one stays as it is), instead of
+/// the draft failing verification on every launch forever.
 fn import_one(
     stash: &mut Stash,
     draft: &Draft,
@@ -169,7 +171,7 @@ fn import_one(
         .map_err(db::err)?;
     if let Some(id) = previous {
         if let Ok(entry) = stash.get(&id) {
-            if entry.deleted_at.is_none() && fs::symlink_metadata(&entry.path).is_ok() {
+            if entry.deleted_at.is_none() && holds(Path::new(&entry.path), &draft.text) {
                 return Ok((entry, false));
             }
         }
@@ -890,28 +892,52 @@ mod tests {
     }
 
     #[test]
-    fn a_note_that_does_not_read_back_keeps_its_draft_and_its_tab() {
-        let (mut stash, _root) = stash_in("drafts-verify");
-        let d = dirs("verify");
+    fn a_reused_note_edited_since_gives_way_to_a_fresh_note_from_the_draft() {
+        // The human edited the note an interrupted run made: it no longer
+        // holds the draft. Skipping would keep the draft in `session/` on
+        // every launch forever; a fresh note takes the draft instead.
+        let (mut stash, _root) = stash_in("drafts-edited");
+        let d = dirs("edited");
         let src = write_draft(&d, "draft-v.md", b"the real text");
-        let (entry, _) = import_one(&mut stash, &only_draft(&d), None, NOW).unwrap();
-        fs::write(&entry.path, b"something else").unwrap();
+        let (old, _) = import_one(&mut stash, &only_draft(&d), None, NOW).unwrap();
+        fs::write(&old.path, b"the human's edit").unwrap();
 
         let session = one_window(None, vec![untitled("v", "draft-v.md")]);
         let (session, report) = import_drafts(&mut stash, &draft_dirs(&d), Some(session), NOW);
+        assert!(report.errors.is_empty(), "{report:?}");
         assert_eq!(
-            fs::read(&src).unwrap(),
-            b"the real text",
-            "never moved: its note does not hold it"
+            (
+                report.imported,
+                report.reused,
+                report.trashed,
+                report.rewritten_tabs
+            ),
+            (1, 0, 1, 1),
+            "{report:?}"
         );
+        let tab_path = session.unwrap().windows[0].tabs[0].path.clone().unwrap();
+        assert_ne!(tab_path, old.path, "the tab opens the fresh note");
+        assert_eq!(fs::read(&tab_path).unwrap(), b"the real text");
         assert_eq!(
-            session.unwrap().windows[0].tabs[0].untitled.as_deref(),
-            Some("draft-v.md")
+            fs::read(&old.path).unwrap(),
+            b"the human's edit",
+            "the edited note is untouched"
         );
-        assert_eq!((report.trashed, report.rewritten_tabs), (0, 0));
-        assert_eq!(report.errors.len(), 1, "{report:?}");
-        assert!(!d.data.join("session-v2.json").exists());
-        assert!(!d.trash.exists());
+        assert_eq!(rows(&stash, "entries"), 2);
+        let id: String = stash
+            .conn
+            .query_row("SELECT entry_id FROM draft_imports", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            stash.get(&id).unwrap().path,
+            tab_path,
+            "the record names it"
+        );
+        assert!(!src.exists(), "the draft went to the trash");
+        assert_eq!(
+            session_on_disk(&d).windows[0].tabs[0].path.as_deref(),
+            Some(tab_path.as_str())
+        );
     }
 
     fn note_files(root: &Path) -> Vec<PathBuf> {
