@@ -17,6 +17,7 @@ pub(crate) mod migrate_drafts;
 mod notes;
 mod paths;
 mod search;
+mod trash;
 
 pub use paths::StashPaths;
 pub(crate) use paths::{is_note_path, notes_dir_spelled};

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 pub(crate) const DB_FILE: &str = "stash.db";
 pub(crate) const BACKUPS_DIR: &str = "stash-backups";
 pub(crate) const EXPORT_FILE: &str = ".stash-export.json";
+pub(crate) const TRASH_DIR: &str = ".trash";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StashPaths {
@@ -16,6 +17,9 @@ pub struct StashPaths {
     pub notes_dir: PathBuf,
     /// `<notes_dir>/.stash-export.json`, the plain metadata snapshot.
     pub export_path: PathBuf,
+    /// `<notes_dir>/.trash/` (stage 06): trashed notes, 30 days. Created
+    /// only by a delete that has a file to move.
+    pub trash_dir: PathBuf,
     /// `<app data>/stash.db`.
     pub db_path: PathBuf,
     /// `<app data>/stash-backups/`.
@@ -30,6 +34,7 @@ impl StashPaths {
         let notes_dir = home.join(product_dir);
         Self {
             export_path: notes_dir.join(EXPORT_FILE),
+            trash_dir: notes_dir.join(TRASH_DIR),
             notes_dir,
             db_path: app_data.join(DB_FILE),
             backups_dir: app_data.join(BACKUPS_DIR),
@@ -45,10 +50,11 @@ impl StashPaths {
     }
 
     /// The same paths with `notes_dir` replaced (by its normalized spelling,
-    /// once it exists) and the export following it.
+    /// once it exists) and the export and the trash following it.
     pub(crate) fn with_notes_dir(&self, notes_dir: PathBuf) -> Self {
         Self {
             export_path: notes_dir.join(EXPORT_FILE),
+            trash_dir: notes_dir.join(TRASH_DIR),
             notes_dir,
             ..self.clone()
         }
@@ -84,6 +90,7 @@ mod tests {
         let dev = StashPaths::from_bases(home, dev_data, &crate::paths::dir_name("couplet-dev"));
         assert_eq!(dev.notes_dir, PathBuf::from("/Users/u/couplet-dev"));
         assert_eq!(dev.export_path, PathBuf::from("/Users/u/couplet-dev/.stash-export.json"));
+        assert_eq!(dev.trash_dir, PathBuf::from("/Users/u/couplet-dev/.trash"));
         assert_eq!(dev.db_path, dev_data.join("stash.db"));
         assert_eq!(dev.backups_dir, dev_data.join("stash-backups"));
 
@@ -91,10 +98,12 @@ mod tests {
         let release = StashPaths::from_bases(home, release_data, &crate::paths::dir_name("couplet"));
         assert_eq!(release.notes_dir, PathBuf::from("/Users/u/couplet"));
         assert_eq!(release.export_path, PathBuf::from("/Users/u/couplet/.stash-export.json"));
+        assert_eq!(release.trash_dir, PathBuf::from("/Users/u/couplet/.trash"));
         assert_eq!(release.db_path, release_data.join("stash.db"));
         assert_eq!(release.backups_dir, release_data.join("stash-backups"));
         assert_ne!(release.notes_dir, dev.notes_dir);
         assert_ne!(release.export_path, dev.export_path);
+        assert_ne!(release.trash_dir, dev.trash_dir);
         assert_ne!(release.db_path, dev.db_path);
         assert_ne!(release.backups_dir, dev.backups_dir);
     }
@@ -130,11 +139,12 @@ mod tests {
     }
 
     #[test]
-    fn a_new_notes_dir_moves_the_export_with_it() {
+    fn a_new_notes_dir_moves_the_export_and_the_trash_with_it() {
         let paths = StashPaths::from_bases(Path::new("/h"), Path::new("/a"), "couplet");
         let moved = paths.with_notes_dir(PathBuf::from("/private/h/couplet"));
         assert_eq!(moved.notes_dir, PathBuf::from("/private/h/couplet"));
         assert_eq!(moved.export_path, PathBuf::from("/private/h/couplet/.stash-export.json"));
+        assert_eq!(moved.trash_dir, PathBuf::from("/private/h/couplet/.trash"));
         assert_eq!(moved.db_path, paths.db_path);
         assert_eq!(moved.backups_dir, paths.backups_dir);
     }

@@ -870,8 +870,9 @@ const DRAFTS_TRASH_DIR: &str = ".trash";
 const TRASHED_MARK: &str = ".trashed-";
 
 /// `Ok` only when `trash` is a real directory. A symlink there would send
-/// the drafts — and the purge's deletions — to wherever it points.
-fn require_real_trash_dir(trash: &Path) -> Result<(), String> {
+/// the drafts — and the purge's deletions — to wherever it points. The note
+/// trash (`stash::trash`) checks its own folder with it too.
+pub(crate) fn require_real_trash_dir(trash: &Path) -> Result<(), String> {
     match fs::symlink_metadata(trash) {
         Ok(meta) if meta.file_type().is_dir() => Ok(()),
         Ok(_) => Err(format!("{} is not a real directory", trash.display())),
