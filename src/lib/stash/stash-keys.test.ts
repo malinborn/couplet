@@ -126,4 +126,11 @@ describe('the native menu', () => {
     expect(item).toBeDefined();
     expect(item).not.toMatch(/\.accelerator\(/);
   });
+
+  it('has «Тайник» (View → Tabs) without a key — ⌃S is a page key', () => {
+    const item = /MenuItemBuilder::with_id\("toggle_stash"[\s\S]*?\.build\(app\)/.exec(menu)?.[0];
+    expect(item).toBeDefined();
+    expect(item).toContain('t("menu.view.toggle_stash")');
+    expect(item).not.toMatch(/\.accelerator\(/);
+  });
 });

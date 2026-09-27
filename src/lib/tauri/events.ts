@@ -44,6 +44,7 @@ export type MenuAction =
   | 'next_tab'
   | 'prev_tab'
   | 'toggle_drawer'
+  | 'toggle_stash'
   | 'toggle_tabs_compact:on'
   | 'toggle_tabs_compact:off'
   | 'toggle_tabs_dates:on'
