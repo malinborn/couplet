@@ -74,5 +74,7 @@
   "doc.connect.skill_only_body": "El mismo prompt, salvo que no toca tu configuración principal. El costo: tu agente no averiguará por sí mismo cuándo conviene recurrir a couplet, así que tendrás que llamar la skill a mano (`/couplet`, o \"usa la skill couplet\"). Por eso seguimos recomendando el primero —",
   "doc.connect.back_to_it": "volver a él",
   "doc.connect.heading_config_location": "Dónde vive la configuración principal",
-  "doc.connect.config_location_body": "El prompt de arriba ya conoce estos lugares; la lista está aquí por si tu agente pregunta."
+  "doc.connect.config_location_body": "El prompt de arriba ya conoce estos lugares; la lista está aquí por si tu agente pregunta.",
+
+  "menu.view.toggle_stash": "Stash"
 }

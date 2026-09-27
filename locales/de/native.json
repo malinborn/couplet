@@ -74,5 +74,7 @@
   "doc.connect.skill_only_body": "Derselbe Prompt, außer dass er deine Hauptkonfiguration nicht anfasst. Der Preis: Dein Agent findet dann nicht selbst heraus, wann sich couplet lohnt, also musst du die Skill von Hand aufrufen (`/couplet`, oder \"benutze die couplet-Skill\"). Deshalb empfehlen wir weiterhin den ersten —",
   "doc.connect.back_to_it": "zurück dazu",
   "doc.connect.heading_config_location": "Wo die Hauptkonfiguration liegt",
-  "doc.connect.config_location_body": "Der Prompt oben kennt diese Orte schon; die Liste steht hier, falls dein Agent nachfragt."
+  "doc.connect.config_location_body": "Der Prompt oben kennt diese Orte schon; die Liste steht hier, falls dein Agent nachfragt.",
+
+  "menu.view.toggle_stash": "Stash"
 }
