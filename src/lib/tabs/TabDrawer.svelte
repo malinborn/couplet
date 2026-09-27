@@ -53,7 +53,7 @@
   import { DRAWER_MOVE_KEY, DRAWER_SORT_KEYS } from './drawer-keys';
   import { createDrawerData, type DrawerDataDeps, type GitInfo, type TabText } from './drawer-data';
   import { dropBefore, moveIds, pastThreshold, sweptIds, type Box } from './drawer-geometry';
-  import { tabCaption, type Caption } from '../stash/tab-caption';
+  import { repoLabel, tabCaption, type Caption } from '../stash/tab-caption';
   import type { StashMark } from '../stash/marks';
   import type { RenumberResult } from './window-number';
   import WindowCarousel, { type CarouselHandle } from './WindowCarousel.svelte';
@@ -61,7 +61,9 @@
   import StashDrawer, { type StashDrawerHandle } from '../stash/StashDrawer.svelte';
   import type { StashStore } from '../stash/stash-store.svelte';
   import type { StashEntry, TagChange } from '../stash/types';
-  import { drawerLayout } from '../stash/drawer-width';
+  import { drawerLayout, pageBand, type Band } from '../stash/drawer-width';
+  import { resolveDrop, type DropTarget } from '../stash/drop-target';
+  import { entryTitle } from '../stash/stash-view';
   import { arrowFocus, focusDrawer, type DrawerFocus } from '../stash/stash-state';
   import {
     GOT_MS,
@@ -163,8 +165,14 @@
   } = $props();
 
   interface DragState {
+    /** Stash stage 04: a tab card, or a stash card — one drag machine for both drawers (D1). */
+    src: 'tabs' | 'stash';
+    /** Tab ids (tabs), or the one entry id (stash). */
     ids: string[];
-    lead: TabMeta;
+    /** The dragged tab (tabs only). */
+    lead: TabMeta | null;
+    /** The dragged entry (stash only). */
+    entry: StashEntry | null;
     x: number;
     y: number;
     /** Where on the card it was grabbed. */
@@ -173,6 +181,7 @@
     width: number;
     before: string | null;
     inList: boolean;
+    target: DropTarget;
   }
 
   /** How often an open drawer refreshes the cards' relative times. */
@@ -204,6 +213,8 @@
     hot: number | null;
     got: number | null;
     left: number;
+    /** The stash drawer's width while it is open: the carousel stays between the drawers (D20). */
+    right: number;
   }
   // `.raw`: always replaced whole, never mutated — and a deep proxy would make
   // its arrays compare unequal to the ones it was given.
@@ -219,6 +230,9 @@
   let stashHandle: StashDrawerHandle | undefined = $state();
   let stashBarEl: HTMLElement | undefined = $state();
   let viewport = $state(typeof window === 'undefined' ? 0 : window.innerWidth);
+  /** A put-away just landed on the stash bar: its short pulse (mockup `stGot`). */
+  let barGot = $state(false);
+  let barGotTimer: ReturnType<typeof setTimeout> | undefined;
 
   // Bookkeeping nothing renders from.
   let restoreFocus: HTMLElement | null = null;
@@ -338,12 +352,13 @@
   const dropTop = $derived.by(() => {
     const d = drag;
     if (!d?.inList || !listEl) return null;
+    const moving = d.src === 'tabs' ? d.ids : [];
     const slotOf = (id: string) => cardEl(id)?.closest<HTMLElement>('.card-slot') ?? null;
     if (d.before !== null) {
       const slot = slotOf(d.before);
       return slot ? slot.offsetTop - 5 : null;
     }
-    const rest = visible.filter((id) => !d.ids.includes(id));
+    const rest = visible.filter((id) => !moving.includes(id));
     const last = rest.length > 0 ? slotOf(rest[rest.length - 1]) : null;
     return last ? last.offsetTop + last.offsetHeight - 6 : null;
   });
@@ -505,7 +520,7 @@
   $effect(() => () => {
     removeWindowListeners();
     endGesture?.();
-    for (const timer of [hoverOpenTimer, hoverCloseTimer, expandTimer, flashTimer, carCloseTimer]) {
+    for (const timer of [hoverOpenTimer, hoverCloseTimer, expandTimer, flashTimer, carCloseTimer, barGotTimer]) {
       clearTimeout(timer);
     }
   });
@@ -556,7 +571,11 @@
     });
   }
 
+  /** A card's grey line as `TabCard` draws it, in the compact wording (the drag ghost's). */
   function metaText(tab: TabMeta): string {
+    const stashed = captionOf(tab).stash;
+    if (stashed?.kind === 'note') return repoLabel(stashed.repo);
+    if (stashed?.kind === 'blank') return t('stash.card.blank_short');
     if (tab.path === null) return t('tabs.card.unsaved');
     const info = gitOf.get(tab.path);
     if (!info) return '';
@@ -700,9 +719,77 @@
     onstashopen?.(entry, before);
   }
 
-  /** A press on a stash card opens it here (Task 20 makes a press that moves a drag). */
-  function onStashPress(entry: StashEntry): void {
-    openStashEntry(entry, undefined, true);
+  /**
+   * A press on a stash card: released in place it opens the entry here and
+   * closes both drawers; moved past the threshold it is a drag through this
+   * drawer's one drag machine (D1), and both drawers stay open (D9).
+   */
+  function onStashPress(entry: StashEntry, card: HTMLElement, e: PointerEvent): void {
+    endGesture?.();
+    if (car?.mode === 'keys') closeCarousel();
+    gesture = 'press';
+    const sx = e.clientX;
+    const sy = e.clientY;
+    let dragging = false;
+    track(
+      (ev) => {
+        if (!dragging && pastThreshold(ev.clientX - sx, ev.clientY - sy)) dragging = beginStashDrag(entry, card, sx, sy);
+        if (dragging) dragMove(ev);
+      },
+      (ev) => {
+        gesture = null;
+        if (dragging) finishDrag(ev !== null);
+        else if (ev) openStashEntry(entry, undefined, true);
+      }
+    );
+  }
+
+  function beginStashDrag(entry: StashEntry, card: HTMLElement, sx: number, sy: number): boolean {
+    gesture = 'drag';
+    clearTimeout(expandTimer);
+    expandedId = null;
+    const r = card.getBoundingClientRect();
+    drag = {
+      src: 'stash',
+      ids: [entry.id],
+      lead: null,
+      entry,
+      x: sx,
+      y: sy,
+      ox: sx - r.left,
+      oy: sy - r.top,
+      width: r.width,
+      before: null,
+      inList: false,
+      target: 'none',
+    };
+    return true;
+  }
+
+  /** Tabs → stash (the drop zone, a drop on the stash drawer, «В тайник»): App puts them away; the bar pulses. */
+  function putAway(ids: string[]): void {
+    if (ids.length === 0 || !onputaway) return;
+    ds = clearSelection(ds);
+    onputaway(ids);
+    barGot = false;
+    clearTimeout(barGotTimer);
+    requestAnimationFrame(() => {
+      barGot = true;
+      barGotTimer = setTimeout(() => {
+        barGot = false;
+      }, 720);
+    });
+  }
+
+  function putAwaySelected(): void {
+    putAway(selectedIds());
+  }
+
+  /** The ghost's grey line for a stash card. */
+  function stashGhostMeta(entry: StashEntry): string {
+    if (entry.kind === 'note') return t('stash.ghost.note_meta');
+    const repo = repoLabel(entry.repo);
+    return repo && entry.branch ? `${repo} · ⎇ ${entry.branch}` : repo;
   }
 
   function notchClick(): void {
@@ -911,6 +998,10 @@
       hot: null,
       got: null,
       left: asideEl?.getBoundingClientRect().right ?? 0,
+      right: (() => {
+        const stashLeft = stashOpen ? (stashHandle?.left() ?? null) : null;
+        return stashLeft === null ? 0 : Math.max(0, window.innerWidth - stashLeft);
+      })(),
     };
     const opening = ++carOpening;
     const fetching = windowsFetch ?? fetchWindows();
@@ -965,6 +1056,8 @@
 
   /** ⌘G / «В окно…»: the selection, else the card the arrows are on, else the active tab. */
   function openMoveKeys(): void {
+    // No page between squeezed drawers for the carousel (D20): the stash steps aside.
+    if (stashOpen && layout.narrow) closeStash();
     const selectedNow = selectedIds();
     const kb = kbTarget(ds, visible);
     const ids = selectedNow.length > 0 ? selectedNow : kb ? [kb] : list.activeId ? [list.activeId] : [];
@@ -999,12 +1092,19 @@
     carHandle?.reveal(kb);
   }
 
-  /** Over the page right of the drawer: the carousel; back over the drawer: gone (mockup `carouselFollow`). */
-  function followCarousel(x: number, y: number, inList: boolean): void {
+  /** The page band the carousel may use: right of the tabs drawer, left of the stash drawer (D20). */
+  function carouselBand(): Band | null {
+    const tabsRight = asideEl?.getBoundingClientRect().right ?? 0;
+    const stashLeft = stashOpen ? (stashHandle?.left() ?? null) : null;
+    return pageBand(tabsRight, stashLeft, window.innerWidth, layout.narrow);
+  }
+
+  /** Over the page between the drawers: the carousel; anywhere else: gone (mockup `carouselFollow`). */
+  function followCarousel(x: number, y: number, overPage: boolean): void {
     const d = drag;
     if (!d) return;
-    const right = asideEl?.getBoundingClientRect().right ?? 0;
-    const want = !inList && wantsCarousel(x, y, right, window.innerWidth, window.innerHeight);
+    const band = carouselBand();
+    const want = overPage && band !== null && wantsCarousel(x, y, band.left, band.right, window.innerHeight);
     if (want && !car) openCarousel('drag', d.ids);
     else if (!want && car?.mode === 'drag' && car.got === null) closeCarousel();
     refreshHot();
@@ -1129,7 +1229,20 @@
     expandedId = null;
     const ids = selected.has(id) ? selectedIds() : [id];
     const r = card.getBoundingClientRect();
-    drag = { ids, lead, x: sx, y: sy, ox: sx - r.left, oy: sy - r.top, width: r.width, before: null, inList: false };
+    drag = {
+      src: 'tabs',
+      ids,
+      lead,
+      entry: null,
+      x: sx,
+      y: sy,
+      ox: sx - r.left,
+      oy: sy - r.top,
+      width: r.width,
+      before: null,
+      inList: false,
+      target: 'none',
+    };
     windowsFetch = fetchWindows();
     return true;
   }
@@ -1139,20 +1252,41 @@
     return !!r && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
   }
 
+  /** A laid-out element under the point (a zero box — hidden, or jsdom — never is). */
+  function inside(el: Element | null | undefined, x: number, y: number): boolean {
+    const r = el?.getBoundingClientRect();
+    return !!r && r.width > 0 && r.height > 0 && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  }
+
+  function dropTargetAt(src: 'tabs' | 'stash', x: number, y: number): DropTarget {
+    return resolveDrop(
+      src,
+      {
+        stashDrawer: stashOpen && (stashHandle?.contains(x, y) ?? false),
+        stashZone: !!stash && inside(stashBarEl, x, y),
+        list: overList(x, y),
+        tabsDrawer: inside(asideEl, x, y),
+      },
+      !!ds.query
+    );
+  }
+
   function dragMove(ev: PointerEvent): void {
     const d = drag;
     if (!d) return;
+    const target = dropTargetAt(d.src, ev.clientX, ev.clientY);
     // A filtered view has no manual order to drop into (mockup).
-    const inList = !ds.query && overList(ev.clientX, ev.clientY);
+    const inList = !ds.query && overList(ev.clientX, ev.clientY) && (target === 'list' || target === 'tabs-drawer');
     drag = {
       ...d,
       x: ev.clientX,
       y: ev.clientY,
+      target,
       inList,
-      before: inList ? dropBefore(cardBoxes(), ev.clientY, new Set(d.ids)) : null,
+      before: inList ? dropBefore(cardBoxes(), ev.clientY, new Set(d.src === 'tabs' ? d.ids : [])) : null,
     };
     if (inList) autoScroll(ev.clientY);
-    followCarousel(ev.clientX, ev.clientY, inList);
+    if (d.src === 'tabs') followCarousel(ev.clientX, ev.clientY, target === 'page');
   }
 
   function finishDrag(dropped: boolean): void {
@@ -1160,11 +1294,17 @@
     drag = null;
     windowsFetch = null;
     const c = car;
-    if (dropped && c?.mode === 'drag' && c.hot !== null) {
+    if (d?.src === 'stash') {
+      // Onto the tabs drawer: open here, at the drop position of an unfiltered list; both drawers stay (D9).
+      if (dropped && d.entry && d.target === 'tabs-drawer') {
+        openStashEntry(d.entry, d.inList ? d.before : undefined, false);
+      }
+    } else if (dropped && c?.mode === 'drag' && c.hot !== null) {
       pick(c.hot);
     } else {
       if (c?.mode === 'drag') closeCarousel();
-      if (dropped && d?.inList) onreorder(moveIds(list.tabs.map((tab) => tab.id), d.ids, d.before));
+      if (dropped && d && (d.target === 'stash-zone' || d.target === 'stash-drawer')) putAway(d.ids);
+      else if (dropped && d?.inList) onreorder(moveIds(list.tabs.map((tab) => tab.id), d.ids, d.before));
     }
     if (ds.mode === 'hover' && !inWrap) scheduleHoverClose();
   }
@@ -1294,7 +1434,7 @@
               selected={selected.has(tab.id)}
               kb={tab.id === kbId}
               expanded={tab.id === expandedId}
-              dragging={drag?.ids.includes(tab.id) ?? false}
+              dragging={drag?.src === 'tabs' && drag.ids.includes(tab.id)}
               compact={compactCards}
               {showTime}
               {now}
@@ -1322,6 +1462,11 @@
           >{t('tabs.selection.drag_hint')}</small
         >
         <span class="acts">
+          {#if onputaway}
+            <button type="button" title={t('tabs.selection.to_stash_title')} onclick={putAwaySelected}
+              >{t('tabs.selection.to_stash')}</button
+            >
+          {/if}
           <button
             type="button"
             title={acceleratorLabel(DRAWER_MOVE_KEY.accelerator)}
@@ -1357,9 +1502,9 @@
         <StashBar
           counts={stash.counts}
           open={stashOpen}
-          dropCount={null}
-          hot={false}
-          got={false}
+          dropCount={drag?.src === 'tabs' ? drag.ids.length : null}
+          hot={drag?.target === 'stash-zone'}
+          got={barGot}
           onclick={toggleStash}
           bind:el={stashBarEl}
         />
@@ -1394,10 +1539,10 @@
       narrow={layout.narrow}
       compact={compactCards}
       {windowNumber}
-      dropReady={false}
-      dropHot={false}
-      draggingId={null}
-      onpress={(entry) => onStashPress(entry)}
+      dropReady={drag?.src === 'tabs'}
+      dropHot={drag?.target === 'stash-drawer'}
+      draggingId={drag?.src === 'stash' ? (drag.entry?.id ?? null) : null}
+      onpress={onStashPress}
       onopen={(entry) => openStashEntry(entry, undefined, true)}
       onremove={(entry) => onstashremove?.(entry)}
       onsettag={(entry, change) => onstashtag?.(entry, change)}
@@ -1410,26 +1555,46 @@
   {#if drag}
     {@const inCar = car?.mode === 'drag'}
     {@const hotItem = car && car.hot !== null ? car.items?.[car.hot] : undefined}
-    <!-- pointer-events: none (styles): the carousel's hit test must see the thumbnail under it. -->
+    {@const toStash = drag.target === 'stash-zone' || drag.target === 'stash-drawer'}
+    {@const toOpen = drag.src === 'stash' && drag.target === 'tabs-drawer'}
+    <!-- pointer-events: none (styles): the carousel's hit test must see the thumbnail under it.
+         Over a stash target it shrinks and lifts above the pointer, so the zone stays readable (mockup `dragAt`). -->
     <div
       class="ghost"
       class:multi={drag.ids.length > 1}
-      class:cancel={!drag.inList && !hotItem}
+      class:from-stash={drag.src === 'stash'}
+      class:cancel={!drag.inList && !hotItem && !toStash && !toOpen}
       class:as-car={inCar}
+      class:as-stash={toStash}
+      class:as-open={toOpen}
       aria-hidden="true"
-      style:width={inCar ? null : `${drag.width}px`}
+      style:width={inCar ? null : toStash ? '240px' : `${drag.width}px`}
       style:transform={inCar
         ? `translate(${drag.x - 40}px, ${drag.y - 12}px)`
-        : `translate(${drag.x - drag.ox}px, ${drag.y - drag.oy}px) rotate(-1.2deg)`}
+        : toStash
+          ? `translate(${drag.x - 40}px, ${drag.y - 112}px)`
+          : toOpen
+            ? `translate(${drag.x - drag.ox}px, ${drag.y - drag.oy}px)`
+            : `translate(${drag.x - drag.ox}px, ${drag.y - drag.oy}px) rotate(-1.2deg)`}
     >
       <div class="ghost-bar">
         <i></i><i></i><i></i><span
-          >{hotItem ? (hotItem.kind === 'new' ? t('tabs.carousel.new_window_short') : `→ #${hotItem.number ?? '?'}`) : ''}</span
+          >{hotItem
+            ? hotItem.kind === 'new'
+              ? t('tabs.carousel.new_window_short')
+              : `→ #${hotItem.number ?? '?'}`
+            : toStash
+              ? t('stash.ghost.to_stash')
+              : toOpen
+                ? t('stash.ghost.open')
+                : ''}</span
         >
       </div>
       <div class="ghost-body">
-        <div class="ghost-name">{nameOf(drag.lead)}</div>
-        <div class="ghost-meta">{metaText(drag.lead)}</div>
+        <div class="ghost-name">
+          {drag.entry ? entryTitle(drag.entry, t('stash.untitled')) : nameOf(drag.lead ?? undefined)}
+        </div>
+        <div class="ghost-meta">{drag.entry ? stashGhostMeta(drag.entry) : drag.lead ? metaText(drag.lead) : ''}</div>
       </div>
       {#if drag.ids.length > 1}<div class="ghost-count">{drag.ids.length}</div>{/if}
     </div>
@@ -1444,6 +1609,7 @@
       hot={car.hot}
       got={car.got}
       left={car.left}
+      right={car.right}
       count={car.ids.length}
       lead={car.lead}
       pointer={car.mode === 'drag' && drag ? { x: drag.x, y: drag.y } : null}
@@ -2034,6 +2200,24 @@
   }
 
   .ghost.as-car .ghost-bar {
+    height: 24px;
+  }
+
+  /* Stash stage 04: a stash card in flight, and a card over a stash target / the tab list. */
+  .ghost.from-stash {
+    border-color: var(--stash-line);
+  }
+
+  .ghost.as-stash {
+    outline: 2px solid var(--color-stash);
+  }
+
+  .ghost.as-open {
+    outline: 2px solid var(--tabs-brand-a);
+  }
+
+  .ghost.as-stash .ghost-bar,
+  .ghost.as-open .ghost-bar {
     height: 24px;
   }
 

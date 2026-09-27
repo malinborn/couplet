@@ -667,8 +667,21 @@ pub struct CarouselWindow {
     pub branch: Option<String>,
     pub tab_count: usize,
     pub active_path: Option<String>,
+    /// The active tab is a stash note (it lies in the notes folder): the
+    /// thumbnail captions it by its title, not its `YYYY-MM-DD-HHMM-xxxx.md` name.
+    pub active_is_note: bool,
     /// The start of the active document, whole lines, at most `HEAD_BYTES`.
     pub head: String,
+}
+
+/// Whether a thumbnail's active document is a note. The notes folder in the
+/// `path_norm` spelling (`stash::notes_dir_spelled`), or `None` when it cannot
+/// be named — then nothing is.
+fn active_is_note(notes_dir: Option<&std::path::Path>, active_path: Option<&str>) -> bool {
+    match (notes_dir, active_path) {
+        (Some(dir), Some(path)) => crate::stash::is_note_path(dir, path),
+        _ => false,
+    }
 }
 
 /// The first bytes of a file — a little more than `HEAD_BYTES`, for the cut.
@@ -692,6 +705,10 @@ fn read_start(path: &std::path::Path) -> String {
 pub async fn tab_carousel_windows(app: AppHandle, window: tauri::WebviewWindow) -> Result<Vec<CarouselWindow>, String> {
     // Before the registry lock: binding walks the file system.
     crate::routing::bind_missing_projects(&app);
+    // Also before the lock: spelling the notes folder asks the file system.
+    let notes_dir = crate::stash::StashPaths::resolve()
+        .ok()
+        .map(|p| crate::stash::notes_dir_spelled(&p));
     let order = app.state::<crate::menu_route::FocusTracker>().order();
     let rows = {
         let open_files = app.state::<OpenFiles>();
@@ -723,6 +740,7 @@ pub async fn tab_carousel_windows(app: AppHandle, window: tauri::WebviewWindow) 
                 project: row.project,
                 branch,
                 tab_count: row.tab_count,
+                active_is_note: active_is_note(notes_dir.as_deref(), row.active_path.as_deref()),
                 active_path: row.active_path,
                 head: crate::routing::cut_head(&text, HEAD_BYTES),
             }
@@ -856,6 +874,32 @@ mod tests {
         assert_eq!(read_start(&path).len(), HEAD_BYTES + 4);
         std::fs::remove_file(&path).unwrap();
         assert_eq!(read_start(&path), "");
+    }
+
+    #[test]
+    fn a_thumbnail_knows_a_note_by_the_notes_folder() {
+        let notes = std::path::Path::new("/Users/x/couplet");
+        assert!(active_is_note(Some(notes), Some("/Users/x/couplet/2026-09-27-0215-a3f9.md")));
+        assert!(!active_is_note(Some(notes), Some("/Users/x/couplet-other/plan.md")), "component-wise");
+        assert!(!active_is_note(Some(notes), Some("/Users/x/dev/plan.md")));
+        assert!(!active_is_note(Some(notes), None), "an untitled tab is no note yet");
+        assert!(!active_is_note(None, Some("/Users/x/couplet/a.md")), "no notes folder: nothing is a note");
+    }
+
+    #[test]
+    fn a_carousel_window_says_whether_its_tab_is_a_note_in_camel_case() {
+        let json = serde_json::to_value(CarouselWindow {
+            label: "editor-2".into(),
+            number: Some(7),
+            project: None,
+            branch: None,
+            tab_count: 1,
+            active_path: Some("/Users/x/couplet/a.md".into()),
+            active_is_note: true,
+            head: String::new(),
+        })
+        .unwrap();
+        assert_eq!(json["activeIsNote"], serde_json::json!(true));
     }
 
     fn reg_with(entries: &[(&str, &str, Option<&str>)]) -> TabRegistry {

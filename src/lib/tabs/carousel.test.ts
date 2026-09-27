@@ -25,6 +25,7 @@ const win = (label: string, number: number): CarouselWindow => ({
   branch: null,
   tabCount: 1,
   activePath: `/p/${label}.md`,
+  activeIsNote: false,
   head: '',
 });
 

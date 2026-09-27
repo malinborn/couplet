@@ -9,7 +9,8 @@
   import { tick } from 'svelte';
   import { plural, t } from '../i18n';
   import { previewLines, type InlineSeg } from './drawer-preview';
-  import { tabName } from './tab-name';
+  import { tabCaption } from '../stash/tab-caption';
+  import { noteTitle } from '../stash/note-title';
   import {
     DOC_WIDTH_PX,
     clampOffset,
@@ -20,6 +21,7 @@
     thumbScale,
     thumbWidth,
     type CarouselItem,
+    type CarouselWindow,
   } from './carousel';
 
   export interface CarouselHandle {
@@ -38,6 +40,7 @@
     hot,
     got,
     left,
+    right = 0,
     count,
     lead,
     pointer,
@@ -57,6 +60,8 @@
     got: number | null;
     /** The drawer's right edge, px: the carousel fills the page right of it. */
     left: number;
+    /** Stash stage 04: the stash drawer's width while it is open — the carousel stays between the drawers (D20). */
+    right?: number;
     /** How many tabs move. */
     count: number;
     /** The name of the (first) tab that moves. */
@@ -89,6 +94,21 @@
   const head = $derived(t('tabs.carousel.head').split('{what}'));
   const optionId = (i: number) => `car-opt-${i}`;
   const selectedIndex = $derived(mode === 'keys' ? kb : hot);
+
+  /**
+   * A thumbnail's title reads like that window's tab card (stash stage 04):
+   * a note by its title, a blank untitled tab as a new note, an untitled one
+   * with text by its first line, a file by its name.
+   */
+  function captionOf(item: CarouselWindow): string {
+    const titled = item.activeIsNote || item.activePath === null;
+    return tabCaption({
+      path: item.activePath,
+      title: titled ? noteTitle(item.head) : undefined,
+      blank: item.activePath === null && item.head.trim() === '',
+      mark: item.activeIsNote ? { kind: 'note', title: null, repo: null } : null,
+    }).name;
+  }
 
   function apply(v = edges.v): void {
     if (!trackEl || !viewEl) return;
@@ -209,6 +229,7 @@
   class="carousel"
   bind:this={rootEl}
   style:left="{left}px"
+  style:right="{right}px"
   style:--tw="{tw}px"
   style:--ts={(tw / DOC_WIDTH_PX).toFixed(4)}
 >
@@ -253,7 +274,7 @@
             class:got={i === got}
           >
             <div class="wt-bar" aria-hidden="true">
-              <i></i><i></i><i></i><span class="t">{tabName(item.activePath)}<span class="wid">— #{item.number ?? '?'}</span></span>
+              <i></i><i></i><i></i><span class="t">{captionOf(item)}<span class="wid">— #{item.number ?? '?'}</span></span>
             </div>
             <div class="wt-page" aria-hidden="true">
               <div class="doc">

@@ -13,6 +13,8 @@ export interface CarouselWindow {
   branch: string | null;
   tabCount: number;
   activePath: string | null;
+  /** The active tab is a stash note (it lies in the notes folder): captioned by its title, not its file name. */
+  activeIsNote: boolean;
   /** The start of its active document. Untrusted text: rendered as text only. */
   head: string;
 }

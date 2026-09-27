@@ -11,6 +11,7 @@ const win = (label: string, number: number, head = '# Title\nline'): CarouselWin
   branch: 'main',
   tabCount: 2,
   activePath: `/infra/${label}.md`,
+  activeIsNote: false,
   head,
 });
 
@@ -111,6 +112,21 @@ describe('WindowCarousel', () => {
     expect(handle!.itemAt(10, 10)).toBe(1);
     document.elementFromPoint = vi.fn(() => document.body);
     expect(handle!.itemAt(10, 10)).toBeNull();
+  });
+
+  it('CaptionsATabAsItsCardDoes_ANoteByItsTitle_ABlankTabAsANewNote', () => {
+    show(
+      carouselItems([
+        win('editor-3', 12),
+        { ...win('editor-4', 13, '# План\nтело'), activePath: '/n/2026-09-27-0215-a3f9.md', activeIsNote: true },
+        { ...win('editor-5', 14, ''), activePath: null },
+        { ...win('editor-6', 15, 'draft text'), activePath: null },
+      ])
+    );
+    const captions = options()
+      .slice(1)
+      .map((o) => o.querySelector('.wt-bar .t')?.firstChild?.textContent?.trim());
+    expect(captions).toEqual(['editor-3.md', 'План', 'New note', 'draft text']);
   });
 
   it('AThumbnailShowsItsTextAsText_NeverAsHtml', () => {
