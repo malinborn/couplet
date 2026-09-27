@@ -53,7 +53,7 @@
     "url": "https://couplet.pro/",
     "downloadUrl": "https://github.com/malinborn/couplet/releases",
     "sameAs": ["https://github.com/malinborn/couplet"],
-    "softwareVersion": "2.1.0",
+    "softwareVersion": "2.1.1",
     "license": "https://opensource.org/licenses/GPL-3.0"
   }
   </script>
@@ -457,6 +457,19 @@
       <div class="changelog-list">
 
         <details class="changelog-entry" open>
+          <summary class="changelog-summary">
+            <span class="changelog-version">v2.1.1</span>
+            <span class="changelog-date">2026-09-27</span>
+            <span class="changelog-tag fix">fix</span>
+            <span class="changelog-title">&#8997;&#9003; and &#8984;&#9003; work in the drawer filters</span>
+          </summary>
+          <ul class="changelog-body-list">
+            <li><strong>&#8997;&#9003; deletes a word, &#8984;&#9003; clears the filter</strong> &mdash; the tab and stash drawers filter as you type, but only a plain &#9003; edited the query. &#8984;&#9003; fell into the branch that handles &#8984;L/&#8984;R/&#8984;U, found no sort for it and did nothing; &#8997;&#9003; was read as a plain &#9003; and took one character. Both now behave as in any macOS text field, in the trash view too; on an empty query they do what &#9003; always did</li>
+            <li><strong>&#9003; takes a whole emoji</strong> &mdash; it used to remove half of one, leaving a broken character in the filter</li>
+          </ul>
+        </details>
+
+        <details class="changelog-entry">
           <summary class="changelog-summary">
             <span class="changelog-version">v2.1.0</span>
             <span class="changelog-date">2026-09-27</span>
