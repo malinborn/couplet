@@ -1,5 +1,6 @@
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+import type { StashDropRequest } from '../stash/stash-drop';
 import type { StashChanged } from '../stash/types';
 import type { RecentSnapshot } from '../stores.svelte';
 import type { PendingTab } from './commands';
@@ -148,6 +149,17 @@ export interface TabPullRequest {
 /** Targeted at the holder alone; listened to per window like every targeted event here. */
 export function onTabPull(handler: (request: TabPullRequest) => void): Promise<() => void> {
   return getCurrentWebviewWindow().listen<TabPullRequest>('tab-pull', (event) => {
+    handler(event.payload);
+  });
+}
+
+/**
+ * Stash stage 06: Rust asks the window holding a note's tab to drop it before
+ * the note moves to the trash. Targeted at that window alone; always answered
+ * with `stash_drop_done` (`stash/stash-drop.ts`).
+ */
+export function onStashDropTab(handler: (request: StashDropRequest) => void): Promise<() => void> {
+  return getCurrentWebviewWindow().listen<StashDropRequest>('stash-drop-tab', (event) => {
     handler(event.payload);
   });
 }

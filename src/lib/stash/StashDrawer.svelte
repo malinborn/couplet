@@ -49,6 +49,7 @@
     setStashSort,
     stashKbTarget,
     stashKeyAction,
+    type StashKeyAction,
   } from './stash-state';
   import { drawerTerms, termsText } from './stash-query';
   import { STASH_RENDER_CAP, entryTitle, stashView, type StashSort } from './stash-view';
@@ -343,6 +344,7 @@
 
   function key(e: KeyboardEvent): boolean {
     const action = stashKeyAction(e, stash.state.query, mac);
+    if (inTrash) return trashKey(e, action);
     switch (action.kind) {
       case 'none':
         return false;
@@ -377,6 +379,35 @@
         });
         return true;
       }
+    }
+  }
+
+  /**
+   * The trash's keys (plan 06 D14): typing, ⌫ and Esc as in the stash (their
+   * reducers know the mode); no ring, so ↑/↓/Enter do nothing; no sort row, so
+   * ⌘L/⌘R/⌘U do nothing — all of them used, so neither the tabs drawer nor
+   * CodeMirror (⌘U `undoSelection`) gets them. ←/→ never reach here.
+   */
+  function trashKey(e: KeyboardEvent, action: StashKeyAction): boolean {
+    switch (action.kind) {
+      case 'none':
+        return false;
+      case 'enter':
+        // Enter on a button in the drawer presses it.
+        return !(e.target instanceof HTMLButtonElement && !!asideEl?.contains(e.target));
+      case 'sort':
+      case 'move':
+        return true;
+      case 'escape':
+        stash.update(escapeStash);
+        if (listEl) listEl.scrollTop = 0;
+        return true;
+      case 'type':
+        setQuery(stash.state.query + action.char);
+        return true;
+      case 'backspace':
+        stash.update(backspaceStash);
+        return true;
     }
   }
 

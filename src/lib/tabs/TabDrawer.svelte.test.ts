@@ -1692,6 +1692,27 @@ describe('TabDrawer — one keyboard for two drawers (stash stage 04)', () => {
     expect(h.editorKeys).toEqual([]);
   });
 
+  it('in the trash (stash stage 06) the sort keys, ↑/↓ and Enter stop at the stash; ← still gives the keys back', async () => {
+    press('ArrowRight');
+    await settleLong();
+    stash.enterTrash();
+    await settleLong();
+    // ⌘ on a Mac, ⌃ elsewhere (`isMacPlatform`): both, so the test holds on either.
+    for (const [k, code] of [
+      ['u', 'KeyU'],
+      ['l', 'KeyL'],
+    ]) {
+      expect(press(k, { code, metaKey: true, ctrlKey: true }).defaultPrevented).toBe(true);
+    }
+    for (const k of ['ArrowDown', 'ArrowUp', 'Enter']) expect(press(k).defaultPrevented).toBe(true);
+    expect(stash.state).toMatchObject({ mode: 'trash', sort: 'changed', kb: null });
+    expect(h.editorKeys).toEqual([]);
+    press('ArrowLeft');
+    await settle();
+    expect(stash.state.focus).toBe('tabs');
+    expect(stash.state.mode).toBe('trash');
+  });
+
   it('DOM focus follows the drawer that has the keys (D5)', async () => {
     press('ArrowRight');
     await settleLong();

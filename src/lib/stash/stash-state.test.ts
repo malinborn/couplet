@@ -132,6 +132,25 @@ describe('Esc and Backspace', () => {
     expect(backspaceStash(s)).toBe(s);
   });
 
+  it('in the trash: Esc clears the query, then goes back to the stash — the drawer stays (D14)', () => {
+    const trash = setStashQuery(showTrash(openStash(STASH_CLOSED, 'infra')), 'vpn');
+    const cleared = escapeStash(trash);
+    expect(cleared).toMatchObject({ open: true, mode: 'trash', query: '' });
+    const back = escapeStash(cleared);
+    expect(back).toMatchObject({ open: true, mode: 'stash', query: '', repoChip: 'infra' });
+    expect(escapeStash(back).open).toBe(false);
+  });
+
+  it('in the trash: Backspace edits the query and does nothing on an empty one — no chip to drop', () => {
+    let s = setStashQuery(showTrash(openStash(STASH_CLOSED, 'infra')), 'ab');
+    s = backspaceStash(s);
+    expect(s.query).toBe('a');
+    s = backspaceStash(s);
+    expect(s.query).toBe('');
+    expect(backspaceStash(s)).toBe(s);
+    expect(s.repoChip).toBe('infra');
+  });
+
   it('the chip can be put back', () => {
     expect(setRepoChip(openStash(STASH_CLOSED, null), 'infra').repoChip).toBe('infra');
   });

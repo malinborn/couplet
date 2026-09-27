@@ -25,6 +25,7 @@
     onAiCommand,
     onCommentsChanged,
     onStashChanged,
+    onStashDropTab,
     onTabPull,
     type AiCommandPayload,
     type UpdateInfo,
@@ -57,6 +58,7 @@
     stashCreateNote,
     stashDelete,
     stashEntryForPath,
+    stashDropDone,
     stashPurge,
     stashRestore,
     stashSearch,
@@ -75,6 +77,7 @@
   import { createWidenSession } from './lib/stash/widen-session';
   import { onStashOpenEdge } from './lib/stash/stash-open-edge.svelte';
   import { showStash } from './lib/stash/stash-state';
+  import { handleStashDropTab } from './lib/stash/stash-drop';
   import { entryTitle } from './lib/stash/stash-view';
   import type { StashToastNote } from './lib/stash/stash-toast';
   import type { StashEntry, TagChange } from './lib/stash/types';
@@ -2347,6 +2350,14 @@
         )
         .catch((err: unknown) => console.error('Failed to hand a tab to another window:', err));
     });
+    // Stash stage 06: a note of ours is being deleted — let go of its tab, the
+    // controller's way, and always answer (Rust gives up after 10 s: `kept`).
+    // Not a tab source either; it waits for the tab list like the pull above.
+    const unlistenStashDropTab = onStashDropTab((request) => {
+      void tabSourcesReady.then(() =>
+        handleStashDropTab({ dropPath: (path) => tabs.dropPath(path), done: stashDropDone }, request)
+      );
+    });
 
     // Pull what the backend stored for this window (its tabs, restored or
     // handed over before it mounted) — pulled, so it cannot race the listeners.
@@ -2738,6 +2749,7 @@
       unlistenWindowNumber.then((fn) => fn());
       unlistenStash.then((fn) => fn());
       unlistenTabPull.then((fn) => fn());
+      unlistenStashDropTab.then((fn) => fn());
       unlistenExternalChange.then((fn) => fn());
       unlistenAiCommand.then((fn) => fn());
       unlistenComments.then((fn) => fn());

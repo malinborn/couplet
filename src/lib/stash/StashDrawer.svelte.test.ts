@@ -709,6 +709,67 @@ describe('StashDrawer — the trash (stage 06)', () => {
     expect(trashIds()).toEqual(['t1']);
   });
 
+  describe('keys (Task 12)', () => {
+    it('typing filters, Backspace edits, and on an empty query does nothing (used, so the editor never sees it)', async () => {
+      await inTrash({ repo: 'shelf' });
+      expect(key('v')).toBe(true);
+      await settle();
+      expect(h.store.state.query).toBe('v');
+      expect(trashIds()).toEqual(['t1']);
+      expect(key('Backspace')).toBe(true);
+      expect(key('Backspace')).toBe(true);
+      await settle();
+      expect(h.store.state).toMatchObject({ mode: 'trash', query: '', repoChip: 'shelf' });
+    });
+
+    it('Esc clears the query, the next goes back to the stash, the next closes it', async () => {
+      await inTrash();
+      key('v');
+      expect(key('Escape')).toBe(true);
+      expect(h.store.state).toMatchObject({ open: true, mode: 'trash', query: '' });
+      expect(key('Escape')).toBe(true);
+      expect(h.store.state).toMatchObject({ open: true, mode: 'stash' });
+      await settle();
+      expect(ids()).toEqual(['d', 'a', 'b', 'c']);
+      key('Escape');
+      expect(h.store.state.open).toBe(false);
+    });
+
+    it('⌘L / ⌘R / ⌘U are swallowed: no sort changes, and CodeMirror never gets ⌘U', async () => {
+      await inTrash();
+      expect(h.store.state.sort).toBe('changed');
+      // ⌘ on a Mac, ⌃ elsewhere (`isMacPlatform`): both, so the test holds on either.
+      expect(key('u', { code: 'KeyU', metaKey: true, ctrlKey: true })).toBe(true);
+      expect(key('r', { code: 'KeyR', metaKey: true, ctrlKey: true })).toBe(true);
+      expect(h.store.state.sort).toBe('changed');
+    });
+
+    it('↑ / ↓ / Enter do nothing, but are used', async () => {
+      await inTrash();
+      expect(key('ArrowDown')).toBe(true);
+      expect(key('ArrowUp')).toBe(true);
+      expect(h.store.state.kb).toBeNull();
+      expect(key('Enter')).toBe(true);
+      key('v');
+      expect(key('Enter')).toBe(true);
+      expect(h.onopen).not.toHaveBeenCalled();
+    });
+
+    it('Enter on a focused trash button still presses it', async () => {
+      await inTrash();
+      const btn = h.root.querySelector<HTMLButtonElement>('[data-trash-id="t1"] .tr-restore')!;
+      const e = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter' });
+      Object.defineProperty(e, 'target', { value: btn });
+      expect(h.handle().key(e)).toBe(false);
+    });
+
+    it('the stash view keeps its own keys: ⌘U sorts there', async () => {
+      h = await setup();
+      expect(key('u', { code: 'KeyU', metaKey: true, ctrlKey: true })).toBe(true);
+      expect(h.store.state.sort).toBe('kind');
+    });
+  });
+
   it('«удалить» on a note card of the stash goes up as a remove', async () => {
     h = await setup();
     h.root.querySelector<HTMLButtonElement>('[data-stash-id="a"] .card-rm')!.click();

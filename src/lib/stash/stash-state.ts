@@ -76,15 +76,22 @@ export function setRepoChip(s: StashState, repoChip: string | null): StashState 
   return { ...s, repoChip, kb: null };
 }
 
-/** First Esc clears the query, the next closes the stash (spec «Esc»). */
+/**
+ * First Esc clears the query, the next closes the stash (spec «Esc»). In the
+ * trash the one between goes back to the stash, the drawer open (plan 06 D14).
+ */
 export function escapeStash(s: StashState): StashState {
-  return s.query ? setStashQuery(s, '') : closeStash(s);
+  if (s.query) return setStashQuery(s, '');
+  return s.mode === 'trash' ? showStash(s) : closeStash(s);
 }
 
-/** ⌫ edits the query; on an empty one it drops the repo chip (mockup); then nothing. */
+/**
+ * ⌫ edits the query; on an empty one it drops the repo chip (mockup); then
+ * nothing. The trash has no chip (D13), so there it only edits.
+ */
 export function backspaceStash(s: StashState): StashState {
   if (s.query) return setStashQuery(s, s.query.slice(0, -1));
-  if (s.repoChip !== null) return setRepoChip(s, null);
+  if (s.mode === 'stash' && s.repoChip !== null) return setRepoChip(s, null);
   return s;
 }
 
