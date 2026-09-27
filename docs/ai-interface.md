@@ -538,7 +538,7 @@ After a successful write the CLI/MCP sends one line to the command socket, with 
 {"v": 1, "cmd": "stash-changed", "reason": "external", "ids": ["s1790378408605-3f9a"]}
 ```
 
-The app answers `{"ok":true}` at once, without asking any window, and emits `stash-changed` to its windows once, so every open drawer reloads and pulses the named cards. `reason` is sanitised (`[a-z0-9-]`, at most 32 characters, empty → `external`); `ids` is optional, keeps only entry ids, at most 50. No first-use toast, no pending request.
+The app answers `{"ok":true}` at once, without asking any window, and emits `stash-changed` to its windows once, so every open drawer reloads and pulses the named cards. The event's reason is always `external`, whatever `reason` the request carries: any local process can write the socket, and another reason (`deleted`, say) would change what the drawers do with the named entries; `ids` is optional, keeps only entry ids, at most 50. No first-use toast, no pending request.
 
 ### Dev builds: `--product`, never `--socket` alone
 

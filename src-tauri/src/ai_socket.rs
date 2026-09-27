@@ -109,9 +109,11 @@ pub enum AiRequest {
     #[serde(rename = "stash-changed")]
     StashChanged {
         v: u32,
+        /// Sent as `external` by the CLI/MCP; the app never trusts it and
+        /// always emits `external` (`stash_changed_event`).
         #[serde(default)]
         reason: String,
-        /// The entries written, so the drawer can pulse their cards.
+        /// The entries written (checked and capped by `stash_ids`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ids: Option<Vec<String>>,
     },
@@ -935,8 +937,9 @@ fn dispatch(app: &AppHandle, mut req: AiRequest, tx: mpsc::Sender<AiResponse>) -
         AiRequest::Close { .. } => return Dispatched { id: dispatch_close(app, &req, tx), quiet: false },
         // Before `mark_connected`: a CLI write is not an agent connecting, so
         // no first-use toast; no window, no `AiPending` either.
-        AiRequest::StashChanged { reason, ids, .. } => {
-            crate::stash::emit_changed(app, &stash_reason(reason), stash_ids(ids.clone()));
+        AiRequest::StashChanged { ids, .. } => {
+            let (reason, ids) = stash_changed_event(ids.clone());
+            crate::stash::emit_changed(app, reason, ids);
             let _ = tx.send(AiResponse::ok());
             return Dispatched::ANSWERED;
         }
@@ -1077,20 +1080,12 @@ fn request_path(raw: &str) -> Result<String, String> {
     Ok(normalized.to_string_lossy().into_owned())
 }
 
-/// A `stash-changed` reason as the frontend receives it: an external client
-/// names it, so it is cut to a short plain word.
-fn stash_reason(raw: &str) -> String {
-    let word: String = raw
-        .to_lowercase()
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
-        .take(32)
-        .collect();
-    if word.is_empty() {
-        "external".to_string()
-    } else {
-        word
-    }
+/// What a `stash-changed` request makes the app emit: always reason
+/// `external` (A6), whatever the client said — any local process can write
+/// the socket, and a reason such as `deleted` would make the drawers drop
+/// the named entries' marks. Only the ids are taken, checked and capped.
+fn stash_changed_event(ids: Option<Vec<String>>) -> (&'static str, Option<Vec<String>>) {
+    ("external", stash_ids(ids))
 }
 
 /// At most this many ids ride one `stash-changed`; a write from the CLI or
@@ -3739,15 +3734,20 @@ mod tests {
     }
 
     #[test]
-    fn a_stash_changed_reason_is_short_and_plain() {
-        assert_eq!(stash_reason("external"), "external");
-        assert_eq!(stash_reason("put-away"), "put-away");
-        assert_eq!(stash_reason("Tag"), "tag");
-        assert_eq!(stash_reason(""), "external");
-        assert_eq!(stash_reason("<>"), "external");
-        assert_eq!(stash_reason("<script>"), "script");
-        assert_eq!(stash_reason(&"x".repeat(100)).len(), 32);
-        assert_eq!(stash_reason("ТЭГ"), "external", "non-ASCII letters are dropped, not kept");
+    fn a_stash_changed_request_is_always_emitted_as_external() {
+        // Any local client can write the socket: its word would make the
+        // drawers treat the named entries as deleted (A6 fixes `external`).
+        for raw in [
+            r#"{"v":1,"cmd":"stash-changed","reason":"deleted","ids":["s1-00ab"]}"#,
+            r#"{"v":1,"cmd":"stash-changed","reason":"put-away","ids":["s1-00ab"]}"#,
+            r#"{"v":1,"cmd":"stash-changed","reason":"external","ids":["s1-00ab"]}"#,
+        ] {
+            let AiRequest::StashChanged { ids, .. } = parse_request(raw).unwrap() else {
+                panic!("{raw}")
+            };
+            assert_eq!(stash_changed_event(ids), ("external", Some(vec!["s1-00ab".to_string()])), "{raw}");
+        }
+        assert_eq!(stash_changed_event(None), ("external", None));
     }
 
     #[test]
