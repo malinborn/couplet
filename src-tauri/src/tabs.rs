@@ -116,13 +116,19 @@ impl TabRegistry {
     }
 
     /// Windows with no project yet but a file to take one from, with that
-    /// file: `(label, first file in tab order)`.
-    pub fn unbound_windows(&self) -> Vec<(String, String)> {
+    /// file: `(label, first file in tab order that may bind)`. A stash note
+    /// may not (`binds` says so): outside git a file's project is its folder,
+    /// and a window typed into first would be bound to the notes folder.
+    pub fn unbound_windows(&self, binds: impl Fn(&str) -> bool) -> Vec<(String, String)> {
         self.windows
             .iter()
             .filter(|(_, w)| w.project.is_none())
             .filter_map(|(label, w)| {
-                w.tabs.iter().find_map(|t| t.path.clone()).map(|p| (label.clone(), p))
+                w.tabs
+                    .iter()
+                    .filter_map(|t| t.path.as_deref())
+                    .find(|p| binds(p))
+                    .map(|p| (label.clone(), p.to_string()))
             })
             .collect()
     }
@@ -624,9 +630,25 @@ mod tests {
         ]);
         reg.bind_project("editor-3", "/q".to_string());
         assert_eq!(
-            reg.unbound_windows(),
+            reg.unbound_windows(|_| true),
             vec![("main".to_string(), "/p/a.md".to_string())],
             "an untitled-only window has nothing to bind to yet; a bound one is done"
+        );
+    }
+
+    #[test]
+    fn a_note_never_binds_a_window() {
+        let reg = reg_with(&[
+            ("main", "n", Some("/notes/2026-09-27-0215-a3f9.md")),
+            ("main", "a", Some("/p/a.md")),
+            ("editor-2", "m", Some("/notes/2026-09-27-0216-b4c1.md")),
+        ]);
+        let mut got = reg.unbound_windows(|p| !p.starts_with("/notes/"));
+        got.sort();
+        assert_eq!(
+            got,
+            vec![("main".to_string(), "/p/a.md".to_string())],
+            "main binds to its first file that is not a note; a notes-only window stays unbound"
         );
     }
 

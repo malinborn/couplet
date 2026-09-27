@@ -21,10 +21,21 @@ pub fn project_of(path: &str) -> String {
 /// the directories runs outside the registry lock; a window bound (or
 /// closed) meanwhile keeps what it has.
 pub fn bind_missing_projects(app: &AppHandle) {
+    // Before the registry lock: spelling the notes folder asks the file
+    // system. `resolve` is pure and needs no stash lock — a stash that failed
+    // to open still has note tabs restored from the session.
+    let notes_dir = crate::stash::StashPaths::resolve()
+        .ok()
+        .map(|p| crate::stash::notes_dir_spelled(&p));
+    let binds = |p: &str| {
+        notes_dir
+            .as_deref()
+            .is_none_or(|dir| !crate::stash::is_note_path(dir, p))
+    };
     let unbound = {
         let open_files = app.state::<crate::window::OpenFiles>();
         let reg = open_files.0.lock().unwrap();
-        reg.unbound_windows()
+        reg.unbound_windows(binds)
     };
     if unbound.is_empty() {
         return;

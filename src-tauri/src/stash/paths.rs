@@ -55,6 +55,22 @@ impl StashPaths {
     }
 }
 
+/// Whether `path` lies in the notes folder (its `.trash/` and any sub-folder
+/// included), component-wise (`Path::starts_with`), so `couplet-dev-other/`
+/// is outside. For project binding only: nothing in this folder may bind a
+/// window to it. Whether a path *is a note* is stricter (a direct child with a
+/// couplet name, `entries::kind_of_new`) and is read from the entry's `kind`.
+/// `notes_dir` must be in the `path_norm` spelling — see `notes_dir_spelled`.
+pub(crate) fn is_note_path(notes_dir: &Path, path: &str) -> bool {
+    Path::new(path).starts_with(notes_dir)
+}
+
+/// The notes folder as `path_norm` spells it, comparable with registry paths.
+/// Asks the file system: never call it under a lock.
+pub(crate) fn notes_dir_spelled(paths: &StashPaths) -> PathBuf {
+    crate::path_norm::normalize_path(&paths.notes_dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,6 +104,29 @@ mod tests {
         let root = crate::atomic_write::testkit::scratch("stash-paths");
         let _ = StashPaths::from_bases(&root.join("home"), &root.join("data"), "couplet-test");
         assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_note_path_is_one_inside_the_notes_folder() {
+        // Roadmap A1: the notes folder is in the home root.
+        let dir = Path::new("/Users/u/couplet-dev");
+        assert!(is_note_path(dir, "/Users/u/couplet-dev/2026-09-27-0215-a3f9.md"));
+        assert!(is_note_path(dir, "/Users/u/couplet-dev/.trash/x.md"));
+        assert!(
+            !is_note_path(dir, "/Users/u/couplet-dev-other/x.md"),
+            "a sibling with a common prefix is not inside"
+        );
+        assert!(!is_note_path(dir, "/Users/u/work/plan.md"));
+    }
+
+    #[test]
+    fn the_notes_folder_is_spelled_as_the_registry_spells_paths() {
+        // `/tmp` style symlinks resolve; a folder that does not exist yet keeps
+        // its name under its resolved parent (`path_norm::normalize_path`).
+        let root = crate::atomic_write::testkit::scratch("stash-notes-spelled");
+        let paths = StashPaths::from_bases(&root.join("home"), &root.join("data"), "couplet-test");
+        let real = crate::path_norm::normalize_path(&root);
+        assert_eq!(notes_dir_spelled(&paths), real.join("home/couplet-test"));
     }
 
     #[test]

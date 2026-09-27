@@ -16,6 +16,7 @@ mod notes;
 mod paths;
 
 pub use paths::StashPaths;
+pub(crate) use paths::{is_note_path, notes_dir_spelled};
 
 use std::fs;
 use std::path::PathBuf;

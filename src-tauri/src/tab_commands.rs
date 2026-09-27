@@ -149,6 +149,34 @@ pub async fn tab_owner(
     Ok(owner_for(&reg, &path, window.label(), live_windows(&app)))
 }
 
+/// A window's project (spec §2): the absolute root the registry bound it to,
+/// and that root's directory name — a new note's `repo` (roadmap A3). Both
+/// `None` until the window has held a file outside the notes folder.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowProject {
+    pub root: Option<String>,
+    pub repo: Option<String>,
+}
+
+fn window_project_of(reg: &TabRegistry, label: &str) -> WindowProject {
+    let root = reg.window(label).and_then(|w| w.project.clone());
+    // `file_name` ignores a trailing `/`; the root `/` itself has no name.
+    let repo = root
+        .as_deref()
+        .and_then(|r| std::path::Path::new(r).file_name())
+        .map(|n| n.to_string_lossy().into_owned());
+    WindowProject { root, repo }
+}
+
+/// The calling window's project, read just before `stash_create_note`.
+#[tauri::command]
+pub async fn window_project(app: AppHandle, window: tauri::WebviewWindow) -> Result<WindowProject, String> {
+    let open_files = app.state::<OpenFiles>();
+    let reg = open_files.0.lock().unwrap();
+    Ok(window_project_of(&reg, window.label()))
+}
+
 #[tauri::command]
 pub async fn tab_open(
     app: AppHandle,
@@ -686,6 +714,35 @@ mod tests {
             assert!(reg.add_tab(label, id, path.map(str::to_string)));
         }
         reg
+    }
+
+    #[test]
+    fn a_windows_project_is_its_root_and_the_roots_name() {
+        let mut reg = reg_with(&[("main", "a", Some("/p/proj/a.md")), ("editor-2", "u", None)]);
+        reg.bind_project("main", "/p/proj".to_string());
+        assert_eq!(
+            window_project_of(&reg, "main"),
+            WindowProject { root: Some("/p/proj".to_string()), repo: Some("proj".to_string()) }
+        );
+        assert_eq!(
+            serde_json::to_value(window_project_of(&reg, "main")).unwrap(),
+            serde_json::json!({ "root": "/p/proj", "repo": "proj" })
+        );
+        reg.bind_project("editor-2", "/".to_string());
+        assert_eq!(
+            window_project_of(&reg, "editor-2"),
+            WindowProject { root: Some("/".to_string()), repo: None },
+            "the file-system root has no name to tag a note with"
+        );
+        let none = WindowProject { root: None, repo: None };
+        let reg = reg_with(&[("editor-2", "u", None)]);
+        assert_eq!(window_project_of(&reg, "editor-2"), none, "unbound: no project yet");
+        assert_eq!(window_project_of(&reg, "editor-9"), none, "an unknown window has none");
+        assert_eq!(
+            serde_json::to_value(&none).unwrap(),
+            serde_json::json!({ "root": null, "repo": null }),
+            "both keys are always present for the frontend"
+        );
     }
 
     #[test]

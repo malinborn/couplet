@@ -170,6 +170,7 @@ pub fn run() {
             comment_pause::commit_document_pauses,
             window::get_window_init,
             tab_commands::tab_owner,
+            tab_commands::window_project,
             tab_commands::tab_open,
             tab_commands::tab_claim,
             tab_commands::tab_release,
