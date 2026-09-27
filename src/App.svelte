@@ -24,6 +24,7 @@
     onLanguageChangeFailed,
     onAiCommand,
     onCommentsChanged,
+    onStashChanged,
     type AiCommandPayload,
     type UpdateInfo,
   } from './lib/tauri/events';
@@ -47,6 +48,11 @@
     type RevealResult,
   } from './lib/tabs/window-number';
   import { ctrlTabHandler } from './lib/tabs/tab-cycle-keys';
+  import { stashCreateNote, stashEntryForPath, windowProject } from './lib/stash/ipc';
+  import { noteTitle } from './lib/stash/note-title';
+  import { createStashMarks } from './lib/stash/stash-marks.svelte';
+  import { stashKeysHandler } from './lib/stash/stash-keys';
+  import type { StashControl } from './lib/editor/slash-stash';
   import { shouldShowHint, nextCheckDelay } from './lib/ai-hint';
   import { previewCompartment, lineGlowCompartment } from './lib/editor/setup';
   import { stashAndUnfoldAll, restoreStashedFolds } from './lib/editor/fold-memory';
@@ -337,13 +343,17 @@
     return was;
   }
 
-  function handleChange(_doc: string, update: ViewUpdate) {
+  function handleChange(doc: string, update: ViewUpdate) {
     fileState.isDirty = true;
     autoSave.schedule();
     // The drawer card's time: any change to the text counts, not only a human's.
     tabs.liveDocChanged();
     // Editing a quick look is working in it: «Оставить» (spec §7).
     if (isHumanEdit(update)) tabs.humanEdited();
+    // The window title of an untitled tab or a note follows its first line.
+    fileState.noteName = noteTitle(doc);
+    // Stash plan 03: the first non-blank character makes the tab a note.
+    if (fileState.filePath === null) tabs.noteTyped();
   }
 
   // --- Auto-save (300ms debounce). `performSave` is declared below, but
@@ -433,9 +443,13 @@
   }
 
   async function handleSaveAs(): Promise<void> {
-    const name = fileState.filePath
-      ? fileState.filePath.split('/').pop()
-      : t('ui.untitled_filename');
+    // A note's file name is a timestamp; its title is the better default.
+    const name =
+      fileState.stashMark === 'note'
+        ? `${(fileState.noteName ?? t('stash.untitled')).replace(/[/:]/g, '-')}.md`
+        : fileState.filePath
+          ? fileState.filePath.split('/').pop()
+          : t('ui.untitled_filename');
     // The dialog holds back the human, not an agent: a tab switch can land
     // while it is open, and the name picked belongs to the tab it was opened
     // for. The tab queue is not held meanwhile — agents keep working.
@@ -618,6 +632,8 @@
     // The state's own path field: the `$effect` below only re-runs when
     // `fileState.filePath` changes, and two untitled tabs share `null`.
     editorHandle?.setDocumentPath(path);
+    // A swap runs no update listener: the new document's title line, now.
+    fileState.noteName = noteTitle(editorHandle?.view?.state.doc.toString() ?? '');
   }
 
   /**
@@ -663,6 +679,9 @@
   function logTabIpc(command: string): (err: unknown) => void {
     return (err) => console.error(`${command} failed:`, err);
   }
+
+  /** Which open documents are notes or stashed files — display only (stash plan 03, D13). */
+  const stashMarks = createStashMarks((path) => stashEntryForPath(path));
 
   /**
    * The one path that changes what this window shows — see
@@ -778,6 +797,27 @@
     settled: () => reportTabs(),
     now: () => Date.now(),
     windowFocused: () => document.hasFocus(),
+    // Without Rust behind the page (`npm run dev` in a browser) there is no
+    // stash: untitled tabs stay untitled instead of raising an error per key.
+    notes:
+      '__TAURI_INTERNALS__' in window
+        ? {
+            create: async (text) => {
+              // Roadmap A3: a note's `repo` is the window project's directory name.
+              const repo = (await windowProject().catch(() => null))?.repo ?? null;
+              const entry = await stashCreateNote(text, repo);
+              stashMarks.learn(entry);
+              toasts.dismissKind('stash-error');
+              return { path: entry.path };
+            },
+            claim: (tabId, path) =>
+              invoke<TabClaim>('tab_claim', { tabId, path }).catch((err: unknown) => {
+                logTabIpc('tab_claim')(err);
+                return null;
+              }),
+            failed: (message) => toasts.push({ kind: 'stash-error', message }),
+          }
+        : undefined,
   });
 
   // Rust counts this window as mounted from `get_window_init` on and delivers
@@ -1775,6 +1815,17 @@
    */
   const onWindowCtrlTab = ctrlTabHandler(cycleTab);
 
+  /** ⌃T, `/stash`, File → «Отложить в тайник» (stash spec). */
+  function putAwayActive(): void {
+    void tabSourcesReady.then(() => tabs.putAwayActive());
+  }
+
+  /** ⌃T: registered right after `onWindowCtrlTab`, before the drawer's listener. */
+  const onWindowStashKeys = stashKeysHandler({ putAway: putAwayActive });
+
+  /** `/stash` in the slash menu. One object: the editor's completion sources are built once per state. */
+  const stashControl: StashControl = { putAway: putAwayActive };
+
   function liveAskShown(): boolean {
     const view = editorHandle?.view;
     return view ? activeAskIds(view.state).length > 0 : false;
@@ -2053,6 +2104,10 @@
     });
 
     const unlistenWindowNumber = onWindowNumber(setWindowNumber);
+    // Not a tab source: it stays out of the `Promise.all` before `get_window_init`.
+    const unlistenStash = onStashChanged(() => {
+      void stashMarks.refresh(tabList.tabs.flatMap((tab) => (tab.path === null ? [] : [tab.path])));
+    });
 
     // Pull what the backend stored for this window (its tabs, restored or
     // handed over before it mounted) — pulled, so it cannot race the listeners.
@@ -2129,6 +2184,9 @@
           break;
         case 'close':
           void tabSourcesReady.then(() => tabs.closeActive());
+          break;
+        case 'stash_put_away':
+          putAwayActive();
           break;
         case 'next_tab':
           cycleTab(1);
@@ -2329,6 +2387,7 @@
     window.addEventListener('keydown', noteTyping, true);
     window.addEventListener('keydown', onWindowDigit, true);
     window.addEventListener('keydown', onWindowCtrlTab, true);
+    window.addEventListener('keydown', onWindowStashKeys, true);
     window.addEventListener('focus', handleWindowFocus);
 
     // Start recovery interval
@@ -2435,6 +2494,7 @@
       unlistenReopenTab.then((fn) => fn());
       unlistenTabsArrive.then((fn) => fn());
       unlistenWindowNumber.then((fn) => fn());
+      unlistenStash.then((fn) => fn());
       unlistenExternalChange.then((fn) => fn());
       unlistenAiCommand.then((fn) => fn());
       unlistenComments.then((fn) => fn());
@@ -2449,6 +2509,7 @@
       window.removeEventListener('keydown', noteTyping, true);
       window.removeEventListener('keydown', onWindowDigit, true);
       window.removeEventListener('keydown', onWindowCtrlTab, true);
+      window.removeEventListener('keydown', onWindowStashKeys, true);
       window.removeEventListener('focus', handleWindowFocus);
       autoSave.cancel();
       if (recoveryInterval !== null) clearInterval(recoveryInterval);
@@ -2507,6 +2568,21 @@
     import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
       getCurrentWindow().setTitle(title);
     });
+  });
+
+  // Stash marks (D13, display only): the title glyph follows the active tab's
+  // mark; every open path is asked once, and the active one again whenever the
+  // window turns to it — a mark that went stale while the tab sat in the
+  // background is corrected where it is seen.
+  $effect(() => {
+    fileState.stashMark = stashMarks.get(fileState.filePath)?.kind ?? null;
+  });
+  $effect(() => {
+    stashMarks.ensure(tabList.tabs.map((tab) => tab.path));
+  });
+  $effect(() => {
+    const path = fileState.filePath;
+    if (path !== null) void stashMarks.refresh([path]);
   });
 
   /** Line glow lives in each state's own compartment: a swapped-in state needs it re-applied. */
@@ -2624,6 +2700,7 @@
     onJsonOffer={() => toasts.push({ kind: 'json-offer' })}
     onJsonOfferWithdrawn={() => toasts.dismissKind('json-offer')}
     {themeControl}
+    {stashControl}
   />
 </main>
 
@@ -2649,6 +2726,7 @@
   }}
   onrestorefocus={() => editorHandle?.view?.focus()}
   onrenumber={renumber}
+  marks={(path) => stashMarks.get(path)}
 />
 
 <TransientBar
