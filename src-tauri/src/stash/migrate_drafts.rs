@@ -184,12 +184,30 @@ fn import_one(
         clock::local_offset_secs(at.div_euclid(1000)),
         ids::random16,
     )?;
-    let path = path.to_string_lossy().into_owned();
-    // If the transaction fails the note file stays — a second copy of the
-    // draft, which is not moved — and the next run makes another note.
-    let id = record_import(stash, &path, draft, repo, now)
-        .map_err(|e| format!("note saved to {path} but not recorded in the stash: {e}"))?;
-    Ok((stash.get(&id)?, true))
+    let path_buf = path;
+    let path = path_buf.to_string_lossy().into_owned();
+    match record_import(stash, &path, draft, repo, now) {
+        Ok(id) => Ok((stash.get(&id)?, true)),
+        // The draft is not moved, so its text is still there. The unrecorded
+        // note file would be an orphan, and every launch with the cause still
+        // present would add one more — so it goes, but only while the draft
+        // provably still holds the very same text.
+        Err(e) if drop_unrecorded_note(&path_buf, draft) => {
+            Err(format!("not recorded in the stash: {e}"))
+        }
+        Err(e) => Err(format!(
+            "note saved to {path} but not recorded in the stash: {e}"
+        )),
+    }
+}
+
+/// Removes `note`, a note file `import_one` just created and could not
+/// record, only if both it and the draft it came from — each re-read now —
+/// hold exactly the draft's text: the draft is then a full copy. Anything
+/// else (the draft changed or gone, the note not what was written) keeps
+/// the note. `true`: removed.
+fn drop_unrecorded_note(note: &Path, draft: &Draft) -> bool {
+    holds(note, &draft.text) && holds(&draft.path, &draft.text) && fs::remove_file(note).is_ok()
 }
 
 /// Step 1's transaction: the note's row, stashed at the draft's mtime, and
@@ -896,8 +914,20 @@ mod tests {
         assert!(!d.trash.exists());
     }
 
+    fn note_files(root: &Path) -> Vec<PathBuf> {
+        fs::read_dir(root.join("home/couplet-test"))
+            .map(|r| {
+                r.map(|e| e.unwrap().path())
+                    .filter(|p| notes::is_note_file_name(p.file_name().unwrap().to_str().unwrap()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     #[test]
-    fn a_failed_transaction_keeps_the_note_file_and_the_draft() {
+    fn a_failed_transaction_takes_its_note_file_back_while_the_draft_holds_the_text() {
+        // Otherwise every launch with the cause still there adds one more
+        // orphan note file holding the same text.
         let (mut stash, root) = stash_in("drafts-tx-fails");
         let d = dirs("tx-fails");
         let src = write_draft(&d, "draft-t.md", b"twice, never none");
@@ -908,39 +938,34 @@ mod tests {
                  BEGIN SELECT RAISE(ABORT, 'refused'); END;",
             )
             .unwrap();
-        let session = one_window(None, vec![untitled("t", "draft-t.md")]);
-        let (session, report) = import_drafts(&mut stash, &draft_dirs(&d), Some(session), NOW);
-        assert_eq!(
-            (report.imported, report.trashed, report.rewritten_tabs),
-            (0, 0, 0),
-            "{report:?}"
-        );
-        assert_eq!(report.errors.len(), 1, "{report:?}");
-        assert_eq!(
-            rows(&stash, "entries"),
-            0,
-            "the note's row went with the transaction"
-        );
-        assert_eq!(
-            fs::read(&src).unwrap(),
-            b"twice, never none",
-            "the draft stays"
-        );
-        assert_eq!(
-            session.unwrap().windows[0].tabs[0].untitled.as_deref(),
-            Some("draft-t.md")
-        );
-        let notes: Vec<PathBuf> = fs::read_dir(root.join("home/couplet-test"))
-            .unwrap()
-            .map(|e| e.unwrap().path())
-            .filter(|p| notes::is_note_file_name(p.file_name().unwrap().to_str().unwrap()))
-            .collect();
-        assert_eq!(notes.len(), 1);
-        assert_eq!(
-            fs::read(&notes[0]).unwrap(),
-            b"twice, never none",
-            "the note file stays too"
-        );
+        for _launch in 0..2 {
+            let session = one_window(None, vec![untitled("t", "draft-t.md")]);
+            let (session, report) = import_drafts(&mut stash, &draft_dirs(&d), Some(session), NOW);
+            assert_eq!(
+                (report.imported, report.trashed, report.rewritten_tabs),
+                (0, 0, 0),
+                "{report:?}"
+            );
+            assert_eq!(report.errors.len(), 1, "{report:?}");
+            assert_eq!(
+                rows(&stash, "entries"),
+                0,
+                "the note's row went with the transaction"
+            );
+            assert_eq!(
+                fs::read(&src).unwrap(),
+                b"twice, never none",
+                "the draft stays"
+            );
+            assert_eq!(
+                session.unwrap().windows[0].tabs[0].untitled.as_deref(),
+                Some("draft-t.md")
+            );
+            assert!(
+                note_files(&root).is_empty(),
+                "no orphan note: the draft still holds the text"
+            );
+        }
 
         // Once the cause is gone, the next run imports it for good.
         stash
@@ -955,6 +980,34 @@ mod tests {
             "{report:?}"
         );
         assert!(!src.exists());
+        assert_eq!(note_files(&root).len(), 1);
+    }
+
+    #[test]
+    fn an_unrecorded_note_stays_unless_the_draft_still_holds_the_same_text() {
+        let d = dirs("unrecorded");
+        let src = write_draft(&d, "draft-u.md", b"the text");
+        let draft = only_draft(&d);
+        let note = d.data.join("2026-09-26-0215-abcd.md");
+
+        fs::write(&note, b"the text").unwrap();
+        fs::write(&src, b"the text, edited since").unwrap();
+        assert!(!drop_unrecorded_note(&note, &draft), "the draft changed");
+        assert_eq!(fs::read(&note).unwrap(), b"the text");
+
+        fs::remove_file(&src).unwrap();
+        assert!(!drop_unrecorded_note(&note, &draft), "the draft is gone");
+        assert_eq!(fs::read(&note).unwrap(), b"the text");
+
+        fs::write(&src, b"the text").unwrap();
+        fs::write(&note, b"the text and more").unwrap();
+        assert!(!drop_unrecorded_note(&note, &draft), "the note differs");
+        assert!(note.exists());
+
+        fs::write(&note, b"the text").unwrap();
+        assert!(drop_unrecorded_note(&note, &draft));
+        assert!(!note.exists());
+        assert_eq!(fs::read(&src).unwrap(), b"the text", "the draft stays");
     }
 
     #[test]
