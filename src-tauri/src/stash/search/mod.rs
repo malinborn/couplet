@@ -19,6 +19,7 @@ pub(crate) use index::{
     ensure_index, index_text, read_body, read_saved, register_functions, reindex_path,
     unindex_entry, write_body,
 };
+pub(crate) use run::{search, SearchArgs, SearchPage};
 
 /// The ids a plain search for `q` finds, best first: for the writers' tests
 /// outside `search`.

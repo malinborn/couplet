@@ -11,6 +11,7 @@
 use tauri::{AppHandle, State};
 
 use super::entries::plan_put_away;
+use super::search::{self, SearchArgs, SearchPage};
 use super::{
     clock, emit_changed, DeleteOutcome, Enrich, ListQuery, ListResult, ListSort, PutAway, PutAwayResult, Stash,
     StashCounts, StashEntry, StashKind, StashState,
@@ -235,4 +236,87 @@ pub async fn stash_counts(
         )
     })
     .await
+}
+
+/// IPC `stash_search` (roadmap, plus `deleted` for the trash, A8): one search
+/// for the drawer and, from stage 07, for agents.
+#[tauri::command]
+// The IPC contract passes the filters flat: `stash_search { query, repo?, … }`.
+#[allow(clippy::too_many_arguments)]
+pub async fn stash_search(
+    state: State<'_, StashState>,
+    query: String,
+    repo: Option<String>,
+    tag: Option<String>,
+    kind: Option<StashKind>,
+    deleted: Option<bool>,
+    limit: Option<usize>,
+    cursor: Option<String>,
+) -> Result<SearchPage, String> {
+    let args = SearchArgs {
+        query,
+        repo,
+        tag,
+        kind,
+        deleted: deleted.unwrap_or(false),
+        limit,
+        cursor,
+    };
+    search_page(&state, args).await
+}
+
+/// The command without Tauri's `State`, for tests: only the SQL runs under
+/// the stash lock; hits are enriched from the disk after it (I3).
+async fn search_page(state: &StashState, args: SearchArgs) -> Result<SearchPage, String> {
+    run(state, move |s| search::search(&s.conn, &args)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stash::testkit::{paths_in, MSK, T0};
+
+    fn state_in(tag: &str) -> StashState {
+        let root = crate::atomic_write::testkit::scratch(&format!("stash-{tag}"));
+        StashState::open(Ok(paths_in(&root)))
+    }
+
+    fn args(query: &str) -> SearchArgs {
+        SearchArgs {
+            query: query.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_search_page_is_enriched_after_the_lock_and_keeps_the_ipc_shape() {
+        let state = state_in("cmd-search");
+        let note = state
+            .with(|s| s.create_note("# Тайник\nключи от серверной", None, T0, MSK))
+            .unwrap();
+        let page = tauri::async_runtime::block_on(search_page(&state, args("серверн"))).unwrap();
+        // The SQL half leaves `preview` empty; the disk half fills it.
+        assert_eq!(page.hits[0].entry.preview, "# Тайник\nключи от серверной");
+        let v = serde_json::to_value(&page).unwrap();
+        assert_eq!(v["total"], 1);
+        assert!(v["nextCursor"].is_null());
+        assert_eq!(v["hits"][0]["entry"]["id"], note.id.as_str());
+        assert!(v["hits"][0]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("серверной"));
+        assert!(v["hits"][0]["ranges"][0].is_array());
+        assert!(v["hits"][0]["score"].as_f64().unwrap() > 0.0);
+    }
+
+    #[test]
+    fn a_bad_cursor_is_an_error_not_an_empty_page() {
+        let state = state_in("cmd-search-cursor");
+        let bad = SearchArgs {
+            cursor: Some("c.oops".into()),
+            ..args("тайник")
+        };
+        let err = tauri::async_runtime::block_on(search_page(&state, bad)).unwrap_err();
+        assert!(err.contains("invalid cursor"), "{err}");
+    }
 }
