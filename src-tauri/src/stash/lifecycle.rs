@@ -256,51 +256,107 @@ pub(crate) fn document_left(
         .ok_or_else(|| format!("nothing put away for {path}"))
 }
 
-/// `document_left` for each of `docs`, best effort: a stash that cannot be
-/// written never fails a close. Blocking. Answers the ids it changed, after
-/// one export/backup for all of them.
+/// What the stash did with the documents that left, by entry id, and what it
+/// could not do, by path — `(path, reason)`.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct LeftReport {
+    pub put_away: Vec<String>,
+    pub discarded: Vec<String>,
+    pub failed: Vec<(String, String)>,
+}
+
+impl LeftReport {
+    fn failed_all(docs: &[(String, usize, usize)], reason: &str) -> Self {
+        Self {
+            failed: docs
+                .iter()
+                .map(|(path, ..)| (path.clone(), reason.to_string()))
+                .collect(),
+            ..Self::default()
+        }
+    }
+
+    fn changed(&self) -> bool {
+        !self.put_away.is_empty() || !self.discarded.is_empty()
+    }
+
+    /// What `tab_close` answers: an explicit put-away (⌃T, `/stash`, the menu
+    /// item) that did not happen says why — the tab is closed either way.
+    /// ⌘W and a window closing are best effort and answer nothing.
+    pub(crate) fn failure(&self, leaving: Leaving) -> Option<String> {
+        if leaving != Leaving::PutAway || self.failed.is_empty() {
+            return None;
+        }
+        Some(
+            self.failed
+                .iter()
+                .map(|(_, reason)| reason.as_str())
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    }
+}
+
+/// `document_left` for each of `docs`. Blocking. One export/backup for all of
+/// them; a document the stash could not take is in `failed`, logged, and
+/// fails nothing else.
 pub(crate) fn documents_left_in(
     state: &StashState,
     docs: &[(String, usize, usize)],
     leaving: Leaving,
     now: i64,
-) -> Vec<String> {
-    let mut ids = Vec::new();
+) -> LeftReport {
+    let mut report = LeftReport::default();
     for (path, cursor, top_line) in docs {
         match document_left(state, path, *cursor, *top_line, leaving, now) {
             Ok(Left::Untouched) => {}
-            Ok(Left::PutAway(id) | Left::Discarded(id)) => ids.push(id),
-            Err(e) => eprintln!("stash: {path} left the tabs: {e}"),
+            Ok(Left::PutAway(id)) => report.put_away.push(id),
+            Ok(Left::Discarded(id)) => report.discarded.push(id),
+            Err(e) => {
+                eprintln!("stash: {path} left the tabs: {e}");
+                report.failed.push((path.clone(), e));
+            }
         }
     }
-    if !ids.is_empty() {
+    if report.changed() {
         let offset = clock::local_offset_secs(now.div_euclid(1000));
         let _ = state.with(|s| {
             s.after_write(now, offset);
             Ok(())
         });
     }
-    ids
+    report
 }
 
 /// `documents_left_in` in the live app, then one `stash-changed` (A6:
 /// `put-away`, naming every entry put away or discarded) — unless the app is
 /// quitting, when no drawer is left to refresh. Blocking: call it on the
 /// blocking pool (a quit excepted), with no other lock held.
-pub(crate) fn documents_left(app: &AppHandle, docs: &[(String, usize, usize)], leaving: Leaving) {
+pub(crate) fn documents_left(
+    app: &AppHandle,
+    docs: &[(String, usize, usize)],
+    leaving: Leaving,
+) -> LeftReport {
     if docs.is_empty() {
-        return;
+        return LeftReport::default();
     }
     let Some(state) = app.try_state::<StashState>() else {
-        return;
+        return LeftReport::failed_all(docs, "stash unavailable");
     };
-    let ids = documents_left_in(&state, docs, leaving, clock::now_ms());
+    let report = documents_left_in(&state, docs, leaving, clock::now_ms());
     let quitting = app
         .try_state::<SessionState>()
         .is_some_and(|s| s.is_quitting());
-    if !ids.is_empty() && !quitting {
+    if report.changed() && !quitting {
+        let ids = report
+            .put_away
+            .iter()
+            .chain(&report.discarded)
+            .cloned()
+            .collect();
         emit_changed(app, "put-away", Some(ids));
     }
+    report
 }
 
 /// Stash work handed to the blocking pool that a quit must not cut short.
@@ -393,7 +449,8 @@ pub(crate) fn documents_left_later(
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _pending = pending;
-        documents_left(&app, &docs, leaving);
+        // Best effort: `documents_left_in` logged whatever failed.
+        let _ = documents_left(&app, &docs, leaving);
     });
 }
 
@@ -931,7 +988,65 @@ mod tests {
             Leaving::Closed,
             NOW,
         );
-        assert_eq!(ids, vec![kept.id.clone(), blank.id.clone()]);
+        assert_eq!(ids.put_away, vec![kept.id.clone()]);
+        assert_eq!(ids.discarded, vec![blank.id.clone()]);
+        assert!(ids.failed.is_empty());
         assert_eq!(state.with(|s| Ok(rows(s, "entries"))).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_put_away_with_the_stash_unavailable_is_reported_to_the_close() {
+        let root = crate::atomic_write::testkit::scratch("lifecycle-unavailable");
+        let state = StashState::open(Err("no stash here".into()));
+        let file = user_file(&root, "plan.md", "# plan");
+        let report = documents_left_in(&state, &[(file.clone(), 0, 1)], Leaving::PutAway, NOW);
+        assert_eq!(report.failed.len(), 1, "{report:?}");
+        assert_eq!(report.failed[0].0, file);
+        let answer = report.failure(Leaving::PutAway).expect("⌃T says it failed");
+        assert!(answer.contains("stash unavailable"), "{answer}");
+    }
+
+    #[test]
+    fn a_plain_close_with_the_stash_unavailable_is_not_reported() {
+        // ⌘W is best effort: the close itself succeeded, the log has the rest.
+        let (state, _root) = state_in("unavailable-close");
+        let note = note(&state, "# kept");
+        let unavailable = StashState::open(Err("no stash here".into()));
+        let report = documents_left_in(
+            &unavailable,
+            &[(note.path.clone(), 0, 1)],
+            Leaving::Closed,
+            NOW,
+        );
+        assert_eq!(report.failed.len(), 1, "{report:?}");
+        assert_eq!(report.failure(Leaving::Closed), None);
+    }
+
+    #[test]
+    fn a_trashed_note_put_away_is_reported_to_the_close() {
+        let (state, _root) = state_in("trashed-report");
+        let note = note(&state, "x");
+        state
+            .with(|s| {
+                set_columns(s, &note.id, "deleted_at = 5, stashed_at = NULL");
+                Ok(())
+            })
+            .unwrap();
+        let report = documents_left_in(&state, &[(note.path.clone(), 0, 1)], Leaving::PutAway, NOW);
+        let answer = report.failure(Leaving::PutAway).expect("reported");
+        assert!(answer.contains("in the trash"), "{answer}");
+        assert!(report.put_away.is_empty() && report.discarded.is_empty());
+    }
+
+    #[test]
+    fn a_put_away_that_worked_answers_nothing() {
+        let (state, root) = state_in("put-away-ok");
+        let file = user_file(&root, "plan.md", "# plan");
+        let blank = note(&state, "x");
+        std::fs::write(&blank.path, "").unwrap();
+        for doc in [(file, 0, 1), (blank.path.clone(), 0, 1)] {
+            let report = documents_left_in(&state, &[doc], Leaving::PutAway, NOW);
+            assert_eq!(report.failure(Leaving::PutAway), None, "{report:?}");
+        }
     }
 }

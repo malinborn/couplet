@@ -281,6 +281,10 @@ pub(crate) fn rescue_text<'a>(path: Option<&str>, content: Option<&'a str>) -> O
 /// comment pauses, and records it for ⌘⇧T with the caret the frontend saw.
 /// `content` is an untitled tab's text as it was on screen: ⌘W discards it
 /// by design (tabs spec §8), but never without a copy in the draft trash.
+///
+/// Answers `null`, or — only for `putAway: true` — the reason the document
+/// did NOT go into the stash (stash unavailable, `in the trash: …`). The tab
+/// is closed either way; the answer is for a toast.
 #[tauri::command]
 pub async fn tab_close(
     app: AppHandle,
@@ -292,7 +296,7 @@ pub async fn tab_close(
     // ⌃T: the document goes into the stash — a file as a reference. A note is
     // put away on every close anyway (stash plan 03, D5).
     put_away: Option<bool>,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let label = window.label().to_string();
     let (removed, number) = {
         let open_files = app.state::<OpenFiles>();
@@ -307,7 +311,7 @@ pub async fn tab_close(
         (removed, number)
     };
     let Some(tab) = removed else {
-        return Ok(());
+        return Ok(None);
     };
 
     // After the registry guard (no disk under `OpenFiles`), before the
@@ -332,7 +336,8 @@ pub async fn tab_close(
         // With the registry, session and closed-stack locks all released
         // (A11). Awaited, so the stash has decided before the close answers;
         // on the blocking pool, since SQLite may wait out its busy timeout.
-        // A stash that cannot be written never fails the close.
+        // A stash that cannot be written never fails the close; an explicit
+        // put-away says so in the answer.
         let leaving = if put_away.unwrap_or(false) {
             crate::stash::lifecycle::Leaving::PutAway
         } else {
@@ -343,17 +348,23 @@ pub async fn tab_close(
         let pending = crate::stash::lifecycle::pending();
         let stashed = tauri::async_runtime::spawn_blocking(move || {
             let _pending = pending;
-            crate::stash::lifecycle::documents_left(&stash_app, &[doc], leaving);
+            crate::stash::lifecycle::documents_left(&stash_app, &[doc], leaving)
         })
         .await;
-        if let Err(e) = stashed {
-            eprintln!("tab_close: stash task failed: {e}");
-        }
+        let failure = match stashed {
+            Ok(report) => report.failure(leaving),
+            Err(e) => {
+                eprintln!("tab_close: stash task failed: {e}");
+                (leaving == crate::stash::lifecycle::Leaving::PutAway)
+                    .then(|| format!("stash task failed: {e}"))
+            }
+        };
         std::thread::spawn(move || {
             let _ = crate::recovery::delete_recovery_sync(&path);
         });
+        return Ok(failure);
     }
-    Ok(())
+    Ok(None)
 }
 
 /// One tab as its old window hands it over (plan 05) — `MovedTab` in
