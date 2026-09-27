@@ -1213,6 +1213,38 @@ export function createTabController(deps: TabControllerDeps) {
     return true;
   }
 
+  /**
+   * Stash stage 06: a stash note is being deleted, and its tab leaves this
+   * window for good — a release (Rust `tab_release`), never a close: no ⌘⇧T
+   * entry (it would reopen an empty document at a path that no longer holds
+   * the note), no put-away, and agents waiting on the tab are answered `tab
+   * released`. An active tab is first left the normal way (`activateNow`, or
+   * `newTabNow` when it is the only one — the window stays, D4): flushed, and
+   * refused if the save did not land, so the file holds the last keystroke
+   * when it moves and no autosave is bound to its path afterwards. `true`
+   * when no tab here holds `path` any more.
+   */
+  async function dropNow(path: string): Promise<boolean> {
+    const tab = findByPath(list, path);
+    if (!tab) return true;
+    if (tab.id === list.activeId) {
+      const next = removeTab(list, tab.id).nextActiveId;
+      const result = next === null ? 'failed' : await activateNow(next);
+      // No neighbour, or one that cannot be read: a fresh empty tab instead.
+      if (result === 'failed') await newTabNow();
+      if (list.activeId === tab.id) return false;
+    }
+    // In the background now, and clean by construction: it was left the
+    // normal way (or never shown since it was last left).
+    cache.delete(tab.id);
+    deps.ai.forget(tab.id);
+    forgetBirth(tab.id);
+    publish(removeTab(list, tab.id).state);
+    await deps.rust.release(tab.id);
+    deps.settled();
+    return true;
+  }
+
   /** Background tabs first, the active one last: at most one swap for a group. */
   function backgroundFirst(ids: readonly string[]): string[] {
     const active = list.activeId;
@@ -1738,6 +1770,13 @@ export function createTabController(deps: TabControllerDeps) {
         }
         return error === undefined ? { closed, notStashed } : { closed, notStashed, error };
       }),
+    /**
+     * `stash-drop-tab` (stash stage 06): a stash note is being deleted — drop
+     * its tab from this window (`dropNow`). `false`: its save did not land,
+     * the tab stays and the note is kept. Never call it from inside
+     * `runExclusive` or a queued method: it waits for the tab queue.
+     */
+    dropPath: (path: string) => queue.run(() => dropNow(path)),
     /** Move `ids` (in this window's order) to another window or a new one (plan 05). */
     moveTabs: (ids: readonly string[], target: MoveTarget) => queue.run(() => moveNow(ids, target)),
     /** Tabs another window moved here (`tabs-arrive`). */

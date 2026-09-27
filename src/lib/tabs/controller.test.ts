@@ -2888,3 +2888,102 @@ describe('putting a selection away (stash stage 04)', () => {
     expect(h.notes.notPutAway).toHaveBeenCalledWith('locked');
   });
 });
+
+describe('dropPath (stash stage 06: a note is being deleted)', () => {
+  const files = { '/n/a.md': 'AAAA', '/n/b.md': 'BBBB' };
+  const both = () => [fileTab('a', '/n/a.md'), fileTab('b', '/n/b.md')];
+
+  it('LeavesTheActiveNoteTabTheNormalWayThenReleasesItNeverClosesIt', async () => {
+    const h = await started(files, both(), 'a');
+    h.type(' edited');
+    expect(await h.controller.dropPath('/n/a.md')).toBe(true);
+    const flush = h.calls.indexOf('flush');
+    const activate = h.calls.indexOf('activate b');
+    const release = h.calls.indexOf('release a');
+    expect(flush).toBeGreaterThanOrEqual(0);
+    expect(flush).toBeLessThan(activate);
+    expect(activate).toBeLessThan(release);
+    expect(h.calls).not.toContain('close a');
+    // The last keystroke is on disk before the file can move.
+    expect(h.files.get('/n/a.md')).toBe('AAAA edited');
+    expect(h.ids()).toEqual(['b']);
+    expect(h.active()).toBe('b');
+    expect(h.live().doc.toString()).toBe('BBBB');
+  });
+
+  it('RefusesAndKeepsTheTabWhenItsSaveDidNotLand', async () => {
+    const h = await started(files, both(), 'a');
+    h.type('x');
+    h.setSaveSucceeds(false);
+    expect(await h.controller.dropPath('/n/a.md')).toBe(false);
+    expect(h.calls.some((c) => c.startsWith('release '))).toBe(false);
+    expect(h.ids()).toEqual(['a', 'b']);
+    expect(h.active()).toBe('a');
+    expect(h.deps.reportUnsaved).toHaveBeenCalled();
+  });
+
+  it('GivesTheWindowAFreshEmptyTabWhenTheNoteWasItsOnlyTab', async () => {
+    const h = await started(files, [fileTab('a', '/n/a.md')]);
+    expect(await h.controller.dropPath('/n/a.md')).toBe(true);
+    const open = vi.mocked(h.deps.rust.open).mock.invocationCallOrder[0];
+    const release = vi.mocked(h.deps.rust.release).mock.invocationCallOrder[0];
+    expect(open).toBeLessThan(release);
+    expect(h.deps.rust.release).toHaveBeenCalledWith('a');
+    expect(h.calls).not.toContain('closeWindow');
+    expect(h.calls).not.toContain('close a');
+    expect(h.controller.list.tabs).toHaveLength(1);
+    expect(h.controller.list.tabs[0].path).toBeNull();
+    expect(h.active()).toBe(h.controller.list.tabs[0].id);
+    expect(h.doc.path).toBeNull();
+  });
+
+  it('KeepsTheOnlyTabWhenItsSaveDidNotLand', async () => {
+    const h = await started(files, [fileTab('a', '/n/a.md')]);
+    h.type('x');
+    h.setSaveSucceeds(false);
+    expect(await h.controller.dropPath('/n/a.md')).toBe(false);
+    expect(h.deps.rust.release).not.toHaveBeenCalled();
+    expect(h.ids()).toEqual(['a']);
+  });
+
+  it('FallsBackToAnEmptyTabWhenTheNeighbourCannotBeRead', async () => {
+    const h = await started(files, both(), 'a');
+    h.unreadable.add('/n/b.md');
+    expect(await h.controller.dropPath('/n/a.md')).toBe(true);
+    expect(h.deps.rust.release).toHaveBeenCalledWith('a');
+    expect(h.ids()).not.toContain('a');
+    expect(h.doc.path).toBeNull();
+  });
+
+  it('ReleasesABackgroundNoteTabWithoutFlushingAnything', async () => {
+    const h = await started(files, both(), 'a');
+    expect(await h.controller.dropPath('/n/b.md')).toBe(true);
+    expect(h.calls).not.toContain('flush');
+    expect(h.calls).not.toContain('swap');
+    expect(h.calls).toContain('release b');
+    expect(h.calls).not.toContain('close b');
+    expect(h.ids()).toEqual(['a']);
+    expect(h.active()).toBe('a');
+    expect(h.deps.settled).toHaveBeenCalled();
+  });
+
+  it('IsANoOpForAPathThisWindowDoesNotHold', async () => {
+    const h = await started(files, [fileTab('a', '/n/a.md')]);
+    expect(await h.controller.dropPath('/n/zzz.md')).toBe(true);
+    expect(h.calls).toEqual([]);
+  });
+
+  it('ForgetsWhatAgentsParkedOnTheTab', async () => {
+    const h = await started(files, both(), 'a');
+    await h.controller.dropPath('/n/b.md');
+    expect(h.deps.ai.forget).toHaveBeenCalledWith('b');
+  });
+
+  it('NeverPutsTheNoteAwayNorRecordsItForReopen', async () => {
+    const h = await started(files, both(), 'a', { notes: true });
+    await h.controller.dropPath('/n/a.md');
+    await h.controller.dropPath('/n/b.md');
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+    expect(h.notes.create).not.toHaveBeenCalled();
+  });
+});
