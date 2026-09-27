@@ -135,6 +135,14 @@ fn bounded_query(query: &str) -> SearchQuery {
     parsed
 }
 
+/// Whether `query`, as `search` will read it (within the caps), names any
+/// term or tag. With none, `select_page` lists every entry newest first,
+/// each with a snippet from its opening text — a browse, not a search.
+pub(crate) fn has_criteria(query: &str) -> bool {
+    let parsed = bounded_query(query);
+    !parsed.terms.is_empty() || !parsed.tags.is_empty()
+}
+
 /// Pushes `v` and returns its placeholder.
 fn bind(values: &mut Vec<Value>, v: String) -> String {
     values.push(Value::Text(v));

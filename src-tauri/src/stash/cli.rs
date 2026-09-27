@@ -116,7 +116,8 @@ pub(crate) fn location_for_build(
 /// so the file is checked first; once it exists, `db::open`'s creates are
 /// no-ops (SQLite may add `-wal`/`-shm` beside it, and a v1 file is
 /// migrated). A file removed between the check and the open is recreated
-/// empty inside the existing app dir — what a write may do anyway.
+/// empty inside the existing app dir: a narrow race, and the app recreates
+/// it on its next launch anyway.
 fn open_for_read(loc: &StashLocation) -> Result<Option<Stash>, String> {
     if !loc.paths.db_path.is_file() {
         return Ok(None);
@@ -562,13 +563,10 @@ fn empty_page(scope: Scope, hits: bool) -> StashAnswer {
 /// repo filter is SQL on the stored column (stage 05 M8); no `Enrich` (it
 /// would read every hit's text).
 pub fn search(ctx: &Ctx, args: &AgentSearchArgs) -> StashAnswer {
-    // A query of quotes and spaces parses to no terms and would list the
-    // whole stash by freshness.
-    if args
-        .query
-        .trim_matches(|c: char| c == '"' || c.is_whitespace())
-        .is_empty()
-    {
+    // A query the parser reads as no terms and no tags (quotes, spaces, any
+    // of its separators) would list the whole stash by freshness, each entry
+    // with its opening text — what `list` deliberately withholds.
+    if !super::search::has_criteria(&args.query) {
         return StashAnswer::error("search needs a query (browse with list)");
     }
     let tag = match filter_tag(&args.filter.tag) {
@@ -2040,7 +2038,15 @@ mod tests {
     fn a_blank_query_is_refused() {
         let loc = temp_location("blank", true);
         let cwd = outside_git();
-        for q in ["", "   ", "\"\"", " \" \" "] {
+        // Anything the query parser reads as no terms and no tags — its
+        // separators include C0 controls, DEL, NBSP and U+3000 — would page
+        // through every entry's opening text, newest first.
+        let nbsp_only = "\u{a0}\u{a0}".to_string();
+        let far_term = format!("{}HDMI", " ".repeat(1100));
+        for q in [
+            "", "   ", "\"\"", " \" \" ", "\u{1}", "\u{7f}", "\u{3000}", &nbsp_only, "\u{1}\"\u{a0}\"",
+            &far_term,
+        ] {
             let answer = search(&ctx(&loc, &cwd), &search_all(q));
             assert!(!answer.ok, "{q:?}: {answer:?}");
             assert!(
