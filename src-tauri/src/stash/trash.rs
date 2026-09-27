@@ -224,6 +224,59 @@ pub(crate) fn purgeable_file(trash_dir: &Path, path: &Path) -> Result<Option<Pat
     Ok(Some(canon_parent.join(name)))
 }
 
+/// Deletes `path` — only a regular file directly inside the real trash
+/// folder (`purgeable_file`) — through a descriptor of that folder (M9):
+/// `.trash` opened `O_NOFOLLOW`, checked to be the folder the row's path
+/// resolves to, then `fstatat(AT_SYMLINK_NOFOLLOW)` and `unlinkat` by name.
+/// A `.trash` swapped for a symlink after the checks can no longer redirect
+/// the unlink. `Ok(false)`: nothing there, nothing deleted.
+fn unlink_from_trash(trash_dir: &Path, path: &Path) -> Result<bool, String> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    if purgeable_file(trash_dir, path)?.is_none() {
+        return Ok(false);
+    }
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("{} has no file name", path.display()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent", path.display()))?;
+    let dir = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(trash_dir)
+        .map_err(|e| format!("{}: {e}", trash_dir.display()))?;
+    let held = dir.metadata().map_err(|e| format!("{}: {e}", trash_dir.display()))?;
+    let named = fs::metadata(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    if (held.dev(), held.ino()) != (named.dev(), named.ino()) {
+        return Err(format!("{} changed during the purge", trash_dir.display()));
+    }
+    let c_name = crate::atomic_write::c_path(Path::new(name))?;
+    // SAFETY: an all-zero `stat` is a valid value for `fstatat` to fill in.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: `dir` is an open descriptor and `c_name` a NUL-terminated
+    // string; both outlive the call, and `st` is a valid out pointer.
+    let rc = unsafe {
+        libc::fstatat(dir.as_raw_fd(), c_name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW)
+    };
+    if rc != 0 {
+        let e = std::io::Error::last_os_error();
+        return match e.kind() {
+            ErrorKind::NotFound => Ok(false),
+            _ => Err(format!("{}: {e}", path.display())),
+        };
+    }
+    if st.st_mode & libc::S_IFMT != libc::S_IFREG {
+        return Err(format!("{} is not a regular file", path.display()));
+    }
+    // SAFETY: as for `fstatat`.
+    if unsafe { libc::unlinkat(dir.as_raw_fd(), c_name.as_ptr(), 0) } != 0 {
+        return Err(format!("{}: {}", path.display(), std::io::Error::last_os_error()));
+    }
+    Ok(true)
+}
+
 /// What `Stash::delete_entry` did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Deleted {
@@ -451,18 +504,10 @@ impl Stash {
         }
         let trash = self.paths.trash_dir.clone();
         let doc = PathBuf::from(&r.path);
-        if let Some(file) = purgeable_file(&trash, &doc)? {
-            fs::remove_file(&file).map_err(|e| format!("{}: {e}", file.display()))?;
-        }
+        unlink_from_trash(&trash, &doc)?;
         if let Some(side) = crate::comments::sidecar_path(&doc) {
-            match purgeable_file(&trash, &side) {
-                Ok(Some(s)) => {
-                    if let Err(e) = fs::remove_file(&s) {
-                        eprintln!("[stash::trash] sidecar {} not removed: {e}", s.display());
-                    }
-                }
-                Ok(None) => {}
-                Err(e) => eprintln!("[stash::trash] sidecar left alone: {e}"),
+            if let Err(e) = unlink_from_trash(&trash, &side) {
+                eprintln!("[stash::trash] sidecar left alone: {e}");
             }
         }
         let tx = self
@@ -1618,6 +1663,40 @@ mod tests {
         let root = scratch("trash-guard-nodir");
         fs::write(root.join("a.md"), "x").unwrap();
         assert!(purgeable_file(&root.join(".trash"), &root.join("a.md")).is_err());
+    }
+
+    #[test]
+    fn unlink_from_trash_deletes_a_regular_file_and_nothing_else() {
+        let root = scratch("trash-unlinkat");
+        let trash = root.join(".trash");
+        fs::create_dir_all(&trash).unwrap();
+        fs::write(trash.join("a.md"), "x").unwrap();
+        fs::write(root.join("precious.md"), "keep me").unwrap();
+        symlink(root.join("precious.md"), trash.join("link.md")).unwrap();
+        fs::create_dir_all(trash.join("dir.md")).unwrap();
+
+        assert_eq!(unlink_from_trash(&trash, &trash.join("a.md")), Ok(true));
+        assert!(!trash.join("a.md").exists());
+        assert_eq!(unlink_from_trash(&trash, &trash.join("gone.md")), Ok(false));
+        assert!(unlink_from_trash(&trash, &trash.join("link.md")).is_err());
+        assert!(unlink_from_trash(&trash, &trash.join("dir.md")).is_err());
+        assert!(unlink_from_trash(&trash, &root.join("precious.md")).is_err());
+
+        assert_eq!(fs::read_to_string(root.join("precious.md")).unwrap(), "keep me");
+        assert!(fs::symlink_metadata(trash.join("link.md")).unwrap().file_type().is_symlink());
+        assert!(trash.join("dir.md").is_dir());
+    }
+
+    #[test]
+    fn unlink_from_trash_refuses_a_symlinked_trash_folder() {
+        let root = scratch("trash-unlinkat-symlinked");
+        let real = root.join("documents");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("a.md"), "keep me").unwrap();
+        let trash = root.join(".trash");
+        symlink(&real, &trash).unwrap();
+        assert!(unlink_from_trash(&trash, &trash.join("a.md")).is_err());
+        assert_eq!(fs::read_to_string(real.join("a.md")).unwrap(), "keep me");
     }
 
     // ---- delete ----
