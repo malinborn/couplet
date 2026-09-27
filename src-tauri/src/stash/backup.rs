@@ -200,7 +200,17 @@ fn export_json(conn: &Connection, now: i64) -> Result<String, String> {
 
 /// In the user's folder, so through `atomic_write`; reserved 0600 first like a
 /// note (plan D3, D13), and `save` keeps that mode on every rewrite.
+/// Refuses anything at the name but a regular file: a symlink planted there
+/// would have this write the stash's titles and paths wherever it points.
 fn write_export(path: &Path, json: &str) -> Result<(), String> {
+    if let Ok(meta) = fs::symlink_metadata(path) {
+        if !meta.file_type().is_file() {
+            return Err(format!(
+                "{} is not a regular file, not writing the export over it",
+                path.display()
+            ));
+        }
+    }
     match notes::reserve_private(path) {
         Ok(()) => {}
         Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
@@ -419,6 +429,36 @@ mod tests {
             .filter(|n| n.as_str() > "stash-2026-09")
             .count();
         assert_eq!(files, KEEP_BACKUPS);
+    }
+
+    #[test]
+    fn the_export_does_not_follow_a_symlink() {
+        let (mut stash, root) = stash_in("export-symlink");
+        stash.create_note("# Один", None, T0, MSK).unwrap();
+        let elsewhere = root.join("elsewhere.txt");
+        fs::write(&elsewhere, "someone else's file").unwrap();
+        let path = stash.paths.export_path.clone();
+        std::os::unix::fs::symlink(&elsewhere, &path).unwrap();
+        let err = stash.export(T0).unwrap_err();
+        assert!(err.contains("not a regular file"), "{err}");
+        assert_eq!(
+            fs::read_to_string(&elsewhere).unwrap(),
+            "someone else's file"
+        );
+        assert!(fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
+    fn the_export_does_not_replace_a_folder() {
+        let (mut stash, _root) = stash_in("export-dir");
+        stash.create_note("# Один", None, T0, MSK).unwrap();
+        let path = stash.paths.export_path.clone();
+        fs::create_dir_all(path.join("inside")).unwrap();
+        assert!(stash.export(T0).is_err());
+        assert!(path.join("inside").is_dir());
     }
 
     #[test]
