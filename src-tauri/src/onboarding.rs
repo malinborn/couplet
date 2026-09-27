@@ -544,7 +544,7 @@ const PROMPT_INTRO: &str = r#"1. Register couplet over MCP, if your harness supp
 
    ---
    name: couplet
-   description: Use when the user should read something with their own eyes, when a file or report needs to be shown, when asking a question about a document they already have open, or when replying to comments they left in one. Covers the MCP tools (show/edit/ask/question/answer) and the CLI fallback.
+   description: Use when the user should read something with their own eyes, when a file or report needs to be shown, when asking a question about a document they already have open, when replying to comments they left in one, or when looking for something they put away in their couplet stash. Covers the MCP tools (show/edit/ask/question/answer/stash_search/stash_get) and the CLI fallback.
    ---
 
    Its body is everything between the SKILL markers below, verbatim.
@@ -582,13 +582,15 @@ const CONFIG_BLOCK: &str = r#"
 `couplet` is the local editor the user reads in. Reach for it when they should
 see something with their own eyes — a report, plan, spec or review you just
 wrote; when they say "show me"; when the question is about a document they
-already have open; when a mermaid diagram is involved; or when they left
-comments in a document for you. Load the `couplet` skill before using it.
+already have open; when a mermaid diagram is involved; when they left
+comments in a document for you; or when they mention something they put away
+(their couplet stash — search it, never dump it). Load the `couplet` skill
+before using it.
 
-Prefer the MCP tools (`show`, `edit`, `ask`, `question`, `answer`). If MCP is
-not registered, not supported by this harness, or a call fails, use the
-`couplet` CLI instead — the skill documents both. Skip it for short answers and
-throwaway files.
+Prefer the MCP tools (`show`, `edit`, `ask`, `question`, `answer`,
+`stash_search`). If MCP is not registered, not supported by this harness, or a
+call fails, use the `couplet` CLI instead — the skill documents both. Skip it
+for short answers and throwaway files.
 "#;
 
 /// Content for the "AI Playbook" menu item — static, bundled at compile time,

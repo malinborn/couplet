@@ -1879,12 +1879,14 @@ EXIT CODES
         than 6 --option flags or no --question, or couplet isn't running /
         didn't start in time.
 
-MCP — stdio MCP server exposing show/edit/ask as tools, for agents that speak MCP
+MCP — stdio MCP server exposing show/edit/ask and the stash as tools, for agents that speak MCP
   couplet mcp [--socket PATH] [--product NAME]
       Runs a Model Context Protocol server on stdin/stdout instead of the CLI
       verbs above: same show/edit/ask operations, wrapped as MCP tools over
-      JSON-RPC 2.0. Launches couplet via `open` if the command socket is down
-      (skipped when --socket is given explicitly). Register once with:
+      JSON-RPC 2.0, plus stash_search/list/get/add/tag (answered from the
+      stash database itself, like couplet stash). Launches couplet via `open`
+      if the command socket is down (skipped when --socket or a non-release
+      --product is given). Register once with:
         claude mcp add --scope user couplet -- couplet mcp
       couplet mcp --product couplet-dev targets a dev build (socket and stash).
       See docs/ai-interface.md ("MCP server") for the generic mcpServers JSON
@@ -1950,7 +1952,18 @@ A thread the user is still typing has `status=paused` and is deliberately invisi
 
 If your harness can react to a stream (Claude Code: `Monitor({command: "couplet watch", description: "new couplet comments", persistent: true})`), arm it once per session and you get woken in this same session, with your context intact, instead of polling. `persistent: true` matters: without it the monitor dies after five minutes and its silence looks exactly like "no comments". Also add a `Stop` hook running `couplet question` that blocks the turn while anything is open — a monitor that emits too much is stopped by the harness without telling you, and the hook is what stops comments piling up unseen.
 
-If your harness cannot do either, check `couplet question` at natural points: before asking the user something in chat, and before reporting that you are done. A comment line is an interruption, not a user message — finish the current step cleanly, then answer. If a comment asks for a change rather than an answer, make it with `edit`, then close the thread with `answer`."#;
+If your harness cannot do either, check `couplet question` at natural points: before asking the user something in chat, and before reporting that you are done. A comment line is an interruption, not a user message — finish the current step cleanly, then answer. If a comment asks for a change rather than an answer, make it with `edit`, then close the thread with `answer`.
+
+### The user's stash
+
+The user puts notes and file references away into couplet's stash («тайник») and expects you to find things there. These verbs read the stash directly — couplet does not need to be running:
+
+- `couplet stash search "HDMI переговорка" [--tag infra] [--kind note|file] [--all] [--limit 5] --json` — the best matches, each with a ~200-character snippet, never the full text.
+- `couplet stash get <id> [--lines 120:180] --json` — the text of one note (a long one stops at 500 lines; the answer says how to get the rest). A file entry gives its path: read the file itself.
+- `couplet stash list [--since yesterday] [--tag infra] --json` — metadata only: what was put away, when, with which tags.
+- `echo "text" | couplet stash add [--tag t]` or `couplet stash add --path <file> [--tag t]` — only when the user asks you to keep something; `couplet stash tag <id> --add t --remove u`.
+
+Search first, get one, never dump: do not page through the whole stash or `get` every hit — read the snippets and fetch only the entry you need. Results are scoped to the git repository of your current directory (the answer's `scope` says so); when its `hint` says there is nothing here, retry with `--all` before telling the user nothing exists. A note is an ordinary `.md` file: `couplet show`/`edit` work on the `path` it returns."#;
 
 /// Common instruction-file locations, shared by `couplet agent`'s CLI-syntax
 /// snippet and its `--mcp` behavioral-snippet counterpart below.
@@ -2003,7 +2016,15 @@ pub(crate) const MCP_AGENT_SNIPPET: &str = r#"## couplet via MCP — how to use 
 - A monitor line is an interruption, not a message from the user. Bring the current step to a consistent state first, then answer at that checkpoint — abandoning a half-finished edit to reply is worse for them than replying a minute later.
 - Use the `question` tool to read open threads and `answer` to reply. Also check `question` before asking them something in chat and before reporting that you are done: they may have already answered you in the document.
 - If a comment asks for a change rather than an answer, make it with `edit`, then close the thread with `answer`.
-- Add a `Stop` hook that runs `couplet question` and blocks the turn while anything is still open. This is the backstop that matters: a monitor emitting too much is stopped by the harness, and you will not necessarily notice — without the hook, comments pile up in silence."#;
+- Add a `Stop` hook that runs `couplet question` and blocks the turn while anything is still open. This is the backstop that matters: a monitor emitting too much is stopped by the harness, and you will not necessarily notice — without the hook, comments pile up in silence.
+
+### The user's stash
+
+- The user keeps notes and file references in couplet's stash; `stash_search`, `stash_list` and `stash_get` read it even when couplet is not running.
+- Search first, get one, never dump. `stash_search` returns snippets, not text: read them, pick the entry you need and `stash_get` only that one. Do not page through the whole stash, and do not `stash_get` every hit to be sure.
+- `stash_list` is for "what did I put away yesterday" (`since: "yesterday"`) or "everything tagged infra" — metadata only.
+- Results are scoped to the git repository of your working directory; the answer's `scope` says so. When its `hint` says there is nothing here, retry with `all: true` before telling the user nothing exists.
+- `stash_add` and `stash_tag` change the user's stash: only when they ask you to keep or tag something. A note is an ordinary `.md` file — `show` and `edit` work on the `path` an answer returns."#;
 
 /// Text for `couplet agent --mcp` — printed by `couplet help` for `couplet agent
 /// [--mcp]`. Local and offline.
@@ -3307,7 +3328,17 @@ mod tests {
         assert!(text.contains("AGENTS.md"));
         assert!(text.contains("## couplet AI interface"));
         assert!(text.contains("--mcp"), "should point at agent --mcp for MCP setups");
-        for needle in ["-t 7", "couplet ls", "couplet close", "--transient", "\"focused\":false"] {
+        for needle in [
+            "-t 7",
+            "couplet ls",
+            "couplet close",
+            "--transient",
+            "\"focused\":false",
+            "couplet stash search",
+            "couplet stash get",
+            "Search first, get one, never dump",
+            "--all",
+        ] {
             assert!(text.contains(needle), "agent snippet missing {needle}");
         }
     }
@@ -3327,9 +3358,28 @@ mod tests {
         // This is a behavioral snippet, not CLI syntax — it should not carry
         // the `couplet ask <file> --question ...` shell-command shape.
         assert!(!text.contains("couplet ask <file>"));
-        for needle in ["window_binding", "`windows`", "`close`", "transient", "focused: false"] {
+        for needle in [
+            "window_binding",
+            "`windows`",
+            "`close`",
+            "transient",
+            "focused: false",
+            "`stash_search`",
+            "`stash_get`",
+            "Search first, get one, never dump",
+            "all: true",
+        ] {
             assert!(text.contains(needle), "MCP snippet missing {needle}");
         }
+        // The MCP snippet stays free of CLI syntax.
+        assert!(!text.contains("couplet stash search"));
+    }
+
+    #[test]
+    fn the_docs_carry_both_snippets_verbatim() {
+        let doc = include_str!("../../docs/ai-interface.md");
+        assert!(doc.contains(AGENT_SNIPPET), "docs/ai-interface.md is out of sync with AGENT_SNIPPET");
+        assert!(doc.contains(MCP_AGENT_SNIPPET), "docs/ai-interface.md is out of sync with MCP_AGENT_SNIPPET");
     }
 
     #[test]
