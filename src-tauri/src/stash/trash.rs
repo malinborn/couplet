@@ -404,6 +404,105 @@ impl Stash {
         }
         tx.commit().map_err(db::err)
     }
+
+    /// «удалить навсегда» and the 30-day purge: the only code that deletes a
+    /// note's bytes (D9). Only a trashed note; only a regular file directly
+    /// inside a real trash folder (`purgeable_file`) — a tampered row, a
+    /// symlink, a directory or a symlinked `.trash` is refused and nothing
+    /// changes. A file already gone just loses its row. The comment sidecar
+    /// goes under the same guard, best effort.
+    pub(crate) fn purge_entry(&mut self, id: &str) -> Result<(), String> {
+        let r = row(&self.conn, id)?;
+        if r.kind != StashKind::Note.as_str() || r.deleted_at.is_none() {
+            return Err(format!("stash entry {id} is not in the trash"));
+        }
+        let trash = self.paths.trash_dir.clone();
+        let doc = PathBuf::from(&r.path);
+        if let Some(file) = purgeable_file(&trash, &doc)? {
+            fs::remove_file(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+        }
+        if let Some(side) = crate::comments::sidecar_path(&doc) {
+            match purgeable_file(&trash, &side) {
+                Ok(Some(s)) => {
+                    if let Err(e) = fs::remove_file(&s) {
+                        eprintln!("[stash::trash] sidecar {} not removed: {e}", s.display());
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => eprintln!("[stash::trash] sidecar left alone: {e}"),
+            }
+        }
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db::err)?;
+        // Before the DELETE: afterwards the rowid can no longer be found.
+        search::unindex_entry(&tx, id)?;
+        // Explicit although `tags` cascades, as in `remove_file_ref`.
+        tx.execute("DELETE FROM tags WHERE entry_id = ?1", [id])
+            .map_err(db::err)?;
+        tx.execute(
+            "DELETE FROM entries WHERE id = ?1 AND kind = 'note' AND deleted_at IS NOT NULL",
+            [id],
+        )
+        .map_err(db::err)?;
+        tx.commit().map_err(db::err)
+    }
+
+    /// Trashed notes deleted at least `TRASH_RETENTION_MS` before `now`,
+    /// oldest first.
+    fn expired_trash(&self, now: i64) -> Result<Vec<String>, String> {
+        let mut st = self
+            .conn
+            .prepare(
+                "SELECT id FROM entries \
+                 WHERE kind = 'note' AND deleted_at IS NOT NULL AND deleted_at <= ?1 \
+                 ORDER BY deleted_at, rowid",
+            )
+            .map_err(db::err)?;
+        let ids = st
+            .query_map([now - TRASH_RETENTION_MS], |r| r.get(0))
+            .map_err(db::err)?
+            .collect::<Result<Vec<String>, _>>()
+            .map_err(db::err)?;
+        Ok(ids)
+    }
+}
+
+/// How long a trashed note stays restorable. Mirrored as `TRASH_DAYS` in
+/// `src/lib/stash/trash-view.ts`; a vitest reads this line.
+pub(crate) const TRASH_RETENTION_DAYS: i64 = 30;
+pub(crate) const TRASH_RETENTION_MS: i64 = TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct PurgeReport {
+    pub(crate) purged: Vec<String>,
+    /// Rows the guard refused, with the reason — left exactly as they were.
+    pub(crate) skipped: Vec<(String, String)>,
+}
+
+/// The 30-day purge (D10's pass): every expired trashed note, one stash lock
+/// per note, so the housekeeping thread never holds the lock across a run of
+/// file removals. One refused row never stops the rest.
+pub(crate) fn purge_expired(state: &StashState, now: i64) -> PurgeReport {
+    let mut report = PurgeReport::default();
+    let ids = match state.with(|s| s.expired_trash(now)) {
+        Ok(ids) => ids,
+        Err(e) => {
+            eprintln!("[stash::trash] purge query failed: {e}");
+            return report;
+        }
+    };
+    for id in ids {
+        match state.with(|s| s.purge_entry(&id)) {
+            Ok(()) => report.purged.push(id),
+            Err(e) => {
+                eprintln!("[stash::trash] purge of {id} skipped: {e}");
+                report.skipped.push((id, e));
+            }
+        }
+    }
+    report
 }
 
 /// «вернуть»: `Stash::restore_entry`, then the search index from the note as
@@ -1173,5 +1272,232 @@ mod tests {
         assert_eq!(fs::read_to_string(&trashed).unwrap(), "x");
         assert!(!Path::new(&e.path).exists());
         assert_eq!(row(&stash, &e.id).unwrap(), (trashed, Some(T0), None));
+    }
+
+    // ---- purge ----
+
+    /// Points a row somewhere else, as a corrupt or tampered database would.
+    fn repoint(stash: &Stash, id: &str, path: &Path) {
+        stash
+            .conn
+            .execute(
+                "UPDATE entries SET path = ?2 WHERE id = ?1",
+                params![id, path.to_string_lossy()],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn purge_removes_the_file_the_row_and_the_tags() {
+        let (mut stash, _root) = stash_in("trash-purge");
+        let e = note(&mut stash, "x");
+        stash.tag(&e.id, &["t".into()], &[]).unwrap();
+        stash.delete_entry(&e.id, T0).unwrap();
+        let (trashed, _, _) = row(&stash, &e.id).unwrap();
+
+        stash.purge_entry(&e.id).unwrap();
+
+        assert!(!Path::new(&trashed).exists());
+        assert_eq!(row(&stash, &e.id), None);
+        assert!(tags(&stash, &e.id).is_empty());
+        assert!(stash.paths.trash_dir.is_dir(), "the trash folder itself stays");
+    }
+
+    #[test]
+    fn purge_removes_the_sidecar_in_the_trash() {
+        let (mut stash, _root) = stash_in("trash-purge-sidecar");
+        let e = note(&mut stash, "x");
+        fs::write(crate::comments::sidecar_path(Path::new(&e.path)).unwrap(), "t").unwrap();
+        stash.delete_entry(&e.id, T0).unwrap();
+        let (trashed, _, _) = row(&stash, &e.id).unwrap();
+        stash.purge_entry(&e.id).unwrap();
+        assert!(!crate::comments::sidecar_path(Path::new(&trashed)).unwrap().exists());
+        assert!(names_in(&stash.paths.trash_dir).is_empty());
+    }
+
+    #[test]
+    fn purge_refuses_a_live_note_and_a_file_ref() {
+        let (mut stash, root) = stash_in("trash-purge-live");
+        let e = note(&mut stash, "live");
+        let (r, file) = file_ref(&mut stash, &root, "theirs.md", "theirs");
+        assert!(stash.purge_entry(&e.id).is_err());
+        assert!(stash.purge_entry(&r.id).is_err());
+        assert_eq!(fs::read_to_string(&e.path).unwrap(), "live");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "theirs");
+        assert!(row(&stash, &e.id).is_some() && row(&stash, &r.id).is_some());
+    }
+
+    #[test]
+    fn purge_never_deletes_a_file_outside_the_trash() {
+        let (mut stash, root) = stash_in("trash-purge-outside");
+        let e = note(&mut stash, "x");
+        stash.delete_entry(&e.id, T0).unwrap();
+        let precious = root.join("precious.md");
+        fs::write(&precious, "keep me").unwrap();
+
+        repoint(&stash, &e.id, &precious);
+        assert!(stash.purge_entry(&e.id).is_err());
+        // A `..` path that only looks as if it were in the trash.
+        let dotted = stash.paths.trash_dir.join("..").join("..").join("..").join("precious.md");
+        assert_eq!(fs::canonicalize(&dotted).unwrap(), fs::canonicalize(&precious).unwrap());
+        repoint(&stash, &e.id, &dotted);
+        assert!(stash.purge_entry(&e.id).is_err());
+        // A file in the notes folder, next to a live note.
+        let live = note(&mut stash, "live");
+        fs::write(format!("{}.x", live.path), "neighbour").unwrap();
+        repoint(&stash, &e.id, &PathBuf::from(format!("{}.x", live.path)));
+        assert!(stash.purge_entry(&e.id).is_err());
+
+        assert_eq!(fs::read_to_string(&precious).unwrap(), "keep me");
+        assert_eq!(fs::read_to_string(&live.path).unwrap(), "live");
+        assert_eq!(fs::read_to_string(format!("{}.x", live.path)).unwrap(), "neighbour");
+        assert!(row(&stash, &e.id).is_some());
+    }
+
+    #[test]
+    fn purge_of_a_symlink_in_the_trash_leaves_its_target() {
+        let (mut stash, root) = stash_in("trash-purge-symlink");
+        let e = note(&mut stash, "x");
+        stash.delete_entry(&e.id, T0).unwrap();
+        let (trashed, _, _) = row(&stash, &e.id).unwrap();
+        let precious = root.join("precious.md");
+        fs::write(&precious, "keep me").unwrap();
+        fs::remove_file(&trashed).unwrap();
+        symlink(&precious, &trashed).unwrap();
+
+        assert!(stash.purge_entry(&e.id).is_err());
+        assert_eq!(fs::read_to_string(&precious).unwrap(), "keep me");
+        assert!(fs::symlink_metadata(&trashed).unwrap().file_type().is_symlink());
+        assert!(row(&stash, &e.id).is_some());
+    }
+
+    #[test]
+    fn purge_of_a_directory_in_the_trash_is_refused() {
+        let (mut stash, _root) = stash_in("trash-purge-dir");
+        let e = note(&mut stash, "x");
+        stash.delete_entry(&e.id, T0).unwrap();
+        let (trashed, _, _) = row(&stash, &e.id).unwrap();
+        fs::remove_file(&trashed).unwrap();
+        fs::create_dir(&trashed).unwrap();
+        fs::write(Path::new(&trashed).join("inner.md"), "keep me").unwrap();
+
+        assert!(stash.purge_entry(&e.id).is_err());
+        assert_eq!(
+            fs::read_to_string(Path::new(&trashed).join("inner.md")).unwrap(),
+            "keep me"
+        );
+        assert!(row(&stash, &e.id).is_some());
+    }
+
+    #[test]
+    fn purge_through_a_symlinked_trash_folder_is_refused() {
+        // `.trash` swapped for a symlink to a real folder after the delete:
+        // the row still names `.trash/<name>`, which now resolves elsewhere.
+        let (mut stash, root) = stash_in("trash-purge-symlinked-dir");
+        let e = note(&mut stash, "x");
+        stash.delete_entry(&e.id, T0).unwrap();
+        let (trashed, _, _) = row(&stash, &e.id).unwrap();
+        let trash = stash.paths.trash_dir.clone();
+        let elsewhere = root.join("documents");
+        fs::rename(&trash, &elsewhere).unwrap();
+        symlink(&elsewhere, &trash).unwrap();
+        assert!(fs::metadata(&trashed).unwrap().is_file());
+
+        assert!(stash.purge_entry(&e.id).is_err());
+
+        let name = Path::new(&trashed).file_name().unwrap();
+        assert_eq!(fs::read_to_string(elsewhere.join(name)).unwrap(), "x");
+        assert!(row(&stash, &e.id).is_some());
+    }
+
+    #[test]
+    fn purge_of_a_note_whose_file_is_gone_removes_the_row() {
+        let (mut stash, _root) = stash_in("trash-purge-gone");
+        let e = note(&mut stash, "x");
+        stash.delete_entry(&e.id, T0).unwrap();
+        let (trashed, _, _) = row(&stash, &e.id).unwrap();
+        fs::remove_file(&trashed).unwrap();
+        stash.purge_entry(&e.id).unwrap();
+        assert_eq!(row(&stash, &e.id), None);
+    }
+
+    #[test]
+    fn purge_of_a_note_trashed_without_its_file_removes_only_the_row() {
+        // Deleted while its file was already gone: the row still names the
+        // notes folder, where a file of that name may appear again later.
+        let (mut stash, _root) = stash_in("trash-purge-gone-live-path");
+        let e = note(&mut stash, "x");
+        fs::remove_file(&e.path).unwrap();
+        stash.delete_entry(&e.id, T0).unwrap();
+        fs::write(&e.path, "a new file under the old name").unwrap();
+
+        assert!(stash.purge_entry(&e.id).is_err());
+        assert_eq!(
+            fs::read_to_string(&e.path).unwrap(),
+            "a new file under the old name"
+        );
+
+        fs::remove_file(&e.path).unwrap();
+        stash.purge_entry(&e.id).unwrap();
+        assert_eq!(row(&stash, &e.id), None);
+    }
+
+    #[test]
+    fn purge_expired_uses_a_thirty_day_cutoff() {
+        let (state, root) = state_in("trash-purge-cutoff");
+        let make = |text: &str| state.with(|s| s.create_note(text, None, T0, MSK)).unwrap();
+        let young = make("young");
+        let exact = make("exact");
+        let old = make("old");
+        let live = make("live");
+        let (r, file) = state
+            .with(|s| Ok(file_ref(s, &root, "ref.md", "ref")))
+            .unwrap();
+        let now = T0 + 100 * DAY;
+        let del = |id: &str, at: i64| state.with(|s| s.delete_entry(id, at)).unwrap();
+        del(&young.id, now - 30 * DAY + 1);
+        del(&exact.id, now - 30 * DAY);
+        del(&old.id, now - 31 * DAY);
+
+        let report = purge_expired(&state, now);
+
+        let mut purged = report.purged.clone();
+        purged.sort();
+        let mut want = vec![exact.id.clone(), old.id.clone()];
+        want.sort();
+        assert_eq!(purged, want);
+        assert!(report.skipped.is_empty());
+        let row_of = |id: &str| state.with(|s| Ok(row(s, id))).unwrap();
+        assert!(row_of(&young.id).is_some());
+        assert!(row_of(&live.id).is_some());
+        assert_eq!(fs::read_to_string(&live.path).unwrap(), "live");
+        assert!(row_of(&r.id).is_some());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "ref");
+        assert_eq!(TRASH_RETENTION_MS, 30 * DAY);
+    }
+
+    #[test]
+    fn purge_expired_skips_an_unsafe_row_and_goes_on() {
+        let (state, root) = state_in("trash-purge-skip");
+        let bad = state.with(|s| s.create_note("bad", None, T0, MSK)).unwrap();
+        let good = state.with(|s| s.create_note("good", None, T0, MSK)).unwrap();
+        state.with(|s| s.delete_entry(&bad.id, T0)).unwrap();
+        state.with(|s| s.delete_entry(&good.id, T0 + 1)).unwrap();
+        let precious = root.join("precious.md");
+        fs::write(&precious, "keep me").unwrap();
+        state
+            .with(|s| {
+                repoint(s, &bad.id, &precious);
+                Ok(())
+            })
+            .unwrap();
+
+        let report = purge_expired(&state, T0 + 31 * DAY);
+
+        assert_eq!(report.purged, vec![good.id.clone()]);
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(report.skipped[0].0, bad.id);
+        assert_eq!(fs::read_to_string(&precious).unwrap(), "keep me");
+        assert!(state.with(|s| Ok(row(s, &bad.id))).unwrap().is_some());
     }
 }
