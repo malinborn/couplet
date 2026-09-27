@@ -726,6 +726,12 @@
     color: var(--text-muted);
   }
 
+  /* Compact, a trash card drops «удалена …» (mockup :741 hides every compact
+     meta, :759 brings back only a stash card's); «удалится через N дн.» stays. */
+  .card.compact.trashed .card-meta {
+    display: none;
+  }
+
   /* Plain labels here, not filters. */
   .card.trashed .tag {
     cursor: default;

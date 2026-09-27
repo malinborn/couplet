@@ -421,9 +421,14 @@ describe('StashCard, trashed (stage 06)', () => {
     expect(css).not.toMatch(/\.card\.compact \.card-meta > :not\(\.aw\)/);
   });
 
-  it("compact keeps «удалена …» (the stash card's rule exempts it) and one preview line", () => {
+  it('compact hides «удалена …» as the mockup does and keeps one preview line', () => {
+    // Mockup :741 hides every compact card's meta; :759 brings it back for
+    // `:not(.trashed)` cards only — a compact trash card has no «удалена …»
+    // line («удалится через N дн.» still says it). jsdom applies no scoped CSS.
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'StashCard.svelte'), 'utf8');
+    expect(css).toMatch(/\.card\.compact\.trashed \.card-meta \{\s*display: none;/);
     const card = renderTrashed(trashedNote, true);
-    expect(q(card, '.card-meta span')?.textContent).toBe('удалена 3 дня назад');
+    expect(card.classList.contains('compact')).toBe(true);
     expect(card.querySelectorAll('.card-preview > div')).toHaveLength(1);
     expect(q(card, '.card-preview')?.textContent).toBe('Почему мы ушли с OpenVPN на Xray');
   });
