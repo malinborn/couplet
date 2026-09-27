@@ -100,6 +100,8 @@ export function stashView(input: ViewInput): StashView {
     : input.entries.map((e): [StashEntry, null] => [e, null]);
   for (const [entry, hit] of candidates) {
     if (entry.deletedAt !== null) continue;
+    // The one repo rule, with or without a query: the list copy's repo. The
+    // search never filters by repo (`SearchRequest`).
     if (input.repoChip !== null && entry.repo !== input.repoChip) continue;
     const match = matchStash(
       {

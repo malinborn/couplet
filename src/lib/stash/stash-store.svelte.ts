@@ -271,13 +271,13 @@ export function createStashStore(deps: StashStoreDeps) {
       return hits;
     },
     /**
-     * How many entries matched in all. With a `#tag` in the query the drawer
-     * filters the hits further, so this is then an upper bound of its rows.
+     * How many entries matched in all. The drawer filters the hits further by
+     * its repo chip and `#tag`s, so under them this is an upper bound of its rows.
      */
     get searchTotal(): number {
       return searchTotal;
     },
-    /** The drawer's query or repo chip changed: search its text (debounced), or drop the hits. */
+    /** The drawer's query changed: search its text (debounced), or drop the hits. */
     search(req: SearchRequest): void {
       runner?.request(req);
     },

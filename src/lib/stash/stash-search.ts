@@ -17,13 +17,22 @@ import { searchText } from './stash-query';
 import { STASH_RENDER_CAP } from './stash-view';
 
 export const SEARCH_DEBOUNCE_MS = 120;
-/** One page is what the drawer renders; Rust caps `limit` at 200 too. */
+/**
+ * One page is what the drawer renders; Rust caps `limit` at 200 too. The
+ * repo chip and `#tag`s filter this page on the client, so under them the
+ * drawer can show fewer cards than matched in all («ещё N» counts the rest).
+ */
 export const SEARCH_LIMIT = STASH_RENDER_CAP;
 
+/**
+ * No repo: the drawer applies its repo chip to the hits itself, on the list's
+ * copy of each entry — the rule it applies without a query. Rust would filter
+ * on the repo stored at put-away, which the list re-derives for a file ref, so
+ * a card could be there under the chip and gone once text is typed.
+ */
 export interface SearchRequest {
   /** The drawer's whole query; `toArgs` keeps only its text terms. */
   query: string;
-  repo: string | null;
   /** Stage 06's trash filter; the drawer passes `null`. */
   tag: string | null;
   deleted: boolean;
@@ -38,7 +47,6 @@ export interface SearchRunner {
 
 export function toArgs(r: SearchRequest): StashSearchArgs {
   const args: StashSearchArgs = { query: searchText(r.query), deleted: r.deleted, limit: SEARCH_LIMIT };
-  if (r.repo) args.repo = r.repo;
   if (r.tag) args.tag = r.tag;
   return args;
 }

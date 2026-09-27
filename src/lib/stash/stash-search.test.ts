@@ -40,7 +40,6 @@ function result(...ids: string[]): StashSearchResult {
 
 const req = (query: string, extra: Partial<SearchRequest> = {}): SearchRequest => ({
   query,
-  repo: null,
   tag: null,
   deleted: false,
   ...extra,
@@ -294,9 +293,8 @@ describe('createSearchRunner', () => {
 describe('toArgs', () => {
   it('OmitsAbsentFiltersAndAsksForAWholePage', () => {
     expect(toArgs(req('тай'))).toEqual({ query: 'тай', deleted: false, limit: SEARCH_LIMIT });
-    expect(toArgs(req('тай', { repo: 'md-mini', tag: 'infra', deleted: true }))).toEqual({
+    expect(toArgs(req('тай', { tag: 'infra', deleted: true }))).toEqual({
       query: 'тай',
-      repo: 'md-mini',
       tag: 'infra',
       deleted: true,
       limit: SEARCH_LIMIT,

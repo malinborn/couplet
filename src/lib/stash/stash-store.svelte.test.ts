@@ -463,9 +463,8 @@ describe('stash store', () => {
   });
 
   describe('search (stage 05)', () => {
-    const req = (query: string, repo: string | null = null): SearchRequest => ({
+    const req = (query: string): SearchRequest => ({
       query,
-      repo,
       tag: null,
       deleted: false,
     });
@@ -493,10 +492,10 @@ describe('stash store', () => {
       const { s, search } = searching(async () => ({ hits: [hitOf(entry('b'))], total: 7, nextCursor: null }));
       s.open();
       await flush();
-      s.search(req('plan #ops', 'infra'));
+      s.search(req('plan #ops'));
       expect(search).not.toHaveBeenCalled();
       await afterDebounce();
-      expect(search).toHaveBeenCalledWith({ query: 'plan', repo: 'infra', deleted: false, limit: 200 });
+      expect(search).toHaveBeenCalledWith({ query: 'plan', deleted: false, limit: 200 });
       expect(s.hits?.map((h) => h.entry.id)).toEqual(['b']);
       expect(s.searchTotal).toBe(7);
     });

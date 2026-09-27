@@ -236,6 +236,24 @@ describe('stashView with search hits', () => {
     expect(v.total).toBe(3);
   });
 
+  it('the repo chip reads the list copy in both modes, not the repo the hit was stored with (M8)', () => {
+    const listed = entry('f', { kind: 'file', repo: 'shelf' });
+    const stored = { ...listed, repo: 'old-name' };
+    const withoutQuery = stashView({
+      entries: [listed, c],
+      indexes: indexes([listed, c]),
+      openHere: new Set(),
+      repoChip: 'shelf',
+      query: '',
+      sort: 'changed',
+      untitled: 'Untitled',
+      hits: null,
+    });
+    expect(rowIds(withoutQuery)).toEqual(['f']);
+    expect(rowIds(view([listed, c], [hit(stored), hit(c)], { repoChip: 'shelf' }))).toEqual(['f']);
+    expect(rowIds(view([listed, c], [hit(stored), hit(c)], { repoChip: 'old-name' }))).toEqual([]);
+  });
+
   it('without hits (null) the local substring path runs unchanged', () => {
     const v = stashView({
       entries: [a, b],

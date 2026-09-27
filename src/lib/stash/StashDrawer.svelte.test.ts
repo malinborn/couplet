@@ -438,6 +438,29 @@ describe('StashDrawer', () => {
       expect(ids()).toEqual(['a', 'c', 'd']);
     });
 
+    it('the repo chip is one rule with and without a query: the list copy, never the stored repo (M8)', async () => {
+      // A file ref whose stored repo (Rust's `entries.repo`, what SQL would
+      // filter on) differs from the one the list re-derives on every load.
+      const moved = entry('f', { kind: 'file', title: 'f.md', repo: 'shelf', modifiedAt: NOW - 2 * MIN });
+      const stored = { ...moved, repo: 'old-name' };
+      const list = [...ENTRIES, moved];
+      const search = vi.fn(async (_args: StashSearchArgs) => ({
+        hits: [hitOf(stored), hitOf(byId('c'))],
+        total: 2,
+        nextCursor: null,
+      }));
+      h = await setup({ repo: 'shelf', list: () => list, search });
+      expect(h.store.state.repoChip).toBe('shelf');
+      expect(ids()).toContain('f');
+      await setQuery('f.md');
+      await searched();
+      expect(search).toHaveBeenCalledTimes(1);
+      expect(search.mock.calls[0][0]).not.toHaveProperty('repo');
+      expect(search.mock.calls[0][0].limit).toBe(STASH_RENDER_CAP);
+      // Under the chip: the file ref stays, the other repo's note goes.
+      expect(ids()).toEqual(['f']);
+    });
+
     it('a failed search leaves the local filter working', async () => {
       const error = vi.spyOn(console, 'error').mockImplementation(() => {});
       h = await setup({ search: async () => Promise.reject(new Error('no IPC')) });

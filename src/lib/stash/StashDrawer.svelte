@@ -105,13 +105,12 @@
   const focused = $derived(open && stash.state.focus === 'stash');
   /** The query's text: what `stash_search` matches and the cards mark. Tags stay stage 04's client rule. */
   const terms = $derived(drawerTerms(stash.state.query));
-  const searchQuery = $derived(termsText(terms));
   /**
    * `stash.state` is `$state.raw`, replaced on every update (↑/↓, focus,
-   * sort): read through a `$derived`, an unchanged value stops there instead
-   * of re-running the search effect.
+   * sort): read through this `$derived` string, an unchanged query stops here
+   * instead of re-running the search effect.
    */
-  const repoChip = $derived(stash.state.repoChip);
+  const searchQuery = $derived(termsText(terms));
   const view = $derived(
     stashView({
       entries: stash.entries,
@@ -127,8 +126,8 @@
   /** The rows rendered as cards (I2); the keyboard ring moves over these only. */
   const rows = $derived(view.rows.slice(0, STASH_RENDER_CAP));
   /**
-   * Matches past the one page Rust answered. With a `#tag` in the query the
-   * drawer drops hits Rust counted, so this is then an upper bound.
+   * Matches past the one page Rust answered. The repo chip and a `#tag` drop
+   * hits Rust counted, so under them this is an upper bound.
    */
   const unfetched = $derived(stash.hits ? Math.max(0, stash.searchTotal - stash.hits.length) : 0);
   const more = $derived(view.rows.length - rows.length + unfetched);
@@ -172,9 +171,10 @@
 
   // Closed, the query is empty (`closeStash`), so this also drops the hits.
   // The store searches again after every list load, so no listener here.
-  // Primitives only (`searchQuery`, `repoChip`): see `repoChip`.
+  // Reads `searchQuery` only; the repo chip filters the hits in `stashView`,
+  // with the rule it has without a query (`SearchRequest`).
   $effect(() => {
-    stash.search({ query: searchQuery, repo: repoChip, tag: null, deleted: false });
+    stash.search({ query: searchQuery, tag: null, deleted: false });
   });
 
   // What is on screen: only a card the human can see pulses after a reload.
