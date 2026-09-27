@@ -2850,6 +2850,30 @@ describe('putting a selection away (stash stage 04)', () => {
     expect(h.notes.notPutAway).toHaveBeenCalledWith('locked; disk full');
   });
 
+  it('AThrowMidBatchAnswersWhatClosedSoFar_OnlyOurOwnCloses', async () => {
+    const h = await window5();
+    vi.mocked(h.deps.rust.close).mockResolvedValueOnce(null).mockRejectedValueOnce(new Error('ipc down'));
+    const outcome = await h.controller.putAwayTabs(['n', 'z', 'a']);
+    // z left the list before its IPC threw: our close, stash unknown — said as not stashed.
+    expect(outcome).toEqual({
+      closed: ['n', 'z'],
+      notStashed: [{ id: 'z', message: 'ipc down' }],
+      error: 'ipc down',
+    });
+    // The batch stopped there: the active tab was not touched.
+    expect(h.ids()).toEqual(['a', 'u', 'b']);
+    expect(h.notes.notPutAway).toHaveBeenCalledWith('ipc down');
+  });
+
+  it('AThrowBeforeTheTabLeftKeepsItAndCountsNothing', async () => {
+    const h = await window5();
+    vi.mocked(h.deps.comments.flush).mockRejectedValueOnce(new Error('sidecar locked'));
+    const outcome = await h.controller.putAwayTabs(['a']);
+    expect(outcome).toEqual({ closed: [], notStashed: [], error: 'sidecar locked' });
+    expect(h.ids()).toContain('a');
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+  });
+
   it('IdsThatAreNotTabsHereAreSkipped', async () => {
     const h = await window5();
     expect(await h.controller.putAwayTabs(['ghost'])).toEqual({ closed: [], notStashed: [] });

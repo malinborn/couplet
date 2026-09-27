@@ -91,6 +91,9 @@ export async function putAwayTabs(ids: readonly string[], deps: PutAwayDeps): Pr
       return { kind: 'failed', error: err instanceof Error ? err.message : String(err) };
     }
   }
+  // A close threw before any tab left: nothing happened but the error. One
+  // that threw midway is a partial `done` — the tabs still here are `kept`.
+  if (answer.error !== undefined && answer.closed.length === 0) return { kind: 'failed', error: answer.error };
   const closed = new Set(answer.closed);
   const refused = new Set(answer.notStashed.map((n) => n.id));
   const stashed = chosen.filter((s) => closed.has(s.id) && s.keeps && !refused.has(s.id));

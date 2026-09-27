@@ -951,14 +951,11 @@
         return text === null || isBlankText(text);
       },
       close: async (ids) => {
+        // A throw mid-batch comes back in the answer (`error`), with only the
+        // closes that were ours in `closed` — never "whatever is missing now".
         const answer = await tabs.putAwayTabs(ids);
-        if (answer) return answer;
-        // The serial queue swallowed a throw (and logged it) mid-batch: the tabs
-        // already gone did close, and went the way ⌃T goes.
-        const left = new Set(tabList.tabs.map((tab) => tab.id));
-        const closed = ids.filter((id) => !left.has(id));
-        if (closed.length === 0) throw new Error('the tabs could not be closed');
-        return { closed, notStashed: [] };
+        if (!answer) throw new Error('the tabs could not be closed');
+        return answer;
       },
     });
     const chip = stashStore.state.open ? stashStore.state.repoChip : null;

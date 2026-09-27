@@ -116,6 +116,16 @@ describe('putAwayTabs', () => {
     });
     expect(await putAwayTabs(['a'], d)).toEqual({ kind: 'failed', error: 'no window' });
   });
+
+  it('a batch that stopped on a throw before anything closed says why', async () => {
+    const d = deps(async () => ({ closed: [], notStashed: [], error: 'sidecar locked' }));
+    expect(await putAwayTabs(['a', 'c'], d)).toEqual({ kind: 'failed', error: 'sidecar locked' });
+  });
+
+  it('a batch that stopped midway counts only the closes the controller reported', async () => {
+    const d = deps(async () => ({ closed: ['a'], notStashed: [], error: 'ipc down' }));
+    expect(await putAwayTabs(['a', 'c'], d)).toMatchObject({ kind: 'done', closed: ['a'], count: 1, kept: ['c'] });
+  });
 });
 
 describe('putAwayNote', () => {

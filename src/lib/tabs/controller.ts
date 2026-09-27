@@ -70,6 +70,13 @@ export interface NotStashed {
 export interface PutAwayTabsOutcome {
   closed: string[];
   notStashed: NotStashed[];
+  /**
+   * A close threw (an IPC, a flush): the batch stopped there. What closed
+   * before it is still in `closed`; the tab it threw on counts only if that
+   * close had already taken it out of the list — then it is `notStashed`
+   * with this message, since whether Rust stashed it is unknown.
+   */
+  error?: string;
 }
 
 /**
@@ -1705,17 +1712,31 @@ export function createTabController(deps: TabControllerDeps) {
         const closed: string[] = [];
         const notStashed: NotStashed[] = [];
         const refusals: string[] = [];
+        let error: string | undefined;
         try {
           for (const id of backgroundFirst(ids)) {
             const before = refusals.length;
-            const gone = await closeNow(id, 'close', undefined, false, true, refusals);
+            let gone: boolean;
+            try {
+              gone = await closeNow(id, 'close', undefined, false, true, refusals);
+            } catch (err) {
+              error = err instanceof Error ? err.message : String(err);
+              console.error('put-away: a close failed', err);
+              // The queue runs one task at a time: a tab gone from the list
+              // now was taken out by this close, before its IPC threw.
+              if (findById(list, id)) break;
+              closed.push(id);
+              refusals.push(error);
+              notStashed.push({ id, message: error });
+              break;
+            }
             if (gone) closed.push(id);
             for (const message of refusals.slice(before)) notStashed.push({ id, message });
           }
         } finally {
           if (refusals.length > 0) deps.notes?.notPutAway([...new Set(refusals)].join('; '));
         }
-        return { closed, notStashed };
+        return error === undefined ? { closed, notStashed } : { closed, notStashed, error };
       }),
     /** Move `ids` (in this window's order) to another window or a new one (plan 05). */
     moveTabs: (ids: readonly string[], target: MoveTarget) => queue.run(() => moveNow(ids, target)),
