@@ -258,7 +258,10 @@ impl Stash {
 
     /// The notes folder in the same one spelling, for comparing a path
     /// against — never created: putting a file away must neither make the
-    /// folder appear nor fail because something else sits at its name.
+    /// folder appear nor fail because something else sits at its name. Tests
+    /// only: it may ask the file system, so production code names the folder
+    /// under the lock and spells it after (`stash_put_away`, `document_left`).
+    #[cfg(test)]
     fn notes_dir_spelling(&self) -> PathBuf {
         if self.notes_dir_ready {
             self.paths.notes_dir.clone()

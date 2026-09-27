@@ -272,8 +272,8 @@ pub(crate) struct PutAwayPlan {
 /// `put_away`'s disk half. Paths are normalized here — the dedup key is
 /// `path_norm`'s spelling — and a file named twice, in any two spellings, is
 /// kept once at its first place: a second pass would report it
-/// `created: false` and emit its id twice. `notes_dir` is
-/// `Stash::notes_dir_spelling`.
+/// `created: false` and emit its id twice. `notes_dir` is the notes folder
+/// in `path_norm`'s spelling, spelled with no lock held.
 pub(crate) fn plan_put_away(
     req: &PutAway,
     notes_dir: &Path,

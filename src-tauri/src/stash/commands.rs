@@ -76,7 +76,10 @@ pub async fn stash_put_away(
     };
     let results = off_lock(&state, move |state| {
         let now = clock::now_ms();
-        let notes_dir = state.with(|s| Ok(s.notes_dir_spelling()))?;
+        // The folder's spelling asks the file system: named under the lock,
+        // spelled outside it — only SQL under the stash lock (A11).
+        let notes_dir = state.with(|s| Ok(s.paths.notes_dir.clone()))?;
+        let notes_dir = crate::path_norm::normalize_path(&notes_dir);
         // Metadata, titles and `.git` walks on the user's paths: unlocked.
         let plan = plan_put_away(&req, &notes_dir, now)?;
         state.with(|s| {
