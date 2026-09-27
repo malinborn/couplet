@@ -103,6 +103,18 @@ pub enum AiRequest {
         #[allow(dead_code)] // protocol version, reserved for the future MCP wrapper
         v: u32,
     },
+    /// A CLI/MCP write landed in `stash.db` behind the app's back. Answered
+    /// by Rust at once: the app emits `stash-changed` once so drawers reload.
+    /// Best effort on the sender's side — nothing depends on it arriving.
+    #[serde(rename = "stash-changed")]
+    StashChanged {
+        v: u32,
+        #[serde(default)]
+        reason: String,
+        /// The entries written, so the drawer can pulse their cards.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ids: Option<Vec<String>>,
+    },
 }
 
 impl AiRequest {
@@ -113,11 +125,12 @@ impl AiRequest {
             | AiRequest::Ask { path, .. }
             | AiRequest::Open { path, .. }
             | AiRequest::Close { path, .. } => path,
-            AiRequest::Windows { .. } => "",
+            AiRequest::Windows { .. } | AiRequest::StashChanged { .. } => "",
         }
     }
 
-    /// The path to normalize at the socket's door; `None` for `windows`.
+    /// The path to normalize at the socket's door; `None` for `windows` and
+    /// `stash-changed`.
     fn path_mut(&mut self) -> Option<&mut String> {
         match self {
             AiRequest::Show { path, .. }
@@ -125,7 +138,7 @@ impl AiRequest {
             | AiRequest::Ask { path, .. }
             | AiRequest::Open { path, .. }
             | AiRequest::Close { path, .. } => Some(path),
-            AiRequest::Windows { .. } => None,
+            AiRequest::Windows { .. } | AiRequest::StashChanged { .. } => None,
         }
     }
 
@@ -135,7 +148,11 @@ impl AiRequest {
         match self {
             AiRequest::Show { focus, .. } => focus.unwrap_or(true),
             AiRequest::Open { focus, .. } => *focus,
-            AiRequest::Edit { .. } | AiRequest::Ask { .. } | AiRequest::Close { .. } | AiRequest::Windows { .. } => false,
+            AiRequest::Edit { .. }
+            | AiRequest::Ask { .. }
+            | AiRequest::Close { .. }
+            | AiRequest::Windows { .. }
+            | AiRequest::StashChanged { .. } => false,
         }
     }
 
@@ -149,7 +166,7 @@ impl AiRequest {
             | AiRequest::Edit { window_binding, .. }
             | AiRequest::Ask { window_binding, .. }
             | AiRequest::Open { window_binding, .. } => *window_binding,
-            AiRequest::Close { .. } | AiRequest::Windows { .. } => None,
+            AiRequest::Close { .. } | AiRequest::Windows { .. } | AiRequest::StashChanged { .. } => None,
         }
     }
 }
@@ -251,11 +268,10 @@ pub struct AiResponse {
 }
 
 impl AiResponse {
-    // Counterpart to `error()` below — not called from non-test Rust yet: the
-    // "ok" response for `edit`/`show` is built by the frontend and only
-    // deserialized here via `ai_respond`. Kept public for symmetry and for the
-    // CLI client (Task 5) to construct local responses with.
-    #[allow(dead_code)]
+    // Counterpart to `error()` below. The "ok" response for `edit`/`show` is
+    // built by the frontend and only deserialized here via `ai_respond`; Rust
+    // builds its own for the requests it answers itself (`windows`,
+    // `stash-changed`) and for local CLI answers.
     pub fn ok() -> Self {
         Self { ok: true, ..Default::default() }
     }
@@ -831,6 +847,7 @@ fn payload_for(req: &AiRequest, id: u64, first_use: bool) -> AiCommandPayload {
         AiRequest::Close { .. } => p.cmd = "close".to_string(),
         // Answered by Rust itself, never delivered to a window.
         AiRequest::Windows { .. } => p.cmd = "windows".to_string(),
+        AiRequest::StashChanged { .. } => p.cmd = "stash-changed".to_string(),
     }
     p
 }
@@ -916,6 +933,13 @@ fn dispatch(app: &AppHandle, mut req: AiRequest, tx: mpsc::Sender<AiResponse>) -
             return Dispatched::ANSWERED;
         }
         AiRequest::Close { .. } => return Dispatched { id: dispatch_close(app, &req, tx), quiet: false },
+        // Before `mark_connected`: a CLI write is not an agent connecting, so
+        // no first-use toast; no window, no `AiPending` either.
+        AiRequest::StashChanged { reason, ids, .. } => {
+            crate::stash::emit_changed(app, &stash_reason(reason), stash_ids(ids.clone()));
+            let _ = tx.send(AiResponse::ok());
+            return Dispatched::ANSWERED;
+        }
         _ => {}
     }
 
@@ -1051,6 +1075,37 @@ fn request_path(raw: &str) -> Result<String, String> {
         return Err("path must be absolute".to_string());
     }
     Ok(normalized.to_string_lossy().into_owned())
+}
+
+/// A `stash-changed` reason as the frontend receives it: an external client
+/// names it, so it is cut to a short plain word.
+fn stash_reason(raw: &str) -> String {
+    let word: String = raw
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .take(32)
+        .collect();
+    if word.is_empty() {
+        "external".to_string()
+    } else {
+        word
+    }
+}
+
+/// At most this many ids ride one `stash-changed`; a write from the CLI or
+/// MCP names one entry.
+const STASH_CHANGED_MAX_IDS: usize = 50;
+
+/// The ids of a `stash-changed` request that look like entry ids, capped.
+/// `None` when none is left: the event then says "something changed".
+fn stash_ids(raw: Option<Vec<String>>) -> Option<Vec<String>> {
+    let ids: Vec<String> = raw?
+        .into_iter()
+        .filter(|id| crate::stash::is_id(id))
+        .take(STASH_CHANGED_MAX_IDS)
+        .collect();
+    (!ids.is_empty()).then_some(ids)
 }
 
 /// `close`: to the window holding the file. Registered **without a path**:
@@ -3546,5 +3601,59 @@ mod tests {
             .unwrap_err();
         assert_eq!(code, 2);
         assert_eq!(line, r#"{"ok":false,"error":"couplet is not running"}"#);
+    }
+
+    #[test]
+    fn stash_changed_parses_and_carries_no_path() {
+        let mut req = parse_request(r#"{"v":1,"cmd":"stash-changed","reason":"external"}"#).unwrap();
+        assert!(matches!(&req, AiRequest::StashChanged { reason, ids: None, .. } if reason == "external"));
+        assert!(req.path_mut().is_none());
+        assert_eq!(req.path(), "");
+        assert!(!req.focus());
+        assert_eq!(req.window_binding(), None);
+        assert_eq!(payload_for(&req, 1, false).cmd, "stash-changed");
+        // `reason` and `ids` are optional on the wire.
+        assert!(matches!(
+            parse_request(r#"{"v":1,"cmd":"stash-changed"}"#).unwrap(),
+            AiRequest::StashChanged { reason, ids: None, .. } if reason.is_empty()
+        ));
+        assert!(matches!(
+            parse_request(r#"{"v":1,"cmd":"stash-changed","ids":["s1-00ab"]}"#).unwrap(),
+            AiRequest::StashChanged { ids: Some(ids), .. } if ids == vec!["s1-00ab".to_string()]
+        ));
+    }
+
+    #[test]
+    fn stash_changed_goes_on_the_wire_as_its_own_command() {
+        let line = serde_json::to_string(&AiRequest::StashChanged { v: 1, reason: "external".to_string(), ids: None }).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!((v["cmd"].as_str(), v["reason"].as_str(), v["v"].as_u64()), (Some("stash-changed"), Some("external"), Some(1)));
+        assert!(v.get("ids").is_none(), "no ids: the key is left out, {line}");
+        let with_ids = AiRequest::StashChanged { v: 1, reason: "external".to_string(), ids: Some(vec!["s1-00ab".to_string()]) };
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&with_ids).unwrap()).unwrap();
+        assert_eq!(v["ids"], serde_json::json!(["s1-00ab"]));
+    }
+
+    #[test]
+    fn a_stash_changed_reason_is_short_and_plain() {
+        assert_eq!(stash_reason("external"), "external");
+        assert_eq!(stash_reason("put-away"), "put-away");
+        assert_eq!(stash_reason("Tag"), "tag");
+        assert_eq!(stash_reason(""), "external");
+        assert_eq!(stash_reason("<>"), "external");
+        assert_eq!(stash_reason("<script>"), "script");
+        assert_eq!(stash_reason(&"x".repeat(100)).len(), 32);
+        assert_eq!(stash_reason("ТЭГ"), "external", "non-ASCII letters are dropped, not kept");
+    }
+
+    #[test]
+    fn stash_changed_ids_are_entry_ids_only_and_few() {
+        assert_eq!(stash_ids(None), None);
+        assert_eq!(stash_ids(Some(vec![])), None);
+        let raw = vec!["s1790378408605-3f9a".to_string(), "../etc".to_string(), "s1-zz".to_string(), "S1-00ab".to_string()];
+        assert_eq!(stash_ids(Some(raw)), Some(vec!["s1790378408605-3f9a".to_string()]));
+        assert_eq!(stash_ids(Some(vec!["x".to_string()])), None, "nothing valid: no ids at all");
+        let many: Vec<String> = (0..80).map(|i| format!("s{i}-00ab")).collect();
+        assert_eq!(stash_ids(Some(many)).map(|v| v.len()), Some(STASH_CHANGED_MAX_IDS));
     }
 }

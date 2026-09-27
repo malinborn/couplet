@@ -21,6 +21,7 @@ mod search;
 mod trash;
 
 pub use paths::StashPaths;
+pub(crate) use ids::is_id;
 pub(crate) use paths::{is_note_path, notes_dir_spelled};
 pub(crate) use trash::{start_housekeeping, DropRequests};
 

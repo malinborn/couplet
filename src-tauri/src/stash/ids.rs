@@ -35,19 +35,21 @@ pub(crate) fn random16() -> u16 {
     (hasher.finish() & 0xffff) as u16
 }
 
+/// Whether `id` has the shape `new_id` produces. For ids that come from
+/// outside (a `stash-changed` request): anything else is not an entry id.
+pub(crate) fn is_id(id: &str) -> bool {
+    let Some(rest) = id.strip_prefix('s') else { return false };
+    let Some((ms, hex)) = rest.split_once('-') else { return false };
+    !ms.is_empty()
+        && ms.bytes().all(|b| b.is_ascii_digit())
+        && hex.len() == 4
+        && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
-
-    fn has_id_shape(id: &str) -> bool {
-        let Some(rest) = id.strip_prefix('s') else { return false };
-        let Some((ms, hex)) = rest.split_once('-') else { return false };
-        !ms.is_empty()
-            && ms.bytes().all(|b| b.is_ascii_digit())
-            && hex.len() == 4
-            && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    }
 
     #[test]
     fn an_id_is_the_millisecond_and_four_hex_digits() {
@@ -59,7 +61,7 @@ mod tests {
     fn new_ids_have_the_shape() {
         for _ in 0..100 {
             let id = new_id();
-            assert!(has_id_shape(&id), "{id}");
+            assert!(is_id(&id), "{id}");
         }
     }
 
