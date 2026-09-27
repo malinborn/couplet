@@ -608,15 +608,32 @@ describe('the trash (stage 06)', () => {
     expect(s.trashEntries.map((e) => e.id)).toEqual(['t2', 't1']);
   });
 
-  it('every entry reads the trash again; leaving keeps the list for the next time', async () => {
-    const { s, trash } = await inTrash();
+  it('every entry reads the trash again, and shows no old cards until it has (review M8)', async () => {
+    let next = [entry('t1', { deletedAt: T0 - 1 }), entry('t2', { deletedAt: T0 })];
+    const list = vi.fn(async () => next);
+    const { s, trash } = await inTrash({ list });
     s.leaveTrash();
     expect(s.state.mode).toBe('stash');
-    expect(s.trashEntries).toHaveLength(2);
+    // Purged elsewhere while the trash was not shown: no reload for a hidden list.
+    next = [entry('t2', { deletedAt: T0 })];
     s.toggleTrash();
     expect(s.state.mode).toBe('trash');
+    expect(s.trashLoaded).toBe(false);
+    expect(s.trashEntries).toEqual([]);
     await flush();
     expect(trash.list).toHaveBeenCalledTimes(2);
+    expect(s.trashLoaded).toBe(true);
+    expect(s.trashEntries.map((e) => e.id)).toEqual(['t2']);
+  });
+
+  it('closing the stash from the trash also forgets the list (review M8)', async () => {
+    const { s } = await inTrash();
+    s.close();
+    s.open();
+    await flush();
+    s.enterTrash();
+    expect(s.trashLoaded).toBe(false);
+    expect(s.trashEntries).toEqual([]);
   });
 
   it('closing the stash, or a put-away, returns to the stash view', async () => {

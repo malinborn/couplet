@@ -266,9 +266,20 @@ export function createStashStore(deps: StashStoreDeps) {
     setEntries(next);
   }
 
-  /** «Удалённые» (stage 06): the view switches at once, the list is read again. */
+  /**
+   * «Удалённые» (stage 06): the view switches at once, the list is read again.
+   * The list left behind is dropped on the way in (review M8): `stash-changed`
+   * reloads the trash only while it is shown, so the old cards may name notes
+   * restored or purged since — the drawer shows its loading state instead.
+   * Here rather than in `leaveTrash`, because closing the stash leaves the
+   * trash without it.
+   */
   function enterTrash(): void {
     if (!state.open) return;
+    if (state.mode !== 'trash') {
+      trashEntries = [];
+      trashLoaded = false;
+    }
     state = showTrash(state);
     void reloadTrash();
   }
