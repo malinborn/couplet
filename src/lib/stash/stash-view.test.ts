@@ -177,8 +177,9 @@ describe('stashView with search hits', () => {
   const b = entry('b', { modifiedAt: NOW - 50 * MIN, repo: 'shelf' });
   const c = entry('c', { modifiedAt: NOW - 500 * MIN, repo: 'infra' });
 
-  function hit(e: StashEntry, snippet = ''): StashHit {
-    return { entry: e, snippet, ranges: [], score: 1 };
+  /** Rust marks what it matched in a snippet; a title-only hit has none. */
+  function hit(e: StashEntry, snippet = '', ranges: [number, number][] = []): StashHit {
+    return { entry: e, snippet, ranges, score: 1 };
   }
 
   function view(
@@ -207,7 +208,7 @@ describe('stashView with search hits', () => {
   });
 
   it('carries each hit on its row; no substring text to highlight twice', () => {
-    const v = view([a], [hit(a, 'the plan')]);
+    const v = view([a], [hit(a, 'the plan', [[4, 8]])]);
     expect(v.rows[0].hit?.snippet).toBe('the plan');
     expect(v.rows[0].match).toEqual({ rank: 0 });
     expect(v.text).toBe('');

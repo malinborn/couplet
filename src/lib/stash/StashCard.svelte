@@ -64,7 +64,11 @@
     ondone: () => void;
     onhoverstart: () => void;
     onhoverend: () => void;
-    /** The search hit for this card while a query has text (stage 05); `null`: stage 04's substring match. */
+    /**
+     * The search hit for this card while a query has text (stage 05); `null`:
+     * stage 04's substring match. A note's snippet is cut below its title line
+     * (Rust `hit_snippet`), so it never repeats the title.
+     */
     hit?: StashHit | null;
     /** The query's text terms: short ones match titles only, so the title is marked with all of them. */
     terms?: readonly SearchTerm[];
@@ -77,8 +81,10 @@
   const isNote = $derived(entry.kind === 'note');
   const nameSegments = $derived(hit ? highlightTerms(title, terms) : highlight(title, match.rank < 2 ? query : ''));
   const textHit = $derived.by(() => {
-    // A title-only hit has no snippet: the card keeps its preview.
-    if (hit) return hit.snippet ? segmentsFromRanges(hit.snippet, hit.ranges) : null;
+    // «в тексте:» only over a marked match. A title-only hit on a note has no
+    // snippet; one on a file has its body's start, unmarked — both keep the
+    // card's own preview instead of claiming a match in the text.
+    if (hit) return hit.snippet && hit.ranges.length > 0 ? segmentsFromRanges(hit.snippet, hit.ranges) : null;
     return match.rank === 2 ? highlight(hitSnippet(match.line, query), query) : null;
   });
   const source = $derived(isNote ? dropFirstLine(entry.preview) : entry.preview);

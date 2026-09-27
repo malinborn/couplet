@@ -32,7 +32,7 @@ function entry(id: string, path = `/n/${id}.md`): StashEntry {
 
 function result(...ids: string[]): StashSearchResult {
   return {
-    hits: ids.map((id) => ({ entry: entry(id), snippet: id, ranges: [], score: 1 })),
+    hits: ids.map((id) => ({ entry: entry(id), snippet: '', ranges: [], score: 1 })),
     total: ids.length,
     nextCursor: null,
   };

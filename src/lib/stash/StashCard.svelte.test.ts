@@ -276,7 +276,9 @@ describe('StashCard with a search hit (stage 05)', () => {
   });
 
   it('shows the snippet with its ranges in place of the preview', () => {
-    const snippet = 'Тайник для ключей подписать документ';
+    // A note's snippet is cut from the text below its title line (Rust
+    // `hit_snippet`): it never repeats the title.
+    const snippet = 'подписать документ';
     const at = snippet.indexOf('мент');
     const hit: StashHit = { entry: note, snippet, ranges: [[at, at + 4]], score: 1 };
     const card = render(note, null, false, { pulse: false }, { hit, terms: [term('мент')] });
@@ -291,6 +293,17 @@ describe('StashCard with a search hit (stage 05)', () => {
     const card = render(note, null, false, { pulse: false }, { hit, terms: [term('ок')] });
     expect(q(card, '.card-preview .hit')).toBeNull();
     expect(q(card, '.card-preview')?.textContent).toContain('подписать документ');
+  });
+
+  it('a snippet with nothing marked (a file matched by its title) keeps the normal preview', () => {
+    // Rust gives a file ref whose body does not match the start of its body,
+    // unmarked: «в тексте:» over it would claim a match that is not there.
+    const file = entry();
+    const hit: StashHit = { entry: file, snippet: 'Rota - week 40 — Alex', ranges: [], score: 1 };
+    const card = render(file, null, false, { pulse: false }, { hit, terms: [term('rot')] });
+    expect(q(card, '.card-preview .hit-l')).toBeNull();
+    expect(q(card, '.card-preview')?.textContent).toContain('week 40 — Alex');
+    expect(marks(q(card, '.card-name'))).toEqual(['rot']);
   });
 });
 

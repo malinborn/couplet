@@ -359,12 +359,16 @@ describe('StashDrawer', () => {
     };
 
     it('text: the hits in relevance order, the title marked, the snippet in place of the preview', async () => {
+      // As Rust cuts it: a note's snippet comes from below its title line, and
+      // a title-only hit has none.
+      const withBody = { ...byId('c'), preview: 'Title c\na long title here' };
+      const list = ENTRIES.map((e) => (e.id === 'c' ? withBody : e));
       const search = vi.fn(async (_args: StashSearchArgs) => ({
-        hits: [hitOf(byId('c'), 'a long title here', [[7, 12]]), hitOf(byId('a'))],
+        hits: [hitOf(withBody, 'a long title here', [[7, 12]]), hitOf(byId('a'))],
         total: 2,
         nextCursor: null,
       }));
-      h = await setup({ search });
+      h = await setup({ list: () => list, search });
       for (const k of ['i', 't', 'l', 'e']) key(k);
       await searched();
       expect(search).toHaveBeenCalledWith({ query: 'itle', deleted: false, limit: STASH_RENDER_CAP });
