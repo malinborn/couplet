@@ -91,12 +91,27 @@ fn is_markdown(kind: StashKind, path: &str) -> bool {
 /// `BODY_CAP_BYTES`. Binary or unreadable → `""` (found by title only),
 /// never an error. Reads the disk: call it with no lock and no transaction.
 pub fn load_body(path: &str, kind: StashKind) -> String {
+    read_body(path, kind).unwrap_or_default()
+}
+
+/// `load_body`, except that an unreadable file (logged) is `None`: a writer
+/// refreshing a row it already indexed keeps the body it has rather than
+/// trade it for nothing — a put-away of a file iCloud evicted, say.
+pub fn read_body(path: &str, kind: StashKind) -> Option<String> {
+    read_saved(path).map(|text| plain_text(&text, is_markdown(kind, path)))
+}
+
+/// At most `BODY_CAP_BYTES` of the file at `path`, as text: `""` for a
+/// binary file, `None` (logged) when it can't be read now. Not yet plain —
+/// `reindex_path` makes it plain for the row's kind. Reads the disk: call it
+/// with no lock and no transaction.
+pub fn read_saved(path: &str) -> Option<String> {
     match read_capped(Path::new(path)) {
-        Loaded::Text(text) => plain_text(&text, is_markdown(kind, path)),
-        Loaded::Binary => String::new(),
+        Loaded::Text(text) => Some(text),
+        Loaded::Binary => Some(String::new()),
         Loaded::Unreadable(why) => {
-            eprintln!("stash search: {path} indexed by title only: {why}");
-            String::new()
+            eprintln!("stash search: {path} not read for the index: {why}");
+            None
         }
     }
 }
@@ -137,6 +152,16 @@ pub fn write_body(conn: &Connection, id: &str, body: &str) -> Result<bool, Strin
         Some(row) => write_row(conn, &row, body),
         None => Ok(false),
     }
+}
+
+/// Index entry `id` from `text`, its file's content held in memory (a note
+/// just created or imported): no disk read. `Ok(false)` as `write_body`.
+pub fn index_text(conn: &Connection, id: &str, text: &str) -> Result<bool, String> {
+    let Some(row) = find(conn, "id", id)? else {
+        return Ok(false);
+    };
+    let body = plain_text(cap(text), is_markdown(row.kind, &row.path));
+    write_row(conn, &row, &body)
 }
 
 /// (Re)index entry `id` from its file on disk. Reads the file while given the

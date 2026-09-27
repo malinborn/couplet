@@ -16,14 +16,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use rusqlite::{params, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use tauri::{AppHandle, Manager};
 
 use crate::session::{Session, SessionState, WindowSnapshot};
 use crate::tabs::WindowTabs;
 
 use super::entries::{kind_of_new, plan_put_away};
-use super::{clock, db, emit_changed, PutAway, Stash, StashKind, StashState};
+use super::{clock, db, emit_changed, search, PutAway, Stash, StashKind, StashState};
 
 /// How a document left the tabs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -172,17 +172,42 @@ fn settle_aside(aside: &Path, path: &Path, now_secs: u64) -> Blank {
     Blank::Recovered(aside.to_path_buf())
 }
 
+/// Inside the caller's transaction: the live note row `id` and its search
+/// row, the search row first — afterwards its rowid can't be found, and
+/// SQLite gives the freed rowid to the next entry. Anything else under that
+/// id (trashed meanwhile, A8) is left alone, its search row included.
+fn drop_discarded_row(tx: &Connection, id: &str) -> Result<(), String> {
+    let live = tx
+        .query_row(
+            "SELECT 1 FROM entries WHERE id = ?1 AND kind = 'note' AND deleted_at IS NULL",
+            [id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(db::err)?
+        .is_some();
+    if !live {
+        return Ok(());
+    }
+    search::unindex_entry(tx, id)?;
+    tx.execute(
+        "DELETE FROM entries WHERE id = ?1 AND kind = 'note' AND deleted_at IS NULL",
+        [id],
+    )
+    .map_err(db::err)?;
+    Ok(())
+}
+
 impl Stash {
     /// Drops the row of a note whose blank file `lifecycle` already removed.
     /// A row trashed meanwhile is left alone (A8). Tags go with it (cascade).
     fn forget_discarded_note(&mut self, id: &str) -> Result<(), String> {
-        self.conn
-            .execute(
-                "DELETE FROM entries WHERE id = ?1 AND kind = 'note' AND deleted_at IS NULL",
-                [id],
-            )
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db::err)?;
-        Ok(())
+        drop_discarded_row(&tx, id)?;
+        tx.commit().map_err(db::err)
     }
 
     /// The write half of `notes_left`, one IMMEDIATE transaction: the rows of
@@ -202,11 +227,7 @@ impl Stash {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db::err)?;
         for id in discarded {
-            tx.execute(
-                "DELETE FROM entries WHERE id = ?1 AND kind = 'note' AND deleted_at IS NULL",
-                [id],
-            )
-            .map_err(db::err)?;
+            drop_discarded_row(&tx, id)?;
         }
         let mut stamped = Vec::with_capacity(stamps.len());
         for (id, caret, top_line) in stamps {
@@ -788,6 +809,45 @@ mod tests {
             Left::Discarded(note.id.clone())
         );
         assert!(!Path::new(&note.path).exists());
+    }
+
+    /// A discarded note's search row goes with its entry. SQLite hands the
+    /// freed rowid to the next entry, which must not inherit the old text.
+    fn discard_leaves_no_search_row(tag: &str, leaving: Leaving) {
+        let (state, _root) = state_in(tag);
+        let note = note(&state, "секретный план");
+        std::fs::write(&note.path, "\n").unwrap();
+        assert_eq!(
+            document_left(&state, &note.path, 0, 1, leaving, None, NOW).unwrap(),
+            Left::Discarded(note.id.clone())
+        );
+        assert_eq!(state.with(|s| Ok(rows(s, "entries_fts"))).unwrap(), 0);
+        let next = state
+            .with(|s| s.create_note("другое", None, T0, MSK))
+            .unwrap();
+        state
+            .with(|s| {
+                assert!(crate::stash::search::found(&s.conn, "секретный").is_empty());
+                assert_eq!(
+                    crate::stash::search::found(&s.conn, "другое"),
+                    vec![next.id.clone()]
+                );
+                assert_eq!(rows(s, "entries_fts"), 1);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn a_blank_note_discarded_on_close_leaves_no_search_row() {
+        // `settle_left`'s discard.
+        discard_leaves_no_search_row("blank-fts-close", Leaving::Closed);
+    }
+
+    #[test]
+    fn a_blank_note_discarded_by_ctrl_t_leaves_no_search_row() {
+        // `forget_discarded_note`.
+        discard_leaves_no_search_row("blank-fts-put-away", Leaving::PutAway);
     }
 
     #[test]

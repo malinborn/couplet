@@ -468,6 +468,23 @@ impl StashState {
             }
         });
     }
+
+    /// Checks the search index off the launch path (plan D8) and rebuilds it
+    /// when it is missing, corrupt, outdated or stale — taking the lock per
+    /// phase, never across the file reads — then tells every window to load
+    /// and search again (A6: `reindexed`). Call it after the draft import,
+    /// which holds the lock on the main thread.
+    pub fn ensure_index_in_background(&self, app: AppHandle) {
+        let state = self.clone();
+        tauri::async_runtime::spawn_blocking(move || match search::ensure_index(&state) {
+            Ok(Some(reason)) => {
+                eprintln!("stash search: index rebuilt ({reason:?})");
+                emit_changed(&app, "reindexed", None);
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("stash search: index check failed: {e}"),
+        });
+    }
 }
 
 type Notify = Box<dyn Fn(&str) + Send + Sync>;
@@ -510,15 +527,46 @@ pub fn on_file_written(path: &str, text: &str) {
     let title = notes::title_of(text);
     let path = path.to_owned();
     tauri::async_runtime::spawn_blocking(move || {
-        match hook
-            .state
-            .with(|s| s.file_written(&path, title.as_deref(), now))
-        {
-            Ok(true) => (hook.notify)("title"),
-            Ok(false) => {}
-            Err(e) => eprintln!("stash: after saving {path}: {e}"),
-        }
+        saved(&hook.state, &path, title.as_deref(), now, search::read_saved, &*hook.notify);
     });
+}
+
+/// The save hook's work, on the blocking pool; `read` is `search::read_saved`
+/// (a parameter so a test can see that it is never called). The stash lock
+/// is taken twice, around SQL only: the path is normalized before it and the
+/// file re-read between (A11, stage 02 review I3). A save outside the stash
+/// stops after one lookup — no copy, no read (review M4). A stash entry's
+/// file is re-read rather than its text carried here from the save thread:
+/// it was just written, so it is local and in the page cache, and the stamp
+/// guard in `reindex_written` makes out-of-order tasks safe. `title` is
+/// notified last, so whoever re-searches on it finds the new body.
+fn saved(
+    state: &StashState,
+    path: &str,
+    title: Option<&str>,
+    now: i64,
+    read: impl FnOnce(&str) -> Option<String>,
+    notify: &dyn Fn(&str),
+) {
+    let path = crate::path_norm::normalize_str(path);
+    let written = match state.with(|s| s.file_written(&path, title, now)) {
+        Ok(written) => written,
+        Err(e) => {
+            eprintln!("stash: after saving {path}: {e}");
+            return;
+        }
+    };
+    if written.stamped {
+        // Unreadable now (logged by `read`): the index keeps the last body.
+        if let Some(text) = read(&path) {
+            if let Err(e) = state.with(|s| s.reindex_written(&path, &text, now)) {
+                eprintln!("stash search: reindex {path}: {e}");
+            }
+        }
+    }
+    if written.title_changed {
+        notify("title");
+    }
 }
 
 #[cfg(test)]

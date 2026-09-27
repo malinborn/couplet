@@ -660,6 +660,25 @@ mod tests {
     }
 
     #[test]
+    fn an_imported_draft_is_searchable() {
+        // `insert_note_row` indexes from the draft's text: no read-back.
+        let (mut stash, _root) = stash_in("drafts-search");
+        let d = dirs("search");
+        write_draft(
+            &d,
+            "untitled-main.md",
+            "# План\nмиграция серверов".as_bytes(),
+        );
+        let (_, report) = import_drafts(&mut stash, &draft_dirs(&d), None, NOW);
+        assert_eq!(report.imported, 1, "{report:?}");
+        let entry = stash.list(&Default::default()).unwrap().entries.remove(0);
+        assert_eq!(
+            crate::stash::search::found(&stash.conn, "миграц"),
+            vec![entry.id]
+        );
+    }
+
+    #[test]
     fn an_orphaned_draft_beside_a_session_leaves_the_session_file_alone() {
         let (mut stash, _root) = stash_in("drafts-orphan-beside");
         let d = dirs("orphan-beside");

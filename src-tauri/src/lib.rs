@@ -301,6 +301,10 @@ pub fn run() {
                     None => 0,
                 }
             };
+            // Stash plan 05: the search index is derived — rebuilt off the main
+            // thread when missing, corrupt, outdated or stale. After the draft
+            // import, which holds the stash lock here on the main thread.
+            app.state::<stash::StashState>().ensure_index_in_background(app.handle().clone());
 
             let (menu, theme_items, engine_items, view_toggles, session_menu_items, transient_items) =
                 menu::build_menu(app.handle(), pending_count, explicit_language.as_deref())?;

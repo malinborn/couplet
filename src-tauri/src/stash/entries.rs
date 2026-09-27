@@ -12,8 +12,8 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use super::db::{self, EntryRow, ENTRY_COLUMNS};
 use super::{
-    ids, notes, DeleteOutcome, ListQuery, ListResult, ListSort, PutAway, PutAwayResult, Stash,
-    StashCounts, StashEntry, StashKind, Tagged,
+    ids, notes, search, DeleteOutcome, ListQuery, ListResult, ListSort, PutAway, PutAwayResult,
+    Stash, StashCounts, StashEntry, StashKind, Tagged,
 };
 
 /// Preview length in characters (roadmap: "first ~400 chars").
@@ -25,6 +25,18 @@ const ID_ATTEMPTS: usize = 8;
 pub(crate) const TAG_MAX_CHARS: usize = 64;
 pub(crate) const DEFAULT_LIMIT: usize = 50;
 pub(crate) const MAX_LIMIT: usize = 500;
+
+/// What one save did to the stash (`Stash::file_written`).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Written {
+    /// A live entry took this save's time: its search body is now due. Not
+    /// in the stash, trashed, or older than the row — nothing more to do,
+    /// and nothing is read.
+    pub(crate) stamped: bool,
+    /// A note's title changed — the one case worth a
+    /// `stash-changed { reason: "title" }` (roadmap A6).
+    pub(crate) title_changed: bool,
+}
 
 /// What `candidates` filters on, each already in its stored spelling.
 #[derive(Default)]
@@ -178,6 +190,10 @@ struct Probe {
     new: Result<NewEntry, String>,
     /// `file_repo`'s answer; re-stored for an existing file reference too.
     repo: Option<String>,
+    /// The search index body (`search::read_body`): read here, with no lock,
+    /// because a file reference can be up to its 1 MiB cap on a slow volume.
+    /// `None`: not read (not a regular file, or unreadable now).
+    body: Option<String>,
 }
 
 /// The columns a path not yet in the stash is inserted with.
@@ -224,7 +240,16 @@ fn probe_new(path: &str, notes_dir: &Path, now: i64) -> Result<NewEntry, String>
 fn probe(path: String, notes_dir: &Path, project: Option<&str>, now: i64) -> Probe {
     let new = probe_new(&path, notes_dir, now);
     let repo = file_repo(&path, project);
-    Probe { path, new, repo }
+    let body = new
+        .as_ref()
+        .ok()
+        .and_then(|n| search::read_body(&path, n.kind));
+    Probe {
+        path,
+        new,
+        repo,
+        body,
+    }
 }
 
 /// Inserts a probed new path inside the caller's transaction.
@@ -461,7 +486,7 @@ fn entry_from(row: EntryRow, tags: Vec<String>) -> StashEntry {
 /// one. The title comes from `text` and `repo` is stored as its basename
 /// (A3), exactly as `create_note` stores them. The caller writes the file
 /// first: one that rolls back leaves a file with no entry — the text twice,
-/// never none.
+/// never none. Indexed for search from `text`, in the same transaction.
 pub(crate) fn insert_note_row(
     tx: &Connection,
     path: &str,
@@ -478,7 +503,17 @@ pub(crate) fn insert_note_row(
         params![id, path, title, repo, at],
     )
     .map_err(db::err)?;
+    index_best_effort(search::index_text(tx, &id, text), &id);
     Ok(id)
+}
+
+/// A failed index write never fails the stash write it follows (plan D6):
+/// the note or reference is the user's, the index is derived, and
+/// `ensure_index` finds the gap at the next start.
+fn index_best_effort(written: Result<bool, String>, id: &str) {
+    if let Err(e) = written {
+        eprintln!("stash search: index {id}: {e}");
+    }
 }
 
 /// One entry with its tags, from the database alone (`Stash::get`, and each
@@ -615,6 +650,14 @@ impl Stash {
                 }
                 None => (insert_new(&tx, probe, &plan, now)?, true),
             };
+            // A dedup hit re-indexes too: the file may have changed since. A
+            // body the probe could not read keeps what the index has; a new
+            // entry is then found by its title alone.
+            match (&probe.body, created) {
+                (Some(body), _) => index_best_effort(search::write_body(&tx, &id, body), &id),
+                (None, true) => index_best_effort(search::write_body(&tx, &id, ""), &id),
+                (None, false) => {}
+            }
             for tag in &plan.tags {
                 tx.execute(
                     "INSERT OR IGNORE INTO tags (entry_id, tag) VALUES (?1, ?2)",
@@ -689,11 +732,11 @@ impl Stash {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db::err)?;
-        let (rowid, kind, deleted_at): (i64, String, Option<i64>) = tx
+        let (kind, deleted_at): (String, Option<i64>) = tx
             .query_row(
-                "SELECT rowid, kind, deleted_at FROM entries WHERE id = ?1",
+                "SELECT kind, deleted_at FROM entries WHERE id = ?1",
                 [id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()
             .map_err(db::err)?
@@ -706,10 +749,9 @@ impl Stash {
                 "stash entry {id} is a note: notes leave the stash through the trash (stage 06)"
             ));
         }
-        // Unindex before delete: FTS5 has no foreign key to cascade from.
-        // Stage 05 swaps this line for its `unindex_entry`.
-        tx.execute("DELETE FROM entries_fts WHERE rowid = ?1", [rowid])
-            .map_err(db::err)?;
+        // Unindex before delete: FTS5 has no foreign key to cascade from,
+        // and the freed rowid goes to the next entry.
+        search::unindex_entry(&tx, id)?;
         // Explicit although `tags` cascades: the cascade holds only while this
         // connection has `foreign_keys = ON`, and orphan tags would be silent.
         tx.execute("DELETE FROM tags WHERE entry_id = ?1", [id])
@@ -735,23 +777,19 @@ impl Stash {
         Ok(changed > 0)
     }
 
-    /// The save hook's work: a stash entry's `modified_at`, and a note's title
-    /// (a file reference keeps its file name, plan D18). `path` is normalized
-    /// here like in `put_away` and `touch_opened`: the editor saves under the
-    /// registry's spelling, but no caller has to know that to reach the row.
-    /// Only moves forward in time, so a late, older save cannot roll a title
-    /// back (plan D9); a trashed row is left alone (roadmap A8). `true` when the
-    /// title changed — the one case worth a `stash-changed { reason: "title" }`.
-    /// `title` is `notes::title_of` of the saved text, taken by the caller so
-    /// the save hook never has to copy the document.
-    pub fn file_written(
+    /// The save hook's first step: a stash entry's `modified_at`, and a note's
+    /// title (a file reference keeps its file name, plan D18). `path` must be
+    /// in `path_norm`'s spelling — the hook normalizes it with no lock held,
+    /// since normalizing asks the file system. Only moves forward in time, so
+    /// a late, older save cannot roll a title back (plan D9); a trashed row is
+    /// left alone (roadmap A8). `title` is `notes::title_of` of the saved text,
+    /// taken by the caller so the save hook never has to copy the document.
+    pub(crate) fn file_written(
         &mut self,
         path: &str,
         title: Option<&str>,
         now: i64,
-    ) -> Result<bool, String> {
-        let path = crate::path_norm::normalize_str(path);
-        let path = path.as_str();
+    ) -> Result<Written, String> {
         let row: Option<(String, String)> = self
             .conn
             .query_row(
@@ -762,7 +800,7 @@ impl Stash {
             .optional()
             .map_err(db::err)?;
         let Some((kind, old_title)) = row else {
-            return Ok(false);
+            return Ok(Written::default());
         };
         let title = if kind == StashKind::Note.as_str() {
             title.unwrap_or_default().to_string()
@@ -779,7 +817,39 @@ impl Stash {
                 params![now, title, path],
             )
             .map_err(db::err)?;
-        Ok(changed > 0 && title != old_title)
+        Ok(Written {
+            stamped: changed > 0,
+            title_changed: changed > 0 && title != old_title,
+        })
+    }
+
+    /// The save hook's last step: the search body of the live entry at `path`
+    /// (normalized) from `text`, the file as the hook re-read it with no lock
+    /// held — but only while `modified_at` is still `stamp`, this save's own
+    /// stamp. Pool tasks can finish out of order: once a newer save has
+    /// stamped the row, its own task indexes the newer text, and this older
+    /// read must not land over it. `true` when it indexed.
+    pub(crate) fn reindex_written(
+        &mut self,
+        path: &str,
+        text: &str,
+        stamp: i64,
+    ) -> Result<bool, String> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db::err)?;
+        let current: Option<i64> = tx
+            .query_row(
+                "SELECT modified_at FROM entries WHERE path = ?1 AND deleted_at IS NULL",
+                [path],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(db::err)?;
+        let indexed = current == Some(stamp) && search::reindex_path(&tx, path, text)?;
+        tx.commit().map_err(db::err)?;
+        Ok(indexed)
     }
 
     /// Rows passing the filters, all decided in SQL. The repo filter reads
@@ -1232,13 +1302,18 @@ mod tests {
         // Everything the insert needs was probed before the lock: the file
         // may even be gone by the time the transaction runs.
         let (mut stash, root) = stash_in("put-probed");
-        let file = user_file(&root, "gone.md", "g");
+        let file = user_file(&root, "gone.md", "бывший текст");
         let plan =
             plan_put_away(&put(vec![file.clone()]), &stash.notes_dir_spelling(), T0).unwrap();
         fs::remove_file(&file).unwrap();
         let r = stash.put_away_probed(plan, T0).unwrap();
         assert!(r[0].created);
         assert_eq!(r[0].entry.title.as_deref(), Some("gone.md"));
+        // The search body too was read by the probe, not in the transaction.
+        assert_eq!(
+            crate::stash::search::found(&stash.conn, "бывший"),
+            vec![r[0].entry.id.clone()]
+        );
     }
 
     #[test]
@@ -1849,7 +1924,8 @@ mod tests {
         assert!(
             stash
                 .file_written(&note.path, Some("New"), T0 + 10)
-                .unwrap(),
+                .unwrap()
+                .title_changed,
             "title changed"
         );
         let e = stash.get(&note.id).unwrap();
@@ -1857,15 +1933,17 @@ mod tests {
         assert!(
             !stash
                 .file_written(&note.path, Some("New"), T0 + 20)
-                .unwrap(),
+                .unwrap()
+                .title_changed,
             "same title: no event"
         );
         assert_eq!(stash.get(&note.id).unwrap().modified_at, T0 + 20);
-        assert!(
-            !stash
+        assert_eq!(
+            stash
                 .file_written(&note.path, Some("Stale"), T0 + 15)
                 .unwrap(),
-            "an older save landing late changes nothing"
+            Written::default(),
+            "an older save landing late changes nothing, not even the index"
         );
         let e = stash.get(&note.id).unwrap();
         assert_eq!((e.title.as_deref(), e.modified_at), (Some("New"), T0 + 20));
@@ -1875,28 +1953,17 @@ mod tests {
     fn a_note_saved_without_a_title_shows_none() {
         let (mut stash, _root) = stash_in("written-untitled");
         let note = stash.create_note("# Old", None, T0, MSK).unwrap();
-        assert!(stash.file_written(&note.path, None, T0 + 10).unwrap());
+        assert!(
+            stash
+                .file_written(&note.path, None, T0 + 10)
+                .unwrap()
+                .title_changed
+        );
         assert_eq!(stash.get(&note.id).unwrap().title, None);
     }
 
-    #[test]
-    fn a_save_under_another_spelling_reaches_the_entry() {
-        // Like `put_away` and `touch_opened`, the save hook normalizes: a
-        // caller that did not must not silently miss the row.
-        let (mut stash, _root) = stash_in("written-spelling");
-        let note = stash.create_note("# Old", None, T0, MSK).unwrap();
-        let path = Path::new(&note.path);
-        let dir = path.parent().unwrap();
-        let dotted = format!(
-            "{}/./sub/../{}",
-            dir.display(),
-            path.file_name().unwrap().to_string_lossy()
-        );
-        assert_ne!(dotted, note.path);
-        assert!(stash.file_written(&dotted, Some("New"), T0 + 10).unwrap());
-        let e = stash.get(&note.id).unwrap();
-        assert_eq!((e.title.as_deref(), e.modified_at), (Some("New"), T0 + 10));
-    }
+    // «A save under another spelling reaches the entry» moved to
+    // `search::hooks_tests`: the hook normalizes before `file_written`.
 
     #[test]
     fn saving_a_file_reference_keeps_its_file_name_as_title() {
@@ -1909,9 +1976,15 @@ mod tests {
             .remove(0)
             .entry
             .id;
-        assert!(!stash
-            .file_written(&file, Some("Another heading"), Y2100)
-            .unwrap());
+        assert_eq!(
+            stash
+                .file_written(&file, Some("Another heading"), Y2100)
+                .unwrap(),
+            Written {
+                stamped: true,
+                title_changed: false
+            }
+        );
         let e = stash.get(&id).unwrap();
         assert_eq!(e.title.as_deref(), Some("readme.md"));
         assert_eq!(e.modified_at, Y2100);
@@ -1924,7 +1997,10 @@ mod tests {
     fn saving_a_file_outside_the_stash_changes_nothing() {
         let (mut stash, root) = stash_in("written-none");
         let file = user_file(&root, "x.md", "x");
-        assert!(!stash.file_written(&file, Some("y"), T0).unwrap());
+        assert_eq!(
+            stash.file_written(&file, Some("y"), T0).unwrap(),
+            Written::default()
+        );
         assert_eq!(rows(&stash, "entries"), 0);
     }
 
@@ -1935,9 +2011,12 @@ mod tests {
         let (mut stash, _root) = stash_in("written-trashed");
         let note = stash.create_note("# Old", None, T0, MSK).unwrap();
         set_columns(&stash, &note.id, &format!("deleted_at = {}", T0 + 1));
-        assert!(!stash
-            .file_written(&note.path, Some("New"), T0 + 10)
-            .unwrap());
+        assert_eq!(
+            stash
+                .file_written(&note.path, Some("New"), T0 + 10)
+                .unwrap(),
+            Written::default()
+        );
         let e = stash.get(&note.id).unwrap();
         assert_eq!((e.title.as_deref(), e.modified_at), (Some("Old"), T0));
     }
@@ -2430,17 +2509,7 @@ mod tests {
         let (mut stash, root) = stash_in("remove-ref-fts");
         let file = user_file(&root, "a.md", "a");
         let id = stash.put_away(&put(vec![file]), T0).unwrap().remove(0).entry.id;
-        let rowid: i64 = stash
-            .conn
-            .query_row("SELECT rowid FROM entries WHERE id = ?1", [&id], |r| r.get(0))
-            .unwrap();
-        stash
-            .conn
-            .execute(
-                "INSERT INTO entries_fts (rowid, title, body) VALUES (?1, 'a.md', 'a')",
-                [rowid],
-            )
-            .unwrap();
+        assert_eq!(rows(&stash, "entries_fts"), 1, "the put-away indexed it");
         stash.remove_file_ref(&id).unwrap();
         assert_eq!(rows(&stash, "entries_fts"), 0);
     }
