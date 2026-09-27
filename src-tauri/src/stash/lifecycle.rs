@@ -10,7 +10,8 @@
 
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -46,25 +47,127 @@ pub(crate) enum Left {
 /// A blank note is tiny; anything bigger is not read to find out.
 const BLANK_READ_LIMIT: u64 = 64 * 1024;
 
-/// Removes `path` if — read right now — it is a regular file holding only
-/// whitespace. Anything that cannot prove blankness (missing, a symlink, not
-/// UTF-8, unreadable, large) is not blank and stays. `true`: it is gone.
-fn remove_if_blank(path: &Path) -> bool {
-    let Ok(meta) = fs::symlink_metadata(path) else {
+/// What `remove_if_blank` did.
+#[derive(Debug, PartialEq, Eq)]
+enum Blank {
+    /// It was blank, and it is gone.
+    Removed,
+    /// It is at its name with whatever text it holds: not blank, not provably
+    /// blank, or a newer save took the name back meanwhile.
+    Stays,
+    /// Text reached the file while it was set aside, and a newer save took its
+    /// name meanwhile: the set-aside text is kept at this path (a visible name
+    /// in the same folder), the newer save at the note's own name.
+    Recovered(PathBuf),
+}
+
+/// Whether the regular file at `path` — never through a symlink — holds only
+/// whitespace, read through one handle. Anything that cannot prove it
+/// (missing, a symlink, not UTF-8, unreadable, large) is not blank.
+fn holds_only_whitespace(path: &Path) -> bool {
+    if !fs::symlink_metadata(path).is_ok_and(|m| m.is_file()) {
+        return false;
+    }
+    let Ok(file) = fs::File::open(path) else {
         return false;
     };
-    if !meta.is_file() || meta.len() > BLANK_READ_LIMIT {
+    if !file
+        .metadata()
+        .is_ok_and(|m| m.is_file() && m.len() <= BLANK_READ_LIMIT)
+    {
         return false;
     }
     let mut bytes = Vec::new();
-    let read =
-        fs::File::open(path).and_then(|f| f.take(BLANK_READ_LIMIT + 1).read_to_end(&mut bytes));
-    let blank = read.is_ok()
+    file.take(BLANK_READ_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .is_ok()
         && bytes.len() as u64 <= BLANK_READ_LIMIT
-        && std::str::from_utf8(&bytes).is_ok_and(|t| t.trim().is_empty());
-    // Unlinked, not trashed: a trash copy of whitespace keeps nothing, and the
-    // spec wants an empty document to vanish without a trace.
-    blank && fs::remove_file(path).is_ok()
+        && std::str::from_utf8(&bytes).is_ok_and(|t| t.trim().is_empty())
+}
+
+/// Tells one process's asides apart.
+static ASIDE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// A hidden name beside `path` (same folder, so the rename stays on one
+/// volume) that no save and no other close uses.
+fn aside_name(path: &Path) -> Option<PathBuf> {
+    let name = path.file_name()?.to_str()?;
+    let n = ASIDE_SEQ.fetch_add(1, Ordering::Relaxed);
+    Some(path.with_file_name(format!(".{name}.discard-{}-{n}", std::process::id())))
+}
+
+/// Removes `path` if it is a regular file holding only whitespace. See
+/// `remove_if_blank_with`.
+fn remove_if_blank(path: &Path, now_secs: u64) -> Blank {
+    remove_if_blank_with(path, now_secs, || {})
+}
+
+/// `remove_if_blank`; `between` runs after the first look and before the file
+/// is set aside — where a save racing the close lands (tests).
+///
+/// Check-then-unlink would delete whatever an atomic save (tmp + rename) put
+/// at the name after the check. So a file that looks blank is first renamed
+/// aside — from then on no save can reach it — re-read there, and unlinked
+/// only if it is still blank; otherwise it goes back (`settle_aside`). Never
+/// loses text: at every moment the text is at the name or at the aside.
+fn remove_if_blank_with(path: &Path, now_secs: u64, between: impl FnOnce()) -> Blank {
+    if !holds_only_whitespace(path) {
+        return Blank::Stays;
+    }
+    between();
+    let Some(aside) = aside_name(path) else {
+        return Blank::Stays;
+    };
+    // A name taken by something else is never renamed over.
+    if fs::symlink_metadata(&aside).is_ok() || fs::rename(path, &aside).is_err() {
+        return Blank::Stays;
+    }
+    settle_aside(&aside, path, now_secs)
+}
+
+/// Decides what happens to a file set aside from `path`: unlinked if it is
+/// still blank, else put back. `hard_link` refuses an existing name, so the
+/// put-back never overwrites a save that landed at `path` meanwhile; that
+/// text stays at `path` and the aside's is kept under
+/// `<stem>.recovered-<secs>.md` (numbered when taken).
+fn settle_aside(aside: &Path, path: &Path, now_secs: u64) -> Blank {
+    if holds_only_whitespace(aside) {
+        if fs::symlink_metadata(path).is_ok() {
+            // A newer save is at the name: that is the note now. The aside
+            // held only whitespace.
+            let _ = fs::remove_file(aside);
+            return Blank::Stays;
+        }
+        // Unlinked, not trashed: a trash copy of whitespace keeps nothing,
+        // and the spec wants an empty document to vanish without a trace.
+        // (A save landing after this is a file with no entry — text on disk,
+        // never lost.)
+        if fs::remove_file(aside).is_ok() {
+            return Blank::Removed;
+        }
+    }
+    if fs::hard_link(aside, path).is_ok() {
+        let _ = fs::remove_file(aside);
+        return Blank::Stays;
+    }
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("note");
+    for n in 0..100u32 {
+        let name = match n {
+            0 => format!("{stem}.recovered-{now_secs}.md"),
+            n => format!("{stem}.recovered-{now_secs}-{n}.md"),
+        };
+        let kept = path.with_file_name(name);
+        match fs::hard_link(aside, &kept) {
+            Ok(()) => {
+                let _ = fs::remove_file(aside);
+                return Blank::Recovered(kept);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => break,
+        }
+    }
+    // Could not name it anywhere else: the text stays at the aside, intact.
+    Blank::Recovered(aside.to_path_buf())
 }
 
 impl Stash {
@@ -113,7 +216,19 @@ pub(crate) fn document_left(
         Some(e) if e.kind == StashKind::Note && leaving == Leaving::WithWindow => {}
         Some(e) if e.kind == StashKind::Note => {
             let is_note_file = kind_of_new(Path::new(path), &notes_dir) == StashKind::Note;
-            if is_note_file && remove_if_blank(Path::new(path)) {
+            let now_secs = u64::try_from(now.div_euclid(1000)).unwrap_or(0);
+            let blank = if is_note_file {
+                remove_if_blank(Path::new(path), now_secs)
+            } else {
+                Blank::Stays
+            };
+            if let Blank::Recovered(kept) = &blank {
+                eprintln!(
+                    "stash: {path} changed while it was being discarded; its earlier text is kept at {}",
+                    kept.display()
+                );
+            }
+            if blank == Blank::Removed {
                 let id = e.id.clone();
                 state.with(|s| s.forget_discarded_note(&id))?;
                 return Ok(Left::Discarded(id));
@@ -700,6 +815,100 @@ mod tests {
         let started = std::time::Instant::now();
         assert!(!flight.wait_idle(std::time::Duration::from_millis(50)));
         assert!(started.elapsed() >= std::time::Duration::from_millis(50));
+    }
+
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn notes_folder(tag: &str) -> PathBuf {
+        let dir = crate::atomic_write::testkit::scratch(&format!("blank-{tag}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    const SECS: u64 = 1_790_378_160;
+
+    #[test]
+    fn a_blank_file_is_removed_through_an_aside_name() {
+        let dir = notes_folder("gone");
+        let path = dir.join("2026-09-26-0215-abcd.md");
+        std::fs::write(&path, " \n\t\n").unwrap();
+        assert_eq!(remove_if_blank(&path, SECS), Blank::Removed);
+        assert!(names_in(&dir).is_empty(), "no aside left behind");
+    }
+
+    #[test]
+    fn text_saved_between_the_check_and_the_aside_goes_back_to_its_name() {
+        // An atomic save (tmp + rename) landing after the blank check: the
+        // aside holds real text, which must come back — never be unlinked.
+        let dir = notes_folder("raced");
+        let path = dir.join("2026-09-26-0215-abcd.md");
+        std::fs::write(&path, "").unwrap();
+        let blank = remove_if_blank_with(&path, SECS, || {
+            let tmp = dir.join(".save.tmp");
+            std::fs::write(&tmp, "real text").unwrap();
+            std::fs::rename(&tmp, &path).unwrap();
+        });
+        assert_eq!(blank, Blank::Stays);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "real text");
+        assert_eq!(names_in(&dir), vec!["2026-09-26-0215-abcd.md".to_string()]);
+    }
+
+    #[test]
+    fn an_aside_with_text_never_overwrites_a_newer_save_and_both_stay() {
+        let dir = notes_folder("both");
+        let path = dir.join("2026-09-26-0215-abcd.md");
+        let aside = dir.join(".2026-09-26-0215-abcd.md.discard-1-0");
+        std::fs::write(&aside, "text set aside").unwrap();
+        std::fs::write(&path, "a newer save").unwrap();
+        let Blank::Recovered(kept) = settle_aside(&aside, &path, SECS) else {
+            panic!("the aside's text is kept under a visible name");
+        };
+        assert_eq!(
+            kept,
+            dir.join(format!("2026-09-26-0215-abcd.recovered-{SECS}.md"))
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a newer save");
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), "text set aside");
+        assert!(!aside.exists());
+    }
+
+    #[test]
+    fn a_recovered_name_already_taken_is_never_overwritten() {
+        let dir = notes_folder("taken");
+        let path = dir.join("2026-09-26-0215-abcd.md");
+        let aside = dir.join(".2026-09-26-0215-abcd.md.discard-1-0");
+        let first = dir.join(format!("2026-09-26-0215-abcd.recovered-{SECS}.md"));
+        std::fs::write(&first, "an earlier recovery").unwrap();
+        std::fs::write(&aside, "text set aside").unwrap();
+        std::fs::write(&path, "a newer save").unwrap();
+        let Blank::Recovered(kept) = settle_aside(&aside, &path, SECS) else {
+            panic!("kept");
+        };
+        assert_ne!(kept, first);
+        assert_eq!(
+            std::fs::read_to_string(&first).unwrap(),
+            "an earlier recovery"
+        );
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), "text set aside");
+    }
+
+    #[test]
+    fn a_blank_aside_with_a_newer_save_at_the_name_is_not_a_removal() {
+        let dir = notes_folder("blank-newer");
+        let path = dir.join("2026-09-26-0215-abcd.md");
+        let aside = dir.join(".2026-09-26-0215-abcd.md.discard-1-0");
+        std::fs::write(&aside, "\n").unwrap();
+        std::fs::write(&path, "a newer save").unwrap();
+        assert_eq!(settle_aside(&aside, &path, SECS), Blank::Stays);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a newer save");
+        assert!(!aside.exists());
     }
 
     #[test]
