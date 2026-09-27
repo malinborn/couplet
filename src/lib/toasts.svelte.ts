@@ -109,9 +109,11 @@ export type ToastPayload =
    * A note could not be created (stash plan 03, D3) — the notes folder is not
    * writable, the database is locked. The text is still in the tab and in its
    * session draft, and the birth is tried again as the human types; withdrawn
-   * by the next note that is created.
+   * by the next note that is created. `notPutAway`: instead, an explicit
+   * put-away closed its tab but the stash did not take the document (it is
+   * still on disk where it was).
    */
-  | { kind: 'stash-error'; message: string }
+  | { kind: 'stash-error'; message: string; notPutAway?: boolean }
   | { kind: 'update'; latest: string; current: string; highlight?: string }
   /**
    * Answers to a manual "Check for Updates…" click (#82) — the automatic

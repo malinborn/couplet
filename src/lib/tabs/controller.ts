@@ -41,12 +41,16 @@ export const NOTE_RETRY_MS = 10_000;
  * How an untitled tab becomes a stash note (stash plan 03). `create`: Rust
  * writes a new note holding `text` and answers its normalized path.
  * `claim`: `tab_claim` — `null` when Rust could not be asked. `failed`: say
- * so (the `stash-error` toast); the text stays in the tab and its draft.
+ * so (the `stash-error` toast); the text stays in the tab and its draft —
+ * called only while the tab is still there to hold it. `notPutAway`: an
+ * explicit put-away closed the tab, but Rust could not put the document into
+ * the stash (`message`: why); it is still on disk where it was.
  */
 export interface NoteDeps {
   create(text: string): Promise<{ path: string }>;
   claim(tabId: string, path: string): Promise<TabClaim | null>;
   failed(message: string): void;
+  notPutAway(message: string): void;
 }
 
 export type NoteBirth = { kind: 'born'; path: string } | { kind: 'skipped' } | { kind: 'failed'; error: string };
@@ -252,8 +256,10 @@ export interface TabControllerDeps {
      * screen, for the rescue copy in the draft trash; `null` for a file tab.
      * `putAway`: ⌃T — Rust also makes the document a stash entry (a file a
      * reference). A note is put away on every close (stash plan 03, D5).
+     * Answers `null`, or — only for a `putAway` the stash could not take —
+     * why not; the tab is closed either way.
      */
-    close(tabId: string, position: Position, discarded: string | null, putAway: boolean): Promise<void>;
+    close(tabId: string, position: Position, discarded: string | null, putAway: boolean): Promise<string | null>;
     focusElsewhere(path: string): Promise<void>;
     closeWindow(): Promise<void>;
     /** Move tabs of this window to `target` (Rust `tab_move`, atomic). Rejects when Rust refused. */
@@ -499,9 +505,10 @@ export function createTabController(deps: TabControllerDeps) {
     }
   }
 
-  function failBirth(tabId: string, error: string): NoteBirth {
+  /** `quiet`: the tab is closing anyway — "the text is safe in the tab" would be false. */
+  function failBirth(tabId: string, error: string, quiet: boolean): NoteBirth {
     birthFailedAt.set(tabId, deps.now());
-    deps.notes?.failed(error);
+    if (!quiet) deps.notes?.failed(error);
     return { kind: 'failed', error };
   }
 
@@ -514,9 +521,10 @@ export function createTabController(deps: TabControllerDeps) {
    * written by the ordinary flush. Until the claim lands the tab is untitled,
    * so the heartbeat keeps its draft sidecar current; a failure at either
    * step leaves the text in the tab and its draft (and, after a create, in
-   * the note too) — duplicated at worst, never lost.
+   * the note too) — duplicated at worst, never lost. `quiet`: a failure
+   * raises no toast (see `failBirth`).
    */
-  async function becomeNoteNow(tabId: string): Promise<NoteBirth> {
+  async function becomeNoteNow(tabId: string, quiet = false): Promise<NoteBirth> {
     const notes = deps.notes;
     birthing.add(tabId);
     try {
@@ -528,11 +536,11 @@ export function createTabController(deps: TabControllerDeps) {
       try {
         created = (await notes.create(text)).path;
       } catch (err) {
-        return failBirth(tabId, message(err));
+        return failBirth(tabId, message(err), quiet);
       }
       // The note holds `text` from here on, whatever happens to the tab.
       const step = decideSaveAs(await notes.claim(tabId, created), created);
-      if (step.kind === 'blocked') return failBirth(tabId, `the tab could not take ${created}`);
+      if (step.kind === 'blocked') return failBirth(tabId, `the tab could not take ${created}`, quiet);
       birthFailedAt.delete(tabId);
       if (!findById(list, tabId)) return { kind: 'skipped' };
       if (tabId === list.activeId) {
@@ -1027,8 +1035,10 @@ export function createTabController(deps: TabControllerDeps) {
    * close — its refusal is the agent's answer, not a toast (D5). `putAway`:
    * ⌃T / `/stash` / the menu — Rust puts the document into the stash as it
    * closes (stash plan 03, D5). An untitled tab with text becomes a note
-   * first, so a close puts it away instead of dropping it; if that fails it
-   * closes as before, with its rescue copy.
+   * first, so a close puts it away instead of dropping it. If that fails, a
+   * put-away refuses (`false`: nothing was put away, the tab keeps its text),
+   * while ⌘W closes as before, with its rescue copy and no toast — the tab
+   * the "safe in the tab" message speaks of is gone.
    */
   async function closeNow(
     tabId: string,
@@ -1041,19 +1051,26 @@ export function createTabController(deps: TabControllerDeps) {
     // Set when this close made the tab a note: it held text, so like
     // untitled text it is never merely released — the close puts it away.
     let born = false;
-    const birth = async (): Promise<void> => {
-      if ((await becomeNoteNow(tabId)).kind === 'born') born = true;
+    /** `false`: a put-away whose note could not be made — the tab must stay. */
+    const birth = async (): Promise<boolean> => {
+      const outcome = await becomeNoteNow(tabId, !putAway);
+      if (outcome.kind === 'born') born = true;
+      return !(putAway && outcome.kind === 'failed');
     };
     // A release is only for a blank Untitled, but it was judged blank before
     // an await: text typed since goes through `close`, which keeps a rescue
     // copy (or, once it is a note, puts it away).
-    const finish = (position: Position, discarded: string | null) =>
-      how === 'close' || born || discarded?.trim()
-        ? deps.rust.close(tabId, position, discarded, putAway)
-        : deps.rust.release(tabId);
+    const finish = async (position: Position, discarded: string | null): Promise<void> => {
+      if (how === 'close' || born || discarded?.trim()) {
+        const refused = await deps.rust.close(tabId, position, discarded, putAway);
+        if (putAway && refused !== null) deps.notes?.notPutAway(refused);
+      } else {
+        await deps.rust.release(tabId);
+      }
+    };
 
     if (tabId !== list.activeId) {
-      if (findById(list, tabId)?.path === null) await birth();
+      if (findById(list, tabId)?.path === null && !(await birth())) return false;
       const closing = findById(list, tabId);
       if (!closing) return false;
       // A background tab is clean by construction and was handed over when
@@ -1073,9 +1090,10 @@ export function createTabController(deps: TabControllerDeps) {
     await flushWithRetries();
     // Stash spec: ⌘W puts a note away. An untitled tab with text becomes one
     // first; a blank one has nothing to keep and closes without a trace. If
-    // the birth fails, the untitled text is not a reason to refuse: the tab
-    // closes as it always did, with its rescue copy (spec §8).
-    if (deps.doc.path() === null) await birth();
+    // the birth fails, the untitled text is not a reason for ⌘W to refuse:
+    // the tab closes as it always did, with its rescue copy (spec §8). A
+    // put-away refuses instead — closing would put nothing away.
+    if (deps.doc.path() === null && !(await birth())) return false;
     const path = deps.doc.path();
     const verdict = decideLeave({
       activePath: path,

@@ -27,6 +27,8 @@
 
   "toast.stash_error.headline": "The note was not created",
   "toast.stash_error.message": "The text is safe in the tab and its draft — trying again as you type",
+  "toast.stash_error.not_put_away_headline": "Not put away in the stash",
+  "toast.stash_error.not_put_away_message": "The tab is closed and the document is where it was, but it did not go into the stash",
 
   "toast.update.headline": "couplet {latest} available",
   "toast.update.current": "you have v{current}",

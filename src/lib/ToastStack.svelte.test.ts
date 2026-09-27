@@ -84,3 +84,21 @@ describe('ToastStack: tabs moved to another window (plan 05)', () => {
     expect(root.querySelector('.md-toast-text')?.textContent?.trim()).toBe('Перенесено в #19, #20');
   });
 });
+
+describe('ToastStack: stash errors', () => {
+  it('ABirthFailureSaysTheTextIsSafeInTheTab', () => {
+    installCatalog('ru');
+    const root = render({ kind: 'stash-error', message: 'EPERM' });
+    expect(root.querySelector('.md-toast-text')?.textContent?.trim()).toBe('Заметка не создалась');
+  });
+
+  it('AFailedPutAwaySaysTheDocumentWasNotPutAway', () => {
+    installCatalog('ru');
+    const root = render({ kind: 'stash-error', message: 'stash unavailable: locked', notPutAway: true });
+    expect(root.querySelector('.md-toast-text')?.textContent?.trim()).toBe('Не отложено в тайник');
+    const dim = root.querySelector('.md-toast-dim')?.textContent ?? '';
+    expect(dim).toContain('в тайник не попал');
+    expect(dim).toContain('stash unavailable: locked');
+    expect(dim).not.toContain('во вкладке');
+  });
+});

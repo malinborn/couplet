@@ -83,6 +83,7 @@ function makeHarness(initialFiles: Record<string, string>, opts: { notes?: boole
       return { kind: 'claimed', path };
     }),
     failed: vi.fn(),
+    notPutAway: vi.fn(),
   };
 
   const deps: TabControllerDeps = {
@@ -191,8 +192,9 @@ function makeHarness(initialFiles: Record<string, string>, opts: { notes?: boole
       activate: vi.fn(async (tabId: string) => {
         calls.push(`activate ${tabId}`);
       }),
-      close: vi.fn(async (tabId: string) => {
+      close: vi.fn(async (tabId: string): Promise<string | null> => {
         calls.push(`close ${tabId}`);
+        return null;
       }),
       focusElsewhere: vi.fn(async (path: string) => {
         calls.push(`focusElsewhere ${path}`);
@@ -2543,9 +2545,67 @@ describe('notes', () => {
     h.notes.create.mockRejectedValue(new Error('EPERM'));
     h.type('text');
     await h.controller.closeActive();
-    expect(h.notes.failed).toHaveBeenCalledWith('EPERM');
     expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'text', false);
     expect(h.ids()).toEqual(['a']);
+  });
+
+  it('CmdWAfterAFailedBirthClosesWithoutTheSafeInTheTabMessage', async () => {
+    // The tab is gone: "the text is safe in the tab" would be false. The
+    // rescue copy in the drafts trash holds it, as before the stash.
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.notes.create.mockRejectedValue(new Error('EPERM'));
+    h.type('text');
+    await h.controller.closeActive();
+    expect(h.notes.failed).not.toHaveBeenCalled();
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'text', false);
+  });
+
+  it('CmdWOfABackgroundTabAfterAFailedBirthClosesWithoutTheSafeInTheTabMessage', async () => {
+    const h = makeHarness({ '/a.md': 'A' });
+    await h.controller.init([fileTab('a', '/a.md'), untitledTab('u', 'draft')], 'a');
+    Object.assign(h.deps, { notes: h.notes });
+    h.notes.create.mockRejectedValue(new Error('EPERM'));
+    await h.controller.closeTabs(['u']);
+    expect(h.notes.failed).not.toHaveBeenCalled();
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'draft', false);
+  });
+
+  it('PutAwayOfAnUntitledTabWhoseBirthFailsKeepsTheTab', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.notes.create.mockRejectedValue(new Error('EPERM'));
+    h.type('idea');
+    expect(await h.controller.putAwayActive()).toBe(false);
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+    expect(h.ids()).toEqual(['u', 'a']);
+    expect(h.active()).toBe('u');
+    expect(h.live().doc.toString()).toBe('idea');
+    // The tab is still there, so "safe in the tab" is true this time.
+    expect(h.notes.failed).toHaveBeenCalledWith('EPERM');
+  });
+
+  it('PutAwayOfAnUntitledTabWhoseClaimIsRefusedKeepsTheTab', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.notes.claim.mockResolvedValue({ kind: 'refused' });
+    h.type('idea');
+    expect(await h.controller.putAwayActive()).toBe(false);
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+    expect(h.ids()).toEqual(['u', 'a']);
+    expect(h.doc.path).toBeNull();
+  });
+
+  it('PutAwayWhoseRustAnswerIsAFailureRaisesStashError', async () => {
+    const h = await started({ '/a.md': 'A', '/b.md': 'B' }, [fileTab('a', '/a.md'), fileTab('b', '/b.md')], 'a', withNotes);
+    vi.mocked(h.deps.rust.close).mockResolvedValueOnce('stash unavailable: locked');
+    // The tab is closed either way: Rust has already let it go.
+    expect(await h.controller.putAwayActive()).toBe(true);
+    expect(h.notes.notPutAway).toHaveBeenCalledWith('stash unavailable: locked');
+    expect(h.ids()).toEqual(['b']);
+  });
+
+  it('APutAwayThatLandedRaisesNothing', async () => {
+    const h = await started({ '/a.md': 'A', '/b.md': 'B' }, [fileTab('a', '/a.md'), fileTab('b', '/b.md')], 'a', withNotes);
+    await h.controller.putAwayActive();
+    expect(h.notes.notPutAway).not.toHaveBeenCalled();
   });
 
   it('ABlankGivingWayIsStillReleased', async () => {

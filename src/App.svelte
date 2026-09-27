@@ -770,10 +770,14 @@
         }),
       release: (tabId) => invoke<void>('tab_release', { tabId }).catch(logTabIpc('tab_release')),
       activate: (tabId) => invoke<void>('tab_activate', { tabId }).catch(logTabIpc('tab_activate')),
+      // `null`, or why an explicit put-away did not reach the stash (the tab is closed either way).
       close: (tabId, { cursor, topLine }, discarded, putAway) =>
-        invoke<void>('tab_close', { tabId, cursor, topLine, content: discarded, putAway }).catch(
-          logTabIpc('tab_close')
-        ),
+        invoke<string | null>('tab_close', { tabId, cursor, topLine, content: discarded, putAway })
+          .then((refused) => refused ?? null)
+          .catch((err: unknown) => {
+            logTabIpc('tab_close')(err);
+            return null;
+          }),
       focusElsewhere: async (path) => {
         await invoke('focus_if_open', { path }).catch(logTabIpc('focus_if_open'));
       },
@@ -816,6 +820,7 @@
                 return null;
               }),
             failed: (message) => toasts.push({ kind: 'stash-error', message }),
+            notPutAway: (message) => toasts.push({ kind: 'stash-error', message, notPutAway: true }),
           }
         : undefined,
   });

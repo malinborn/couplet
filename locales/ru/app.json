@@ -27,6 +27,8 @@
 
   "toast.stash_error.headline": "Заметка не создалась",
   "toast.stash_error.message": "Текст цел — во вкладке и в черновике; попробуем снова, когда продолжите печатать",
+  "toast.stash_error.not_put_away_headline": "Не отложено в тайник",
+  "toast.stash_error.not_put_away_message": "Вкладка закрыта, документ остался на месте, но в тайник не попал",
 
   "toast.update.headline": "Доступна версия couplet {latest}",
   "toast.update.current": "у вас установлена v{current}",
