@@ -873,7 +873,8 @@
     // the stash — and while the stash has them every key is routed to it. Esc
     // there is the stash's own (D7: query, then the stash alone); Esc in the
     // tabs drawer stays `escapeState` → `closeDrawer`, which closes both.
-    if (stash && car === null) {
+    // The «got» pulse after a pick counts as no carousel: the keys are the drawers' again.
+    if (stash && (car === null || car.got !== null)) {
       const side = arrowFocus(e);
       if (side) {
         e.preventDefault();
@@ -887,6 +888,13 @@
         return;
       }
       if (focusStash) {
+        // ⌘G is the carousel's from either drawer; squeezed, the stash steps aside first (D20).
+        if (drawerKeyAction(e, ds.query, mac).kind === 'carousel') {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!gesture) openMoveKeys();
+          return;
+        }
         if (stashHandle?.key(e)) {
           e.preventDefault();
           e.stopPropagation();
@@ -1036,7 +1044,15 @@
   /** Esc, or a press off the thumbnails: the keys go back to the list. */
   function cancelKeysCarousel(): void {
     closeCarousel();
-    void tick().then(() => listEl?.focus({ preventScroll: true }));
+    focusAfterKeysCarousel();
+  }
+
+  /** DOM focus back to the drawer that has the keys — the stash, if ⌘G came from there. */
+  function focusAfterKeysCarousel(): void {
+    void tick().then(() => {
+      if (focusStash) stashHandle?.focus();
+      else listEl?.focus({ preventScroll: true });
+    });
   }
 
   /** The option under the dragged card — also after the track scrolled under a still pointer. */
@@ -1062,7 +1078,7 @@
     ds = clearSelection(ds);
     car = { ...c, got: index, hot: null };
     carCloseTimer = setTimeout(closeCarousel, motion(GOT_MS));
-    if (c.mode === 'keys') void tick().then(() => listEl?.focus({ preventScroll: true }));
+    if (c.mode === 'keys') focusAfterKeysCarousel();
   }
 
   /** ⌘G / «В окно…»: the selection, else the card the arrows are on, else the active tab. */

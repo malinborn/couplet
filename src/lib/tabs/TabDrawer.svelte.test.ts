@@ -1770,6 +1770,57 @@ describe('TabDrawer — one keyboard for two drawers (stash stage 04)', () => {
     expect(h.handle().putAwayTargets()).toBeUndefined();
   });
 
+  describe('⌘G while the stash has the keys (M10)', () => {
+    let was = 0;
+    function viewport(width: number): void {
+      window.innerWidth = width;
+      window.dispatchEvent(new Event('resize'));
+    }
+    beforeEach(() => {
+      was = window.innerWidth;
+    });
+    afterEach(() => viewport(was));
+
+    it('reaches the carousel: the stash stays open and types nothing', async () => {
+      viewport(1200);
+      press('ArrowRight');
+      await settleLong();
+      const e = press('g', { metaKey: true, ctrlKey: true });
+      await settleLong();
+      expect(e.defaultPrevented).toBe(true);
+      expect(page().querySelector('.carousel')).not.toBeNull();
+      expect(stash.state.open).toBe(true);
+      expect(stashQuery()).toBe('');
+    });
+
+    it('squeezed, it closes the stash first (D20)', async () => {
+      viewport(800);
+      press('ArrowRight');
+      await settleLong();
+      press('g', { metaKey: true, ctrlKey: true });
+      await settleLong();
+      expect(stash.state.open).toBe(false);
+      expect(page().querySelector('.carousel')).not.toBeNull();
+    });
+
+    it('during the «got» pulse after a pick, keys still go to the stash, not the tabs search', async () => {
+      viewport(1200);
+      press('ArrowRight');
+      await settleLong();
+      press('g', { metaKey: true, ctrlKey: true });
+      await settleLong();
+      press('Enter');
+      await settle();
+      expect(h.onmove).toHaveBeenCalled();
+      expect(page().querySelector('.carousel'), 'still pulsing').not.toBeNull();
+      press('b');
+      await settle();
+      expect(stashQuery()).toBe('b');
+      expect(query()).toBe('');
+      expect(page().querySelector('.stash-drawer')?.contains(document.activeElement)).toBe(true);
+    });
+  });
+
   it('⌃T targets the card under the keyboard ring when nothing is selected', async () => {
     press('ArrowDown');
     await settle();
