@@ -6,11 +6,12 @@
 //! An agent never gets the whole stash: search answers snippets, list answers
 //! metadata, and only `get` returns text — of one entry, capped.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::{clock, entries, Stash, StashPaths};
+use super::{clock, entries, ListQuery, ListSort, Stash, StashEntry, StashKind, StashPaths};
 
 /// Answer to a write when the app data directory does not exist yet (A12).
 pub const NOT_RUN_YET: &str = "couplet has not run on this Mac yet — open it once, then try again";
@@ -345,6 +346,344 @@ pub fn clip(s: &str, max: usize) -> String {
     out
 }
 
+pub const SEARCH_DEFAULT_LIMIT: usize = 10;
+pub const SEARCH_MAX_LIMIT: usize = 50;
+pub const LIST_DEFAULT_LIMIT: usize = 20;
+pub const LIST_MAX_LIMIT: usize = 100;
+/// A backstop over stage 05's ~200-character snippets.
+const SNIPPET_MAX_CHARS: usize = 240;
+
+/// One entry as an agent sees it: metadata only (plan D7, A12) — never the
+/// IPC `StashEntry`, whose `preview` is text. `repo` is the stored one, the
+/// column the scope filtered on. No branch: it would cost a `.git` walk per
+/// file hit, and the stored repo is what the scope means.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentEntry {
+    pub id: String,
+    pub kind: StashKind,
+    pub title: Option<String>,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stashed_at: Option<String>,
+    pub modified_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentHit {
+    #[serde(flatten)]
+    pub entry: AgentEntry,
+    pub snippet: String,
+}
+
+/// The one answer shape of every stash verb — the CLI's `--json` line and
+/// the MCP tool result text. Every field but `ok` is skipped when absent.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct StashAnswer {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<Scope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hits: Option<Vec<AgentHit>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entries: Option<Vec<AgentEntry>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<AgentEntry>,
+    /// `add`: false when the path was already in the stash (dedup).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<[usize; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_lines: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
+    /// Absent on the last page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+impl StashAnswer {
+    pub fn error(msg: impl Into<String>) -> Self {
+        StashAnswer {
+            ok: false,
+            error: Some(msg.into()),
+            ..Default::default()
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Filter {
+    pub tag: Option<String>,
+    pub kind: Option<StashKind>,
+    pub scope: ScopeArg,
+}
+
+/// `search`'s arguments — named apart from stage 05's `search::SearchArgs`,
+/// which this turns into.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentSearchArgs {
+    pub query: String,
+    pub filter: Filter,
+    pub limit: Option<usize>,
+    /// The previous page's `next_cursor`: an offset — paging re-runs the
+    /// search, so an entry changed between pages may be skipped or repeated
+    /// (stage 05 M10).
+    pub cursor: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ListArgs {
+    pub filter: Filter,
+    /// See `parse_since`.
+    pub since: Option<String>,
+    pub sort: Option<ListSort>,
+    pub limit: Option<usize>,
+    /// The previous page's `next_cursor` (a keyset: stable under writes).
+    pub cursor: Option<String>,
+}
+
+/// Everything an operation needs besides its arguments.
+pub struct Ctx<'a> {
+    pub loc: &'a StashLocation,
+    /// The caller's working directory: the default scope, and the base of a
+    /// relative `add --path`.
+    pub cwd: &'a Path,
+    pub now_ms: i64,
+}
+
+fn agent_entry(e: &StashEntry) -> AgentEntry {
+    AgentEntry {
+        id: e.id.clone(),
+        kind: e.kind,
+        title: e.title.clone(),
+        path: e.path.clone(),
+        repo: e.repo.clone(),
+        tags: e.tags.clone(),
+        stashed_at: e.stashed_at.map(iso_local),
+        modified_at: iso_local(e.modified_at),
+    }
+}
+
+fn clamp_limit(asked: Option<usize>, default: usize, max: usize) -> usize {
+    asked.unwrap_or(default).clamp(1, max)
+}
+
+/// The one optional tag of a search/list filter, normalised; `#` alone is an
+/// error rather than a filter nothing matches.
+fn filter_tag(tag: &Option<String>) -> Result<Option<String>, String> {
+    match tag {
+        Some(t) => agent_tags(std::slice::from_ref(t)).map(|mut v| v.pop()),
+        None => Ok(None),
+    }
+}
+
+/// Zero results inside a repo scope: say so, or the agent tells the human
+/// "nothing exists" (plan D6).
+fn scope_hint(scope: &Scope, total: usize) -> Option<String> {
+    match (&scope.repo, total) {
+        (Some(repo), 0) => Some(format!(
+            "nothing in repo {repo}; widen with --all (MCP: all: true)"
+        )),
+        _ => None,
+    }
+}
+
+/// The answer of a read when `stash.db` does not exist yet.
+fn empty_page(scope: Scope, hits: bool) -> StashAnswer {
+    StashAnswer {
+        ok: true,
+        scope: Some(scope),
+        total: Some(0),
+        hits: hits.then(Vec::new),
+        entries: (!hits).then(Vec::new),
+        hint: Some("the stash is empty".to_string()),
+        ..Default::default()
+    }
+}
+
+/// Best matches with a snippet each — never full text (spec «Агент»). The
+/// repo filter is SQL on the stored column (stage 05 M8); no `Enrich` (it
+/// would read every hit's text).
+pub fn search(ctx: &Ctx, args: &AgentSearchArgs) -> StashAnswer {
+    // A query of quotes and spaces parses to no terms and would list the
+    // whole stash by freshness.
+    if args
+        .query
+        .trim_matches(|c: char| c == '"' || c.is_whitespace())
+        .is_empty()
+    {
+        return StashAnswer::error("search needs a query (browse with list)");
+    }
+    let tag = match filter_tag(&args.filter.tag) {
+        Ok(t) => t,
+        Err(e) => return StashAnswer::error(e),
+    };
+    let scope = resolve_scope(&args.filter.scope, ctx.cwd);
+    let stash = match open_for_read(ctx.loc) {
+        Ok(Some(s)) => s,
+        Ok(None) => return empty_page(scope, true),
+        Err(e) => return StashAnswer::error(e),
+    };
+    let query = super::search::SearchArgs {
+        query: args.query.clone(),
+        repo: scope.repo.clone(),
+        tag,
+        kind: args.filter.kind,
+        deleted: false,
+        limit: Some(clamp_limit(
+            args.limit,
+            SEARCH_DEFAULT_LIMIT,
+            SEARCH_MAX_LIMIT,
+        )),
+        cursor: args.cursor.clone(),
+    };
+    match super::search::select_page(&stash.conn, &query).map(|d| d.into_page()) {
+        Ok(page) => StashAnswer {
+            ok: true,
+            hint: scope_hint(&scope, page.total),
+            scope: Some(scope),
+            total: Some(page.total),
+            hits: Some(
+                page.hits
+                    .iter()
+                    .map(|h| AgentHit {
+                        entry: agent_entry(&h.entry),
+                        snippet: clip(&h.snippet, SNIPPET_MAX_CHARS),
+                    })
+                    .collect(),
+            ),
+            next_cursor: page.next_cursor,
+            ..Default::default()
+        },
+        Err(e) => StashAnswer::error(e),
+    }
+}
+
+/// Metadata only, never text; the trash is never listed (A8).
+pub fn list(ctx: &Ctx, args: &ListArgs) -> StashAnswer {
+    let tag = match filter_tag(&args.filter.tag) {
+        Ok(t) => t,
+        Err(e) => return StashAnswer::error(e),
+    };
+    let since = match args
+        .since
+        .as_deref()
+        .map(|s| parse_since(s, ctx.now_ms))
+        .transpose()
+    {
+        Ok(s) => s,
+        Err(e) => return StashAnswer::error(e),
+    };
+    let scope = resolve_scope(&args.filter.scope, ctx.cwd);
+    let stash = match open_for_read(ctx.loc) {
+        Ok(Some(s)) => s,
+        Ok(None) => return empty_page(scope, false),
+        Err(e) => return StashAnswer::error(e),
+    };
+    let query = ListQuery {
+        repo: scope.repo.clone(),
+        tag,
+        kind: args.filter.kind,
+        sort: args.sort.unwrap_or_default(),
+        deleted: false,
+        since,
+        limit: Some(clamp_limit(args.limit, LIST_DEFAULT_LIMIT, LIST_MAX_LIMIT)),
+        cursor: args.cursor.clone(),
+    };
+    match stash.list(&query) {
+        Ok(page) => StashAnswer {
+            ok: true,
+            hint: scope_hint(&scope, page.total),
+            scope: Some(scope),
+            total: Some(page.total),
+            entries: Some(page.entries.iter().map(agent_entry).collect()),
+            next_cursor: page.next_cursor,
+            ..Default::default()
+        },
+        Err(e) => StashAnswer::error(e),
+    }
+}
+
+/// The text of one note (capped, plan D8), or a file entry's path (D9).
+/// Touches nothing: an agent reading is not the human opening (D10).
+pub fn get(ctx: &Ctx, id: &str, lines: Option<LineRange>) -> StashAnswer {
+    let stash = match open_for_read(ctx.loc) {
+        Ok(Some(s)) => s,
+        Ok(None) => return StashAnswer::error(format!("no stash entry {id}")),
+        Err(e) => return StashAnswer::error(e),
+    };
+    let entry = match stash.get(id) {
+        Ok(e) => e,
+        Err(e) => return StashAnswer::error(e),
+    };
+    if entry.deleted_at.is_some() {
+        return StashAnswer::error(format!("stash entry {id} is in the trash"));
+    }
+    let mut answer = StashAnswer {
+        ok: true,
+        entry: Some(agent_entry(&entry)),
+        ..Default::default()
+    };
+    if entry.kind == StashKind::File {
+        if lines.is_some() {
+            return StashAnswer::error(format!(
+                "{id} is a file reference: read {} directly",
+                entry.path
+            ));
+        }
+        answer.hint = Some(format!("a file reference: read {} directly", entry.path));
+        return answer;
+    }
+    let text = match read_note(Path::new(&entry.path)) {
+        Ok(t) => t,
+        Err(e) => {
+            return StashAnswer::error(format!("cannot read the note file {}: {e}", entry.path))
+        }
+    };
+    match slice_lines(&text, lines) {
+        Ok(s) => {
+            if s.truncated {
+                answer.hint = Some(format!(
+                    "showing lines {}–{} of {}; the rest with lines {}:",
+                    s.lines[0],
+                    s.lines[1],
+                    s.total_lines,
+                    s.lines[1] + 1
+                ));
+            }
+            answer.text = Some(s.text);
+            answer.lines = Some(s.lines);
+            answer.total_lines = Some(s.total_lines);
+            answer.truncated = Some(s.truncated);
+            answer
+        }
+        Err(e) => StashAnswer::error(e),
+    }
+}
+
+/// A note's text through `open_readable_now`: a FIFO or a dataless iCloud
+/// file swapped in at the note's path fails at once instead of hanging.
+fn read_note(path: &Path) -> Result<String, String> {
+    let mut text = String::new();
+    entries::open_readable_now(path)?
+        .read_to_string(&mut text)
+        .map_err(|e| e.to_string())?;
+    Ok(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,21 +703,21 @@ mod tests {
         };
         use rusqlite::Connection;
 
+        /// Every stash call answers its error as text.
+        type R<T> = Result<T, String>;
         let _: fn(&Path, &Path, &str) -> StashPaths = StashPaths::from_bases;
         let _: fn(StashPaths) -> Result<Stash, db::OpenError> = Stash::open;
-        let _: fn(&mut Stash, &str, Option<&str>, i64, i64) -> Result<StashEntry, String> =
-            Stash::create_note;
-        let _: fn(&PutAway, &Path, i64) -> Result<PutAwayPlan, String> = entries::plan_put_away;
-        let _: fn(&mut Stash, PutAwayPlan, i64) -> Result<Vec<PutAwayResult>, String> =
-            Stash::put_away_probed;
-        let _: fn(&Stash, &ListQuery) -> Result<ListResult, String> = Stash::list;
-        let _: fn(&Stash, &str) -> Result<StashEntry, String> = Stash::get;
-        let _: fn(&mut Stash, &str, &[String], &[String]) -> Result<Tagged, String> = Stash::tag;
-        let _: fn(&mut Stash, &str, i64) -> Result<Deleted, String> = Stash::delete_entry;
+        let _: fn(&mut Stash, &str, Option<&str>, i64, i64) -> R<StashEntry> = Stash::create_note;
+        let _: fn(&PutAway, &Path, i64) -> R<PutAwayPlan> = entries::plan_put_away;
+        let _: fn(&mut Stash, PutAwayPlan, i64) -> R<Vec<PutAwayResult>> = Stash::put_away_probed;
+        let _: fn(&Stash, &ListQuery) -> R<ListResult> = Stash::list;
+        let _: fn(&Stash, &str) -> R<StashEntry> = Stash::get;
+        let _: fn(&mut Stash, &str, &[String], &[String]) -> R<Tagged> = Stash::tag;
+        let _: fn(&mut Stash, &str, i64) -> R<Deleted> = Stash::delete_entry;
         let _: fn(&mut Stash, i64, i64) = Stash::after_write;
-        let _: fn(&str) -> Result<Option<String>, String> = entries::normalize_tag;
+        let _: fn(&str) -> R<Option<String>> = entries::normalize_tag;
         let _: fn(Option<&str>) -> Option<String> = entries::normalize_repo;
-        let _: fn(&Path) -> Result<std::fs::File, String> = entries::open_readable_now;
+        let _: fn(&Path) -> R<std::fs::File> = entries::open_readable_now;
         let _: fn(&tauri::AppHandle, &str, Option<Vec<String>>) = crate::stash::emit_changed;
         // `select_page`'s draft type is not nameable outside `search::run`.
         let _ = |c: &Connection, a: &search::SearchArgs| {
@@ -395,17 +734,10 @@ mod tests {
             t: &Tagged,
         ) {
             let _: (&PathBuf, &PathBuf) = (&p.db_path, &p.notes_dir);
-            let _: (
-                &String,
-                StashKind,
-                &String,
-                &Option<String>,
-                &Option<String>,
-                &Option<String>,
-                &Vec<String>,
-            ) = (
-                &e.id, e.kind, &e.path, &e.title, &e.repo, &e.branch, &e.tags,
-            );
+            let _: (&String, StashKind, &String) = (&e.id, e.kind, &e.path);
+            let _: (&Option<String>, &Option<String>, &Option<String>) =
+                (&e.title, &e.repo, &e.branch);
+            let _: &Vec<String> = &e.tags;
             let _: (i64, Option<i64>, Option<i64>) = (e.modified_at, e.stashed_at, e.deleted_at);
             let _: (&Vec<StashEntry>, usize, &Option<String>) =
                 (&l.entries, l.total, &l.next_cursor);
@@ -880,5 +1212,502 @@ mod tests {
         assert_eq!(clip("тайник", 10), "тайник");
         assert_eq!(clip("тайник", 6), "тайник");
         assert_eq!(clip("тайник", 3), "тай…");
+    }
+
+    fn ctx<'a>(loc: &'a StashLocation, cwd: &'a Path) -> Ctx<'a> {
+        Ctx {
+            loc,
+            cwd,
+            now_ms: clock::now_ms(),
+        }
+    }
+
+    /// A put-away note, seeded through the stage 02 API directly, on the real
+    /// clock (`list --since 1d` is measured against it).
+    fn seed(loc: &StashLocation, text: &str, repo: Option<&str>, tags: &[&str]) -> String {
+        let now = clock::now_ms();
+        let mut s = Stash::open(loc.paths.clone()).unwrap();
+        let e = s.create_note(text, repo, now, offset_at(now)).unwrap();
+        let req = crate::stash::PutAway {
+            paths: vec![e.path.clone()],
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            ..Default::default()
+        };
+        s.put_away(&req, now).unwrap();
+        e.id
+    }
+
+    fn stored(loc: &StashLocation, id: &str) -> crate::stash::StashEntry {
+        Stash::open(loc.paths.clone()).unwrap().get(id).unwrap()
+    }
+
+    fn all() -> Filter {
+        Filter {
+            scope: ScopeArg::All,
+            ..Default::default()
+        }
+    }
+
+    fn search_all(query: &str) -> AgentSearchArgs {
+        AgentSearchArgs {
+            query: query.to_string(),
+            filter: all(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_search_answer_has_this_exact_shape() {
+        let answer = StashAnswer {
+            ok: true,
+            scope: Some(Scope {
+                repo: Some("couplet".to_string()),
+                all: false,
+            }),
+            total: Some(1),
+            hits: Some(vec![AgentHit {
+                entry: AgentEntry {
+                    id: "s1-a".to_string(),
+                    kind: crate::stash::StashKind::Note,
+                    title: Some("HDMI".to_string()),
+                    path: "/n/a.md".to_string(),
+                    repo: Some("couplet".to_string()),
+                    tags: vec!["infra".to_string()],
+                    stashed_at: Some("2026-09-27T01:55:00+03:00".to_string()),
+                    modified_at: "2026-09-27T01:50:00+03:00".to_string(),
+                },
+                snippet: "…HDMI через адаптер…".to_string(),
+            }]),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&answer).unwrap(),
+            r#"{"ok":true,"scope":{"repo":"couplet"},"total":1,"hits":[{"id":"s1-a","kind":"note","title":"HDMI","path":"/n/a.md","repo":"couplet","tags":["infra"],"stashed_at":"2026-09-27T01:55:00+03:00","modified_at":"2026-09-27T01:50:00+03:00","snippet":"…HDMI через адаптер…"}]}"#
+        );
+        let back: StashAnswer =
+            serde_json::from_str(&serde_json::to_string(&answer).unwrap()).unwrap();
+        assert_eq!(back, answer);
+    }
+
+    #[test]
+    fn search_returns_a_snippet_never_the_full_text() {
+        let loc = temp_location("snippet", true);
+        let text = format!(
+            "# Сеть\n\n{}\nмаршрутизатор в переговорке\n{}ХВОСТ-НЕ-ДОЛЖЕН-УЙТИ",
+            "а".repeat(1500),
+            "б".repeat(1500)
+        );
+        seed(&loc, &text, None, &[]);
+        let cwd = outside_git();
+        let answer = search(&ctx(&loc, &cwd), &search_all("маршрутизатор"));
+        assert!(answer.ok, "{answer:?}");
+        let hits = answer.hits.as_ref().unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(
+            hits[0].snippet.contains("маршрутизатор"),
+            "{}",
+            hits[0].snippet
+        );
+        assert!(hits[0].snippet.chars().count() <= SNIPPET_MAX_CHARS + 1);
+        let json = serde_json::to_string(&answer).unwrap();
+        for forbidden in [
+            "ХВОСТ-НЕ-ДОЛЖЕН-УЙТИ",
+            "\"preview\"",
+            "\"text\"",
+            "\"caret\"",
+            "\"ranges\"",
+            "\"score\"",
+        ] {
+            assert!(!json.contains(forbidden), "{forbidden} leaked: {json}");
+        }
+    }
+
+    #[test]
+    fn a_blank_query_is_refused() {
+        let loc = temp_location("blank", true);
+        let cwd = outside_git();
+        for q in ["", "   ", "\"\"", " \" \" "] {
+            let answer = search(&ctx(&loc, &cwd), &search_all(q));
+            assert!(!answer.ok, "{q:?}: {answer:?}");
+            assert!(
+                answer.error.as_deref().unwrap().contains("list"),
+                "{answer:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn search_defaults_to_the_repository_of_the_cwd() {
+        let loc = temp_location("scope", true);
+        let repo = temp_repo("alpha");
+        seed(&loc, "# роутер альфа", Some("alpha"), &[]);
+        seed(&loc, "# роутер бета", Some("beta"), &[]);
+        let cwd = repo.join("sub");
+        let args = AgentSearchArgs {
+            query: "роутер".to_string(),
+            ..Default::default()
+        };
+        let here = search(&ctx(&loc, &cwd), &args);
+        assert_eq!(
+            (here.total, here.scope.clone()),
+            (
+                Some(1),
+                Some(Scope {
+                    repo: Some("alpha".to_string()),
+                    all: false
+                })
+            )
+        );
+        assert_eq!(here.hits.unwrap()[0].entry.repo.as_deref(), Some("alpha"));
+        let everywhere = search(&ctx(&loc, &cwd), &search_all("роутер"));
+        assert_eq!(
+            (everywhere.total, everywhere.scope),
+            (
+                Some(2),
+                Some(Scope {
+                    repo: None,
+                    all: true
+                })
+            )
+        );
+    }
+
+    #[test]
+    fn nothing_in_the_default_repository_hints_at_all() {
+        let loc = temp_location("hint", true);
+        seed(&loc, "# роутер бета", Some("beta"), &[]);
+        let cwd = temp_repo("alpha");
+        let args = AgentSearchArgs {
+            query: "роутер".to_string(),
+            ..Default::default()
+        };
+        let answer = search(&ctx(&loc, &cwd), &args);
+        assert_eq!(answer.total, Some(0));
+        assert!(
+            answer.hint.as_deref().unwrap_or("").contains("--all"),
+            "{answer:?}"
+        );
+        let everywhere = search(&ctx(&loc, &cwd), &search_all("роутер"));
+        assert_eq!((everywhere.total, everywhere.hint), (Some(1), None));
+    }
+
+    #[test]
+    fn search_pages_through_every_hit_once() {
+        let loc = temp_location("search-pages", true);
+        for i in 0..12 {
+            seed(&loc, &format!("# роутер {i}"), None, &[]);
+        }
+        let cwd = outside_git();
+        let mut seen = std::collections::HashSet::new();
+        let mut args = AgentSearchArgs {
+            limit: Some(5),
+            ..search_all("роутер")
+        };
+        let mut pages = Vec::new();
+        loop {
+            let page = search(&ctx(&loc, &cwd), &args);
+            assert_eq!(page.total, Some(12), "{page:?}");
+            let hits = page.hits.unwrap();
+            pages.push(hits.len());
+            for h in hits {
+                assert!(seen.insert(h.entry.id.clone()), "duplicate {}", h.entry.id);
+            }
+            match page.next_cursor {
+                Some(c) => args.cursor = Some(c),
+                None => break,
+            }
+        }
+        assert_eq!((pages, seen.len()), (vec![5, 5, 2], 12));
+        let capped = search(
+            &ctx(&loc, &cwd),
+            &AgentSearchArgs {
+                limit: Some(1000),
+                ..search_all("роутер")
+            },
+        );
+        assert_eq!(
+            capped.hits.map(|h| h.len()),
+            Some(12),
+            "clamped to {SEARCH_MAX_LIMIT}, not refused"
+        );
+        let default = search(&ctx(&loc, &cwd), &search_all("роутер"));
+        assert_eq!(default.hits.map(|h| h.len()), Some(SEARCH_DEFAULT_LIMIT));
+    }
+
+    #[test]
+    fn list_is_metadata_only_and_pages() {
+        let loc = temp_location("list-pages", true);
+        for i in 0..25 {
+            seed(
+                &loc,
+                &format!("# запись {i}\n\nтекст-который-не-нужен"),
+                None,
+                &["infra"],
+            );
+        }
+        let cwd = outside_git();
+        let first = list(
+            &ctx(&loc, &cwd),
+            &ListArgs {
+                filter: all(),
+                limit: Some(10),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            (first.total, first.entries.as_ref().map(Vec::len)),
+            (Some(25), Some(10))
+        );
+        let json = serde_json::to_string(&first).unwrap();
+        for forbidden in [
+            "текст-который-не-нужен",
+            "\"preview\"",
+            "\"snippet\"",
+            "\"text\"",
+        ] {
+            assert!(!json.contains(forbidden), "{forbidden} leaked: {json}");
+        }
+        assert!(first.entries.as_ref().unwrap()[0].stashed_at.is_some());
+        let second = list(
+            &ctx(&loc, &cwd),
+            &ListArgs {
+                filter: all(),
+                limit: Some(10),
+                cursor: first.next_cursor.clone(),
+                ..Default::default()
+            },
+        );
+        let third = list(
+            &ctx(&loc, &cwd),
+            &ListArgs {
+                filter: all(),
+                limit: Some(10),
+                cursor: second.next_cursor.clone(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(third.entries.as_ref().map(Vec::len), Some(5));
+        assert!(third.next_cursor.is_none());
+        let default = list(
+            &ctx(&loc, &cwd),
+            &ListArgs {
+                filter: all(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(default.entries.map(|e| e.len()), Some(LIST_DEFAULT_LIMIT));
+    }
+
+    #[test]
+    fn list_since_and_tag_filter() {
+        let loc = temp_location("list-since", true);
+        seed(&loc, "# a", None, &["infra"]);
+        seed(&loc, "# b", None, &[]);
+        let cwd = outside_git();
+        let recent = list(
+            &ctx(&loc, &cwd),
+            &ListArgs {
+                filter: all(),
+                since: Some("1d".to_string()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(recent.total, Some(2));
+        let future = list(
+            &ctx(&loc, &cwd),
+            &ListArgs {
+                filter: all(),
+                since: Some((clock::now_ms() + 3_600_000).to_string()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(future.total, Some(0));
+        let tagged = list(
+            &ctx(&loc, &cwd),
+            &ListArgs {
+                filter: Filter {
+                    tag: Some("#INFRA".to_string()),
+                    ..all()
+                },
+                ..Default::default()
+            },
+        );
+        assert_eq!(tagged.total, Some(1));
+        let bad = list(
+            &ctx(&loc, &cwd),
+            &ListArgs {
+                since: Some("soon".to_string()),
+                ..Default::default()
+            },
+        );
+        assert!(!bad.ok);
+        let empty_tag = list(
+            &ctx(&loc, &cwd),
+            &ListArgs {
+                filter: Filter {
+                    tag: Some("#".to_string()),
+                    ..all()
+                },
+                ..Default::default()
+            },
+        );
+        assert!(!empty_tag.ok, "{empty_tag:?}");
+    }
+
+    #[test]
+    fn reading_a_stash_that_does_not_exist_is_an_empty_page() {
+        let loc = temp_location("empty", false);
+        let cwd = outside_git();
+        let answer = list(&ctx(&loc, &cwd), &ListArgs::default());
+        assert_eq!(
+            (answer.ok, answer.total, answer.hint.as_deref()),
+            (true, Some(0), Some("the stash is empty"))
+        );
+        assert_eq!(answer.entries, Some(vec![]));
+        let found = search(&ctx(&loc, &cwd), &search_all("x"));
+        assert_eq!(
+            (found.ok, found.total, found.hits),
+            (true, Some(0), Some(vec![]))
+        );
+        assert_eq!(
+            found.scope,
+            Some(Scope {
+                repo: None,
+                all: true
+            })
+        );
+        assert!(!get(&ctx(&loc, &cwd), "s1-a", None).ok);
+        assert!(!loc.app_dir().exists());
+        assert!(!loc.paths.notes_dir.exists());
+    }
+
+    #[test]
+    fn get_returns_one_note_and_caps_a_long_one() {
+        let loc = temp_location("get", true);
+        let short = seed(&loc, "# Заметка\n\nтекст", None, &[]);
+        let long = seed(&loc, &numbered(1200), None, &[]);
+        let cwd = outside_git();
+        let one = get(&ctx(&loc, &cwd), &short, None);
+        assert_eq!(
+            (one.text.as_deref(), one.truncated),
+            (Some("# Заметка\n\nтекст"), Some(false))
+        );
+        assert_eq!(one.entry.as_ref().unwrap().id, short);
+        assert_eq!(one.hint, None);
+        let capped = get(&ctx(&loc, &cwd), &long, None);
+        assert_eq!(
+            (capped.lines, capped.total_lines, capped.truncated),
+            (Some([1, 500]), Some(1200), Some(true))
+        );
+        assert!(
+            capped.hint.as_deref().unwrap().contains("501:"),
+            "{capped:?}"
+        );
+        let range = get(
+            &ctx(&loc, &cwd),
+            &long,
+            Some(LineRange {
+                from: 501,
+                to: Some(510),
+            }),
+        );
+        assert_eq!(range.text.as_deref().map(|t| t.lines().count()), Some(10));
+        assert!(range.text.unwrap().starts_with("line 501\n"));
+        assert!(
+            !get(
+                &ctx(&loc, &cwd),
+                &long,
+                Some(LineRange {
+                    from: 5000,
+                    to: None
+                })
+            )
+            .ok
+        );
+    }
+
+    #[test]
+    fn get_of_a_file_entry_gives_its_path_not_its_text() {
+        let loc = temp_location("get-file", true);
+        let doc = outside_git().join("doc.md");
+        fs::write(&doc, "file body").unwrap();
+        let abs = crate::resolve_path(doc.to_str().unwrap(), None);
+        let mut s = Stash::open(loc.paths.clone()).unwrap();
+        let req = crate::stash::PutAway {
+            paths: vec![abs.clone()],
+            ..Default::default()
+        };
+        let id = s.put_away(&req, clock::now_ms()).unwrap()[0]
+            .entry
+            .id
+            .clone();
+        let cwd = outside_git();
+        let answer = get(&ctx(&loc, &cwd), &id, None);
+        assert!(answer.ok && answer.text.is_none(), "{answer:?}");
+        assert!(answer.hint.as_deref().unwrap().contains(&abs), "{answer:?}");
+        assert!(!serde_json::to_string(&answer)
+            .unwrap()
+            .contains("file body"));
+        assert_eq!(answer.entry.unwrap().path, abs);
+        assert!(!get(&ctx(&loc, &cwd), &id, Some(LineRange { from: 1, to: None })).ok);
+    }
+
+    #[test]
+    fn get_of_an_unknown_or_trashed_entry_is_an_error() {
+        let loc = temp_location("get-missing", true);
+        let id = seed(&loc, "# в корзину", None, &[]);
+        let cwd = outside_git();
+        let unknown = get(&ctx(&loc, &cwd), "s0-none", None);
+        assert!(!unknown.ok && unknown.error.as_deref().unwrap().contains("s0-none"));
+        Stash::open(loc.paths.clone())
+            .unwrap()
+            .delete_entry(&id, clock::now_ms())
+            .unwrap();
+        let trashed = get(&ctx(&loc, &cwd), &id, None);
+        assert!(!trashed.ok);
+        assert!(
+            trashed.error.as_deref().unwrap().contains("trash"),
+            "{trashed:?}"
+        );
+        let listed = list(
+            &ctx(&loc, &cwd),
+            &ListArgs {
+                filter: all(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            listed.total,
+            Some(0),
+            "the trash is never listed to an agent"
+        );
+        let found = search(&ctx(&loc, &cwd), &search_all("корзину"));
+        assert_eq!(found.total, Some(0), "nor found");
+    }
+
+    #[test]
+    fn reads_touch_nothing() {
+        let loc = temp_location("reads-touch-nothing", true);
+        let id = seed(&loc, "# Не трогать\n\nтекст", None, &["infra"]);
+        let before = stored(&loc, &id);
+        let cwd = outside_git();
+        assert!(search(&ctx(&loc, &cwd), &search_all("трогать")).ok);
+        assert!(
+            list(
+                &ctx(&loc, &cwd),
+                &ListArgs {
+                    filter: all(),
+                    ..Default::default()
+                }
+            )
+            .ok
+        );
+        assert!(get(&ctx(&loc, &cwd), &id, None).ok);
+        let after = stored(&loc, &id);
+        assert_eq!(after, before);
+        assert_eq!(
+            after.opened_at, None,
+            "an agent reading is not the human opening"
+        );
     }
 }
