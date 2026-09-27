@@ -164,29 +164,43 @@ fn kind_of_new(path: &Path, notes_dir: &Path) -> StashKind {
     }
 }
 
-/// A path not yet in the stash becomes an entry, a note or a file reference
-/// as `kind_of_new` decides (plan D5, D18).
-fn insert_new(
-    tx: &Connection,
-    path: &str,
-    notes_dir: &Path,
-    req: &PutAway,
-    now: i64,
-) -> Result<String, String> {
+/// What `put_away` learns from the disk about one path, before its
+/// transaction: the metadata, a new note's title and a file's repository
+/// all come from the user's file system — a dead mount, a dataless file, a
+/// slow `.git` walk — and must not run while the write lock is held (I3).
+struct Probe {
+    path: String,
+    /// `Err`: why it cannot become a new entry (an existing one is raised
+    /// without looking at the file).
+    new: Result<NewEntry, String>,
+    /// The git toplevel's name; re-stored for an existing file reference too.
+    repo: Option<String>,
+}
+
+/// The columns a path not yet in the stash is inserted with.
+struct NewEntry {
+    kind: StashKind,
+    title: String,
+    modified: i64,
+}
+
+/// Bytes read for a note's title (M10): its first non-blank line, which a
+/// note does not push past 64 KB.
+const TITLE_READ_BYTES: u64 = 64 * 1024;
+
+/// A path not yet in the stash becomes a note or a file reference as
+/// `kind_of_new` decides (plan D5, D18), with this title and modified time.
+fn probe_new(path: &str, notes_dir: &Path, now: i64) -> Result<NewEntry, String> {
     let meta = fs::metadata(path).map_err(|e| format!("cannot put away {path}: {e}"))?;
     if !meta.is_file() {
         return Err(format!("cannot put away {path}: not a file"));
     }
     let kind = kind_of_new(Path::new(path), notes_dir);
-    let (title, repo) = match kind {
-        StashKind::Note => (
-            fs::read_to_string(path)
-                .ok()
-                .and_then(|t| notes::title_of(&t))
-                .unwrap_or_default(),
-            None,
-        ),
-        StashKind::File => (file_title(path), file_repo(path)),
+    let title = match kind {
+        StashKind::Note => read_head(Path::new(path), TITLE_READ_BYTES)
+            .and_then(|t| notes::title_of(&t))
+            .unwrap_or_default(),
+        StashKind::File => file_title(path),
     };
     // Never in the future: a skewed mtime would hold the entry at the top of
     // «changed» and make every real save look older to `file_written`.
@@ -196,6 +210,36 @@ fn insert_new(
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .and_then(|d| i64::try_from(d.as_millis()).ok())
         .map_or(now, |m| m.min(now));
+    Ok(NewEntry {
+        kind,
+        title,
+        modified,
+    })
+}
+
+/// Everything `put_away` needs from the disk for `path`, off the lock.
+fn probe(path: String, notes_dir: &Path, now: i64) -> Probe {
+    let new = probe_new(&path, notes_dir, now);
+    let repo = file_repo(&path);
+    Probe { path, new, repo }
+}
+
+/// Inserts a probed new path inside the caller's transaction.
+fn insert_new(
+    tx: &Connection,
+    probe: &Probe,
+    plan: &PutAwayPlan,
+    now: i64,
+) -> Result<String, String> {
+    let new = probe.new.as_ref().map_err(String::clone)?;
+    let path = probe.path.as_str();
+    let (kind, title, modified) = (new.kind, new.title.as_str(), new.modified);
+    // A note keeps no repo from the file system: its repo is the window's
+    // project, given when it was written (plan D1).
+    let repo = match kind {
+        StashKind::Note => None,
+        StashKind::File => probe.repo.clone(),
+    };
     let id = unique_id(tx)?;
     tx.execute(
         "INSERT INTO entries (id, kind, path, title, repo, created_at, modified_at, stashed_at, caret, top_line) \
@@ -208,12 +252,55 @@ fn insert_new(
             repo,
             now,
             modified,
-            req.caret.unwrap_or(0),
-            req.top_line.unwrap_or(1)
+            plan.caret.unwrap_or(0),
+            plan.top_line.unwrap_or(1)
         ],
     )
     .map_err(db::err)?;
     Ok(id)
+}
+
+/// A put-away request checked and every path probed, with no lock held —
+/// `Stash::put_away_probed` then does only SQL (I3).
+pub(crate) struct PutAwayPlan {
+    probes: Vec<Probe>,
+    tags: Vec<String>,
+    caret: Option<i64>,
+    top_line: Option<i64>,
+}
+
+/// `put_away`'s disk half. Paths are normalized here — the dedup key is
+/// `path_norm`'s spelling — and a file named twice, in any two spellings, is
+/// kept once at its first place: a second pass would report it
+/// `created: false` and emit its id twice. `notes_dir` is
+/// `Stash::notes_dir_spelling`.
+pub(crate) fn plan_put_away(
+    req: &PutAway,
+    notes_dir: &Path,
+    now: i64,
+) -> Result<PutAwayPlan, String> {
+    let mut paths: Vec<String> = Vec::with_capacity(req.paths.len());
+    for path in req.paths.iter().map(|p| crate::path_norm::normalize_str(p)) {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    if paths.len() > 1 && (req.caret.is_some() || req.top_line.is_some()) {
+        return Err("caret and topLine belong to a single path".to_string());
+    }
+    let tags = normalize_tags(&req.tags)?;
+    if let Some(path) = paths.iter().find(|p| !Path::new(p).is_absolute()) {
+        return Err(format!("path must be absolute: {path}"));
+    }
+    Ok(PutAwayPlan {
+        probes: paths
+            .into_iter()
+            .map(|path| probe(path, notes_dir, now))
+            .collect(),
+        tags,
+        caret: req.caret,
+        top_line: req.top_line,
+    })
 }
 
 /// The repo tag as the stash stores and filters it: a project's directory
@@ -231,39 +318,71 @@ pub(crate) fn normalize_repo(repo: Option<&str>) -> Option<String> {
     Some(repo.to_string())
 }
 
-/// The first `PREVIEW_CHARS` characters of a regular file, `""` for anything
-/// unreadable, not a regular file, or not UTF-8. Checked and opened like
-/// `git_info::read_small`: a FIFO or a device must not hang a listing.
-pub(crate) fn read_preview(path: &Path) -> String {
-    if !fs::metadata(path).is_ok_and(|m| m.is_file()) {
-        return String::new();
+/// `SF_DATALESS` (`<sys/stat.h>`): an iCloud Drive / File Provider file whose
+/// bytes are not on this Mac. Reading one blocks until it is downloaded.
+#[cfg(target_os = "macos")]
+const SF_DATALESS: u32 = 0x4000_0000;
+
+#[cfg(target_os = "macos")]
+fn is_dataless_flags(st_flags: u32) -> bool {
+    st_flags & SF_DATALESS != 0
+}
+
+/// A regular file whose bytes are here to read without waiting.
+fn readable_now(meta: &fs::Metadata) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::macos::fs::MetadataExt;
+        if is_dataless_flags(meta.st_flags()) {
+            return false;
+        }
     }
-    let Ok(file) = OpenOptions::new()
+    meta.is_file()
+}
+
+/// At most `max_bytes` of a regular file's start as UTF-8, a character cut
+/// by the limit dropped; `None` for anything unreadable, not a regular file,
+/// not downloaded (dataless), or not UTF-8. Checked and opened like
+/// `git_info::read_small`: a FIFO, a device or a file iCloud would have to
+/// fetch first must not hang a listing or a put-away.
+fn read_head(path: &Path, max_bytes: u64) -> Option<String> {
+    if !fs::metadata(path).is_ok_and(|m| readable_now(&m)) {
+        return None;
+    }
+    let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
         .open(path)
-    else {
-        return String::new();
-    };
-    if !file.metadata().is_ok_and(|m| m.is_file()) {
-        return String::new();
+        .ok()?;
+    if !file.metadata().is_ok_and(|m| readable_now(&m)) {
+        return None;
     }
     let mut bytes = Vec::new();
-    if file.take(PREVIEW_BYTES).read_to_end(&mut bytes).is_err() {
-        return String::new();
-    }
-    let text = match std::str::from_utf8(&bytes) {
-        Ok(text) => text,
+    file.take(max_bytes).read_to_end(&mut bytes).ok()?;
+    match String::from_utf8(bytes) {
+        Ok(text) => Some(text),
         // Cut inside the last character by the read limit: keep what came before it.
-        Err(e) if e.error_len().is_none() => {
-            std::str::from_utf8(&bytes[..e.valid_up_to()]).unwrap_or("")
+        Err(e) if e.utf8_error().error_len().is_none() => {
+            let valid = e.utf8_error().valid_up_to();
+            let mut bytes = e.into_bytes();
+            bytes.truncate(valid);
+            String::from_utf8(bytes).ok()
         }
-        Err(_) => return String::new(),
-    };
-    text.replace("\r\n", "\n")
-        .chars()
-        .take(PREVIEW_CHARS)
-        .collect()
+        Err(_) => None,
+    }
+}
+
+/// The first `PREVIEW_CHARS` characters of a regular file, `""` for anything
+/// `read_head` will not read.
+pub(crate) fn read_preview(path: &Path) -> String {
+    read_head(path, PREVIEW_BYTES)
+        .map(|text| {
+            text.replace("\r\n", "\n")
+                .chars()
+                .take(PREVIEW_CHARS)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// A fresh id not yet in `entries`, checked inside the caller's transaction.
@@ -282,32 +401,30 @@ fn unique_id(conn: &Connection) -> Result<String, String> {
     Err("could not pick a free stash id".to_string())
 }
 
-/// `(repo, branch)` as the entry shows them: stored for a note, derived from
-/// the file's repository for a file reference.
-fn derived_repo(row: &EntryRow) -> (Option<String>, Option<String>) {
-    match row.kind {
-        StashKind::Note => (row.repo.clone(), None),
-        StashKind::File => match crate::git_info::repo_info(Path::new(&row.path)) {
+/// Fills what an entry shows from the disk: the preview, and for a file
+/// reference its live repository and branch in place of the name stored at
+/// put-away (a note keeps its stored project). Never under the stash lock
+/// (`Enrich`, I3).
+pub(crate) fn enrich_entry(e: &mut StashEntry) {
+    if e.kind == StashKind::File {
+        (e.repo, e.branch) = match crate::git_info::repo_info(Path::new(&e.path)) {
             Some(info) => (Some(info.project), info.branch),
             None => (None, None),
-        },
+        };
     }
+    e.preview = read_preview(Path::new(&e.path));
 }
 
-fn entry_from(
-    row: EntryRow,
-    tags: Vec<String>,
-    repo: Option<String>,
-    branch: Option<String>,
-    preview: String,
-) -> StashEntry {
+/// An entry as the database alone knows it: the stored repo, no branch, no
+/// preview — until `enrich_entry`.
+fn entry_from(row: EntryRow, tags: Vec<String>) -> StashEntry {
     StashEntry {
         title: (!row.title.is_empty()).then_some(row.title),
         id: row.id,
         kind: row.kind,
         path: row.path,
-        repo,
-        branch,
+        repo: row.repo,
+        branch: None,
         tags,
         created_at: row.created_at,
         modified_at: row.modified_at,
@@ -316,7 +433,7 @@ fn entry_from(
         deleted_at: row.deleted_at,
         caret: row.caret,
         top_line: row.top_line,
-        preview,
+        preview: String::new(),
     }
 }
 
@@ -369,6 +486,7 @@ impl Stash {
         Ok(id)
     }
 
+    /// One entry from the database alone: see `Enrich` for the rest.
     pub fn get(&self, id: &str) -> Result<StashEntry, String> {
         let row = self
             .conn
@@ -381,39 +499,35 @@ impl Stash {
             .map_err(db::err)?
             .ok_or_else(|| format!("no stash entry {id}"))?;
         let tags = tags_of(&self.conn, &row.id)?;
-        let (repo, branch) = derived_repo(&row);
-        let preview = read_preview(Path::new(&row.path));
-        Ok(entry_from(row, tags, repo, branch, preview))
+        Ok(entry_from(row, tags))
+    }
+
+    /// `plan_put_away` and `put_away_probed` in one call, all under the lock:
+    /// the tests' shorthand. The command splits them so the probing runs
+    /// with no lock held.
+    #[cfg(test)]
+    pub fn put_away(&mut self, req: &PutAway, now: i64) -> Result<Vec<PutAwayResult>, String> {
+        let plan = plan_put_away(req, &self.notes_dir_spelling(), now)?;
+        self.put_away_probed(plan, now)
     }
 
     /// Puts documents away: new ones become entries, ones already in the stash
     /// are raised (`stashed_at = now`), re-tagged (union) and re-positioned.
-    /// Paths are normalized here — the dedup key is `path_norm`'s spelling —
-    /// and the whole request is one transaction (plan D4): a trashed entry
-    /// among the paths refuses all of it (roadmap A8). A file named twice —
-    /// in any two spellings — is put away once, at its first place: a second
-    /// pass would report it `created: false` and emit its id twice.
-    pub fn put_away(&mut self, req: &PutAway, now: i64) -> Result<Vec<PutAwayResult>, String> {
-        let mut paths: Vec<String> = Vec::with_capacity(req.paths.len());
-        for path in req.paths.iter().map(|p| crate::path_norm::normalize_str(p)) {
-            if !paths.contains(&path) {
-                paths.push(path);
-            }
-        }
-        if paths.len() > 1 && (req.caret.is_some() || req.top_line.is_some()) {
-            return Err("caret and topLine belong to a single path".to_string());
-        }
-        let tags = normalize_tags(&req.tags)?;
-        let notes_dir = self.notes_dir_spelling();
+    /// Only SQL — `plan_put_away` already read the disk — and the whole request
+    /// is one transaction (plan D4): a trashed entry among the paths refuses
+    /// all of it (roadmap A8).
+    pub(crate) fn put_away_probed(
+        &mut self,
+        plan: PutAwayPlan,
+        now: i64,
+    ) -> Result<Vec<PutAwayResult>, String> {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db::err)?;
-        let mut done: Vec<(String, bool)> = Vec::with_capacity(paths.len());
-        for path in &paths {
-            if !Path::new(path).is_absolute() {
-                return Err(format!("path must be absolute: {path}"));
-            }
+        let mut done: Vec<(String, bool)> = Vec::with_capacity(plan.probes.len());
+        for probe in &plan.probes {
+            let path = probe.path.as_str();
             let existing: Option<(String, String, Option<i64>)> = tx
                 .query_row(
                     "SELECT id, kind, deleted_at FROM entries WHERE path = ?1",
@@ -428,7 +542,7 @@ impl Stash {
                     tx.execute(
                         "UPDATE entries SET stashed_at = ?1, caret = COALESCE(?2, caret), \
                          top_line = COALESCE(?3, top_line) WHERE id = ?4",
-                        params![now, req.caret, req.top_line, id],
+                        params![now, plan.caret, plan.top_line, id],
                     )
                     .map_err(db::err)?;
                     // A file's repo is re-derived at every put-away (roadmap A3);
@@ -436,15 +550,15 @@ impl Stash {
                     if kind == StashKind::File.as_str() {
                         tx.execute(
                             "UPDATE entries SET repo = ?1 WHERE id = ?2",
-                            params![file_repo(path), id],
+                            params![probe.repo, id],
                         )
                         .map_err(db::err)?;
                     }
                     (id, false)
                 }
-                None => (insert_new(&tx, path, &notes_dir, req, now)?, true),
+                None => (insert_new(&tx, probe, &plan, now)?, true),
             };
-            for tag in &tags {
+            for tag in &plan.tags {
                 tx.execute(
                     "INSERT OR IGNORE INTO tags (entry_id, tag) VALUES (?1, ?2)",
                     params![id, tag],
@@ -574,7 +688,7 @@ impl Stash {
     /// the stored column for notes and files alike: a file's repo is written
     /// at put-away precisely so this needs no `.git` walk per file reference
     /// (roadmap A3). It can lag the live repository until the next put-away;
-    /// only the returned page's display (`derived_repo`) looks at the disk.
+    /// only the returned page's display (`enrich_entry`) looks at the disk.
     fn candidates(&self, f: &Filter<'_>) -> Result<Vec<EntryRow>, String> {
         let sql = format!(
             "SELECT {ENTRY_COLUMNS} FROM entries e \
@@ -603,7 +717,8 @@ impl Stash {
         Ok(rows)
     }
 
-    /// One page of the stash, or of the trash with `deleted` (plan D6).
+    /// One page of the stash, or of the trash with `deleted` (plan D6), from
+    /// the database alone: see `Enrich` for the rest.
     pub fn list(&self, q: &ListQuery) -> Result<ListResult, String> {
         let mode = cursor_mode(q.sort, q.deleted);
         let after = q
@@ -655,10 +770,8 @@ impl Stash {
         let entries = page
             .into_iter()
             .map(|row| {
-                let (repo, branch) = derived_repo(&row);
-                let preview = read_preview(Path::new(&row.path));
                 let tags = tags.remove(&row.id).unwrap_or_default();
-                entry_from(row, tags, repo, branch, preview)
+                entry_from(row, tags)
             })
             .collect();
         Ok(ListResult {
@@ -714,7 +827,7 @@ mod tests {
     use crate::atomic_write::testkit::scratch;
     use crate::stash::testkit::*;
     use crate::stash::PutAway;
-    use crate::stash::{ListQuery, ListResult, ListSort, StashCounts};
+    use crate::stash::{Enrich, ListQuery, ListResult, ListSort, StashCounts};
 
     #[test]
     fn creating_a_note_writes_its_file_and_its_entry() {
@@ -761,8 +874,9 @@ mod tests {
         );
         assert_eq!((e.caret, e.top_line), (0, 1));
         assert!(e.tags.is_empty());
-        assert_eq!(e.preview, "# Список покупок\n- молоко\n");
+        assert_eq!(e.preview, "", "the database alone has no preview");
         assert_eq!(stash.get(&e.id).unwrap(), e);
+        assert_eq!(e.enrich().preview, "# Список покупок\n- молоко\n");
     }
 
     #[test]
@@ -856,6 +970,112 @@ mod tests {
     }
 
     #[test]
+    fn a_fifo_has_an_empty_preview_at_once() {
+        // Plan D17: opening a FIFO for reading blocks until a writer comes;
+        // a listing must not wait for one that never will.
+        let dir = scratch("preview-fifo");
+        let fifo = dir.join("pipe.md");
+        let c_path = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        let started = std::time::Instant::now();
+        assert_eq!(read_preview(&fifo), "");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_dataless_file_is_not_read() {
+        // `st_flags` of an iCloud file whose bytes are not on this Mac: reading
+        // it would block until the download finishes.
+        assert!(is_dataless_flags(0x4000_0000));
+        assert!(is_dataless_flags(0x4000_0020), "among other flags");
+        assert!(!is_dataless_flags(0x20), "UF_COMPRESSED alone");
+        assert!(!is_dataless_flags(0));
+    }
+
+    #[test]
+    fn a_stored_entry_reads_nothing_from_disk_until_enriched() {
+        // What `Stash` returns under its lock comes from SQLite alone; the
+        // preview and a file's live branch come from `enrich`, off the lock.
+        let (mut stash, root) = stash_in("stored-vs-enriched");
+        let repo = root.join("work/proj");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let file = user_file(&root, "proj/a.md", "текст");
+        let id = stash
+            .put_away(&put(vec![file]), T0)
+            .unwrap()
+            .remove(0)
+            .entry
+            .id;
+        fs::write(repo.join(".git/HEAD"), "ref: refs/heads/dev\n").unwrap();
+
+        let stored = stash.get(&id).unwrap();
+        assert_eq!(
+            (
+                stored.repo.as_deref(),
+                stored.branch.as_deref(),
+                stored.preview.as_str()
+            ),
+            (Some("proj"), None, ""),
+            "the repo stored at put-away, nothing read"
+        );
+        let listed = stash.list(&ListQuery::default()).unwrap();
+        assert_eq!(listed.entries[0], stored);
+
+        let e = stored.enrich();
+        assert_eq!(
+            (e.repo.as_deref(), e.branch.as_deref(), e.preview.as_str()),
+            (Some("proj"), Some("dev"), "текст")
+        );
+        assert_eq!(listed.enrich().entries[0], e);
+    }
+
+    #[test]
+    fn a_put_away_transaction_reads_nothing_from_disk() {
+        // Everything the insert needs was probed before the lock: the file
+        // may even be gone by the time the transaction runs.
+        let (mut stash, root) = stash_in("put-probed");
+        let file = user_file(&root, "gone.md", "g");
+        let plan =
+            plan_put_away(&put(vec![file.clone()]), &stash.notes_dir_spelling(), T0).unwrap();
+        fs::remove_file(&file).unwrap();
+        let r = stash.put_away_probed(plan, T0).unwrap();
+        assert!(r[0].created);
+        assert_eq!(r[0].entry.title.as_deref(), Some("gone.md"));
+    }
+
+    #[test]
+    fn a_note_put_away_takes_its_title_from_the_first_64_kb() {
+        let (mut stash, root) = stash_in("put-title-bound");
+        let notes = root.join("home/couplet-test");
+        fs::create_dir_all(&notes).unwrap();
+        let early = notes.join("2026-09-26-0215-0001.md");
+        fs::write(&early, format!("# Рано\n{}", "x".repeat(200_000))).unwrap();
+        let late = notes.join("2026-09-26-0215-0002.md");
+        fs::write(&late, format!("{}# Поздно\n", "\n".repeat(70_000))).unwrap();
+        let r = stash
+            .put_away(
+                &put(vec![
+                    early.to_string_lossy().into_owned(),
+                    late.to_string_lossy().into_owned(),
+                ]),
+                T0,
+            )
+            .unwrap();
+        assert_eq!(r[0].entry.kind, StashKind::Note);
+        assert_eq!(r[0].entry.title.as_deref(), Some("Рано"));
+        assert_eq!(
+            r[1].entry.title, None,
+            "a first line past the read bound is not looked for"
+        );
+    }
+
+    #[test]
     fn a_preview_is_the_first_400_characters_and_never_fails() {
         let dir = scratch("preview");
         let long = dir.join("long.md");
@@ -909,7 +1129,7 @@ mod tests {
         let r = stash.put_away(&req, T0).unwrap();
         assert_eq!(r.len(), 1);
         assert!(r[0].created);
-        let e = &r[0].entry;
+        let e = r[0].entry.clone().enrich();
         assert_eq!(
             (e.kind, e.path.as_str(), e.title.as_deref()),
             (StashKind::File, file.as_str(), Some("plan.md"))
@@ -1211,7 +1431,7 @@ mod tests {
         let r = stash.put_away(&put(vec![inside, loose]), T0).unwrap();
         assert_eq!(stored_repo(&stash, &r[0].entry.id).as_deref(), Some("proj"));
         assert_eq!(stored_repo(&stash, &r[1].entry.id), None);
-        let e = &r[0].entry;
+        let e = r[0].entry.clone().enrich();
         assert_eq!(
             (e.repo.as_deref(), e.branch.as_deref()),
             (Some("proj"), Some("main"))
@@ -1550,7 +1770,7 @@ mod tests {
     fn the_default_list_is_newest_change_first_without_the_trash() {
         let (mut stash, root) = stash_in("list");
         let s = seed(&mut stash, &root);
-        let r = stash.list(&ListQuery::default()).unwrap();
+        let r = stash.list(&ListQuery::default()).unwrap().enrich();
         assert_eq!(
             ids(&r),
             vec![s.d.clone(), s.c.clone(), s.b.clone(), s.a.clone()]
@@ -1678,7 +1898,8 @@ mod tests {
 
         let gone = stash
             .list(&query(|q| q.repo = Some("gone".into())))
-            .unwrap();
+            .unwrap()
+            .enrich();
         assert_eq!(ids(&gone), vec![stored_only.clone()]);
         assert_eq!(gone.entries[0].repo, None, "shown as it is now");
         assert_eq!(stash.counts(Some("gone"), 0).unwrap().total, 1);
@@ -1692,7 +1913,7 @@ mod tests {
         );
         assert_eq!(later.total, 0);
         assert_eq!(stash.counts(Some("later"), 0).unwrap().total, 0);
-        let all = stash.list(&ListQuery::default()).unwrap();
+        let all = stash.list(&ListQuery::default()).unwrap().enrich();
         let shown = all.entries.iter().find(|e| e.id == live_only).unwrap();
         assert_eq!(shown.repo.as_deref(), Some("later"), "though shown live");
 

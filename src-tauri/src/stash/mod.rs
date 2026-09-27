@@ -77,6 +77,69 @@ pub struct StashEntry {
     pub preview: String,
 }
 
+/// The part of an answer that comes from the disk: an entry's preview, a file
+/// reference's live repository and branch. `Stash` answers from SQLite alone,
+/// under the stash lock; this runs after the lock is released
+/// (`commands::run`), so a dead SMB mount, a dataless iCloud file or a slow
+/// `.git` walk holds up only the call that asked for it — never every stash
+/// command, nor the save hook's queue (I3).
+pub(crate) trait Enrich {
+    fn enrich(self) -> Self;
+}
+
+impl Enrich for StashEntry {
+    fn enrich(mut self) -> Self {
+        entries::enrich_entry(&mut self);
+        self
+    }
+}
+
+impl Enrich for PutAwayResult {
+    fn enrich(self) -> Self {
+        Self {
+            entry: self.entry.enrich(),
+            ..self
+        }
+    }
+}
+
+impl Enrich for Tagged {
+    fn enrich(self) -> Self {
+        Self {
+            entry: self.entry.enrich(),
+            ..self
+        }
+    }
+}
+
+impl Enrich for ListResult {
+    fn enrich(self) -> Self {
+        Self {
+            entries: self.entries.enrich(),
+            ..self
+        }
+    }
+}
+
+impl<T: Enrich> Enrich for Vec<T> {
+    fn enrich(self) -> Self {
+        self.into_iter().map(Enrich::enrich).collect()
+    }
+}
+
+/// Nothing from the disk in these.
+impl Enrich for StashCounts {
+    fn enrich(self) -> Self {
+        self
+    }
+}
+
+impl Enrich for bool {
+    fn enrich(self) -> Self {
+        self
+    }
+}
+
 /// `stash_put_away`'s arguments.
 #[derive(Clone, Debug, Default)]
 pub struct PutAway {
@@ -387,7 +450,10 @@ pub fn on_file_written(path: &str, text: &str) {
     let title = notes::title_of(text);
     let path = path.to_owned();
     tauri::async_runtime::spawn_blocking(move || {
-        match hook.state.with(|s| s.file_written(&path, title.as_deref(), now)) {
+        match hook
+            .state
+            .with(|s| s.file_written(&path, title.as_deref(), now))
+        {
             Ok(true) => (hook.notify)("title"),
             Ok(false) => {}
             Err(e) => eprintln!("stash: after saving {path}: {e}"),
