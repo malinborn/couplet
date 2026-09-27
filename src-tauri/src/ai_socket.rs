@@ -1641,7 +1641,7 @@ USAGE
   couplet answer <file> --id ID < reply-text
   couplet watch [<dir>]
   couplet stash search <query> [--tag T] [--repo R | --all] [--kind note|file] [--limit N] [--cursor C] [--json]
-  couplet stash list [--since S] [--tag T] [--repo R | --all] [--kind note|file] [--sort changed|opened|kind] [--json]
+  couplet stash list [--since S] [--tag T] [--repo R | --all] [--kind note|file] [--sort changed|opened|kind] [--limit N] [--cursor C] [--json]
   couplet stash get <id> [--lines A:B] [--json]
   couplet stash add [--tag T ...] < text  |  couplet stash add --path <file> [--tag T ...]
   couplet stash tag <id> [--add T ...] [--remove T ...]
@@ -3795,5 +3795,16 @@ mod tests {
             assert!(help.contains(needle), "help missing {needle}");
         }
         assert!(USAGE.contains("couplet ai stash"));
+        // The USAGE lines page like the stash CLI's own usage: an agent
+        // reading `couplet help` must be able to get a list's next page.
+        for verb in ["search", "list"] {
+            let line = help
+                .lines()
+                .find(|l| l.trim_start().starts_with(&format!("couplet stash {verb} ")))
+                .unwrap_or_else(|| panic!("no usage line for stash {verb}"));
+            for flag in ["--limit N", "--cursor C", "--json"] {
+                assert!(line.contains(flag), "stash {verb} usage lacks {flag}: {line}");
+            }
+        }
     }
 }
