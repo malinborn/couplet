@@ -1,4 +1,4 @@
-import { indexText, type SearchIndex } from './drawer-filter';
+import { firstPlainLine, indexText, type SearchIndex } from './drawer-filter';
 import { previewLines, type PreviewLine } from './drawer-preview';
 import type { TabMeta } from './tab-model';
 import { afterFirstLine, isBlankText, noteTitle } from '../stash/note-title';
@@ -46,7 +46,7 @@ function digest(text: string): TabText {
     title: noteTitle(text),
     blank: isBlankText(text),
     rest: previewLines(rest),
-    restFirst: indexText(rest).lines[0] ?? '',
+    restFirst: firstPlainLine(rest),
   };
 }
 
