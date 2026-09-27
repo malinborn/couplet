@@ -5,6 +5,7 @@
  * explicit rather than insertion-based, because the update check only fires 15s
  * after launch and would otherwise land below the session toast.
  */
+import type { StashToastNote } from './stash/stash-toast';
 
 export type ToastPayload =
   /**
@@ -114,6 +115,15 @@ export type ToastPayload =
    * still on disk where it was).
    */
   | { kind: 'stash-error'; message: string; notPutAway?: boolean }
+  /**
+   * Stash stage 04: every drawer notice — put away, opened / moved here,
+   * removed, the window widened, a pull that failed, a drawer IPC error. One
+   * kind, so a newer notice replaces the last; App dismisses the quiet ones
+   * itself (like `tabs-moved`), a failure stays until closed. Text:
+   * `stashToastText`. Deliberately not `stash-error`: a drawer notice must not
+   * replace (and so hide) a standing "notes are not being created".
+   */
+  | { kind: 'stash'; note: StashToastNote }
   | { kind: 'update'; latest: string; current: string; highlight?: string }
   /**
    * Answers to a manual "Check for Updates…" click (#82) — the automatic
@@ -213,6 +223,8 @@ const ORDER: Record<ToastKind, number> = {
   'tabs-moved': 4,
   'save-as-blocked': 4,
   'window-number': 4,
+  // Answers a drawer action the user just took, like the rest of this group.
+  stash: 4,
   // Sorts below everything: it is the only toast that is still waiting on a
   // decision, so it belongs closest to the pointer that has to make it.
   'json-offer': 5,
