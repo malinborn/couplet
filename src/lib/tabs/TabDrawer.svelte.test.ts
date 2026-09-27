@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { flushSync, mount, tick, unmount } from 'svelte';
+import { flushSync, mount, tick, unmount, type ComponentProps } from 'svelte';
 import TabDrawer, { type TabDrawerHandle } from './TabDrawer.svelte';
 import { EditorView } from '@codemirror/view';
 import { EditorSelection } from '@codemirror/state';
@@ -9,6 +9,8 @@ import type { TabListState, TabMeta } from './tab-model';
 import { GOT_MS, type CarouselWindow } from './carousel';
 import { DOUBLE_CLICK_MS, ctrlDigitHandler, type RenumberResult, type RevealResult } from './window-number';
 import type { StashMark } from '../stash/marks';
+import { createStashStore, type StashStore } from '../stash/stash-store.svelte';
+import type { StashEntry } from '../stash/types';
 
 /*
  * The drawer's keyboard and pointer contract against a stand-in for the
@@ -79,7 +81,11 @@ interface SetupOptions {
   marks?: (path: string | null) => StashMark | null;
 }
 
-function setup(list: TabListState = initialList(), options: SetupOptions = {}): Harness {
+function setup(
+  list: TabListState = initialList(),
+  options: SetupOptions = {},
+  extra: Partial<ComponentProps<typeof TabDrawer>> = {}
+): Harness {
   const editor = document.createElement('div');
   editor.setAttribute('contenteditable', 'true');
   editor.tabIndex = 0;
@@ -100,39 +106,43 @@ function setup(list: TabListState = initialList(), options: SetupOptions = {}): 
   const onclose = vi.fn();
   const component = mount(TabDrawer, {
     target,
-    props: {
-      get list() {
-        return props.list;
+    // `Object.assign` onto the literal keeps its getters; the extra props are plain values.
+    props: Object.assign(
+      {
+        get list() {
+          return props.list;
+        },
+        windowNumber: 3,
+        get compact() {
+          return props.compact;
+        },
+        get showTime() {
+          return props.showTime;
+        },
+        source: {
+          held: (id: string) => (options.held ? (options.held[id] ?? null) : ''),
+          read: () => Promise.resolve(''),
+          gitInfo: (paths: string[]) => Promise.resolve(paths.map(() => null)),
+        },
+        onactivate,
+        onclose,
+        onreorder,
+        onnewwindows: () => {},
+        carouselSource: { windows: () => windows() },
+        onmove,
+        oncarousel,
+        onrestorefocus,
+        onrenumber,
+        marks: options.marks,
+        get handle() {
+          return props.handle;
+        },
+        set handle(v: TabDrawerHandle | undefined) {
+          props.handle = v;
+        },
       },
-      windowNumber: 3,
-      get compact() {
-        return props.compact;
-      },
-      get showTime() {
-        return props.showTime;
-      },
-      source: {
-        held: (id: string) => (options.held ? (options.held[id] ?? null) : ''),
-        read: () => Promise.resolve(''),
-        gitInfo: (paths: string[]) => Promise.resolve(paths.map(() => null)),
-      },
-      onactivate,
-      onclose,
-      onreorder,
-      onnewwindows: () => {},
-      carouselSource: { windows: () => windows() },
-      onmove,
-      oncarousel,
-      onrestorefocus,
-      onrenumber,
-      marks: options.marks,
-      get handle() {
-        return props.handle;
-      },
-      set handle(v: TabDrawerHandle | undefined) {
-        props.handle = v;
-      },
-    },
+      extra
+    ),
   });
   flushSync();
   return {
@@ -1454,5 +1464,167 @@ describe('TabDrawer — notes and the stash mark (stash spec «Отметка т
     expect(cards[2].querySelector('.in-stash svg')).not.toBeNull();
     expect(cards[2].querySelector('.card-name .sg')).toBeNull();
     expect(h.root().textContent).not.toMatch(/в тайнике|in the stash/i);
+  });
+});
+
+function stashEntry(id: string, path: string, over: Partial<StashEntry> = {}): StashEntry {
+  return {
+    id,
+    kind: 'note',
+    path,
+    title: id,
+    repo: null,
+    branch: null,
+    tags: [],
+    createdAt: 0,
+    modifiedAt: 1,
+    stashedAt: null,
+    openedAt: null,
+    deletedAt: null,
+    caret: 0,
+    topLine: 1,
+    preview: '',
+    ...over,
+  };
+}
+
+/** s3 is `/p/alpha.md` — open here as tab `a`, so the stash hides it. */
+function fakeStash(): StashStore {
+  const entries = [
+    stashEntry('s1', '/n/one.md', { title: 'One note', modifiedAt: 1 }),
+    stashEntry('s2', '/n/two.md', { title: 'Beta note', modifiedAt: 2 }),
+    stashEntry('s3', '/p/alpha.md', { title: 'alpha.md', kind: 'file' }),
+  ];
+  return createStashStore({
+    list: async () => entries,
+    counts: async () => ({ total: entries.length, stashedToday: 1, deleted: 0 }),
+    holders: async (paths) => paths.map(() => null),
+    windowRepo: async () => null,
+  });
+}
+
+async function settleLong(): Promise<void> {
+  for (let i = 0; i < 4; i++) await settle();
+}
+
+const stashIds = () => [...h.root().querySelectorAll<HTMLElement>('[data-stash-id]')].map((x) => x.dataset.stashId);
+
+describe('TabDrawer — hosts the stash (stash stage 04)', () => {
+  let stash: StashStore;
+  const onstashopen = vi.fn();
+  const onputaway = vi.fn();
+
+  beforeEach(() => {
+    h?.destroy();
+    stash = fakeStash();
+    onstashopen.mockClear();
+    onputaway.mockClear();
+    h = setup(initialList(), {}, { stash, onstashopen, onputaway, onstashremove: vi.fn(), onstashtag: vi.fn() });
+  });
+
+  it('has the stash bar and a closed stash drawer', async () => {
+    h.handle().toggle();
+    await settle();
+    expect(el('.stash-bar')).not.toBeNull();
+    expect(h.root().querySelector('.stash-wrap')).not.toBeNull();
+    expect(h.root().querySelector('.stash-wrap.open')).toBeNull();
+  });
+
+  it('the bar button opens the stash; an entry open here as a tab is not in it', async () => {
+    h.handle().toggle();
+    await settle();
+    el('.stash-btn').click();
+    await settleLong();
+    expect(stash.state.open).toBe(true);
+    expect(h.root().querySelector('.stash-wrap.open')).not.toBeNull();
+    expect(stashIds()).toEqual(['s2', 's1']);
+  });
+
+  it('the stash drawer is a sibling of the tabs drawer inside the display: contents root', async () => {
+    h.handle().toggleStash();
+    await settleLong();
+    const wrap = h.root().querySelector('.stash-wrap');
+    expect(wrap?.parentElement).toBe(h.root());
+    expect(h.root().querySelector('.drawer-wrap')?.contains(wrap ?? null)).toBe(false);
+  });
+
+  it('closing the tabs drawer closes the stash too', async () => {
+    h.handle().toggleStash();
+    await settleLong();
+    h.handle().close();
+    await settle();
+    expect(stash.state.open).toBe(false);
+    expect(h.root().classList.contains('open')).toBe(false);
+  });
+
+  it('toggleStash from a closed drawer opens both, then closes the stash alone', async () => {
+    h.handle().toggleStash();
+    await settleLong();
+    expect(h.root().classList.contains('open')).toBe(true);
+    expect(stash.state.focus).toBe('stash');
+    h.handle().toggleStash();
+    await settle();
+    expect(stash.state.open).toBe(false);
+    expect(h.root().classList.contains('open')).toBe(true);
+  });
+
+  it('both open veil the page like the carousel (D17), and the veil lifts with the stash', async () => {
+    h.handle().toggle();
+    await settle();
+    expect(h.oncarousel).toHaveBeenLastCalledWith(false);
+    h.handle().toggleStash();
+    await settleLong();
+    expect(h.root().classList.contains('stash-open')).toBe(true);
+    expect(h.oncarousel).toHaveBeenLastCalledWith(true);
+    h.handle().toggleStash();
+    await settle();
+    expect(h.root().classList.contains('stash-open')).toBe(false);
+    expect(h.oncarousel).toHaveBeenLastCalledWith(false);
+  });
+
+  it('widths come from drawerLayout: wide, then squeezed halves with compact cards (D4)', async () => {
+    const width = window.innerWidth;
+    try {
+      window.innerWidth = 1200;
+      window.dispatchEvent(new Event('resize'));
+      h.handle().toggleStash();
+      await settleLong();
+      expect(el('.drawer-wrap').style.width).toBe('420px');
+      expect(el('.stash-wrap').style.width).toBe('400px');
+      expect(stash.width).toBe(400);
+      expect(h.root().classList.contains('compact')).toBe(false);
+
+      window.innerWidth = 800;
+      window.dispatchEvent(new Event('resize'));
+      await settle();
+      expect(el('.drawer-wrap').style.width).toBe('380px');
+      expect(el('.stash-wrap').style.width).toBe('380px');
+      expect(h.root().classList.contains('narrow')).toBe(true);
+      expect(h.root().classList.contains('compact'), 'squeezed: compact cards').toBe(true);
+      expect(el('.stash-wrap').classList.contains('compact')).toBe(true);
+
+      h.handle().toggleStash();
+      await settle();
+      expect(el('.drawer-wrap').style.width, 'the stylesheet width again').toBe('');
+      expect(h.root().classList.contains('compact')).toBe(false);
+    } finally {
+      window.innerWidth = width;
+      window.dispatchEvent(new Event('resize'));
+    }
+  });
+});
+
+describe('TabDrawer — a blank tab in Compact (stage-03 carry-over)', () => {
+  it('reads just «empty», not the full sentence', async () => {
+    h.destroy();
+    const list: TabListState = { tabs: [tab('a', '/p/alpha.md'), tab('u', null)], activeId: 'a' };
+    h = setup(list, { held: { u: '' } });
+    h.props.compact = true;
+    h.handle().toggle();
+    await settle();
+    expect(card('u').querySelector('.card-imeta')?.textContent).toBe('empty');
+    h.props.compact = false;
+    await settle();
+    expect(card('u').querySelector('.card-meta')?.textContent).toContain('empty — vanishes when closed');
   });
 });

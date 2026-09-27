@@ -57,6 +57,12 @@
   import type { StashMark } from '../stash/marks';
   import type { RenumberResult } from './window-number';
   import WindowCarousel, { type CarouselHandle } from './WindowCarousel.svelte';
+  import StashBar from '../stash/StashBar.svelte';
+  import StashDrawer, { type StashDrawerHandle } from '../stash/StashDrawer.svelte';
+  import type { StashStore } from '../stash/stash-store.svelte';
+  import type { StashEntry, TagChange } from '../stash/types';
+  import { drawerLayout } from '../stash/drawer-width';
+  import { focusDrawer, type DrawerFocus } from '../stash/stash-state';
   import {
     GOT_MS,
     carouselItems,
@@ -80,6 +86,8 @@
      * the key keeps its plain meaning.
      */
     shortcutTarget(n: number): string | null | undefined;
+    /** ⌃S and View → Tabs → Stash (stash stage 04): open both drawers with the stash focused, or close the stash. */
+    toggleStash(): void;
   }
 
   let {
@@ -98,6 +106,11 @@
     onrestorefocus,
     onrenumber,
     marks = () => null,
+    stash,
+    onputaway,
+    onstashopen,
+    onstashremove,
+    onstashtag,
     handle = $bindable(),
   }: {
     list: TabListState;
@@ -114,7 +127,11 @@
     carouselSource: { windows(): Promise<CarouselWindow[]> };
     /** Move `tabIds` — this window's order — to `target`: the carousel's drop or Enter. */
     onmove: (tabIds: string[], target: MoveTarget) => void;
-    /** The carousel came up or went: the page behind it blurs. */
+    /**
+     * The page behind should blur, or no longer: the carousel came up or went,
+     * or the stash opened or closed beside this drawer (stash D17 — «размыта и
+     * затемнена так же сильно, как при карусели окон»).
+     */
     oncarousel?: (on: boolean) => void;
     /**
      * Closing with focus nowhere useful and nothing remembered to give it back
@@ -126,6 +143,14 @@
     onrenumber?: (n: number) => Promise<RenumberResult>;
     /** What the stash says about a tab's document (display only, D13). */
     marks?: (path: string | null) => StashMark | null;
+    /** The window's stash (stash stage 04). Absent: no stash bar, no stash drawer. */
+    stash?: StashStore;
+    /** Put these tabs away (the drop zone, a drop on the stash drawer, «В тайник», ⌃T). */
+    onputaway?: (tabIds: string[]) => void;
+    /** Open a stash entry here; `before`: its drop position in the tab list, `undefined` for a click or Enter. */
+    onstashopen?: (entry: StashEntry, before: string | null | undefined) => void;
+    onstashremove?: (entry: StashEntry) => void;
+    onstashtag?: (entry: StashEntry, change: TagChange) => void;
     handle?: TabDrawerHandle;
   } = $props();
 
@@ -183,6 +208,9 @@
   let selHintEl: HTMLElement | undefined = $state();
   let dragHintFits = $state(true);
   let dragHintEl: HTMLElement | undefined = $state();
+  let stashHandle: StashDrawerHandle | undefined = $state();
+  let stashBarEl: HTMLElement | undefined = $state();
+  let viewport = $state(typeof window === 'undefined' ? 0 : window.innerWidth);
 
   // Bookkeeping nothing renders from.
   let restoreFocus: HTMLElement | null = null;
@@ -282,6 +310,13 @@
   const kbId = $derived(ds.open ? kbTarget(ds, visible) : null);
   const unviewedCount = $derived(list.tabs.filter((tab) => tab.unviewed).length);
   const listLabel = $derived(t('tabs.notch.aria', { n: windowNumber ?? '' }));
+  const stashOpen = $derived(stash?.state.open ?? false);
+  const focusStash = $derived(stashOpen && stash?.state.focus === 'stash');
+  const layout = $derived(drawerLayout(viewport, stashOpen));
+  /** Compact cards: the View setting, or both drawers squeezed side by side (D4). */
+  const compactCards = $derived(compact || (stashOpen && layout.narrow));
+  /** Paths open as tabs here: the stash drawer does not show them (D10). */
+  const openHerePaths = $derived(new Set(list.tabs.flatMap((tab) => (tab.path === null ? [] : [tab.path]))));
   const searchNote = $derived(
     ds.query
       ? [
@@ -316,11 +351,26 @@
       },
       close: () => closeDrawer(),
       shortcutTarget: (n) => (ds.open ? (visible[n - 1] ?? null) : undefined),
+      toggleStash: () => toggleStash(),
     };
   });
 
   $effect(() => {
-    oncarousel?.(car !== null);
+    const onResize = () => {
+      viewport = window.innerWidth;
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  });
+
+  // The toast stack moves by the stash drawer's width (D19).
+  $effect(() => {
+    stash?.setWidth(layout.stash);
+  });
+
+  // Both drawers open veil the page as the carousel does (D17): App's one blur.
+  $effect(() => {
+    oncarousel?.(car !== null || stashOpen);
   });
 
   // ⌘G's carousel follows its tabs: one closed while it is up (⌘W, an agent)
@@ -518,11 +568,14 @@
     ds = openState(ds, mode);
     tookFocus = false;
     data.refresh(list.tabs);
+    void stash?.refreshCounts();
     addWindowListeners();
   }
 
   function closeDrawer(): void {
     if (!ds.open) return;
+    // The stash opens from this drawer and closes with it (spec «Esc», D7).
+    if (stash?.state.open) stash.close();
     endGesture?.();
     closeCarousel();
     clearTimeout(hoverCloseTimer);
@@ -585,6 +638,40 @@
     ds = pin(ds);
   }
 
+  // --- the stash drawer (stash stage 04) ---
+
+  function openStash(): void {
+    if (!stash) return;
+    if (!ds.open) openDrawer('pinned');
+    else pinNow();
+    clearTimeout(hoverCloseTimer);
+    stash.open();
+  }
+
+  function closeStash(): void {
+    if (stash?.state.open) stash.close();
+  }
+
+  function toggleStash(): void {
+    if (stash?.state.open) closeStash();
+    else openStash();
+  }
+
+  function focusSide(side: DrawerFocus): void {
+    stash?.update((s) => focusDrawer(s, side));
+  }
+
+  /** A click or Enter closes both drawers first, as activating a tab does; a drag keeps them open. */
+  function openStashEntry(entry: StashEntry, before: string | null | undefined, close: boolean): void {
+    if (close) closeDrawer();
+    onstashopen?.(entry, before);
+  }
+
+  /** A press on a stash card opens it here (Task 20 makes a press that moves a drag). */
+  function onStashPress(entry: StashEntry): void {
+    openStashEntry(entry, undefined, true);
+  }
+
   function notchClick(): void {
     clearTimeout(hoverOpenTimer);
     if (ds.open && ds.mode === 'hover') pinNow();
@@ -606,7 +693,8 @@
 
   function scheduleHoverClose(): void {
     clearTimeout(hoverCloseTimer);
-    if (!ds.open || ds.mode !== 'hover') return;
+    // Not while the stash is open either: it is only ever opened pinned.
+    if (!ds.open || ds.mode !== 'hover' || stashOpen) return;
     // Not while the carousel is up: it lies outside the wrap, so the pointer
     // on its way to a thumbnail has "left" the drawer (D10: a click works in
     // either mode). `closeCarousel` schedules again.
@@ -1045,9 +1133,11 @@
 <div
   class="tab-drawer"
   class:open={ds.open}
-  class:compact
+  class:compact={compactCards}
   class:shift={ds.open && ds.shiftHeld}
   class:car={car !== null}
+  class:stash-open={stashOpen}
+  class:narrow={layout.narrow}
   bind:this={rootEl}
   onfocusin={onFocusIn}
   onfocusout={onFocusOut}
@@ -1066,6 +1156,10 @@
     onpointerleave={wrapLeave}
     onpointermove={trackShift}
     onpointerdown={trackShift}
+    style:width={stashOpen ? `${layout.tabs}px` : null}
+    onpointerdowncapture={() => {
+      if (stashOpen) focusSide('tabs');
+    }}
   >
     <aside
       class="drawer"
@@ -1141,7 +1235,7 @@
               kb={tab.id === kbId}
               expanded={tab.id === expandedId}
               dragging={drag?.ids.includes(tab.id) ?? false}
-              {compact}
+              compact={compactCards}
               {showTime}
               {now}
               query={ds.query}
@@ -1198,6 +1292,18 @@
           {t('tabs.hint.close_tail')}</span
         >
       </div>
+
+      {#if stash}
+        <StashBar
+          counts={stash.counts}
+          open={stashOpen}
+          dropCount={null}
+          hot={false}
+          got={false}
+          onclick={toggleStash}
+          bind:el={stashBarEl}
+        />
+      {/if}
     </aside>
     <TabNotch
       number={windowNumber}
@@ -1215,6 +1321,31 @@
       oneditend={focusList}
     />
   </div>
+
+  <!-- A sibling of `.drawer-wrap` in this `display: contents` root (D1): the
+       trap, the one key listener and the drag machine cover both drawers, and
+       the fixed stash drawer stacks in the page's context like the tabs drawer. -->
+  {#if stash}
+    <StashDrawer
+      bind:handle={stashHandle}
+      {stash}
+      openHere={openHerePaths}
+      width={layout.stash}
+      narrow={layout.narrow}
+      compact={compactCards}
+      {windowNumber}
+      dropReady={false}
+      dropHot={false}
+      draggingId={null}
+      onpress={(entry) => onStashPress(entry)}
+      onopen={(entry) => openStashEntry(entry, undefined, true)}
+      onremove={(entry) => onstashremove?.(entry)}
+      onsettag={(entry, change) => onstashtag?.(entry, change)}
+      onfocusrequest={() => {
+        if (stashOpen) focusSide('stash');
+      }}
+    />
+  {/if}
 
   {#if drag}
     {@const inCar = car?.mode === 'drag'}
@@ -1301,6 +1432,12 @@
     opacity: 0.82;
   }
 
+  /* Stash stage 04 (D17): both drawers open veil the page like the carousel
+     (App blurs `main` through `oncarousel`, off under reduced motion). */
+  .stash-open .scrim {
+    opacity: 0.82;
+  }
+
   .drawer-wrap {
     position: fixed;
     top: 0;
@@ -1310,7 +1447,9 @@
     z-index: 900;
     pointer-events: auto;
     transform: translateX(-100%);
-    transition: transform 0.34s var(--tabs-ease);
+    transition:
+      transform 0.34s var(--tabs-ease),
+      width 0.34s var(--tabs-ease);
   }
 
   .open .drawer-wrap {

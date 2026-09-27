@@ -72,7 +72,8 @@
     stash?.kind === 'note'
       ? { project: repoLabel(stash.repo), branch: null }
       : stash?.kind === 'blank'
-        ? { project: t('stash.card.blank'), branch: null }
+        ? // Compact has one line in the head row: just «пустая» (mockup).
+          { project: t(compact ? 'stash.card.blank_short' : 'stash.card.blank'), branch: null }
         : tab.path === null
           ? { project: t('tabs.card.unsaved'), branch: null }
           : (git ?? null)
