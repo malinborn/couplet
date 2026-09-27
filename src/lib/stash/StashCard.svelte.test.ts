@@ -102,6 +102,24 @@ describe('StashCard', () => {
     expect(q(card, '.card-preview')?.textContent).toContain('week 40');
   });
 
+  it('the hover actions sit in one overlay, not in the head row beside the name', () => {
+    // In the row, invisible, they kept their width and cut a file's name to «stash-de…».
+    const card = render(entry(), { label: 'editor-19', number: 19 });
+    const head = q(card, '.card-head')!;
+    const row = [...head.children].map((el) => el.className.split(' ')[0]);
+    expect(row).toEqual(['kind-ico', 'card-name', 'open-mark', 'card-acts']);
+    const acts = q(card, '.card-acts')!;
+    expect([...acts.children].map((el) => el.className.split(' ')[0])).toEqual(['tag-add', 'card-rm']);
+  });
+
+  it('a note with its tag input open has no overlay left to show', async () => {
+    const card = render(entry({ kind: 'note' }));
+    expect(q(card, '.card-acts .tag-add')).not.toBeNull();
+    q(card, '.tag-add')!.click();
+    await tick();
+    expect(q(card, '.card-acts')).toBeNull();
+  });
+
   it('draws the kind icon from the shared icon paths', () => {
     const paths = (card: HTMLElement) => [...card.querySelectorAll('.kind-ico path')].map((p) => p.getAttribute('d'));
     expect(paths(render(entry()))).toEqual([...STASH_ICONS.fref]);

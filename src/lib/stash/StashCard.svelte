@@ -139,29 +139,33 @@
         >{t(isNote ? 'stash.card.open_in_note' : 'stash.card.open_in_file', { n: holder.number ?? '?' })}</span
       >
     {/if}
-    {#if !adding}
-      <button
-        class="tag-add"
-        type="button"
-        tabindex="-1"
-        title={t('stash.card.tag_add_title')}
-        onclick={(e) => {
-          e.stopPropagation();
-          void startAdding();
-        }}>{t('stash.card.tag_add')}</button
-      >
-    {/if}
-    {#if !isNote}
-      <button
-        class="card-rm"
-        type="button"
-        tabindex="-1"
-        title={t('stash.card.remove_file_title')}
-        onclick={(e) => {
-          e.stopPropagation();
-          onremove();
-        }}>{t('stash.card.remove_file')}</button
-      >
+    {#if !adding || !isNote}
+      <span class="card-acts">
+        {#if !adding}
+          <button
+            class="tag-add"
+            type="button"
+            tabindex="-1"
+            title={t('stash.card.tag_add_title')}
+            onclick={(e) => {
+              e.stopPropagation();
+              void startAdding();
+            }}>{t('stash.card.tag_add')}</button
+          >
+        {/if}
+        {#if !isNote}
+          <button
+            class="card-rm"
+            type="button"
+            tabindex="-1"
+            title={t('stash.card.remove_file_title')}
+            onclick={(e) => {
+              e.stopPropagation();
+              onremove();
+            }}>{t('stash.card.remove_file')}</button
+          >
+        {/if}
+      </span>
     {/if}
   </div>
   <div class="card-meta">
@@ -311,6 +315,7 @@
   }
 
   .card-head {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -360,6 +365,33 @@
     vertical-align: 1px;
   }
 
+  /* «+ тег» and «убрать из тайника» lie over the head's right end instead of
+     sitting in its row: in the row, invisible, they kept their width and cut a
+     file's name to «stash-de…» at rest. Shown on hover, with the keyboard ring,
+     or while one of them has focus; the fade-in background keeps the covered
+     name and «открыт в #N» from showing through. */
+  .card-acts {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding-left: 18px;
+    background: linear-gradient(to right, transparent, var(--bg-base) 16px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s;
+  }
+
+  .card:hover .card-acts,
+  .card.kb .card-acts,
+  .card:focus-within .card-acts {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
   .card-rm,
   .tag-add {
     flex: 0 0 auto;
@@ -372,18 +404,9 @@
     border-radius: 6px;
     cursor: pointer;
     white-space: nowrap;
-    opacity: 0;
     transition:
-      opacity 0.12s,
       background-color 0.12s,
       color 0.12s;
-  }
-
-  .card:hover .card-rm,
-  .card.kb .card-rm,
-  .card:hover .tag-add,
-  .card.kb .tag-add {
-    opacity: 1;
   }
 
   .card-rm:hover,
@@ -646,6 +669,7 @@
     }
     .card,
     .card-preview,
+    .card-acts,
     .tag-x {
       transition-duration: 0.01s !important;
     }
