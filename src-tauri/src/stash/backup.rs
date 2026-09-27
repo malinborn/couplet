@@ -8,6 +8,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use rusqlite::backup::{Backup, StepResult};
@@ -52,8 +53,56 @@ fn is_backup_name(name: &str) -> bool {
         })
 }
 
+/// A temp older than this is an unfinished copy from a crashed run: no copy
+/// takes that long (the busy retries give up after ~5 s).
+const STALE_TEMP_AGE: Duration = Duration::from_secs(3600);
+
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// A copy's own temp, `.stash-YYYY-MM-DD.db.<pid>.<seq>.tmp`: the app and a
+/// CLI (or two agents) may copy the same day at once, and with one shared
+/// name one removed the other's temp and then published a torn copy.
+fn temp_for(dir: &Path, date: &str) -> PathBuf {
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    dir.join(format!(".{}.{}.{seq}.tmp", backup_name(date), std::process::id()))
+}
+
+/// A backup temp of this build (`temp_for`) or of an older one (the fixed
+/// `stash-YYYY-MM-DD.db.tmp`), or the journal SQLite leaves beside either.
+fn is_backup_temp(name: &str) -> bool {
+    let name = name.strip_suffix("-journal").unwrap_or(name);
+    let Some(rest) = name.strip_suffix(".tmp") else {
+        return false;
+    };
+    let rest = rest.strip_prefix('.').unwrap_or(rest);
+    let Some((backup, tail)) = rest.split_at_checked("stash-YYYY-MM-DD.db".len()) else {
+        return false;
+    };
+    let ours = |t: &str| {
+        let mut parts = t.split('.');
+        parts.next() == Some("")
+            && parts.next().is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+            && parts.next().is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+            && parts.next().is_none()
+    };
+    is_backup_name(backup) && (tail.is_empty() || ours(tail))
+}
+
+/// Publishes `tmp` as `target` unless a backup is already there: a hard link
+/// refuses an existing name where `rename` would replace it. `Ok(false)`:
+/// another process published today's backup first; ours is dropped.
+fn publish(tmp: &Path, target: &Path) -> Result<bool, String> {
+    let linked = match fs::hard_link(tmp, target) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(format!("cannot publish {}: {e}", target.display())),
+    };
+    let _ = fs::remove_file(tmp);
+    linked
+}
+
 /// Today's backup in `dir`, unless it exists. `Ok(None)`: nothing to do.
-/// Lives in the app's own data directory, so `.tmp` + `rename` is enough
+/// Lives in the app's own data directory, so a temp + hard link is enough
 /// (CLAUDE.md: `atomic_write` is for the user's folders).
 pub(crate) fn daily_backup(
     conn: &Connection,
@@ -65,9 +114,7 @@ pub(crate) fn daily_backup(
         return Ok(None);
     }
     fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    let tmp = dir.join(format!("{}.tmp", backup_name(date)));
-    // A leftover is an unfinished copy from a crashed run, never a backup.
-    let _ = fs::remove_file(&tmp);
+    let tmp = temp_for(dir, date);
     // 0600 before it is published: titles, paths and tags, like the export.
     let copied = copy_into(conn, &tmp).and_then(|()| {
         fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))
@@ -78,9 +125,30 @@ pub(crate) fn daily_backup(
         let _ = fs::remove_file(&tmp);
         return Err(e);
     }
-    fs::rename(&tmp, &target).map_err(|e| format!("cannot publish {}: {e}", target.display()))?;
+    if !publish(&tmp, &target)? {
+        return Ok(None);
+    }
+    sweep_stale_temps(dir);
     prune(dir, KEEP_BACKUPS);
     Ok(Some(target))
+}
+
+/// Removes backup temps a crashed run left behind — only ones older than
+/// `STALE_TEMP_AGE`, so another process's copy in flight is left alone.
+fn sweep_stale_temps(dir: &Path) {
+    let Ok(read) = fs::read_dir(dir) else { return };
+    for entry in read.filter_map(|e| e.ok()) {
+        let stale = entry.metadata().is_ok_and(|m| {
+            m.is_file()
+                && m.modified()
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|age| age > STALE_TEMP_AGE)
+        });
+        if stale && entry.file_name().to_str().is_some_and(is_backup_temp) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// The online backup API into `tmp`, then a single-file journal: the source
@@ -167,14 +235,30 @@ fn prune(dir: &Path, keep: usize) {
     } else {
         older.iter().find(|n| has_entries(&dir.join(n)))
     };
+    let mut failed = Vec::new();
     for old in older {
         if Some(old) == last_with_entries {
             continue;
         }
         if let Err(e) = fs::remove_file(dir.join(old)) {
-            eprintln!("stash: cannot prune backup {old}: {e}");
+            failed.push((old.clone(), e));
         }
     }
+    if let Some(report) = removal_report(&failed) {
+        eprintln!("stash: {report}");
+    }
+}
+
+/// At most one line for a prune's failed removals — the CLI prints it on the
+/// agent's stderr. A backup already gone was pruned by another process (the
+/// app and a CLI prune the same folder), which is what was wanted.
+fn removal_report(failed: &[(String, std::io::Error)]) -> Option<String> {
+    let real: Vec<&(String, std::io::Error)> =
+        failed.iter().filter(|(_, e)| e.kind() != ErrorKind::NotFound).collect();
+    let (name, e) = real.first()?;
+    let n = real.len();
+    let what = if n == 1 { "backup" } else { "backups" };
+    Some(format!("cannot prune {n} {what} (first: {name}: {e})"))
 }
 
 #[derive(Serialize)]
@@ -600,11 +684,36 @@ mod tests {
         );
     }
 
+    /// `path`'s mtime, `age` ago.
+    fn age(path: &Path, age: Duration) {
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - age)
+            .unwrap();
+    }
+
     #[test]
-    fn a_leftover_temp_from_a_crash_is_replaced() {
+    fn stale_temps_from_a_crash_are_swept_and_fresh_ones_left_alone() {
         let dir = scratch("backup-tmp");
         let (stash, _root) = stash_in("backup-tmp-db");
-        fs::write(dir.join("stash-2026-09-26.db.tmp"), "half a backup").unwrap();
+        let old = Duration::from_secs(2 * 3600);
+        for name in [
+            // An older build's fixed name, and this build's per-process one
+            // with the journal SQLite leaves beside a copy cut short.
+            "stash-2026-09-20.db.tmp",
+            ".stash-2026-09-20.db.123.0.tmp",
+            ".stash-2026-09-20.db.123.0.tmp-journal",
+            // Not ours: never touched, however old.
+            ".hidden.tmp",
+            "stash-notes.tmp",
+        ] {
+            fs::write(dir.join(name), "half a backup").unwrap();
+            age(&dir.join(name), old);
+        }
+        // Another process's copy in flight today.
+        fs::write(dir.join(".stash-2026-09-26.db.456.1.tmp"), "copying").unwrap();
         let made = daily_backup(&stash.conn, &dir, "2026-09-26")
             .unwrap()
             .unwrap();
@@ -612,7 +721,83 @@ mod tests {
             .unwrap()
             .query_row("SELECT count(*) FROM entries", [], |r| r.get::<_, i64>(0))
             .is_ok());
-        assert!(!dir.join("stash-2026-09-26.db.tmp").exists());
+        assert_eq!(
+            names_in(&dir),
+            [".hidden.tmp", ".stash-2026-09-26.db.456.1.tmp", "stash-2026-09-26.db", "stash-notes.tmp"]
+        );
+    }
+
+    #[test]
+    fn backup_temps_are_unique_per_process_and_call() {
+        let a = temp_for(Path::new("/b"), "2026-09-26");
+        let b = temp_for(Path::new("/b"), "2026-09-26");
+        assert_ne!(a, b);
+        let name = a.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with(".stash-2026-09-26.db."), "{name}");
+        assert!(name.contains(&format!(".{}.", std::process::id())), "{name}");
+        assert!(name.ends_with(".tmp") && !is_backup_name(name), "{name}");
+        assert!(is_backup_temp(name));
+    }
+
+    #[test]
+    fn publishing_never_replaces_a_backup_another_process_published() {
+        let dir = scratch("backup-publish");
+        let target = dir.join("stash-2026-09-26.db");
+        fs::write(&target, "theirs").unwrap();
+        let tmp = temp_for(&dir, "2026-09-26");
+        fs::write(&tmp, "ours").unwrap();
+        assert_eq!(publish(&tmp, &target), Ok(false));
+        assert_eq!(fs::read_to_string(&target).unwrap(), "theirs");
+        assert!(!tmp.exists(), "our copy is dropped");
+        fs::remove_file(&target).unwrap();
+        let tmp = temp_for(&dir, "2026-09-26");
+        fs::write(&tmp, "ours").unwrap();
+        assert_eq!(publish(&tmp, &target), Ok(true));
+        assert_eq!(fs::read_to_string(&target).unwrap(), "ours");
+        assert_eq!(names_in(&dir), ["stash-2026-09-26.db"]);
+    }
+
+    #[test]
+    fn racing_processes_publish_one_whole_backup() {
+        // The app and a CLI (or two agents) doing the day's first backup at
+        // once: with one fixed temp name, one unlinked the other's copy and
+        // then published a torn one.
+        let (mut stash, root) = stash_in("backup-race");
+        stash.create_note("# Race", None, T0, MSK).unwrap();
+        let paths = stash.paths.clone();
+        let racers: Vec<_> = (0..4)
+            .map(|_| {
+                let p = paths.clone();
+                std::thread::spawn(move || Stash::open(p).unwrap().daily_backup(T0, MSK))
+            })
+            .collect();
+        let results: Vec<_> = racers.into_iter().map(|r| r.join().unwrap()).collect();
+        assert!(results.iter().all(Result::is_ok), "{results:?}");
+        assert_eq!(results.iter().filter(|r| matches!(r, Ok(Some(_)))).count(), 1, "{results:?}");
+        let dir = root.join("data/stash-backups");
+        assert_eq!(names_in(&dir), ["stash-2026-09-26.db"]);
+        let copy = Connection::open(dir.join("stash-2026-09-26.db")).unwrap();
+        assert_eq!(copy.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0)).unwrap(), "ok");
+        assert_eq!(copy.query_row("SELECT count(*) FROM entries", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_prune_reports_once_and_never_for_a_backup_already_gone() {
+        use std::io::Error;
+        let gone = |n: &str| (n.to_string(), Error::from(ErrorKind::NotFound));
+        let denied = |n: &str| (n.to_string(), Error::from(ErrorKind::PermissionDenied));
+        // Another process pruned it first: nothing to say.
+        assert_eq!(removal_report(&[gone("stash-2026-09-01.db")]), None);
+        assert_eq!(removal_report(&[]), None);
+        let report = removal_report(&[
+            denied("stash-2026-09-01.db"),
+            gone("stash-2026-09-02.db"),
+            denied("stash-2026-09-03.db"),
+        ])
+        .unwrap();
+        assert!(report.contains("2 backups"), "{report}");
+        assert!(report.contains("stash-2026-09-01.db"), "{report}");
+        assert!(!report.contains('\n'), "one line: {report}");
     }
 
     #[test]
