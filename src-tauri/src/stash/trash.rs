@@ -9,7 +9,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{mpsc, Mutex};
 use std::time::Duration;
 
@@ -577,12 +577,69 @@ struct Fix {
     restoring: bool,
 }
 
+/// Whether `candidate` is one of `unique_target`'s suffixed names for
+/// `name`: `<stem>-<N>.<ext>`, N = 2…`MAX_SUFFIX` written as it writes it.
+fn is_suffixed(candidate: &str, name: &str) -> bool {
+    let (stem, ext) = split_name(name);
+    let digits = candidate
+        .strip_prefix(stem)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .and_then(|rest| match ext {
+            Some(e) => rest.strip_suffix(e)?.strip_suffix('.'),
+            None => Some(rest),
+        });
+    digits.is_some_and(|d| {
+        d.parse::<u32>()
+            .is_ok_and(|n| (2..=MAX_SUFFIX).contains(&n) && n.to_string() == d)
+    })
+}
+
+/// Where a delete cut short left live note `id`'s file in the trash (D11):
+/// `name` itself, else `unique_target`'s one suffixed name for it (M4) — a
+/// regular file no note row names (`named`). Two or more suffixed candidates
+/// are a guess: none, and the log says so. `listing`: the trash folder's
+/// names, read once per pass.
+fn trash_candidate(
+    trash_dir: &Path,
+    name: &std::ffi::OsStr,
+    named: &HashSet<String>,
+    listing: &[String],
+    id: &str,
+) -> Option<PathBuf> {
+    let usable = |p: &Path| {
+        fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_file())
+            && !named.contains(p.to_string_lossy().as_ref())
+    };
+    let exact = trash_dir.join(name);
+    if usable(&exact) {
+        return Some(exact);
+    }
+    let name = name.to_str()?;
+    let mut found: Vec<PathBuf> = listing
+        .iter()
+        .filter(|n| is_suffixed(n, name))
+        .map(|n| trash_dir.join(n))
+        .filter(|p| usable(p))
+        .collect();
+    match found.len() {
+        0 => None,
+        1 => found.pop(),
+        n => {
+            eprintln!(
+                "[stash::trash] reconcile: note {id}'s file may be any of {n} files in the trash; left alone"
+            );
+            None
+        }
+    }
+}
+
 /// Finish a move a crash cut between the rename and the transaction (D11):
-/// a live note whose file is gone while `.trash/<name>` holds a regular file
-/// is marked deleted; a trashed note whose file is gone while
-/// `<notes>/<name>` holds one — and no other row names it — is marked
-/// restored. Only the exact name is looked for; anything else is left
-/// alone, and nothing on disk is moved or removed.
+/// a live note whose file is gone while the trash holds it — `.trash/<name>`,
+/// or the one `<stem>-N.<ext>` a clash sent it to (`trash_candidate`) — is
+/// marked deleted; a trashed note whose file is gone while `<notes>/<name>`
+/// holds one — and no other row names it — is marked restored (the exact
+/// name only). Anything else is left alone, and nothing on disk is moved or
+/// removed.
 ///
 /// Phased like `ensure_index`: the rows are read under the lock, the disk is
 /// looked at with no lock held, and each fix is one guarded transaction. A
@@ -607,6 +664,17 @@ pub(crate) fn reconcile(state: &StashState, now: i64) -> Reconciled {
     let trash_ok = crate::session::require_real_trash_dir(&trash_dir).is_ok();
     let notes_dir = crate::path_norm::normalize_path(&notes_dir);
     let trash_dir = crate::path_norm::normalize_path(&trash_dir);
+    let named: HashSet<String> = rows.iter().map(|(_, path, _)| path.clone()).collect();
+    let listing: Vec<String> = if trash_ok {
+        fs::read_dir(&trash_dir)
+            .map(|dir| {
+                dir.filter_map(|e| e.ok()?.file_name().into_string().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
     let fixes: Vec<Fix> = rows
         .into_iter()
@@ -620,9 +688,15 @@ pub(crate) fn reconcile(state: &StashState, now: i64) -> Reconciled {
                 return None;
             }
             let name = here.file_name()?;
-            let there = if restoring { &notes_dir } else { &trash_dir }.join(name);
-            let is_file = fs::symlink_metadata(&there).is_ok_and(|m| m.file_type().is_file());
-            is_file.then(|| Fix {
+            let there = if restoring {
+                let there = notes_dir.join(name);
+                fs::symlink_metadata(&there)
+                    .is_ok_and(|m| m.file_type().is_file())
+                    .then_some(there)?
+            } else {
+                trash_candidate(&trash_dir, name, &named, &listing, &id)?
+            };
+            Some(Fix {
                 id,
                 here: path.clone(),
                 there: there.to_string_lossy().into_owned(),
@@ -2363,6 +2437,89 @@ mod tests {
         assert_eq!(deleted_at, None);
         assert_eq!(stashed_at, Some(T0 + 9));
         assert!(indexed_in(&state, &e.id), "re-indexed off the lock");
+    }
+
+    /// `<stem>-<n>.<ext>` of a note file name.
+    fn suffixed(name: &std::ffi::OsStr, n: u32) -> String {
+        let name = name.to_str().unwrap();
+        let (stem, ext) = name.rsplit_once('.').unwrap();
+        format!("{stem}-{n}.{ext}")
+    }
+
+    #[test]
+    fn reconcile_completes_a_delete_cut_after_a_rename_to_a_suffixed_name() {
+        // `.trash/<name>` belonged to another trashed note, so the delete
+        // moved the file to `<stem>-2.md` and died before the transaction (M4).
+        let (state, _root) = state_in("trash-reconcile-del-suffix");
+        let e = state.with(|s| s.create_note("# слово\n", None, T0, MSK)).unwrap();
+        let other = state.with(|s| s.create_note("other", None, T0, MSK)).unwrap();
+        let trash = state.with(|s| Ok(s.paths.trash_dir.clone())).unwrap();
+        fs::create_dir_all(&trash).unwrap();
+        let name = PathBuf::from(&e.path).file_name().unwrap().to_owned();
+        let other_trashed = fs::canonicalize(&trash).unwrap().join(&name);
+        fs::write(&other_trashed, "other").unwrap();
+        fs::remove_file(&other.path).unwrap();
+        state
+            .with(|s| {
+                set_columns(
+                    s,
+                    &other.id,
+                    &format!("path = '{}', deleted_at = 1", other_trashed.to_string_lossy()),
+                );
+                Ok(())
+            })
+            .unwrap();
+        fs::rename(&e.path, trash.join(suffixed(&name, 2))).unwrap();
+
+        let got = reconcile(&state, T0 + 9);
+
+        assert_eq!(got.deleted, vec![e.id.clone()]);
+        let (path, deleted_at, _) = row_in(&state, &e.id).unwrap();
+        assert_eq!(PathBuf::from(&path), fs::canonicalize(&trash).unwrap().join(suffixed(&name, 2)));
+        assert_eq!(deleted_at, Some(T0 + 9));
+        assert!(!indexed_in(&state, &e.id));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "# слово\n");
+        assert_eq!(row_in(&state, &other.id).unwrap().0, other_trashed.to_string_lossy());
+    }
+
+    #[test]
+    fn reconcile_leaves_ambiguous_or_claimed_suffixed_candidates_alone() {
+        let (state, _root) = state_in("trash-reconcile-suffix-ambiguous");
+        let e = state.with(|s| s.create_note("x", None, T0, MSK)).unwrap();
+        let trash = state.with(|s| Ok(s.paths.trash_dir.clone())).unwrap();
+        fs::create_dir_all(&trash).unwrap();
+        let name = PathBuf::from(&e.path).file_name().unwrap().to_owned();
+        fs::rename(&e.path, trash.join(suffixed(&name, 2))).unwrap();
+        fs::write(trash.join(suffixed(&name, 3)), "an older orphan").unwrap();
+
+        // Two candidates: which one is the note's is a guess — none.
+        assert_eq!(reconcile(&state, T0 + 1), Reconciled::default());
+        assert_eq!(row_in(&state, &e.id).unwrap(), (e.path.clone(), None, None));
+
+        // One candidate left, but another row names it: not this note's.
+        let other = state.with(|s| s.create_note("other", None, T0, MSK)).unwrap();
+        let claimed = fs::canonicalize(&trash).unwrap().join(suffixed(&name, 3));
+        state
+            .with(|s| {
+                set_columns(
+                    s,
+                    &other.id,
+                    &format!("path = '{}', deleted_at = 1", claimed.to_string_lossy()),
+                );
+                Ok(())
+            })
+            .unwrap();
+        fs::remove_file(trash.join(suffixed(&name, 2))).unwrap();
+        assert_eq!(reconcile(&state, T0 + 2), Reconciled::default());
+        assert_eq!(row_in(&state, &e.id).unwrap(), (e.path.clone(), None, None));
+
+        // Not a regular file, or a name that only looks suffixed: nothing.
+        fs::create_dir(trash.join(suffixed(&name, 4))).unwrap();
+        let stem = name.to_str().unwrap().trim_end_matches(".md");
+        fs::write(trash.join(format!("{stem}-02.md")), "x").unwrap();
+        fs::write(trash.join(format!("{stem}-1.md")), "x").unwrap();
+        assert_eq!(reconcile(&state, T0 + 3), Reconciled::default());
+        assert_eq!(row_in(&state, &e.id).unwrap().1, None);
     }
 
     #[test]
