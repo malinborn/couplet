@@ -67,6 +67,13 @@ export function createStashStore(deps: StashStoreDeps) {
   let tabsOpen = false;
   let countSeq = 0;
   let holdersSeq = 0;
+  /**
+   * Opened from closed, the stash has no picture on screen to compare a load
+   * with: nothing pulses or pops until a load started after the open is in.
+   * `openSeq` tells such a load from one still in flight from before.
+   */
+  let quiet = false;
+  let openSeq = 0;
 
   function setEntries(next: readonly StashEntry[]): void {
     entries = next;
@@ -139,6 +146,7 @@ export function createStashStore(deps: StashStoreDeps) {
     // postdate the list it reads, so its ids stay for the load after.
     const taken = changedIds;
     changedIds = new Set();
+    const startedAt = openSeq;
     let list: StashEntry[];
     try {
       list = await deps.list();
@@ -148,10 +156,14 @@ export function createStashStore(deps: StashStoreDeps) {
       else for (const id of taken) changedIds.add(id);
       return;
     }
+    const silent = quiet;
+    if (startedAt === openSeq) quiet = false;
     const diff = pulses(entries, list, shown, taken === null ? undefined : [...taken]);
     setEntries(list);
-    markPulse(diff.pulse);
-    for (const [id, tags] of diff.newTags) markNewTags(id, tags);
+    if (!silent) {
+      markPulse(diff.pulse);
+      for (const [id, tags] of diff.newTags) markNewTags(id, tags);
+    }
     await refreshHolders(list);
   }
 
@@ -218,6 +230,10 @@ export function createStashStore(deps: StashStoreDeps) {
       const wasOpen = state.open;
       state = openStash(state, repo);
       if (wasOpen) return;
+      // What changed while closed was diffed against a picture nobody saw (M8).
+      changedIds = new Set();
+      quiet = true;
+      openSeq++;
       void refreshRepo();
       void reload();
       void refreshCounts();

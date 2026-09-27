@@ -307,6 +307,57 @@ describe('stash store', () => {
       error.mockRestore();
     });
 
+    it('the first load after a reopen neither pulses nor pops, whatever happened while closed (M8)', async () => {
+      let stashed = 10;
+      let tags: string[] = [];
+      const list = vi.fn(async () => [entry('a', { stashedAt: stashed, tags }), entry('b', { stashedAt: stashed })]);
+      const s = createStashStore(deps({ list }));
+      s.open();
+      await flush();
+      s.setShown(['a', 'b']);
+      s.close();
+      stashed = 20;
+      tags = ['idea'];
+      s.changed('put-away', ['a']);
+      s.changed('external');
+      await settleEvents();
+      s.open();
+      await flush();
+      expect(list).toHaveBeenCalledTimes(2);
+      expect(s.pulse.size).toBe(0);
+      expect(s.newTags.size).toBe(0);
+      // From here on the diff runs again, on the fresh basis and only for what comes next.
+      stashed = 30;
+      s.changed('put-away', ['b']);
+      await settleEvents();
+      expect([...s.pulse]).toEqual(['b']);
+    });
+
+    it('a load still in flight from before the close is quiet too', async () => {
+      let stashed = 10;
+      const gate = deferred<void>();
+      let gated = false;
+      const list = vi.fn(async () => {
+        const at = stashed;
+        if (gated) await gate.promise;
+        return [entry('a', { stashedAt: at })];
+      });
+      const s = createStashStore(deps({ list }));
+      s.open();
+      await flush();
+      s.setShown(['a']);
+      gated = true;
+      stashed = 20;
+      s.changed('put-away', ['a']);
+      await settleEvents();
+      s.close();
+      s.open();
+      gated = false;
+      gate.resolve();
+      await flush();
+      expect(s.pulse.size).toBe(0);
+    });
+
     it('opening without any event since the last load pulses nothing', async () => {
       const { s } = await raisedBoth();
       s.close();
