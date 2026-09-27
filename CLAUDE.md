@@ -64,6 +64,7 @@ src-tauri/src/          # Rust (Tauri backend)
     lifecycle.rs        # What leaving the tabs means for the stash: tab_close / red button / quit → put away, drop a blank note (tab_close only), ⌃T makes a file a reference; quit waits for in-flight closes
     migrate_drafts.rs   # Untitled drafts → notes at every startup, between read_session and set_pending; draft_imports makes it idempotent
     search/             # Search (stage 05): text.rs (plain capped body, read via open_readable_now), index.rs (entries_fts sync, phased ensure_index, stash_fold), query.rs (#tag / "phrase" / words → quoted MATCH), snippet.rs (UTF-16 ranges), run.rs (bm25 title 10 : body 1, offset cursor; deleted:true = titles only)
+    trash.rs            # Trash (stage 06): delete / restore / purge / reconcile / Save As (`note_saved_as`); no-clobber moves into `<notes>/.trash/`; the only code that deletes a note's bytes (`purgeable_file`); `delete_flow` asks the tab's window to drop it first (`stash-drop-tab` → `stash_drop_done`); daily housekeeping thread
 
 src/                    # Frontend (Svelte + TypeScript)
   App.svelte            # Root component, event wiring
@@ -139,6 +140,8 @@ src/                    # Frontend (Svelte + TypeScript)
     drop-target.ts / stash-toast.ts # Pure: where a dragged card lands; `stash` toast text (drawer notices; not stage 03's `stash-error`)
     icons.ts / StashGlyph.svelte / StashIcon.svelte # The one copy of each stash glyph path (tray, note, file ref, repo)
     StashDrawer.svelte / StashCard.svelte / StashBar.svelte # Rendered inside TabDrawer's root; TabDrawer owns keys, focus trap and drags
+    trash-view.ts / TrashBar.svelte # Pure trash rules (`TRASH_DAYS` mirrors `TRASH_RETENTION_DAYS`, calendar days left, newest deletion first, client-side filter); the «Удалённые» bar. Trash mode is `StashState.mode`, trash cards are `StashCard`'s `trashed` variant (`data-trash-id`)
+    stash-drop.ts       # `stash-drop-tab` listener body: `tabs.dropPath` → always answers `stash_drop_done`
   lib/switch-document.ts # decideLeave / decideOpenAction — may the active tab be left, what "open this path" does
   lib/autosave.ts       # Debounced autosave with a synchronous flush() for tab switches
   lib/line-endings.ts   # The buffer is LF; readDocument/writeDocument convert at the disk boundary
@@ -423,6 +426,12 @@ CARGO_TARGET_DIR=~/.cargo/<slug>-target npm run dev:app -- --features mcp-bridge
 - **Trashed rows are not in the index (A8).** `stash_search { deleted: true }` never touches FTS: every term is a folded title substring, notes only, trash order, empty snippet. Stage 06's trash/restore/purge must unindex/index accordingly.
 - **Call `search::unindex_entry` before any `entries` DELETE, in the same transaction** (`remove_file_ref`, `forget_discarded_note`, `settle_left`). Afterwards the rowid is gone, and SQLite reuses the highest rowid — a leftover FTS row would lend its text to the next entry until the next `ensure_index`.
 - **The drawer sends only text terms to `stash_search` (`drawerTerms`); tags stay client-side.** Stage 04's drawer `#tag` is a prefix match over tags *and the repo* (a repo chip sets `#<repo>`), while Rust's `#tag` is an exact stored tag for agents. A tag-only query makes no IPC and falls back to the local list. The drawer never sends `repo` (and asks `enrich: false`): the repo chip filters the *list copies* of the hits by the same rule as without a query, one page of 200 — an in-repo hit ranked past 200 is not fetched. Only agents (stage 07) use the SQL filter on the stored `repo` column (A3).
+- **A trashed note's `path` is its trash path.** `entries.path` always names where the file is; `deleted_at` says whether that is the trash. Readers need no special case; writers (`on_file_written`, put-away, tag, touch-opened) skip or refuse trashed rows.
+- **Purge deletes only a regular file whose canonical parent is the canonical note trash dir** (`trash::purgeable_file`, behind `session::require_real_trash_dir`). Never widen it; a refused row is logged (`purge of … skipped`) and left as it is. Housekeeping runs at startup and then when ≥ 24 h of wall clock passed (checked hourly): `reconcile` (finishes a move a crash cut between rename and transaction) → `purge_expired` (30 days).
+- **Deleting a note open in a tab goes through the window that holds it:** `stash-drop-tab` (`emit_to` the owner) → `tabs.dropPath` (flush, refuse if the save did not land, `tab_release`; the only tab becomes an empty one) → `stash_drop_done` → Rust re-checks the owner and only then moves the file. Moving first would let the next autosave recreate the file at its old path. A drop is a release, never a close: a ⌘⇧T entry for a trashed note would reopen an empty document. No answer in 10 s → `DeleteOutcome::Kept { reason: 'timeout' }`, file untouched. Await `stash_delete` outside the tab queue.
+- **Moves into and out of the trash are no-clobber** (`renamex_np(RENAME_EXCL)`, then link+unlink, then copy→fsync→re-read→compare→remove across volumes); `fs::rename` silently replaces an existing destination on macOS. A taken name gets `-2`, `-3`…; a comment sidecar travels with its note.
+- **`OpenFiles` and `StashState` are never held together** — `stash_delete` and `stash_note_saved_as` read the owner under a short registry lock and drop it before the stash lock.
+- **Trashed notes are not in the FTS index** — every trash/restore/purge unindexes in the same transaction or re-indexes off the lock after the commit; agents' `stash_search` never sees them; the trash view filters client-side and ignores the repo chip.
 - **Don't run rustfmt on `src-tauri/src/stash/mod.rs`.** rustfmt follows `mod` declarations and reformats every stash submodule with it (`rustfmt --check` on `mod.rs` alone reports diffs in `clock.rs`, `ids.rs` and `paths.rs`); those files are not rustfmt-clean, so one "format this file" becomes a diff across files nobody meant to touch.
 
 ## Workflow
