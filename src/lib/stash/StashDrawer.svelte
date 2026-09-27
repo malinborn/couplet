@@ -433,6 +433,7 @@
             dragging={row.entry.id === draggingId}
             {compact}
             pulse={stash.pulse.has(row.entry.id)}
+            pulseKey={stash.pulseKey(row.entry.id)}
             newTags={stash.newTags.get(row.entry.id) ?? []}
             {now}
             onremove={() => onremove(row.entry)}

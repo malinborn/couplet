@@ -49,6 +49,13 @@ export function createStashStore(deps: StashStoreDeps) {
   let loaded = $state(false);
   let width = $state(0);
   let pulse = $state.raw<ReadonlySet<string>>(new Set());
+  /**
+   * Per pulsing id: `timer` is the pulse that owns its end (only the latest
+   * may end it), `n` counts that card's pulses — its parity picks one of two
+   * identical CSS animations, so a repeat restarts rather than runs on.
+   */
+  let pulseMarks = $state.raw<ReadonlyMap<string, { timer: number; n: number }>>(new Map());
+  let pulseSeq = 0;
   let newTags = $state.raw<ReadonlyMap<string, readonly string[]>>(new Map());
   /** Ids the drawer last rendered: only a card on screen can pulse. Nothing renders from it. */
   let shown: ReadonlySet<string> = new Set();
@@ -83,9 +90,18 @@ export function createStashStore(deps: StashStoreDeps) {
 
   function markPulse(ids: readonly string[]): void {
     if (ids.length === 0) return;
+    const timer = ++pulseSeq;
+    const marks = new Map(pulseMarks);
+    for (const id of ids) marks.set(id, { timer, n: (pulseMarks.get(id)?.n ?? 0) + 1 });
+    pulseMarks = marks;
     pulse = new Set([...pulse, ...ids]);
     setTimeout(() => {
-      pulse = new Set([...pulse].filter((id) => !ids.includes(id)));
+      const ending = ids.filter((id) => pulseMarks.get(id)?.timer === timer);
+      if (ending.length === 0) return;
+      pulse = new Set([...pulse].filter((id) => !ending.includes(id)));
+      const after = new Map(pulseMarks);
+      for (const id of ending) after.set(id, { timer: 0, n: after.get(id)?.n ?? 0 });
+      pulseMarks = after;
     }, PULSE_MS);
   }
 
@@ -221,6 +237,10 @@ export function createStashStore(deps: StashStoreDeps) {
     },
     get newTags(): ReadonlyMap<string, readonly string[]> {
       return newTags;
+    },
+    /** How many times this card has pulsed: `StashCard`'s `pulseKey`. */
+    pulseKey(id: string): number {
+      return pulseMarks.get(id)?.n ?? 0;
     },
     update(fn: (s: StashState) => StashState): void {
       state = fn(state);

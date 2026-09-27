@@ -42,7 +42,12 @@ const spies = {
   onhoverend: vi.fn(),
 };
 
-function render(e: StashEntry, holder: TabHolder | null = null, compact = false): HTMLElement {
+function render(
+  e: StashEntry,
+  holder: TabHolder | null = null,
+  compact = false,
+  pulse: { pulse: boolean; pulseKey?: number } = { pulse: false }
+): HTMLElement {
   target = document.createElement('div');
   document.body.appendChild(target);
   component = mount(StashCard, {
@@ -57,7 +62,7 @@ function render(e: StashEntry, holder: TabHolder | null = null, compact = false)
       expanded: false,
       dragging: false,
       compact,
-      pulse: false,
+      ...pulse,
       newTags: [],
       now: NOW,
       ...spies,
@@ -191,6 +196,21 @@ describe('StashCard', () => {
     expect(outside).not.toHaveBeenCalled();
     expect(q(card, '.tag-edit')).toBeNull();
     window.removeEventListener('keydown', outside);
+  });
+
+  it('a repeat pulse switches to the twin animation, so the CSS animation starts over (M7)', () => {
+    const odd = render(entry(), null, false, { pulse: true, pulseKey: 1 });
+    expect(odd.classList.contains('pulse')).toBe(true);
+    expect(odd.classList.contains('pulse-alt')).toBe(true);
+    unmount(component!);
+    target.remove();
+    const even = render(entry(), null, false, { pulse: true, pulseKey: 2 });
+    expect(even.classList.contains('pulse')).toBe(true);
+    expect(even.classList.contains('pulse-alt')).toBe(false);
+    unmount(component!);
+    target.remove();
+    const off = render(entry(), null, false, { pulse: false, pulseKey: 3 });
+    expect(off.classList.contains('pulse-alt')).toBe(false);
   });
 
   it('a chip filters; its × removes the tag; the remove action removes the ref', () => {

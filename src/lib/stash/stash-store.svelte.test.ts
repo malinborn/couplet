@@ -216,6 +216,22 @@ describe('stash store', () => {
     expect(s.pulse.has('a')).toBe(false);
   });
 
+  it('a repeat pulse runs its full length and restarts the animation (M7)', () => {
+    const s = createStashStore(deps());
+    s.markPulse(['a', 'b']);
+    const first = s.pulseKey('a');
+    vi.advanceTimersByTime(PULSE_MS - 200);
+    s.markPulse(['c']);
+    s.markPulse(['a']);
+    expect(s.pulseKey('a') % 2, 'the other animation name: the CSS animation starts over').not.toBe(first % 2);
+    vi.advanceTimersByTime(200);
+    expect(s.pulse.has('a'), 'the first pulse timer does not cut the repeat').toBe(true);
+    expect(s.pulse.has('b')).toBe(false);
+    vi.advanceTimersByTime(PULSE_MS - 200);
+    expect(s.pulse.has('a')).toBe(false);
+    expect(s.pulse.has('c')).toBe(false);
+  });
+
   describe('the pulse diff is narrowed by the ids of the events since the previous load (T6)', () => {
     /** Open with `a` and `b` on screen, then raise both: which ones pulse depends only on the events. */
     async function raisedBoth(list?: StashStoreDeps['list']) {

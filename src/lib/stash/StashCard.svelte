@@ -28,6 +28,7 @@
     dragging,
     compact,
     pulse,
+    pulseKey = 0,
     newTags,
     now,
     onremove,
@@ -49,6 +50,8 @@
     dragging: boolean;
     compact: boolean;
     pulse: boolean;
+    /** The store's pulse count for this card: a new one restarts the animation. */
+    pulseKey?: number;
     newTags: readonly string[];
     /** For «отложено …»; ticks while the drawer is open. */
     now: number;
@@ -118,6 +121,7 @@
   class:expanded
   class:dragging
   class:pulse
+  class:pulse-alt={pulse && pulseKey % 2 === 1}
   class:compact
   role="option"
   id="stash-card-{entry.id}"
@@ -312,6 +316,11 @@
   /* Dedup: the card jumps to the top and pulses (mockup `stPulse`; no transform — flip owns it). */
   .card.pulse {
     animation: stPulse 1.1s ease 0.26s;
+  }
+
+  /* A repeat pulse: a new animation name is what makes the browser start over. */
+  .card.pulse.pulse-alt {
+    animation-name: stPulseAlt;
   }
 
   .card-head {
@@ -651,6 +660,19 @@
     }
   }
 
+  /* stPulse's twin — keep the two identical. */
+  @keyframes stPulseAlt {
+    0%,
+    60% {
+      border-color: var(--color-stash);
+      box-shadow: 0 0 0 4px color-mix(in oklab, var(--color-stash) 22%, transparent);
+      background: color-mix(in oklab, var(--color-stash) 9%, var(--bg-base));
+    }
+    100% {
+      box-shadow: 0 0 0 0 transparent;
+    }
+  }
+
   @keyframes tagIn {
     0% {
       transform: scale(0.6);
@@ -664,6 +686,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     .card.pulse,
+    .card.pulse.pulse-alt,
     .tag.new {
       animation: none;
     }
