@@ -133,6 +133,7 @@
 
   "editor.slash_theme.action_detail": "Сменить семейство темы",
   "editor.slash_tone.action_detail": "Переключить светлую / тёмную",
+  "editor.slash_stash.action_detail": "Отложить в тайник",
   "editor.slash_tone.light": "Светлая",
   "editor.slash_tone.dark": "Тёмная",
   "editor.slash_tone.follow_system": "Как в системе",

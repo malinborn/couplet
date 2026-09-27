@@ -133,6 +133,7 @@
 
   "editor.slash_theme.action_detail": "Themenfamilie wechseln",
   "editor.slash_tone.action_detail": "Hell / Dunkel wechseln",
+  "editor.slash_stash.action_detail": "Put away in the stash",
   "editor.slash_tone.light": "Hell",
   "editor.slash_tone.dark": "Dunkel",
   "editor.slash_tone.follow_system": "Systemeinstellung folgen",

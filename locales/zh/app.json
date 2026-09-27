@@ -133,6 +133,7 @@
 
   "editor.slash_theme.action_detail": "切换主题系列",
   "editor.slash_tone.action_detail": "切换浅色 / 深色",
+  "editor.slash_stash.action_detail": "Put away in the stash",
   "editor.slash_tone.light": "浅色",
   "editor.slash_tone.dark": "深色",
   "editor.slash_tone.follow_system": "跟随系统",

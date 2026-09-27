@@ -133,6 +133,7 @@
 
   "editor.slash_theme.action_detail": "Cambiar la familia de tema",
   "editor.slash_tone.action_detail": "Cambiar claro / oscuro",
+  "editor.slash_stash.action_detail": "Put away in the stash",
   "editor.slash_tone.light": "Claro",
   "editor.slash_tone.dark": "Oscuro",
   "editor.slash_tone.follow_system": "Seguir al sistema",
