@@ -1128,6 +1128,16 @@ fn value(iter: &mut std::slice::Iter<'_, String>, flag: &str) -> Result<String, 
         .ok_or_else(|| format!("{flag} requires a value"))
 }
 
+/// Sets a single-valued flag. A second one is an error, not a quiet
+/// replacement: `--tag a --tag b` on a search would otherwise filter on `b`
+/// alone. (`add`'s `--tag` and `tag`'s `--add`/`--remove` repeat by design.)
+fn once<T>(slot: &mut Option<T>, value: T, flag: &str) -> Result<(), String> {
+    if slot.replace(value).is_some() {
+        return Err(format!("{flag} given twice"));
+    }
+    Ok(())
+}
+
 /// Everything after `couplet stash` (i.e. after `ai stash` in the binary).
 /// A flag belongs to the verbs it makes sense for; anywhere else it is an
 /// error, never silently ignored.
@@ -1149,11 +1159,14 @@ pub fn parse_stash_args(args: &[String]) -> Result<StashCli, String> {
         let flag = arg.as_str();
         match flag {
             "--json" => json = true,
-            "--product" => product = Some(value(&mut iter, flag)?),
-            "--socket" => socket = Some(value(&mut iter, flag)?),
+            "--product" => once(&mut product, value(&mut iter, flag)?, flag)?,
+            "--socket" => once(&mut socket, value(&mut iter, flag)?, flag)?,
             "--tag" if v == "add" => tags.push(value(&mut iter, flag)?),
-            "--tag" if filtered => filter.tag = Some(value(&mut iter, flag)?),
+            "--tag" if filtered => once(&mut filter.tag, value(&mut iter, flag)?, flag)?,
             "--repo" if filtered => {
+                if repo_given {
+                    return Err(format!("{flag} given twice"));
+                }
                 filter.scope = ScopeArg::Repo(value(&mut iter, flag)?);
                 repo_given = true;
             }
@@ -1161,13 +1174,15 @@ pub fn parse_stash_args(args: &[String]) -> Result<StashCli, String> {
                 filter.scope = ScopeArg::All;
                 all_given = true;
             }
-            "--kind" if filtered => filter.kind = Some(parse_kind(&value(&mut iter, flag)?)?),
-            "--limit" if filtered => limit = Some(parse_limit(&value(&mut iter, flag)?)?),
-            "--cursor" if filtered => cursor = Some(value(&mut iter, flag)?),
-            "--since" if v == "list" => since = Some(value(&mut iter, flag)?),
-            "--sort" if v == "list" => sort = Some(parse_sort(&value(&mut iter, flag)?)?),
-            "--lines" if v == "get" => lines = Some(parse_lines(&value(&mut iter, flag)?)?),
-            "--path" if v == "add" => path = Some(value(&mut iter, flag)?),
+            "--kind" if filtered => {
+                once(&mut filter.kind, parse_kind(&value(&mut iter, flag)?)?, flag)?
+            }
+            "--limit" if filtered => once(&mut limit, parse_limit(&value(&mut iter, flag)?)?, flag)?,
+            "--cursor" if filtered => once(&mut cursor, value(&mut iter, flag)?, flag)?,
+            "--since" if v == "list" => once(&mut since, value(&mut iter, flag)?, flag)?,
+            "--sort" if v == "list" => once(&mut sort, parse_sort(&value(&mut iter, flag)?)?, flag)?,
+            "--lines" if v == "get" => once(&mut lines, parse_lines(&value(&mut iter, flag)?)?, flag)?,
+            "--path" if v == "add" => once(&mut path, value(&mut iter, flag)?, flag)?,
             "--add" if v == "tag" => add.push(value(&mut iter, flag)?),
             "--remove" if v == "tag" => remove.push(value(&mut iter, flag)?),
             other if other.starts_with("--") => {
@@ -1422,24 +1437,31 @@ fn str_field(v: &Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The strings of an array argument; anything else in it is ignored. A lone
-/// string is taken as a one-element array rather than dropped: a tag given
-/// as `"infra"` must not silently become no tag.
-pub fn string_array(v: &Value, key: &str) -> Vec<String> {
+/// The strings of an array argument (absent or `null`: none). A lone string
+/// is taken as a one-element array rather than dropped: a tag given as
+/// `"infra"` must not silently become no tag. Anything else — a number in
+/// the array, an object — is a malformed call, never silently dropped.
+pub fn string_array(v: &Value, key: &str) -> Result<Vec<String>, String> {
+    let bad = || format!("{key} must be an array of strings");
     match v.get(key) {
+        None | Some(Value::Null) => Ok(Vec::new()),
         Some(Value::Array(a)) => a
             .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
+            .map(|item| item.as_str().map(str::to_string).ok_or_else(bad))
             .collect(),
-        Some(Value::String(s)) => vec![s.clone()],
-        _ => Vec::new(),
+        Some(Value::String(s)) => Ok(vec![s.clone()]),
+        Some(_) => Err(bad()),
     }
 }
 
-/// `tag`, `kind`, `repo` / `all` — the same rules as the CLI's flags.
+/// `tag`, `kind`, `repo` / `all` — the same rules as the CLI's flags. `all`
+/// must be a boolean: `"true"` ignored would silently mean the default scope.
 fn filter_from_json(v: &Value) -> Result<Filter, String> {
-    let all = v.get("all").and_then(Value::as_bool).unwrap_or(false);
+    let all = match v.get("all") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err("all must be a boolean".to_string()),
+    };
     let scope = match (all, str_field(v, "repo")) {
         (true, Some(_)) => return Err("repo and all are mutually exclusive".to_string()),
         (true, None) => ScopeArg::All,
@@ -3095,6 +3117,26 @@ mod tests {
     }
 
     #[test]
+    fn a_single_valued_flag_given_twice_is_an_error() {
+        // A second --tag used to replace the first silently: the filter then
+        // was not the one the caller wrote.
+        for a in [
+            &["search", "x", "--tag", "a", "--tag", "b"][..],
+            &["list", "--tag", "a", "--tag", "b"],
+            &["list", "--limit", "5", "--limit", "9"],
+            &["list", "--since", "today", "--since", "7d"],
+            &["get", "s1-00ab", "--lines", "1:2", "--lines", "3:4"],
+            &["list", "--product", "couplet-dev", "--product", "couplet"],
+        ] {
+            let err = parse_stash_args(&argv(a)).unwrap_err();
+            assert!(err.contains("given twice"), "{a:?}: {err}");
+        }
+        // Repeatable where repeating means more: add's tags, tag's edits.
+        assert!(parse_stash_args(&argv(&["add", "--tag", "a", "--tag", "b"])).is_ok());
+        assert!(parse_stash_args(&argv(&["tag", "s1-00ab", "--add", "a", "--add", "b"])).is_ok());
+    }
+
+    #[test]
     fn list_reads_since_sort_and_repo() {
         let cli = parse_stash_args(&argv(&[
             "list",
@@ -3543,14 +3585,38 @@ mod tests {
         assert_eq!(number.since.as_deref(), Some("1790000000000"));
         assert!(list_args_from_json(&serde_json::json!({"sort": "size"})).is_err());
         assert_eq!(
-            string_array(&serde_json::json!({"tags": ["a", 3, "b"]}), "tags"),
+            string_array(&serde_json::json!({"tags": ["a", "b"]}), "tags").unwrap(),
             vec!["a".to_string(), "b".to_string()]
         );
+        // A non-string item is an error, never dropped: `3` was meant as a tag.
+        for bad in [
+            serde_json::json!({"tags": ["a", 3, "b"]}),
+            serde_json::json!({"tags": [null]}),
+            serde_json::json!({"tags": 5}),
+            serde_json::json!({"tags": {"a": 1}}),
+        ] {
+            let err = string_array(&bad, "tags").unwrap_err();
+            assert!(err.contains("tags"), "{bad}: {err}");
+        }
         // One tag given as a plain string is that tag, not silently none.
         assert_eq!(
-            string_array(&serde_json::json!({"tags": "infra"}), "tags"),
+            string_array(&serde_json::json!({"tags": "infra"}), "tags").unwrap(),
             vec!["infra".to_string()]
         );
-        assert!(string_array(&serde_json::json!({}), "tags").is_empty());
+        assert!(string_array(&serde_json::json!({}), "tags").unwrap().is_empty());
+        assert!(string_array(&serde_json::json!({"tags": null}), "tags").unwrap().is_empty());
+    }
+
+    #[test]
+    fn mcp_all_must_be_a_boolean() {
+        // `"true"` as a string used to be ignored: the default scope, silently.
+        for bad in [serde_json::json!({"query": "x", "all": "true"}), serde_json::json!({"query": "x", "all": 1})] {
+            assert!(search_args_from_json(&bad).unwrap_err().contains("all"), "{bad}");
+            assert!(list_args_from_json(&bad).unwrap_err().contains("all"), "{bad}");
+        }
+        let null = search_args_from_json(&serde_json::json!({"query": "x", "all": null})).unwrap();
+        assert_eq!(null.filter.scope, ScopeArg::Default);
+        let yes = list_args_from_json(&serde_json::json!({"all": true})).unwrap();
+        assert_eq!(yes.filter.scope, ScopeArg::All);
     }
 }

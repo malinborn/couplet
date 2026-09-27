@@ -362,7 +362,7 @@ Same shapes as the CLI verbs, as MCP tools:
 - **`stash_get`** — `id` (required), `lines` (`"A:B"`, `"A:"`, `":B"`). One note's text, at most 500 lines / 64 KiB without `lines`; a file entry's path.
 - **`stash_add`** — exactly one of `text` or `path` (relative to the server's working directory), plus `tags`. **`stash_tag`** — `id` (required), `add`, `remove`.
 
-An optional string argument sent as `""` counts as absent, and a lone string where an array is expected (`"tags": "infra"`) is a one-element array. The stash tools' answers are described in **Stash: search first, get one, never dump**.
+An optional string argument sent as `""` counts as absent, and a lone string where an array is expected (`"tags": "infra"`) is a one-element array. Any other wrong type is a JSON-RPC `-32602`, never ignored: `all` that is not a boolean (`"true"`), a non-string item in `tags`/`add`/`remove`. The stash tools' answers are described in **Stash: search first, get one, never dump**.
 
 `tools/call` builds the matching command-socket request (`{"v":1,"cmd":...}`), sends it, and wraps the raw `AiResponse` JSON line as the tool result text:
 
@@ -489,7 +489,7 @@ The user's stash («тайник») holds the notes and file references they put
 | `couplet stash add --path <file> [--tag T ...] [--json]` | A reference to an existing regular file (relative to the current directory). The file is never copied or changed; adding it again keeps one entry (`created: false`). |
 | `couplet stash tag <id> [--add T ...] [--remove T ...] [--json]` | Tags are normalised: trimmed, a leading `#` dropped, lower-case, one word each. |
 
-Every verb also takes `--product NAME` and `--socket PATH` (see **Dev builds**). Without `--json` a result is readable text on stdout and an error is one line on stderr, `couplet: <error>`. Exit codes: 0 ok, 1 rejected (`"ok":false`), 2 usage error / empty stdin / bad `--product`/`--socket`.
+Every verb also takes `--product NAME` and `--socket PATH` (see **Dev builds**). A flag that takes one value (`--tag` on search/list, `--limit`, `--since`, …) given twice is a usage error; only `add`'s `--tag` and `tag`'s `--add`/`--remove` repeat. Without `--json` a result is readable text on stdout and an error is one line on stderr, `couplet: <error>`. Exit codes: 0 ok, 1 rejected (`"ok":false`), 2 usage error / empty stdin / bad `--product`/`--socket`.
 
 ### MCP tools
 

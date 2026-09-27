@@ -552,7 +552,10 @@ fn stash_tool_call(id: Value, tool: &str, arguments: &Value, config: &McpConfig)
             }
         }
         "add" => {
-            let tags = stash::string_array(arguments, "tags");
+            let tags = match stash::string_array(arguments, "tags") {
+                Ok(t) => t,
+                Err(msg) => return error_response(id, -32602, msg),
+            };
             let text = arguments.get("text").and_then(Value::as_str);
             let path = arguments.get("path").and_then(Value::as_str);
             match (text, path) {
@@ -565,8 +568,10 @@ fn stash_tool_call(id: Value, tool: &str, arguments: &Value, config: &McpConfig)
             let Some(entry_id) = arguments.get("id").and_then(Value::as_str) else {
                 return error_response(id, -32602, "stash_tag requires id");
             };
-            let add = stash::string_array(arguments, "add");
-            let remove = stash::string_array(arguments, "remove");
+            let (add, remove) = match (stash::string_array(arguments, "add"), stash::string_array(arguments, "remove")) {
+                (Ok(a), Ok(r)) => (a, r),
+                (Err(msg), _) | (_, Err(msg)) => return error_response(id, -32602, msg),
+            };
             stash::tag(&ctx, entry_id, &add, &remove)
         }
         other => return error_response(id, -32602, format!("unknown tool: stash_{other}")),
@@ -1465,6 +1470,13 @@ mod tests {
             ("stash_add", json!({})),
             ("stash_get", json!({"id": "x", "lines": "9:1"})),
             ("stash_nope", json!({})),
+            // Wrong types are refused, never ignored or dropped.
+            ("stash_search", json!({"query": "x", "all": "true"})),
+            ("stash_list", json!({"all": 1})),
+            ("stash_add", json!({"text": "a", "tags": ["a", 3]})),
+            ("stash_add", json!({"text": "a", "tags": 5})),
+            ("stash_tag", json!({"id": "s1-00ab", "add": [null]})),
+            ("stash_tag", json!({"id": "s1-00ab", "add": ["a"], "remove": [true]})),
         ] {
             assert_eq!(call(name, arguments.clone(), &config)["error"]["code"], json!(-32602), "{name} {arguments}");
         }
