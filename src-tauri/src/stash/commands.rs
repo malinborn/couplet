@@ -399,6 +399,19 @@ pub async fn stash_drop_done(
     Ok(())
 }
 
+/// Whether Rust still waits for `stash-drop-tab` `request_id` from this
+/// window. The window asks right before it drops the tab: a tab queue busy
+/// past `trash::DROP_REPLY_TIMEOUT` finds the delete already answered
+/// `kept: timeout`, and must keep its tab (review M1).
+#[tauri::command]
+pub async fn stash_drop_pending(
+    window: tauri::WebviewWindow,
+    requests: State<'_, DropRequests>,
+    request_id: u64,
+) -> Result<bool, String> {
+    Ok(requests.pending(window.label(), request_id))
+}
+
 #[tauri::command]
 pub async fn stash_counts(
     state: State<'_, StashState>,

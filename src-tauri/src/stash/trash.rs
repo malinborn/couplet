@@ -1197,6 +1197,15 @@ impl DropRequests {
         }
     }
 
+    /// Whether request `request_id` still waits for window `from_label`'s
+    /// answer: not answered, not abandoned (timed out), and asked of it.
+    pub(crate) fn pending(&self, from_label: &str, request_id: u64) -> bool {
+        self.inner()
+            .waiting
+            .get(&request_id)
+            .is_some_and(|(label, _)| label == from_label)
+    }
+
     /// A request nobody waits for any more (timed out, or never sent).
     pub(crate) fn abandon(&self, request_id: u64) {
         self.inner().waiting.remove(&request_id);
@@ -3010,6 +3019,22 @@ mod tests {
         let (id2, _rx2) = reqs.register("main");
         reqs.abandon(id2);
         assert!(!reqs.answer("main", id2, false));
+    }
+
+    #[test]
+    fn a_drop_request_is_pending_only_for_the_window_asked_until_answered() {
+        // M1: a window whose queue was busy past the timeout asks first, so a
+        // delete that already answered `kept` does not lose its tab anyway.
+        let reqs = DropRequests::default();
+        let (id, _rx) = reqs.register("editor-2");
+        assert!(reqs.pending("editor-2", id));
+        assert!(!reqs.pending("main", id), "only the window asked");
+        assert!(!reqs.pending("editor-2", id + 1), "an unknown id");
+        assert!(reqs.answer("editor-2", id, true));
+        assert!(!reqs.pending("editor-2", id), "answered");
+        let (late, _rx2) = reqs.register("main");
+        reqs.abandon(late);
+        assert!(!reqs.pending("main", late), "timed out");
     }
 
     #[test]
