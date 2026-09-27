@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
-use super::{db, search, Stash, StashKind};
+use super::{db, search, Stash, StashEntry, StashKind, StashState};
 
 const MAX_SUFFIX: u32 = 999;
 /// A name taken between `unique_target` and the move is retried this often.
@@ -355,6 +355,72 @@ impl Stash {
         search::unindex_entry(&tx, id)?;
         tx.commit().map_err(db::err)
     }
+
+    /// Stage 06 restore (D8), the database and file half: the trashed note's
+    /// file back into the notes folder (a taken name gets a suffix), out of
+    /// the trash and put away now — so «изменение» shows it on top — with its
+    /// tags, `opened_at` and `modified_at` untouched. A failed transaction
+    /// moves the file back into the trash. Not re-indexed: that reads the
+    /// note, which never happens under the stash lock — `restore` does it
+    /// after. Answers the entry from the database alone.
+    pub(crate) fn restore_entry(&mut self, id: &str, now: i64) -> Result<StashEntry, String> {
+        let r = row(&self.conn, id)?;
+        if r.kind != StashKind::Note.as_str() || r.deleted_at.is_none() {
+            return Err(format!("stash entry {id} is not in the trash"));
+        }
+        let src = PathBuf::from(&r.path);
+        let meta = fs::symlink_metadata(&src)
+            .map_err(|_| format!("the note's file is gone from the trash ({})", src.display()))?;
+        if !meta.file_type().is_file() {
+            return Err(format!("{} is not a regular file", src.display()));
+        }
+        let dir = self.notes_dir()?;
+        let name = file_name(&src)?;
+        let conn = &self.conn;
+        let dest = move_into(&dir, &name, &src, |p| path_taken(conn, p))?;
+        move_sidecar(&src, &dest);
+        let new_path = dest.to_string_lossy().into_owned();
+        if let Err(e) = self.mark_restored(id, &r.path, &new_path, now) {
+            move_back(&dest, &src, &format!("restore of {id}"), &e);
+            return Err(e);
+        }
+        self.get(id)
+    }
+
+    fn mark_restored(&mut self, id: &str, old: &str, new: &str, now: i64) -> Result<(), String> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db::err)?;
+        let n = tx
+            .execute(
+                "UPDATE entries SET path = ?2, deleted_at = NULL, stashed_at = ?3 \
+                 WHERE id = ?1 AND path = ?4 AND deleted_at IS NOT NULL",
+                params![id, new, now, old],
+            )
+            .map_err(db::err)?;
+        if n != 1 {
+            return Err(format!("stash entry {id} changed while it was being restored"));
+        }
+        tx.commit().map_err(db::err)
+    }
+}
+
+/// «вернуть»: `Stash::restore_entry`, then the search index from the note as
+/// it is on disk — read with no lock held, written only while the row still
+/// has the `modified_at` it was restored with (`reindex_written`), so a save
+/// that lands in between is not overwritten by this older read. Best effort
+/// (D8): the index is derived, and a failed one must not undo a restore.
+pub(crate) fn restore(state: &StashState, id: &str, now: i64) -> Result<StashEntry, String> {
+    let entry = state.with(|s| s.restore_entry(id, now))?;
+    // `read_saved` logs a file it cannot read; `ensure_index` fills the gap later.
+    if let Some(text) = search::read_saved(&entry.path) {
+        let stamp = entry.modified_at;
+        if let Err(e) = state.with(|s| s.reindex_written(&entry.path, &text, stamp)) {
+            eprintln!("[stash::trash] restored {id} but could not index it: {e}");
+        }
+    }
+    Ok(entry)
 }
 
 #[cfg(test)]
@@ -385,8 +451,8 @@ mod tests {
         }
     }
 
-    use crate::stash::testkit::{set_columns, stash_in, user_file, MSK, T0};
-    use crate::stash::{PutAway, Stash, StashEntry};
+    use crate::stash::testkit::{paths_in, set_columns, stash_in, user_file, MSK, T0};
+    use crate::stash::{PutAway, Stash, StashEntry, StashState};
     use rusqlite::params;
 
     const DAY: i64 = 24 * 60 * 60 * 1000;
@@ -944,5 +1010,168 @@ mod tests {
     fn delete_of_an_unknown_id_is_an_error() {
         let (mut stash, _root) = stash_in("trash-del-unknown");
         assert!(stash.delete_entry("nope", T0).is_err());
+    }
+
+    // ---- restore ----
+
+    fn state_in(tag: &str) -> (StashState, PathBuf) {
+        let root = scratch(&format!("stash-{tag}"));
+        (StashState::open(Ok(paths_in(&root))), root)
+    }
+
+    #[test]
+    fn restore_moves_the_note_back_and_puts_it_on_top() {
+        let (state, _root) = state_in("trash-restore");
+        let e = state
+            .with(|s| s.create_note("# Вернись\nтайное слово\n", None, T0, MSK))
+            .unwrap();
+        state.with(|s| s.delete_entry(&e.id, T0 + 1)).unwrap();
+        assert!(state.with(|s| Ok(!indexed(s, &e.id))).unwrap());
+
+        let back = restore(&state, &e.id, T0 + 2).unwrap();
+
+        assert_eq!(back.path, e.path);
+        assert_eq!(fs::read_to_string(&back.path).unwrap(), "# Вернись\nтайное слово\n");
+        assert_eq!(back.deleted_at, None);
+        assert_eq!(back.stashed_at, Some(T0 + 2));
+        assert_eq!(back.modified_at, e.modified_at);
+        assert!(state.with(|s| Ok(indexed(s, &e.id))).unwrap());
+        let hits = state
+            .with(|s| Ok(crate::stash::search::found(&s.conn, "тайное")))
+            .unwrap();
+        assert_eq!(hits, vec![e.id.clone()]);
+    }
+
+    #[test]
+    fn restore_keeps_tags_and_opened_at() {
+        let (mut stash, _root) = stash_in("trash-restore-tags");
+        let e = note(&mut stash, "x");
+        stash.tag(&e.id, &["a".into(), "b".into()], &[]).unwrap();
+        set_columns(&stash, &e.id, &format!("opened_at = {}", T0 - 7));
+        stash.delete_entry(&e.id, T0).unwrap();
+        let back = stash.restore_entry(&e.id, T0 + 1).unwrap();
+        assert_eq!(back.tags, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(back.opened_at, Some(T0 - 7));
+    }
+
+    #[test]
+    fn restore_suffixes_a_name_taken_in_the_notes_folder() {
+        let (mut stash, _root) = stash_in("trash-restore-collide");
+        let e = note(&mut stash, "trashed");
+        let original = PathBuf::from(&e.path);
+        stash.delete_entry(&e.id, T0).unwrap();
+        fs::write(&original, "someone else").unwrap();
+
+        let back = stash.restore_entry(&e.id, T0 + 1).unwrap();
+
+        assert!(back.path.ends_with("-2.md"), "{}", back.path);
+        assert_eq!(fs::read_to_string(&back.path).unwrap(), "trashed");
+        assert_eq!(fs::read_to_string(&original).unwrap(), "someone else");
+    }
+
+    #[test]
+    fn restore_suffixes_a_name_another_row_holds() {
+        let (mut stash, _root) = stash_in("trash-restore-row-collide");
+        let e = note(&mut stash, "trashed");
+        let other = note(&mut stash, "other");
+        stash.delete_entry(&e.id, T0).unwrap();
+        set_columns(&stash, &other.id, &format!("path = '{}'", e.path));
+
+        let back = stash.restore_entry(&e.id, T0 + 1).unwrap();
+
+        assert!(back.path.ends_with("-2.md"), "{}", back.path);
+        assert_eq!(fs::read_to_string(&back.path).unwrap(), "trashed");
+    }
+
+    #[test]
+    fn restore_brings_the_sidecar_back_under_the_new_name() {
+        let (mut stash, _root) = stash_in("trash-restore-sidecar");
+        let e = note(&mut stash, "x");
+        let side = crate::comments::sidecar_path(Path::new(&e.path)).unwrap();
+        fs::write(&side, "threads").unwrap();
+        stash.delete_entry(&e.id, T0).unwrap();
+        fs::write(&e.path, "collider").unwrap();
+        let back = stash.restore_entry(&e.id, T0 + 1).unwrap();
+        let new_side = crate::comments::sidecar_path(Path::new(&back.path)).unwrap();
+        assert_eq!(fs::read_to_string(new_side).unwrap(), "threads");
+        assert!(!side.exists());
+    }
+
+    #[test]
+    fn restore_refuses_a_live_note_and_a_file_ref() {
+        let (mut stash, root) = stash_in("trash-restore-live");
+        let e = note(&mut stash, "x");
+        let (r, file) = file_ref(&mut stash, &root, "theirs.md", "theirs");
+        assert!(stash.restore_entry(&e.id, T0).is_err());
+        assert!(stash.restore_entry(&r.id, T0).is_err());
+        assert_eq!(fs::read_to_string(&e.path).unwrap(), "x");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "theirs");
+        assert_eq!(row(&stash, &e.id).unwrap().2, None);
+    }
+
+    #[test]
+    fn restore_of_a_missing_file_errors_and_keeps_the_row() {
+        let (mut stash, _root) = stash_in("trash-restore-missing");
+        let e = note(&mut stash, "x");
+        stash.delete_entry(&e.id, T0).unwrap();
+        let (path, _, _) = row(&stash, &e.id).unwrap();
+        fs::remove_file(&path).unwrap();
+        assert!(stash.restore_entry(&e.id, T0 + 1).is_err());
+        assert_eq!(row(&stash, &e.id).unwrap(), (path, Some(T0), None));
+    }
+
+    #[test]
+    fn restore_refuses_a_symlink_in_the_trash() {
+        let (mut stash, root) = stash_in("trash-restore-symlink");
+        let e = note(&mut stash, "x");
+        stash.delete_entry(&e.id, T0).unwrap();
+        let (trashed, _, _) = row(&stash, &e.id).unwrap();
+        let precious = root.join("precious.md");
+        fs::write(&precious, "keep me").unwrap();
+        fs::remove_file(&trashed).unwrap();
+        symlink(&precious, &trashed).unwrap();
+
+        assert!(stash.restore_entry(&e.id, T0 + 1).is_err());
+
+        assert!(fs::symlink_metadata(&trashed).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(&precious).unwrap(), "keep me");
+        assert!(!Path::new(&e.path).exists());
+    }
+
+    #[test]
+    fn restore_moves_the_file_back_into_the_trash_when_the_row_cannot_be_updated() {
+        let (mut stash, _root) = stash_in("trash-restore-rollback");
+        let e = note(&mut stash, "x");
+        let side = crate::comments::sidecar_path(Path::new(&e.path)).unwrap();
+        fs::write(&side, "threads").unwrap();
+        stash.delete_entry(&e.id, T0).unwrap();
+        let (trashed, _, _) = row(&stash, &e.id).unwrap();
+        fail_next_update(&stash);
+
+        assert!(stash.restore_entry(&e.id, T0 + 1).is_err());
+
+        assert_eq!(fs::read_to_string(&trashed).unwrap(), "x");
+        let trashed_side = crate::comments::sidecar_path(Path::new(&trashed)).unwrap();
+        assert_eq!(fs::read_to_string(trashed_side).unwrap(), "threads");
+        assert!(!Path::new(&e.path).exists());
+        assert!(!side.exists());
+        assert_eq!(row(&stash, &e.id).unwrap(), (trashed, Some(T0), None));
+    }
+
+    #[test]
+    fn restore_leaves_the_file_in_the_trash_when_the_notes_folder_refuses_it() {
+        let (mut stash, _root) = stash_in("trash-restore-readonly");
+        let e = note(&mut stash, "x");
+        stash.delete_entry(&e.id, T0).unwrap();
+        let (trashed, _, _) = row(&stash, &e.id).unwrap();
+        let notes = stash.paths.notes_dir.clone();
+        let result = {
+            let _ro = ReadOnly::new(&notes);
+            stash.restore_entry(&e.id, T0 + 1)
+        };
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&trashed).unwrap(), "x");
+        assert!(!Path::new(&e.path).exists());
+        assert_eq!(row(&stash, &e.id).unwrap(), (trashed, Some(T0), None));
     }
 }
