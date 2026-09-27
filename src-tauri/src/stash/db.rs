@@ -116,6 +116,8 @@ pub(crate) fn open(path: &Path) -> Result<Connection, OpenError> {
     let mut conn = Connection::open(path).map_err(open_err)?;
     configure(&conn)?;
     migrate(&mut conn)?;
+    // `stash_fold` backs short-query title matching; every connection needs it.
+    crate::stash::search::register_functions(&conn).map_err(open_err)?;
     make_private(path);
     Ok(conn)
 }
