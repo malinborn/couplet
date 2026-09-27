@@ -53,7 +53,7 @@
     "url": "https://couplet.pro/",
     "downloadUrl": "https://github.com/malinborn/couplet/releases",
     "sameAs": ["https://github.com/malinborn/couplet"],
-    "softwareVersion": "2.0.1",
+    "softwareVersion": "2.1.0",
     "license": "https://opensource.org/licenses/GPL-3.0"
   }
   </script>
@@ -62,8 +62,8 @@
   <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 
-  <script type="module" crossorigin src="/assets/index-QPVCzPn2.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-DiK_OHDV.css">
+  <script type="module" crossorigin src="/assets/index-CVCKN3m6.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-CJga93KC.css">
 </head>
 <body>
 
@@ -458,6 +458,28 @@
       <div class="changelog-list">
 
         <details class="changelog-entry" open>
+          <summary class="changelog-summary">
+            <span class="changelog-version">v2.1.0</span>
+            <span class="changelog-date">2026-09-27</span>
+            <span class="changelog-tag feature">feature</span>
+            <span class="changelog-title">The stash &mdash; nothing you type is untitled, and nothing you type gets lost</span>
+          </summary>
+          <ul class="changelog-body-list">
+            <li><strong>Untitled is gone</strong> &mdash; a new tab becomes a note the moment you type its first character: a plain <code>.md</code> file in <code>~/couplet/</code>, named by date, titled by its first line. Close it with <code>&#8984;W</code>, the red button or <code>&#8984;Q</code> and it is put away in the stash, not thrown away; a tab you never typed in just disappears. Drafts from earlier versions are imported as notes on first launch &mdash; read back and compared before the old copy moves aside</li>
+            <li><strong>The stash drawer</strong> &mdash; <code>&#8963;S</code> opens it beside the tab drawer, <code>&#8963;T</code> puts the current tab away, and a file you tag or put away is kept as a reference &mdash; the file itself stays where it was, untouched. Drag cards between the two drawers, sort by changed, opened or kind, filter by <code>#tag</code>; a project window opens the stash already filtered to its repository. A narrow window widens itself so the drawers never overlap, and shrinks back when the stash closes</li>
+            <li><strong>Search that finds word forms</strong> &mdash; a trigram index over titles and text, so <code>тайник</code> finds <code>тайнике</code> and <code>мент</code> finds <code>документ</code>, case-insensitive in any alphabet. Titles weigh more than text, the matched spot is highlighted and the card shows the text around it, not the first line</li>
+            <li><strong>A trash that keeps things for 30 days</strong> &mdash; deleting a note moves its file to <code>~/couplet/.trash/</code>; <em>Trash</em> at the bottom of the stash restores it with its tags or deletes it for good. A note open in another window is released by that window first, after its last keystroke is on disk, so the next autosave cannot bring it back. Removing a file reference never touches the file</li>
+            <li><strong>Why 2.0.1 lost drafts on upgrade</strong> &mdash; restoring the previous session is opt-in, and a launch nobody restored rewrote the session file with only the windows it had open. The next launch saw the old drafts as unreferenced and deleted them. The session now keeps every un-restored window that holds a draft, and nothing is ever deleted outright: unreferenced drafts move to a trash for 30 days, and a draft that cannot become a note leaves a rescue copy when it is closed</li>
+            <li><strong>Your agent can use the stash</strong> &mdash; <code>couplet stash search | list | get | add | tag</code> and the same five MCP tools. The default scope is the repository the agent works in; search returns short snippets and <code>get</code> one note at a time, so an agent never pulls the whole stash into its context. Run <code>AI &rarr; Teach Your AI couplet</code> again to tell it</li>
+            <li><strong><code>&#8984;'</code> / <code>&#8984;&#8679;'</code> walk through AI marks</strong> &mdash; the caret jumps to the next or previous edit your agent highlighted, comment anchor or open question, wrapping around and unfolding whatever hides it. They are menu shortcuts, so they work with focus in a comment box</li>
+            <li><strong>Quotes render what is inside them</strong> &mdash; bold, links, code, lists, checkboxes, headings and nested <code>&gt;</code> levels, each with its own bar, muted towards the quote grey. Tables and mermaid inside a quote stay source: editing them would rewrite the lines without their <code>&gt;</code></li>
+            <li><strong>Crossing formatting nests instead of tearing</strong> &mdash; in Live Render, italicising text that ran past the end of a bold word wrapped the hidden <code>**</code> along with it, and the repair filter, seeing one marker of a pair touched, added a stray <code>**</code>. The selection is now split at hidden markers it crosses, and spans of the same kind merge</li>
+            <li><strong>Tab cards say when</strong> &mdash; &ldquo;just now&rdquo;, &ldquo;5 minutes ago&rdquo;, &ldquo;yesterday at 23:11&rdquo; for the last time a tab was viewed or edited; <code>View &rarr; Tabs &rarr; Show Dates</code> hides it</li>
+            <li><strong>Autumn</strong> &mdash; cinnamon and pumpkin by day, a violet sunset at night, maple for quotes and falling leaves on finished tasks</li>
+          </ul>
+        </details>
+
+        <details class="changelog-entry">
           <summary class="changelog-summary">
             <span class="changelog-version">v2.0.1</span>
             <span class="changelog-date">2026-09-26</span>
