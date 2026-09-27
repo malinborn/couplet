@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { installCatalog } from '../i18n';
@@ -774,5 +777,16 @@ describe('StashDrawer — the trash (stage 06)', () => {
     h = await setup();
     h.root.querySelector<HTMLButtonElement>('[data-stash-id="a"] .card-rm')!.click();
     expect(h.onremove).toHaveBeenCalledWith(expect.objectContaining({ id: 'a' }));
+  });
+});
+
+describe('StashDrawer head glyph (mockup `.drawer-title .st-g`)', () => {
+  it('is 1em of the 13px title, like the mockup: the icon is 13 px in a 14 px box', () => {
+    // `import.meta.url` as a string: jsdom's own `URL` is not one Node's `fileURLToPath` accepts.
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'StashDrawer.svelte'), 'utf8');
+    const rule = /\n  \.st-g \{([^}]*)\}/.exec(css)?.[1] ?? '';
+    expect(rule).toContain('width: 14px;');
+    expect(rule).toContain('height: 14px;');
+    expect(rule).toContain('font-size: 13px;');
   });
 });

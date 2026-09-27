@@ -710,11 +710,12 @@
     margin-left: 2px;
   }
 
+  /* The icon is 1em of the title's 13px inside a 14px box (mockup). */
   .st-g {
     display: inline-block;
     width: 14px;
     height: 14px;
-    font-size: 14px;
+    font-size: 13px;
     vertical-align: -2px;
     margin-right: 6px;
     color: var(--color-stash);
