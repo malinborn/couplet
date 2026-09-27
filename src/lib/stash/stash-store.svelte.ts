@@ -10,11 +10,14 @@
  *
  * The store never listens to `stash-changed` itself: App already has the one
  * per-window listener (it also feeds `stash-marks`), and calls `changed()`.
+ * The same goes for search (stage 05): every list load searches the active
+ * query again, so a coalesced burst of events is one search, not one each.
  */
 import { indexText, type SearchIndex } from '../tabs/drawer-filter';
-import type { StashCounts } from './ipc';
+import type { StashCounts, StashSearchArgs, StashSearchResult } from './ipc';
+import { createSearchRunner, type SearchRequest } from './stash-search';
 import { STASH_CLOSED, closeStash, openStash, pulses, setRepoChip, type StashState } from './stash-state';
-import type { StashEntry, TabHolder } from './types';
+import type { StashEntry, StashHit, TabHolder } from './types';
 
 /** How long a card pulses (mockup `stPulse` 1.1 s, plus its 260 ms delay). */
 export const PULSE_MS = 1400;
@@ -33,6 +36,11 @@ export interface StashStoreDeps {
   holders(paths: string[]): Promise<(TabHolder | null)[]>;
   /** The window project's directory name (`windowProject().repo`, roadmap A3). */
   windowRepo(): Promise<string | null>;
+  /**
+   * `stash_search` (stage 05). Absent, the store never searches and the
+   * drawer keeps stage 04's local substring filter.
+   */
+  search?(args: StashSearchArgs): Promise<StashSearchResult>;
 }
 
 export function createStashStore(deps: StashStoreDeps) {
@@ -57,6 +65,25 @@ export function createStashStore(deps: StashStoreDeps) {
   let pulseMarks = $state.raw<ReadonlyMap<string, { timer: number; n: number }>>(new Map());
   let pulseSeq = 0;
   let newTags = $state.raw<ReadonlyMap<string, readonly string[]>>(new Map());
+  /** The active query's hits in relevance order; `null`: no text, or the search failed. */
+  let hits = $state.raw<readonly StashHit[] | null>(null);
+  let searchTotal = $state(0);
+  const search = deps.search;
+  const runner = search
+    ? createSearchRunner({
+        search: (args) => search(args),
+        onResult: (res) => {
+          hits = res?.hits ?? null;
+          searchTotal = res?.total ?? 0;
+        },
+        onError: (err) => {
+          // `npm run dev` has no IPC, and a broken index must not blank the drawer.
+          console.error('stash search failed; using the local filter', err);
+          hits = null;
+          searchTotal = 0;
+        },
+      })
+    : null;
   /** Ids the drawer last rendered: only a card on screen can pulse. Nothing renders from it. */
   let shown: ReadonlySet<string> = new Set();
   /**
@@ -180,6 +207,8 @@ export function createStashStore(deps: StashStoreDeps) {
       markPulse(diff.pulse);
       for (const [id, tags] of diff.newTags) markNewTags(id, tags);
     }
+    // What changed the list may have changed what matches (a rebuilt index too).
+    runner?.refresh();
     await refreshHolders(list);
   }
 
@@ -237,6 +266,20 @@ export function createStashStore(deps: StashStoreDeps) {
     },
     get newTags(): ReadonlyMap<string, readonly string[]> {
       return newTags;
+    },
+    get hits(): readonly StashHit[] | null {
+      return hits;
+    },
+    /**
+     * How many entries matched in all. With a `#tag` in the query the drawer
+     * filters the hits further, so this is then an upper bound of its rows.
+     */
+    get searchTotal(): number {
+      return searchTotal;
+    },
+    /** The drawer's query or repo chip changed: search its text (debounced), or drop the hits. */
+    search(req: SearchRequest): void {
+      runner?.request(req);
     },
     /** How many times this card has pulsed: `StashCard`'s `pulseKey`. */
     pulseKey(id: string): number {

@@ -192,9 +192,22 @@ export function parseSearchQuery(input: string): SearchQuery {
  * Rust keeps as a term too.
  */
 export function searchText(query: string): string {
-  return parseSearchQuery(query)
-    .terms.map((term) => (term.phrase ? `"${term.text}"` : term.text))
-    .join(' ');
+  return termsText(parseSearchQuery(query).terms);
+}
+
+/** Terms as a query again: phrases quoted, words bare. */
+export function termsText(terms: readonly SearchTerm[]): string {
+  return terms.map((term) => (term.phrase ? `"${term.text}"` : term.text)).join(' ');
+}
+
+/**
+ * The terms the drawer searches and highlights: `parseSearchQuery`'s minus
+ * every bare `#` word. Stage 04's client rule (`parseStashQuery`) reads each
+ * of those as a tag, or as nothing — the lone `#` typed on the way to `#ops`
+ * — so as text they would only blank the list for a keystroke.
+ */
+export function drawerTerms(query: string): SearchTerm[] {
+  return parseSearchQuery(query).terms.filter((term) => term.phrase || !term.text.startsWith('#'));
 }
 
 /** Long enough for trigrams; counted in code points, as Rust counts chars. */

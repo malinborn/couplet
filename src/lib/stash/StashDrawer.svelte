@@ -43,6 +43,7 @@
     stashKbTarget,
     stashKeyAction,
   } from './stash-state';
+  import { drawerTerms, termsText } from './stash-query';
   import { STASH_RENDER_CAP, entryTitle, stashView, type StashSort } from './stash-view';
   import type { StashEntry, TagChange } from './types';
 
@@ -102,6 +103,9 @@
 
   const open = $derived(stash.state.open);
   const focused = $derived(open && stash.state.focus === 'stash');
+  /** The query's text: what `stash_search` matches and the cards mark. Tags stay stage 04's client rule. */
+  const terms = $derived(drawerTerms(stash.state.query));
+  const searchQuery = $derived(termsText(terms));
   const view = $derived(
     stashView({
       entries: stash.entries,
@@ -111,17 +115,25 @@
       query: stash.state.query,
       sort: stash.state.sort,
       untitled,
+      hits: stash.hits,
     })
   );
   /** The rows rendered as cards (I2); the keyboard ring moves over these only. */
   const rows = $derived(view.rows.slice(0, STASH_RENDER_CAP));
-  const more = $derived(view.rows.length - rows.length);
+  /**
+   * Matches past the one page Rust answered. With a `#tag` in the query the
+   * drawer drops hits Rust counted, so this is then an upper bound.
+   */
+  const unfetched = $derived(stash.hits ? Math.max(0, stash.searchTotal - stash.hits.length) : 0);
+  const more = $derived(view.rows.length - rows.length + unfetched);
   const visible = $derived(rows.map((r) => r.entry.id));
   const kbId = $derived(focused ? stashKbTarget(stash.state, visible) : null);
   const searchNote = $derived(
     stash.state.query
       ? [
-          view.rows.length > 0 ? t('tabs.drawer.search_count', { shown: view.rows.length, total: view.total }) : '',
+          view.rows.length > 0
+            ? t('tabs.drawer.search_count', { shown: view.rows.length + unfetched, total: view.total })
+            : '',
           t('tabs.drawer.search_reset'),
         ]
           .filter(Boolean)
@@ -150,6 +162,12 @@
 
   $effect(() => {
     handle = { key, focus: focusList, contains, left };
+  });
+
+  // Closed, the query is empty (`closeStash`), so this also drops the hits.
+  // The store searches again after every list load, so no listener here.
+  $effect(() => {
+    stash.search({ query: searchQuery, repo: stash.state.repoChip, tag: null, deleted: false });
   });
 
   // What is on screen: only a card the human can see pulses after a reload.
@@ -454,6 +472,8 @@
               title={entryTitle(row.entry, untitled)}
               match={row.match}
               query={view.text}
+              hit={row.hit}
+              {terms}
               holder={stash.holders.get(row.entry.path) ?? null}
               kb={row.entry.id === kbId}
               expanded={row.entry.id === expandedId}

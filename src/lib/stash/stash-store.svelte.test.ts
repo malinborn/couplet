@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PULSE_MS, RELOAD_COALESCE_MS, createStashStore, type StashStoreDeps } from './stash-store.svelte';
-import type { StashEntry, TabHolder } from './types';
+import type { StashSearchArgs, StashSearchResult } from './ipc';
+import { SEARCH_DEBOUNCE_MS, type SearchRequest } from './stash-search';
+import type { StashEntry, StashHit, TabHolder } from './types';
 
 function entry(id: string, over: Partial<StashEntry> = {}): StashEntry {
   return {
@@ -458,6 +460,100 @@ describe('stash store', () => {
     s.remove('b');
     expect(s.entries.map((e) => e.id)).toEqual(['a', 'c']);
     expect(s.indexes.has('b')).toBe(false);
+  });
+
+  describe('search (stage 05)', () => {
+    const req = (query: string, repo: string | null = null): SearchRequest => ({
+      query,
+      repo,
+      tag: null,
+      deleted: false,
+    });
+    const hitOf = (e: StashEntry): StashHit => ({ entry: e, snippet: `… ${e.id} …`, ranges: [[2, 3]], score: 1 });
+
+    function searching(answer: () => Promise<StashSearchResult>) {
+      const search = vi.fn(async (_args: StashSearchArgs) => answer());
+      return { s: createStashStore({ ...deps(), search }), search };
+    }
+
+    async function afterDebounce(): Promise<void> {
+      vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+      await flush();
+    }
+
+    it('without a search dep it never searches: the local filter applies', async () => {
+      const s = createStashStore(deps());
+      s.search(req('plan'));
+      await afterDebounce();
+      expect(s.hits).toBeNull();
+      expect(s.searchTotal).toBe(0);
+    });
+
+    it("sends the query's text after the debounce, and holds the hits and the total", async () => {
+      const { s, search } = searching(async () => ({ hits: [hitOf(entry('b'))], total: 7, nextCursor: null }));
+      s.open();
+      await flush();
+      s.search(req('plan #ops', 'infra'));
+      expect(search).not.toHaveBeenCalled();
+      await afterDebounce();
+      expect(search).toHaveBeenCalledWith({ query: 'plan', repo: 'infra', deleted: false, limit: 200 });
+      expect(s.hits?.map((h) => h.entry.id)).toEqual(['b']);
+      expect(s.searchTotal).toBe(7);
+    });
+
+    it('every coalesced reload searches the active query again — no listener of its own', async () => {
+      const { s, search } = searching(async () => ({ hits: [], total: 0, nextCursor: null }));
+      s.open();
+      await flush();
+      s.search(req('plan'));
+      await afterDebounce();
+      expect(search).toHaveBeenCalledTimes(1);
+      s.changed('reindexed');
+      s.changed('title', ['a']);
+      await settleEvents();
+      expect(search).toHaveBeenCalledTimes(2);
+    });
+
+    it('a reload with no active query asks nothing', async () => {
+      const { s, search } = searching(async () => ({ hits: [], total: 0, nextCursor: null }));
+      s.open();
+      await flush();
+      s.changed('put-away');
+      await settleEvents();
+      expect(search).not.toHaveBeenCalled();
+    });
+
+    it('a query without text drops the hits at once, without asking', async () => {
+      const { s, search } = searching(async () => ({ hits: [hitOf(entry('a'))], total: 1, nextCursor: null }));
+      s.open();
+      await flush();
+      s.search(req('plan'));
+      await afterDebounce();
+      expect(s.hits).not.toBeNull();
+      s.search(req('#ops'));
+      expect(s.hits).toBeNull();
+      await afterDebounce();
+      expect(search).toHaveBeenCalledTimes(1);
+    });
+
+    it('a failed search drops the hits: the local filter applies', async () => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      let fail = false;
+      const { s } = searching(async () => {
+        if (fail) throw new Error('no IPC');
+        return { hits: [hitOf(entry('a'))], total: 1, nextCursor: null };
+      });
+      s.search(req('plan'));
+      await afterDebounce();
+      expect(s.hits).toHaveLength(1);
+      fail = true;
+      s.search(req('plans'));
+      await afterDebounce();
+      expect(s.hits).toBeNull();
+      expect(s.searchTotal).toBe(0);
+      expect(error).toHaveBeenCalled();
+      error.mockRestore();
+    });
   });
 
   it('closing keeps the entries for the next open, and the sort', async () => {

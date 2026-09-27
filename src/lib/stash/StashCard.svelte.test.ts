@@ -5,8 +5,8 @@ import { installCatalog } from '../i18n';
 import StashCard from './StashCard.svelte';
 import StashGlyph from './StashGlyph.svelte';
 import { STASH_ICONS } from './icons';
-import { TAG_MAX } from './stash-query';
-import type { StashEntry, TabHolder } from './types';
+import { TAG_MAX, type SearchTerm } from './stash-query';
+import type { StashEntry, StashHit, TabHolder } from './types';
 
 const NOW = new Date(2026, 8, 26, 10, 30).getTime();
 
@@ -46,7 +46,8 @@ function render(
   e: StashEntry,
   holder: TabHolder | null = null,
   compact = false,
-  pulse: { pulse: boolean; pulseKey?: number } = { pulse: false }
+  pulse: { pulse: boolean; pulseKey?: number } = { pulse: false },
+  search: { hit?: StashHit | null; terms?: readonly SearchTerm[] } = {}
 ): HTMLElement {
   target = document.createElement('div');
   document.body.appendChild(target);
@@ -63,6 +64,7 @@ function render(
       dragging: false,
       compact,
       ...pulse,
+      ...search,
       newTags: [],
       now: NOW,
       ...spies,
@@ -251,6 +253,44 @@ describe('StashCard', () => {
     expect(spies.onfilter).toHaveBeenCalledWith('infra');
     q(card, '.card-rm')!.click();
     expect(spies.onremove).toHaveBeenCalled();
+  });
+});
+
+describe('StashCard with a search hit (stage 05)', () => {
+  const note = entry({
+    kind: 'note',
+    title: 'Тайник для ключей',
+    repo: null,
+    branch: null,
+    tags: [],
+    path: '/d/n.md',
+    preview: '# Тайник для ключей\nподписать документ',
+  });
+  const term = (text: string): SearchTerm => ({ text, phrase: false });
+  const marks = (el: HTMLElement | null) => [...(el?.querySelectorAll('mark') ?? [])].map((m) => m.textContent);
+
+  it('marks every term in the title, case aside', () => {
+    const hit: StashHit = { entry: note, snippet: '', ranges: [], score: 1 };
+    const card = render(note, null, false, { pulse: false }, { hit, terms: [term('тайн'), term('ключ')] });
+    expect(marks(q(card, '.card-name'))).toEqual(['Тайн', 'ключ']);
+  });
+
+  it('shows the snippet with its ranges in place of the preview', () => {
+    const snippet = 'Тайник для ключей подписать документ';
+    const at = snippet.indexOf('мент');
+    const hit: StashHit = { entry: note, snippet, ranges: [[at, at + 4]], score: 1 };
+    const card = render(note, null, false, { pulse: false }, { hit, terms: [term('мент')] });
+    expect(q(card, '.card-preview .hit-l')?.textContent).toBe('в тексте:');
+    expect(q(card, '.card-preview .hit')?.textContent).toBe(snippet);
+    expect(marks(q(card, '.card-preview .hit'))).toEqual(['мент']);
+    expect(card.querySelectorAll('.card-preview')).toHaveLength(1);
+  });
+
+  it('a title-only hit (no snippet) keeps the normal preview', () => {
+    const hit: StashHit = { entry: note, snippet: '', ranges: [], score: 0 };
+    const card = render(note, null, false, { pulse: false }, { hit, terms: [term('ок')] });
+    expect(q(card, '.card-preview .hit')).toBeNull();
+    expect(q(card, '.card-preview')?.textContent).toContain('подписать документ');
   });
 });
 

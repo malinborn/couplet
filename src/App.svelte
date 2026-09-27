@@ -56,6 +56,7 @@
     stashCreateNote,
     stashDelete,
     stashEntryForPath,
+    stashSearch,
     stashTag,
     stashTouchOpened,
     tabHolders,
@@ -909,6 +910,7 @@
     counts: () => stashCounts(),
     holders: (paths) => tabHolders(paths),
     windowRepo: async () => (await windowProject()).repo,
+    search: (args) => stashSearch(args),
   });
 
   /** How long a put-away's toast waits for the new cards, to say how many the repo chip hides. */

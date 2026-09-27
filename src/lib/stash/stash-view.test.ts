@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { indexText, type SearchIndex } from '../tabs/drawer-filter';
 import { installCatalog } from '../i18n';
-import type { StashEntry } from './types';
+import type { StashEntry, StashHit } from './types';
 import {
   changedAt,
   dropFirstLine,
@@ -169,6 +169,86 @@ describe('stashView', () => {
 
   it('filters by tag prefix', () => {
     expect(ids([a, b, c], { query: '#op' })).toEqual(['c']);
+  });
+});
+
+describe('stashView with search hits', () => {
+  const a = entry('a', { modifiedAt: NOW - 1 * MIN, repo: 'infra', tags: ['ops'] });
+  const b = entry('b', { modifiedAt: NOW - 50 * MIN, repo: 'shelf' });
+  const c = entry('c', { modifiedAt: NOW - 500 * MIN, repo: 'infra' });
+
+  function hit(e: StashEntry, snippet = ''): StashHit {
+    return { entry: e, snippet, ranges: [], score: 1 };
+  }
+
+  function view(
+    entries: StashEntry[],
+    hits: StashHit[],
+    over: { query?: string; repoChip?: string | null; openHere?: string[]; sort?: StashSort } = {}
+  ) {
+    return stashView({
+      entries,
+      indexes: indexes(entries),
+      openHere: new Set(over.openHere ?? []),
+      repoChip: over.repoChip ?? null,
+      query: over.query ?? 'plan',
+      sort: over.sort ?? 'changed',
+      untitled: 'Untitled',
+      hits,
+    });
+  }
+
+  const rowIds = (v: ReturnType<typeof view>) => v.rows.map((r) => r.entry.id);
+
+  it('keeps relevance order: no sort applies while a query is active', () => {
+    for (const sort of ['changed', 'opened', 'kind'] as const) {
+      expect(rowIds(view([a, b, c], [hit(c), hit(a), hit(b)], { sort }))).toEqual(['c', 'a', 'b']);
+    }
+  });
+
+  it('carries each hit on its row; no substring text to highlight twice', () => {
+    const v = view([a], [hit(a, 'the plan')]);
+    expect(v.rows[0].hit?.snippet).toBe('the plan');
+    expect(v.rows[0].match).toEqual({ rank: 0 });
+    expect(v.text).toBe('');
+  });
+
+  it('shows the list copy of an entry, the hit copy only when the list lacks it', () => {
+    const stale = { ...a, title: 'old title' };
+    const fresh = entry('n', { title: 'brand new' });
+    expect(view([a], [hit(stale), hit(fresh)]).rows.map((r) => r.entry.title)).toEqual(['a', 'brand new']);
+  });
+
+  it("filters the hits by stage 04's tag rule: a prefix of a tag or of the repo", () => {
+    expect(rowIds(view([a, b, c], [hit(a), hit(b), hit(c)], { query: 'plan #op' }))).toEqual(['a']);
+    expect(rowIds(view([a, b, c], [hit(a), hit(b), hit(c)], { query: 'plan #inf' }))).toEqual(['a', 'c']);
+  });
+
+  it('applies the repo chip, hides and counts what is open here, skips the trash', () => {
+    const gone = entry('gone', { deletedAt: NOW });
+    const v = view([a, b, c, gone], [hit(gone), hit(a), hit(b), hit(c)], {
+      repoChip: 'infra',
+      openHere: ['/n/c.md'],
+    });
+    expect(rowIds(v)).toEqual(['a']);
+    expect(v.openHere).toBe(1);
+    expect(v.total).toBe(3);
+  });
+
+  it('without hits (null) the local substring path runs unchanged', () => {
+    const v = stashView({
+      entries: [a, b],
+      indexes: indexes([a, b]),
+      openHere: new Set(),
+      repoChip: null,
+      query: 'b',
+      sort: 'changed',
+      untitled: 'Untitled',
+      hits: null,
+    });
+    expect(rowIds(v)).toEqual(['b']);
+    expect(v.rows[0].hit).toBeNull();
+    expect(v.text).toBe('b');
   });
 });
 

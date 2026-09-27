@@ -13,9 +13,9 @@
   import { firstPlainLine, highlight, hitSnippet, type Match } from '../tabs/drawer-filter';
   import { previewLines, type InlineSeg } from '../tabs/drawer-preview';
   import StashIcon from './StashIcon.svelte';
-  import { normalizeTag, TAG_MAX } from './stash-query';
+  import { highlightTerms, normalizeTag, segmentsFromRanges, TAG_MAX, type SearchTerm } from './stash-query';
   import { dropFirstLine, formatWhen, repoRelativePath, whenOf } from './stash-view';
-  import type { StashEntry, TabHolder, TagChange } from './types';
+  import type { StashEntry, StashHit, TabHolder, TagChange } from './types';
 
   let {
     entry,
@@ -37,6 +37,8 @@
     ondone,
     onhoverstart,
     onhoverend,
+    hit = null,
+    terms = [],
   }: {
     entry: StashEntry;
     title: string;
@@ -62,6 +64,10 @@
     ondone: () => void;
     onhoverstart: () => void;
     onhoverend: () => void;
+    /** The search hit for this card while a query has text (stage 05); `null`: stage 04's substring match. */
+    hit?: StashHit | null;
+    /** The query's text terms: short ones match titles only, so the title is marked with all of them. */
+    terms?: readonly SearchTerm[];
   } = $props();
 
   let adding = $state(false);
@@ -69,8 +75,12 @@
   let inputEl: HTMLInputElement | undefined = $state();
 
   const isNote = $derived(entry.kind === 'note');
-  const nameSegments = $derived(highlight(title, match.rank < 2 ? query : ''));
-  const hit = $derived(match.rank === 2 ? highlight(hitSnippet(match.line, query), query) : null);
+  const nameSegments = $derived(hit ? highlightTerms(title, terms) : highlight(title, match.rank < 2 ? query : ''));
+  const textHit = $derived.by(() => {
+    // A title-only hit has no snippet: the card keeps its preview.
+    if (hit) return hit.snippet ? segmentsFromRanges(hit.snippet, hit.ranges) : null;
+    return match.rank === 2 ? highlight(hitSnippet(match.line, query), query) : null;
+  });
   const source = $derived(isNote ? dropFirstLine(entry.preview) : entry.preview);
   const preview = $derived(previewLines(source));
   const firstLine = $derived(firstPlainLine(source));
@@ -181,10 +191,10 @@
         >{/if}{/if}
   </div>
   {#if !isNote}<div class="card-path" title={entry.path}>{repoRelativePath(entry.path, entry.repo)}</div>{/if}
-  {#if hit}
+  {#if textHit}
     <div class="card-preview">
       <div class="hit-l">{t('tabs.drawer.in_text')}</div>
-      <div class="hit">{#each hit as s, i (i)}{#if s.hit}<mark>{s.text}</mark>{:else}{s.text}{/if}{/each}</div>
+      <div class="hit">{#each textHit as s, i (i)}{#if s.hit}<mark>{s.text}</mark>{:else}{s.text}{/if}{/each}</div>
     </div>
   {:else if compact}
     {#if firstLine}<div class="card-preview"><div>{firstLine}</div></div>{/if}

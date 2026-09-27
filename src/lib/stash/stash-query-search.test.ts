@@ -3,11 +3,13 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   TRIGRAM_MIN,
+  drawerTerms,
   highlightTerms,
   isLongTerm,
   parseSearchQuery,
   searchText,
   segmentsFromRanges,
+  termsText,
   type SearchTerm,
 } from './stash-query';
 
@@ -79,6 +81,23 @@ describe('searchText', () => {
 
   it.each(cases)('re-parses to the same terms and no tags %j', (c) => {
     expect(parseSearchQuery(searchText(c.input))).toEqual({ tags: [], terms: c.terms });
+  });
+});
+
+describe('drawerTerms', () => {
+  // Stage 04's rule reads every bare `#` word as a tag — or, like the lone `#`
+  // being typed on the way to `#ops`, as nothing — so none of them is text.
+  it('drops every bare # word, keeps phrases and plain words', () => {
+    expect(drawerTerms('# тайник')).toEqual([t('тайник')]);
+    expect(drawerTerms('##')).toEqual([]);
+    expect(drawerTerms(`#${'x'.repeat(80)} ок`)).toEqual([t('ок')]);
+    expect(drawerTerms('"#infra" ок')).toEqual([{ text: '#infra', phrase: true }, t('ок')]);
+  });
+
+  it('serializes back to a query Rust parses to the same terms', () => {
+    const terms = drawerTerms('#infra тайник "на третьем" #');
+    expect(termsText(terms)).toBe('тайник "на третьем"');
+    expect(parseSearchQuery(termsText(terms)).terms).toEqual(terms);
   });
 });
 

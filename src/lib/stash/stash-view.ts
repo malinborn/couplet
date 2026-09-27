@@ -7,7 +7,7 @@
  */
 import type { Match, SearchIndex } from '../tabs/drawer-filter';
 import { plural, t } from '../i18n';
-import type { StashEntry } from './types';
+import type { StashEntry, StashHit } from './types';
 import { matchStash, parseStashQuery } from './stash-query';
 
 export type StashSort = 'changed' | 'opened' | 'kind';
@@ -60,11 +60,19 @@ export interface ViewInput {
   query: string;
   sort: StashSort;
   untitled: string;
+  /**
+   * `stash_search`'s answer for the query's text, in relevance order (stash
+   * stage 05); `null` or absent: no text, or the search failed — the local
+   * substring filter applies.
+   */
+  hits?: readonly StashHit[] | null;
 }
 
 export interface ViewRow {
   entry: StashEntry;
   match: Match;
+  /** The search hit this row came from; `null` on the local path. */
+  hit: StashHit | null;
 }
 
 export interface StashView {
@@ -79,14 +87,19 @@ export interface StashView {
 
 export function stashView(input: ViewInput): StashView {
   const q = parseStashQuery(input.query);
+  // The default list already excludes the trash (roadmap A8); a trashed row
+  // that slips in anyway is inert, never a card.
+  const total = input.entries.reduce((n, e) => (e.deletedAt === null ? n + 1 : n), 0);
   const rows: ViewRow[] = [];
-  let total = 0;
   let openHere = 0;
-  for (const entry of input.entries) {
-    // The default list already excludes the trash (roadmap A8); a trashed row
-    // that slips in anyway is inert, never a card.
+  const hits = input.hits ?? null;
+  // Rust matched the text; the tags keep stage 04's prefix rule here.
+  const tagsOnly = { tags: q.tags, text: '' };
+  const candidates: Iterable<[StashEntry, StashHit | null]> = hits
+    ? listCopies(input.entries, hits)
+    : input.entries.map((e): [StashEntry, null] => [e, null]);
+  for (const [entry, hit] of candidates) {
     if (entry.deletedAt !== null) continue;
-    total++;
     if (input.repoChip !== null && entry.repo !== input.repoChip) continue;
     const match = matchStash(
       {
@@ -95,17 +108,31 @@ export function stashView(input: ViewInput): StashView {
         tags: entry.tags,
         index: input.indexes.get(entry.id) ?? null,
       },
-      q
+      hit ? tagsOnly : q
     );
     if (!match) continue;
     if (input.openHere.has(entry.path)) {
       openHere++;
       continue;
     }
-    rows.push({ entry, match });
+    rows.push({ entry, match, hit });
   }
-  rows.sort((x, y) => (q.text ? x.match.rank - y.match.rank : 0) || compare(input.sort, x.entry, y.entry));
-  return { rows, total, openHere, text: q.text };
+  // Hits stay in relevance order (plan 05 D11): the sort applies again once
+  // the query is cleared.
+  if (!hits) {
+    rows.sort((x, y) => (q.text ? x.match.rank - y.match.rank : 0) || compare(input.sort, x.entry, y.entry));
+  }
+  return { rows, total, openHere, text: hits ? '' : q.text };
+}
+
+/**
+ * Each hit with the list's copy of its entry, so a tag change or a pulse shown
+ * since the search answered stays on the card; the hit's own copy only for an
+ * entry the list has not loaded yet.
+ */
+function listCopies(entries: readonly StashEntry[], hits: readonly StashHit[]): [StashEntry, StashHit][] {
+  const byId = new Map(entries.map((e) => [e.id, e]));
+  return hits.map((h) => [byId.get(h.entry.id) ?? h.entry, h]);
 }
 
 /** A note's preview without its first non-empty line — the title, already on the card. */

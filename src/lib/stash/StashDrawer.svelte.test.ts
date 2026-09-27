@@ -4,8 +4,11 @@ import { flushSync, mount, tick, unmount } from 'svelte';
 import { installCatalog } from '../i18n';
 import StashDrawer, { type StashDrawerHandle } from './StashDrawer.svelte';
 import { RELOAD_COALESCE_MS, createStashStore, type StashStore } from './stash-store.svelte';
+import type { StashSearchArgs, StashSearchResult } from './ipc';
+import { SEARCH_DEBOUNCE_MS } from './stash-search';
+import { setStashQuery } from './stash-state';
 import { STASH_RENDER_CAP } from './stash-view';
-import type { StashEntry, TabHolder } from './types';
+import type { StashEntry, StashHit, TabHolder } from './types';
 
 const NOW = Date.now();
 const MIN = 60_000;
@@ -91,6 +94,8 @@ interface SetupOpts {
   closed?: boolean;
   /** The stash's entries (default `ENTRIES`); read on every load. */
   list?: () => StashEntry[];
+  /** `stash_search` (stage 05); absent: the local substring filter only. */
+  search?: (args: StashSearchArgs) => Promise<StashSearchResult>;
 }
 
 async function setup(opts: SetupOpts = {}): Promise<H> {
@@ -99,6 +104,7 @@ async function setup(opts: SetupOpts = {}): Promise<H> {
     counts: async () => ({ total: ENTRIES.length, stashedToday: 0, deleted: 0 }),
     holders: async (paths) => opts.holders ?? paths.map(() => null),
     windowRepo: async () => opts.repo ?? null,
+    search: opts.search,
   });
   const target = document.createElement('div');
   document.body.appendChild(target);
@@ -330,6 +336,92 @@ describe('StashDrawer', () => {
       await new Promise((resolve) => setTimeout(resolve, RELOAD_COALESCE_MS + 20));
       await settle();
       expect(h.root.querySelector('[data-stash-id="c"]')?.classList.contains('pulse')).toBe(true);
+    });
+  });
+
+  describe('search (stage 05)', () => {
+    const byId = (id: string) => ENTRIES.find((e) => e.id === id)!;
+    const hitOf = (e: StashEntry, snippet = '', ranges: [number, number][] = []): StashHit => ({
+      entry: e,
+      snippet,
+      ranges,
+      score: 1,
+    });
+    /** The query's effect run, past the runner's debounce, and the answer rendered. */
+    const searched = async () => {
+      await settle();
+      await new Promise((resolve) => setTimeout(resolve, SEARCH_DEBOUNCE_MS + 20));
+      await settle();
+    };
+    const setQuery = async (query: string) => {
+      h.store.update((s) => setStashQuery(s, query));
+      await settle();
+    };
+
+    it('text: the hits in relevance order, the title marked, the snippet in place of the preview', async () => {
+      const search = vi.fn(async (_args: StashSearchArgs) => ({
+        hits: [hitOf(byId('c'), 'a long title here', [[7, 12]]), hitOf(byId('a'))],
+        total: 2,
+        nextCursor: null,
+      }));
+      h = await setup({ search });
+      for (const k of ['i', 't', 'l', 'e']) key(k);
+      await searched();
+      expect(search).toHaveBeenCalledWith({ query: 'itle', deleted: false, limit: STASH_RENDER_CAP });
+      expect(ids()).toEqual(['c', 'a']);
+      const c = h.root.querySelector<HTMLElement>('[data-stash-id="c"]')!;
+      expect(c.querySelector('.card-name mark')?.textContent).toBe('itle');
+      expect(c.querySelector('.card-preview .hit')?.textContent).toBe('a long title here');
+      expect(c.querySelector('.card-preview .hit mark')?.textContent).toBe('title');
+      // No snippet: the card keeps its own preview.
+      expect(h.root.querySelector('[data-stash-id="a"] .card-preview .hit')).toBeNull();
+    });
+
+    it("a #tag filters the hits by stage 04's prefix rule; a query without text asks nothing", async () => {
+      const search = vi.fn(async (_args: StashSearchArgs) => ({
+        hits: [hitOf(byId('a')), hitOf(byId('c'))],
+        total: 2,
+        nextCursor: null,
+      }));
+      h = await setup({ search });
+      await setQuery('#op itle');
+      await searched();
+      expect(search).toHaveBeenLastCalledWith({ query: 'itle', deleted: false, limit: STASH_RENDER_CAP });
+      expect(ids()).toEqual(['c']);
+      await setQuery('#op');
+      await searched();
+      expect(search).toHaveBeenCalledTimes(1);
+      expect(h.store.hits).toBeNull();
+      expect(ids()).toEqual(['c']);
+    });
+
+    it('«ещё N» also counts the matches past the page', async () => {
+      const many = Array.from({ length: STASH_RENDER_CAP + 50 }, (_, i) =>
+        entry(`m${String(i).padStart(3, '0')}`, { modifiedAt: NOW - i * MIN })
+      );
+      const search = vi.fn(async () => ({
+        hits: many.slice(0, STASH_RENDER_CAP).map((e) => hitOf(e)),
+        total: STASH_RENDER_CAP + 30,
+        nextCursor: String(STASH_RENDER_CAP),
+      }));
+      h = await setup({ list: () => many, search });
+      key('m');
+      await searched();
+      expect(ids()).toHaveLength(STASH_RENDER_CAP);
+      expect(h.root.querySelector('.more')?.textContent).toBe('ещё 30');
+      expect(h.root.querySelector('.s-n')?.textContent).toContain(
+        `${STASH_RENDER_CAP + 30} из ${STASH_RENDER_CAP + 50}`
+      );
+    });
+
+    it('a failed search leaves the local filter working', async () => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      h = await setup({ search: async () => Promise.reject(new Error('no IPC')) });
+      key('b');
+      await searched();
+      expect(ids()).toEqual(['b']);
+      expect(error).toHaveBeenCalled();
+      error.mockRestore();
     });
   });
 
