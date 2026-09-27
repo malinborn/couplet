@@ -459,7 +459,9 @@ pub struct AgentEntry {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Always present, `[]` when none — like `title: null`, so an agent can
+    /// read it without a presence check.
+    #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stashed_at: Option<String>,
@@ -2142,6 +2144,25 @@ mod tests {
         let back: StashAnswer =
             serde_json::from_str(&serde_json::to_string(&answer).unwrap()).unwrap();
         assert_eq!(back, answer);
+    }
+
+    #[test]
+    fn an_entry_always_carries_its_tags_even_none() {
+        // Like `title: null`: an agent reads `e.tags` without a presence check.
+        let bare = AgentEntry {
+            id: "s1-b".to_string(),
+            kind: crate::stash::StashKind::File,
+            title: None,
+            path: "/p/b.md".to_string(),
+            repo: None,
+            tags: Vec::new(),
+            stashed_at: None,
+            modified_at: "2026-09-27T01:50:00+03:00".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_string(&bare).unwrap(),
+            r#"{"id":"s1-b","kind":"file","title":null,"path":"/p/b.md","tags":[],"modified_at":"2026-09-27T01:50:00+03:00"}"#
+        );
     }
 
     #[test]

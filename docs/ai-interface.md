@@ -522,7 +522,7 @@ The CLI's `--json` line and the MCP tool result text are identical, snake_case, 
 {"ok":false,"error":"no stash entry s0-none"}
 ```
 
-An entry never carries text: `id`, `kind` (`note`\|`file`), `title`, `path`, `repo`, `tags`, `stashed_at`, `modified_at`. `total` is always present; **no `next_cursor` means the last page**. A list cursor is a keyset and stable under writes; a search cursor is an offset — the next page re-runs the search, so an entry changed between pages may be skipped or repeated.
+An entry never carries text: `id`, `kind` (`note`\|`file`), `title`, `path`, `repo`, `tags`, `stashed_at`, `modified_at`. `title` (`null` when there is none) and `tags` (`[]` when none) are always present; `repo` and `stashed_at` are left out when absent. `total` is always present; **no `next_cursor` means the last page**. A list cursor is a keyset and stable under writes; a search cursor is an offset — the next page re-runs the search, so an entry changed between pages may be skipped or repeated.
 
 Errors an agent may see: `refusing to add an empty note`, `file does not exist: <path>`, `not a file: <path>`, `in the trash: <path>`, `stash entry <id> is in the trash`, `no stash entry <id>`, `tag needs something to add or remove`, `empty tag: "…"`, `line N is past the end of the note (M lines)`, and the two below.
 
