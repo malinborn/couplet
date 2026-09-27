@@ -3770,13 +3770,15 @@ mod tests {
         assert_eq!(run_ai_cli(args(&["couplet", "ai", "stash"])), 2);
         // …and only the stash CLI answers a search with exit 0: a product
         // whose stash does not exist reads as an empty page and creates
-        // nothing (A12). Its name is this test's own, never a real build's.
-        let product = format!("couplet-handoff-test-{}", std::process::id());
-        let app_dir = dirs::data_dir().unwrap().join(&product);
-        let notes_dir = dirs::home_dir().unwrap().join(&product);
-        assert!(!app_dir.exists() && !notes_dir.exists());
-        assert_eq!(run_ai_cli(args(&["couplet", "ai", "stash", "search", "x", "--all", "--product", &product, "--json"])), 0);
-        assert!(!app_dir.exists() && !notes_dir.exists(), "a read creates nothing");
+        // nothing (A12). The application-data and home bases are a scratch
+        // dir's, so even a regression cannot touch the real ones.
+        let root = crate::atomic_write::testkit::scratch("ai-stash-handoff");
+        let (data, home) = (root.join("data"), root.join("home"));
+        let code = crate::stash::cli::with_bases(&data, &home, || {
+            run_ai_cli(args(&["couplet", "ai", "stash", "search", "x", "--all", "--product", "couplet-handoff", "--json"]))
+        });
+        assert_eq!(code, 0);
+        assert!(!data.exists() && !home.exists(), "a read creates nothing");
     }
 
     #[test]

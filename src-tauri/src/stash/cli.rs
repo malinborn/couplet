@@ -101,13 +101,45 @@ pub(crate) fn location_for_build(
     }
     let product = product.unwrap_or(crate::paths::RELEASE_PRODUCT_NAME);
     check_product(product)?;
-    let data = dirs::data_dir().ok_or("cannot determine the application data directory")?;
-    let home = dirs::home_dir().ok_or("cannot determine the home folder")?;
+    let (data, home) = bases()?;
     let mut loc = location_for_product(product, &data, &home);
     if let Some(s) = socket {
         loc.socket = Some(PathBuf::from(s));
     }
     Ok(loc)
+}
+
+/// The application-data and home folders a product's stash lives under.
+fn bases() -> Result<(PathBuf, PathBuf), String> {
+    #[cfg(test)]
+    if let Some(b) = TEST_BASES.with(|b| b.borrow().clone()) {
+        return Ok(b);
+    }
+    let data = dirs::data_dir().ok_or("cannot determine the application data directory")?;
+    let home = dirs::home_dir().ok_or("cannot determine the home folder")?;
+    Ok((data, home))
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_BASES: std::cell::RefCell<Option<(PathBuf, PathBuf)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `f` with `bases()` answering `data` and `home` on this thread: a
+/// test that drives the CLI end to end (flags → location → disk) then never
+/// resolves the real `~/Library/Application Support` or home folder.
+#[cfg(test)]
+pub(crate) fn with_bases<R>(data: &Path, home: &Path, f: impl FnOnce() -> R) -> R {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_BASES.with(|b| *b.borrow_mut() = None);
+        }
+    }
+    TEST_BASES.with(|b| *b.borrow_mut() = Some((data.to_path_buf(), home.to_path_buf())));
+    let _reset = Reset;
+    f()
 }
 
 /// The stash for reading, or `None` when it does not exist yet — a read
@@ -1790,6 +1822,19 @@ mod tests {
         assert!(release
             .app_dir()
             .ends_with(crate::paths::RELEASE_PRODUCT_NAME));
+    }
+
+    #[test]
+    fn scratch_bases_stand_in_for_the_real_folders_on_this_thread() {
+        let root = scratch("stash-cli-bases");
+        let (data, home) = (root.join("data"), root.join("home"));
+        let loc = with_bases(&data, &home, || location_from_flags(Some("couplet-dev"), None)).unwrap();
+        assert_eq!(loc.paths.db_path, data.join("couplet-dev/stash.db"));
+        assert_eq!(loc.paths.notes_dir, home.join("couplet-dev"));
+        // Reset afterwards: the real bases again.
+        let real = location_from_flags(Some("couplet-dev"), None).unwrap();
+        assert_eq!(real.paths.notes_dir.parent(), dirs::home_dir().as_deref());
+        assert!(!data.exists() && !home.exists(), "path arithmetic only");
     }
 
     #[test]
