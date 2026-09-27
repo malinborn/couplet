@@ -620,7 +620,8 @@
     ds = openState(ds, mode);
     tookFocus = false;
     data.refresh(list.tabs);
-    void stash?.refreshCounts();
+    // The stash bar's counts: read now, kept fresh by `stash-changed` only while this is open.
+    stash?.setTabsOpen(true);
     addWindowListeners();
   }
 
@@ -628,6 +629,7 @@
     if (!ds.open) return;
     // The stash opens from this drawer and closes with it (spec «Esc», D7).
     if (stash?.state.open) stash.close();
+    stash?.setTabsOpen(false);
     endGesture?.();
     closeCarousel();
     clearTimeout(hoverCloseTimer);

@@ -2,10 +2,11 @@
  * One window's stash drawer state (stash stage 04): the reducer state
  * (`stash-state.ts`), the whole live stash with a search index per entry, the
  * counts for the bar, who holds what elsewhere, the window's repo, and the
- * pulse / new-tag marks. Created by `App.svelte`, passed to `TabDrawer`. Every
- * load is sequence-guarded: a slower, older answer never overwrites a newer
- * one. Failures are logged and leave the last good data on screen — the drawer
- * is a view of the database, and a failed read changes nothing in it.
+ * pulse / new-tag marks. Created by `App.svelte`, passed to `TabDrawer`. The
+ * list has one load in flight at a time (`reload`); counts and holders are
+ * sequence-guarded, so a slower, older answer never overwrites a newer one.
+ * Failures are logged and leave the last good data on screen — the drawer is a
+ * view of the database, and a failed read changes nothing in it.
  *
  * The store never listens to `stash-changed` itself: App already has the one
  * per-window listener (it also feeds `stash-marks`), and calls `changed()`.
@@ -19,6 +20,11 @@ import type { StashEntry, TabHolder } from './types';
 export const PULSE_MS = 1400;
 /** How long a new tag pops (mockup `tagIn` .9 s). */
 export const NEW_TAG_MS = 1000;
+/**
+ * `stash-changed` events closer together than this share one reload: a
+ * put-away of N tabs is N events, and every window reloads on each.
+ */
+export const RELOAD_COALESCE_MS = 120;
 
 export interface StashStoreDeps {
   /** Every live entry (`listAllEntries`). */
@@ -47,14 +53,20 @@ export function createStashStore(deps: StashStoreDeps) {
   /** Ids the drawer last rendered: only a card on screen can pulse. Nothing renders from it. */
   let shown: ReadonlySet<string> = new Set();
   /**
-   * The union of `stash-changed` ids since the last applied load, `null` once
+   * The union of `stash-changed` ids since the last load started, `null` once
    * any of those events came without ids (`pulses`' contract): the next load
-   * then diffs the whole list. Consumed only by a load that is applied — a
-   * superseded or failed one leaves it for the load after.
+   * then diffs the whole list. A load takes it as it starts; a failed one
+   * gives it back for the load after.
    */
   let changedIds: Set<string> | null = new Set();
-  let listSeq = 0;
+  /** The one list load in flight; a reload asked for meanwhile sets `dirty` and runs once after it. */
+  let loading: Promise<void> | null = null;
+  let dirty = false;
+  let eventTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The tabs drawer is open: its stash bar shows the counts (`setTabsOpen`). */
+  let tabsOpen = false;
   let countSeq = 0;
+  let holdersSeq = 0;
 
   function setEntries(next: readonly StashEntry[]): void {
     entries = next;
@@ -106,19 +118,11 @@ export function createStashStore(deps: StashStoreDeps) {
     }
   }
 
-  async function reload(): Promise<void> {
-    const mine = ++listSeq;
+  async function refreshHolders(list: readonly StashEntry[] = entries): Promise<void> {
+    const mine = ++holdersSeq;
     try {
-      const list = await deps.list();
-      if (mine !== listSeq) return;
-      const ids = changedIds === null ? undefined : [...changedIds];
-      changedIds = new Set();
-      const diff = pulses(entries, list, shown, ids);
-      setEntries(list);
-      markPulse(diff.pulse);
-      for (const [id, tags] of diff.newTags) markNewTags(id, tags);
       const found = await deps.holders(list.map((e) => e.path));
-      if (mine !== listSeq) return;
+      if (mine !== holdersSeq) return;
       holders = new Map(
         list.flatMap((e, i): [string, TabHolder][] => {
           const h = found[i];
@@ -126,8 +130,52 @@ export function createStashStore(deps: StashStoreDeps) {
         })
       );
     } catch (err) {
-      console.error('stash: list failed', err);
+      console.error('stash: holders failed', err);
     }
+  }
+
+  async function loadOnce(): Promise<void> {
+    // Taken as the load starts: an event that lands while it is in flight may
+    // postdate the list it reads, so its ids stay for the load after.
+    const taken = changedIds;
+    changedIds = new Set();
+    let list: StashEntry[];
+    try {
+      list = await deps.list();
+    } catch (err) {
+      console.error('stash: list failed', err);
+      if (taken === null || changedIds === null) changedIds = null;
+      else for (const id of taken) changedIds.add(id);
+      return;
+    }
+    const diff = pulses(entries, list, shown, taken === null ? undefined : [...taken]);
+    setEntries(list);
+    markPulse(diff.pulse);
+    for (const [id, tags] of diff.newTags) markNewTags(id, tags);
+    await refreshHolders(list);
+  }
+
+  /**
+   * One load at a time: a reload asked for while one is in flight runs once
+   * after it, however many were asked for — each would read the same newer
+   * list. The promise settles when the last of them has.
+   */
+  function reload(): Promise<void> {
+    if (loading) {
+      dirty = true;
+      return loading;
+    }
+    loading = (async () => {
+      try {
+        do {
+          dirty = false;
+          await loadOnce();
+        } while (dirty);
+      } finally {
+        loading = null;
+      }
+    })();
+    return loading;
   }
 
   return {
@@ -179,17 +227,30 @@ export function createStashStore(deps: StashStoreDeps) {
     },
     reload,
     refreshCounts,
+    /** The tabs drawer opened or closed: its stash bar's counts are read on open and kept fresh only while shown. */
+    setTabsOpen(open: boolean): void {
+      const opening = open && !tabsOpen;
+      tabsOpen = open;
+      if (opening) void refreshCounts();
+    },
     /**
-     * App's `stash-changed` listener: the bar's counts always, the list only
-     * while it is on screen. The ids are collected either way — the next load
-     * diffs exactly what changed since the one before. `reason` is not needed
-     * yet; it is taken so the call mirrors `stashMarks.changed`.
+     * App's `stash-changed` listener: the bar's counts while the tabs drawer
+     * is open, the list while the stash is. Events within
+     * `RELOAD_COALESCE_MS` of each other share one reload. The ids are
+     * collected either way — the next load diffs exactly what changed since
+     * the one before. `reason` is not needed yet; it is taken so the call
+     * mirrors `stashMarks.changed`.
      */
     changed(reason?: string, ids?: readonly string[]): void {
       if (ids === undefined) changedIds = null;
       else if (changedIds !== null) for (const id of ids) changedIds.add(id);
-      void refreshCounts();
-      if (state.open) void reload();
+      if (!tabsOpen && !state.open) return;
+      clearTimeout(eventTimer);
+      eventTimer = setTimeout(() => {
+        eventTimer = undefined;
+        if (tabsOpen || state.open) void refreshCounts();
+        if (state.open) void reload();
+      }, RELOAD_COALESCE_MS);
     },
     setShown(ids: readonly string[]): void {
       shown = new Set(ids);

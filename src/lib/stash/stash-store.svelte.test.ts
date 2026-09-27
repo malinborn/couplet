@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { PULSE_MS, createStashStore, type StashStoreDeps } from './stash-store.svelte';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PULSE_MS, RELOAD_COALESCE_MS, createStashStore, type StashStoreDeps } from './stash-store.svelte';
 import type { StashEntry, TabHolder } from './types';
 
 function entry(id: string, over: Partial<StashEntry> = {}): StashEntry {
@@ -59,6 +59,13 @@ async function flush(): Promise<void> {
   for (let i = 0; i < 12; i++) await Promise.resolve();
 }
 
+/** `stash-changed` events wait `RELOAD_COALESCE_MS` for company, then load. */
+async function settleEvents(): Promise<void> {
+  vi.advanceTimersByTime(RELOAD_COALESCE_MS);
+  await flush();
+}
+
+beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe('stash store', () => {
@@ -92,27 +99,45 @@ describe('stash store', () => {
     expect(d.list).toHaveBeenCalledTimes(1);
   });
 
-  it('a slower, older reload does not overwrite a newer one', async () => {
+  it('a reload asked for mid-load runs once, after it, and its answer stays', async () => {
     const first = deferred<StashEntry[]>();
     const second = deferred<StashEntry[]>();
     const list = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
     const s = createStashStore(deps({ list }));
     void s.reload();
     void s.reload();
+    void s.reload();
+    expect(list).toHaveBeenCalledTimes(1);
     second.resolve([entry('b')]);
-    await flush();
     first.resolve([entry('a')]);
     await flush();
+    expect(list).toHaveBeenCalledTimes(2);
     expect(s.entries.map((e) => e.id)).toEqual(['b']);
   });
 
-  it('stash-changed while closed refreshes the counts only', async () => {
+  it('stash-changed with both drawers closed reads nothing', async () => {
     const d = deps();
     const s = createStashStore(d);
     s.changed('put-away', ['a']);
-    await flush();
-    expect(d.counts).toHaveBeenCalledTimes(1);
+    await settleEvents();
+    expect(d.counts).not.toHaveBeenCalled();
     expect(d.list).not.toHaveBeenCalled();
+  });
+
+  it('with only the tabs drawer open it refreshes the bar counts, not the list', async () => {
+    const d = deps();
+    const s = createStashStore(d);
+    s.setTabsOpen(true);
+    await flush();
+    expect(d.counts, 'read as the tabs drawer opens').toHaveBeenCalledTimes(1);
+    s.changed('put-away', ['a']);
+    await settleEvents();
+    expect(d.counts).toHaveBeenCalledTimes(2);
+    expect(d.list).not.toHaveBeenCalled();
+    s.setTabsOpen(false);
+    s.changed('put-away', ['b']);
+    await settleEvents();
+    expect(d.counts).toHaveBeenCalledTimes(2);
   });
 
   it('stash-changed while open reloads the list and the counts', async () => {
@@ -121,9 +146,56 @@ describe('stash store', () => {
     s.open();
     await flush();
     s.changed('title', ['a']);
-    await flush();
+    await settleEvents();
     expect(d.list).toHaveBeenCalledTimes(2);
     expect(d.counts).toHaveBeenCalledTimes(2);
+  });
+
+  it('five events in a burst cost one reload, not five', async () => {
+    const d = deps();
+    const s = createStashStore(d);
+    s.open();
+    await flush();
+    for (const id of ['a', 'b', 'a', 'b', 'a']) s.changed('put-away', [id]);
+    await settleEvents();
+    expect(d.list).toHaveBeenCalledTimes(2);
+    expect(d.counts).toHaveBeenCalledTimes(2);
+    expect(d.holders).toHaveBeenCalledTimes(2);
+  });
+
+  it('events spread over a slow load cost one more load after it, which diffs their union', async () => {
+    let stashed = 10;
+    let gate: ReturnType<typeof deferred<void>> | null = null;
+    const list = vi.fn(async () => {
+      // The database is read as the call goes out, however late the answer comes.
+      const at = stashed;
+      if (gate) await gate.promise;
+      return ['a', 'b', 'c', 'd'].map((id) => entry(id, { stashedAt: at }));
+    });
+    const s = createStashStore(deps({ list }));
+    s.open();
+    await flush();
+    s.setShown(['a', 'b', 'c', 'd']);
+    const slow = deferred<void>();
+    gate = slow;
+    s.changed('title', ['a']);
+    await settleEvents();
+    expect(list).toHaveBeenCalledTimes(2);
+    // The load is in flight; these land one by one, each past the coalescing window.
+    stashed = 20;
+    for (const id of ['b', 'c']) {
+      s.changed('put-away', [id]);
+      await settleEvents();
+    }
+    s.changed('put-away', ['d']);
+    await settleEvents();
+    expect(list, 'nothing more while one load is in flight').toHaveBeenCalledTimes(2);
+    gate = null;
+    slow.resolve();
+    await flush();
+    expect(list).toHaveBeenCalledTimes(3);
+    // The slow load read the list before b, c, d were raised: their ids wait for the follow-up.
+    expect([...s.pulse].sort()).toEqual(['b', 'c', 'd']);
   });
 
   it('a card on screen put away again elsewhere pulses, then stops', async () => {
@@ -138,7 +210,7 @@ describe('stash store', () => {
     s.setShown(['a']);
     stashed = 20;
     s.changed('put-away');
-    await flush();
+    await settleEvents();
     expect(s.pulse.has('a')).toBe(true);
     vi.advanceTimersByTime(PULSE_MS);
     expect(s.pulse.has('a')).toBe(false);
@@ -162,7 +234,7 @@ describe('stash store', () => {
     it('an event naming `a` pulses `a` alone', async () => {
       const { s } = await raisedBoth();
       s.changed('put-away', ['a']);
-      await flush();
+      await settleEvents();
       expect([...s.pulse]).toEqual(['a']);
     });
 
@@ -187,7 +259,7 @@ describe('stash store', () => {
       s.changed('put-away', ['a']);
       s.changed('put-away', ['b']);
       gate.resolve();
-      await flush();
+      await settleEvents();
       expect([...s.pulse].sort()).toEqual(['a', 'b']);
     });
 
@@ -195,7 +267,7 @@ describe('stash store', () => {
       const { s } = await raisedBoth();
       s.changed('put-away', ['a']);
       s.changed('external');
-      await flush();
+      await settleEvents();
       expect([...s.pulse].sort()).toEqual(['a', 'b']);
     });
 
@@ -203,11 +275,11 @@ describe('stash store', () => {
       vi.useFakeTimers();
       const { s, raise } = await raisedBoth();
       s.changed('put-away', ['a']);
-      await flush();
+      await settleEvents();
       vi.advanceTimersByTime(PULSE_MS);
       raise(30);
       s.changed('put-away', ['b']);
-      await flush();
+      await settleEvents();
       expect([...s.pulse]).toEqual(['b']);
     });
 
@@ -226,11 +298,11 @@ describe('stash store', () => {
       stashed = 20;
       fail = true;
       s.changed('put-away', ['a']);
-      await flush();
+      await settleEvents();
       expect(s.pulse.size).toBe(0);
       fail = false;
       s.changed('put-away', ['b']);
-      await flush();
+      await settleEvents();
       expect([...s.pulse].sort()).toEqual(['a', 'b']);
       error.mockRestore();
     });
@@ -251,7 +323,7 @@ describe('stash store', () => {
     await flush();
     tags = ['idea'];
     s.changed('tagged', ['a']);
-    await flush();
+    await settleEvents();
     expect(s.newTags.get('a')).toEqual(['idea']);
   });
 
@@ -285,7 +357,7 @@ describe('stash store', () => {
     await flush();
     fail = true;
     s.changed('put-away');
-    await flush();
+    await settleEvents();
     expect(s.entries.map((e) => e.id)).toEqual(['a']);
     expect(error).toHaveBeenCalled();
     error.mockRestore();

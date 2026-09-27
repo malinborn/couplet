@@ -9,7 +9,7 @@ import type { TabListState, TabMeta } from './tab-model';
 import { GOT_MS, type CarouselWindow } from './carousel';
 import { DOUBLE_CLICK_MS, ctrlDigitHandler, type RenumberResult, type RevealResult } from './window-number';
 import type { StashMark } from '../stash/marks';
-import { createStashStore, type StashStore } from '../stash/stash-store.svelte';
+import { RELOAD_COALESCE_MS, createStashStore, type StashStore } from '../stash/stash-store.svelte';
 import type { StashEntry } from '../stash/types';
 
 /*
@@ -1521,6 +1521,35 @@ describe('TabDrawer — hosts the stash (stash stage 04)', () => {
     onstashopen.mockClear();
     onputaway.mockClear();
     h = setup(initialList(), {}, { stash, onstashopen, onputaway, onstashremove: vi.fn(), onstashtag: vi.fn() });
+  });
+
+  it('the bar counts are read as the drawer opens and followed only while it is open', async () => {
+    h.destroy();
+    const counts = vi.fn(async () => ({ total: 3, stashedToday: 1, deleted: 0 }));
+    stash = createStashStore({
+      list: async () => [],
+      counts,
+      holders: async (paths) => paths.map(() => null),
+      windowRepo: async () => null,
+    });
+    h = setup(initialList(), {}, { stash, onstashopen, onputaway, onstashremove: vi.fn(), onstashtag: vi.fn() });
+    vi.useFakeTimers();
+    try {
+      stash.changed('put-away', ['x']);
+      vi.advanceTimersByTime(RELOAD_COALESCE_MS);
+      expect(counts, 'nothing shows them').not.toHaveBeenCalled();
+      h.handle().toggle();
+      expect(counts).toHaveBeenCalledTimes(1);
+      stash.changed('put-away', ['x']);
+      vi.advanceTimersByTime(RELOAD_COALESCE_MS);
+      expect(counts).toHaveBeenCalledTimes(2);
+      h.handle().close();
+      stash.changed('put-away', ['x']);
+      vi.advanceTimersByTime(RELOAD_COALESCE_MS);
+      expect(counts).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('has the stash bar and a closed stash drawer', async () => {
