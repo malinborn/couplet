@@ -178,6 +178,8 @@ pub fn run() {
             tab_commands::tab_close,
             tab_commands::tab_move,
             tab_commands::tab_carousel_windows,
+            tab_commands::tab_holders,
+            tab_commands::tab_request_move,
             git_info::tab_git_info,
             window::open_file_window_cmd,
             window::focus_if_open,

@@ -169,9 +169,14 @@ fn window_project_of(reg: &TabRegistry, label: &str) -> WindowProject {
     WindowProject { root, repo }
 }
 
-/// The calling window's project, read just before `stash_create_note`.
+/// The calling window's project, read just before `stash_create_note` and on
+/// every stash open (the repo chip, stash stage 04).
 #[tauri::command]
 pub async fn window_project(app: AppHandle, window: tauri::WebviewWindow) -> Result<WindowProject, String> {
+    // Before the lock: binding walks the file system. Without it a window
+    // that holds a file but was never bound answers no repo on its first
+    // stash open or note birth.
+    crate::routing::bind_missing_projects(&app);
     let open_files = app.state::<OpenFiles>();
     let reg = open_files.0.lock().unwrap();
     Ok(window_project_of(&reg, window.label()))
@@ -725,6 +730,112 @@ pub async fn tab_carousel_windows(app: AppHandle, window: tauri::WebviewWindow) 
         .collect())
 }
 
+/// Who holds a stash entry's file, seen from another window (stash stage 04:
+/// «открыта в #N»). `number` is that window's `#N`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TabHolder {
+    pub label: String,
+    pub number: Option<u32>,
+}
+
+/// For each path: the live window other than `caller` holding it, else `None`
+/// (nobody, a window that is gone, or `caller` itself — the stash drawer hides
+/// those by its own tab list).
+pub fn holders_of(
+    reg: &TabRegistry,
+    paths: &[String],
+    caller: &str,
+    is_live: impl Fn(&str) -> bool,
+) -> Vec<Option<TabHolder>> {
+    paths
+        .iter()
+        .map(|path| match owner_for(reg, path, caller, &is_live) {
+            TabOwner::OtherWindow { label } => Some(TabHolder {
+                number: reg.window(&label).and_then(|w| w.number),
+                label,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// IPC (stash stage 04): the holders of many paths under one lock. The paths
+/// come from the stash database, which stores the registry's own spelling
+/// (`path_norm::normalize_str`), so they are not normalized again — that would
+/// touch the disk once per entry. Only the registry lock is taken, never the
+/// stash's (roadmap A11).
+#[tauri::command]
+pub async fn tab_holders(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    paths: Vec<String>,
+) -> Result<Vec<Option<TabHolder>>, String> {
+    let open_files = app.state::<OpenFiles>();
+    let reg = open_files.0.lock().unwrap();
+    Ok(holders_of(&reg, &paths, window.label(), live_windows(&app)))
+}
+
+/// What opening a stash entry here means (stash stage 04, spec «Перенос»).
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum PullAnswer {
+    /// Nobody holds it: open it here.
+    NotOpen,
+    /// This window already has it: show that tab.
+    ThisWindow {
+        #[serde(rename = "tabId")]
+        tab_id: String,
+    },
+    /// Another window holds it and was asked (`tab-pull`) to move it here.
+    Requested { label: String, number: Option<u32> },
+}
+
+/// `tab-pull`'s payload: move the tab holding `path` to window `target`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequest {
+    pub path: String,
+    pub target: String,
+}
+
+pub fn pull_answer(reg: &TabRegistry, path: &str, caller: &str, is_live: impl Fn(&str) -> bool) -> PullAnswer {
+    match owner_for(reg, path, caller, is_live) {
+        TabOwner::None => PullAnswer::NotOpen,
+        TabOwner::ThisWindow { tab_id } => PullAnswer::ThisWindow { tab_id },
+        TabOwner::OtherWindow { label } => PullAnswer::Requested {
+            number: reg.window(&label).and_then(|w| w.number),
+            label,
+        },
+    }
+}
+
+/// IPC (stash stage 04): «открыть его отсюда — перенести из того окна». A move
+/// is driven by the window that holds the tab (`tab_move`: its dirty checks,
+/// its caret, its agent inbox), so this only asks the holder, with `tab-pull`
+/// sent to that window alone, after the lock is dropped. The holder's frontend
+/// runs its own `tab_move` to the caller; the caller watches for the arrival
+/// (`PULL_WAIT_MS` in `open-from-stash.ts`).
+#[tauri::command]
+pub async fn tab_request_move(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    path: String,
+) -> Result<PullAnswer, String> {
+    // Before the lock: normalizing asks the file system.
+    let path = crate::path_norm::normalize_str(&path);
+    let answer = {
+        let open_files = app.state::<OpenFiles>();
+        let reg = open_files.0.lock().unwrap();
+        pull_answer(&reg, &path, window.label(), live_windows(&app))
+    };
+    if let PullAnswer::Requested { label, .. } = &answer {
+        let request = PullRequest { path, target: window.label().to_string() };
+        app.emit_to(label.as_str(), "tab-pull", request).map_err(|e| e.to_string())?;
+    }
+    Ok(answer)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1165,5 +1276,55 @@ mod tests {
             .unwrap();
         assert_eq!(pending["transientSeenAt"], 3);
         assert!(pending.get("inbox").is_none(), "absent unless carried");
+    }
+
+    #[test]
+    fn holders_of_names_other_live_windows_with_their_number() {
+        let mut reg = reg_with(&[
+            ("main", "a", Some("/a.md")),
+            ("editor-2", "b", Some("/b.md")),
+            ("editor-3", "c", Some("/c.md")),
+        ]);
+        reg.set_number("editor-2", Some(7));
+        let paths: Vec<String> = ["/a.md", "/b.md", "/c.md", "/z.md"].iter().map(|p| p.to_string()).collect();
+        assert_eq!(
+            holders_of(&reg, &paths, "main", |label| label != "editor-3"),
+            vec![None, Some(TabHolder { label: "editor-2".into(), number: Some(7) }), None, None],
+            "own tabs, dead windows and free files are all None"
+        );
+    }
+
+    #[test]
+    fn pull_answer_says_here_elsewhere_or_free() {
+        let mut reg = reg_with(&[("main", "a", Some("/a.md")), ("editor-2", "b", Some("/b.md"))]);
+        reg.set_number("editor-2", Some(4));
+        assert_eq!(pull_answer(&reg, "/a.md", "main", |_| true), PullAnswer::ThisWindow { tab_id: "a".into() });
+        assert_eq!(
+            pull_answer(&reg, "/b.md", "main", |_| true),
+            PullAnswer::Requested { label: "editor-2".into(), number: Some(4) }
+        );
+        assert_eq!(pull_answer(&reg, "/b.md", "main", |_| false), PullAnswer::NotOpen);
+        assert_eq!(pull_answer(&reg, "/z.md", "main", |_| true), PullAnswer::NotOpen);
+    }
+
+    #[test]
+    fn pull_answers_and_holders_serialize_for_the_frontend() {
+        assert_eq!(serde_json::to_value(PullAnswer::NotOpen).unwrap(), serde_json::json!({ "kind": "not-open" }));
+        assert_eq!(
+            serde_json::to_value(PullAnswer::ThisWindow { tab_id: "a".into() }).unwrap(),
+            serde_json::json!({ "kind": "this-window", "tabId": "a" })
+        );
+        assert_eq!(
+            serde_json::to_value(PullAnswer::Requested { label: "editor-2".into(), number: None }).unwrap(),
+            serde_json::json!({ "kind": "requested", "label": "editor-2", "number": null })
+        );
+        assert_eq!(
+            serde_json::to_value(TabHolder { label: "x".into(), number: Some(3) }).unwrap(),
+            serde_json::json!({ "label": "x", "number": 3 })
+        );
+        assert_eq!(
+            serde_json::to_value(PullRequest { path: "/a.md".into(), target: "main".into() }).unwrap(),
+            serde_json::json!({ "path": "/a.md", "target": "main" })
+        );
     }
 }
