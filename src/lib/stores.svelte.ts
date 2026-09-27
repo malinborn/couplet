@@ -15,6 +15,7 @@ import { applyWindowZoom, clampZoom, stepZoom } from './window-zoom';
 import { windowTitle } from './window-title';
 import type { TransientPolicy } from './tabs/controller';
 import type { LineEnding } from './line-endings';
+import type { StashKind } from './stash/types';
 
 /**
  * Third mode added alongside the original binary `live-preview | raw`:
@@ -382,6 +383,10 @@ export function createFileState() {
   // stays CRLF. A fresh window starts at LF, which is also what an untitled
   // document gets saved as.
   let lineEnding = $state<LineEnding>('lf');
+  /** `noteTitle` of the live document — the title of an untitled tab or a note. */
+  let noteName = $state<string | null>(null);
+  /** What the stash says the active document is (display only, D13). */
+  let stashMark = $state<StashKind | null>(null);
 
   return {
     get filePath() {
@@ -408,9 +413,26 @@ export function createFileState() {
     set lastSavedAt(v: number | null) {
       lastSavedAt = v;
     },
+    get noteName() {
+      return noteName;
+    },
+    set noteName(v: string | null) {
+      noteName = v;
+    },
+    get stashMark() {
+      return stashMark;
+    },
+    set stashMark(v: StashKind | null) {
+      stashMark = v;
+    },
     get title() {
-      const name = filePath ? (filePath.split('/').pop() ?? filePath) : t('ui.untitled');
-      return windowTitle({ name, dirty: isDirty, number: windowNumber, product: productName });
+      const note = stashMark === 'note';
+      const name = note
+        ? (noteName ?? t('stash.untitled'))
+        : filePath
+          ? (filePath.split('/').pop() ?? filePath)
+          : (noteName ?? t('stash.new_note'));
+      return windowTitle({ name, dirty: isDirty, number: windowNumber, product: productName, stashed: note });
     },
   };
 }

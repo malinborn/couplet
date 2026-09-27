@@ -25,6 +25,9 @@
   "toast.reload_error.headline": "Could not reload {fileName}",
   "toast.reload_error.instruction": "Autosave is paused until the file can be read again. To keep your version, press",
 
+  "toast.stash_error.headline": "The note was not created",
+  "toast.stash_error.message": "The text is safe in the tab and its draft — trying again as you type",
+
   "toast.update.headline": "couplet {latest} available",
   "toast.update.current": "you have v{current}",
   "toast.update.copy_title": "Click to copy",
@@ -197,6 +200,12 @@
   "tabs.card.ai_chip": "✦ from AI",
   "tabs.card.close": "Close {name}",
   "tabs.card.close_title": "Close (⌘-click)",
+  "stash.new_note": "New note",
+  "stash.untitled": "Untitled",
+  "stash.card.blank": "empty — vanishes when closed",
+  "stash.card.in_stash": "In the stash",
+  "stash.card.close_note": "Close — the note stays in the stash (⌘-click)",
+  "stash.card.close_blank": "Close — the empty note vanishes",
   "tabs.card.time.just_now": "just now",
   "tabs.card.time.minute": "1 minute ago",
   "tabs.card.time.minutes.one": "{count} minute ago",

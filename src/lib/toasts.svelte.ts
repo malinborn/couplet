@@ -105,6 +105,13 @@ export type ToastPayload =
    * read or save of the document.
    */
   | { kind: 'reload-error'; fileName: string; message: string }
+  /**
+   * A note could not be created (stash plan 03, D3) — the notes folder is not
+   * writable, the database is locked. The text is still in the tab and in its
+   * session draft, and the birth is tried again as the human types; withdrawn
+   * by the next note that is created.
+   */
+  | { kind: 'stash-error'; message: string }
   | { kind: 'update'; latest: string; current: string; highlight?: string }
   /**
    * Answers to a manual "Check for Updates…" click (#82) — the automatic
@@ -176,6 +183,8 @@ const ORDER: Record<ToastKind, number> = {
   'open-error': 0,
   // Same rank, and this one does guard work: autosave is paused while it is up.
   'reload-error': 0,
+  // Same rank: notes are not being created, and the next safety net is a draft.
+  'stash-error': 0,
   update: 1,
   // Direct responses to the same menu click that produces `update` above —
   // sorts right beside it rather than with the "just clicked" group below,

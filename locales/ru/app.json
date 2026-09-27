@@ -25,6 +25,9 @@
   "toast.reload_error.headline": "Не удалось перечитать {fileName}",
   "toast.reload_error.instruction": "Автосохранение приостановлено, пока файл снова не прочитается. Чтобы сохранить свою версию, нажмите",
 
+  "toast.stash_error.headline": "Заметка не создалась",
+  "toast.stash_error.message": "Текст цел — во вкладке и в черновике; попробуем снова, когда продолжите печатать",
+
   "toast.update.headline": "Доступна версия couplet {latest}",
   "toast.update.current": "у вас установлена v{current}",
   "toast.update.copy_title": "Нажмите, чтобы скопировать",
@@ -197,6 +200,12 @@
   "tabs.card.ai_chip": "✦ от ИИ",
   "tabs.card.close": "Закрыть {name}",
   "tabs.card.close_title": "Закрыть (⌘-клик)",
+  "stash.new_note": "Новая заметка",
+  "stash.untitled": "Без названия",
+  "stash.card.blank": "пустая — исчезнет при закрытии",
+  "stash.card.in_stash": "Есть в тайнике",
+  "stash.card.close_note": "Закрыть — заметка останется в тайнике (⌘-клик)",
+  "stash.card.close_blank": "Закрыть — пустая заметка исчезнет",
   "tabs.card.time.just_now": "только что",
   "tabs.card.time.minute": "минуту назад",
   "tabs.card.time.minutes.one": "{count} минуту назад",

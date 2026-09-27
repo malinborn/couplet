@@ -25,6 +25,9 @@
   "toast.reload_error.headline": "Impossible de recharger {fileName}",
   "toast.reload_error.instruction": "L'enregistrement automatique est suspendu jusqu'à ce que le fichier soit de nouveau lisible. Pour garder votre version, appuyez sur",
 
+  "toast.stash_error.headline": "The note was not created",
+  "toast.stash_error.message": "The text is safe in the tab and its draft — trying again as you type",
+
   "toast.update.headline": "couplet {latest} disponible",
   "toast.update.current": "vous avez la v{current}",
   "toast.update.copy_title": "Cliquer pour copier",
@@ -197,6 +200,12 @@
   "tabs.card.ai_chip": "✦ de l’IA",
   "tabs.card.close": "Fermer {name}",
   "tabs.card.close_title": "Fermer (⌘-clic)",
+  "stash.new_note": "New note",
+  "stash.untitled": "Untitled",
+  "stash.card.blank": "empty — vanishes when closed",
+  "stash.card.in_stash": "In the stash",
+  "stash.card.close_note": "Close — the note stays in the stash (⌘-click)",
+  "stash.card.close_blank": "Close — the empty note vanishes",
   "tabs.card.time.just_now": "à l’instant",
   "tabs.card.time.minute": "il y a 1 minute",
   "tabs.card.time.minutes.one": "il y a {count} minute",

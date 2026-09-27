@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { windowTitle } from './window-title';
+import { STASH_TITLE_GLYPH, windowTitle } from './window-title';
 
 describe('windowTitle', () => {
   it('ShowsTheWindowNumberInsteadOfTheProduct', () => {
@@ -25,6 +25,15 @@ describe('windowTitle', () => {
   it('FallsBackToTheProductNameWithoutANumber', () => {
     expect(windowTitle({ name: 'a.md', dirty: false, number: null, product: 'couplet' })).toBe(
       'a.md — couplet'
+    );
+  });
+
+  it('PutsTheStashGlyphBeforeANotesName', () => {
+    expect(windowTitle({ name: 'Plan', dirty: false, number: 7, product: 'couplet', stashed: true })).toBe(
+      `${STASH_TITLE_GLYPH} Plan — #7`
+    );
+    expect(windowTitle({ name: 'Plan', dirty: true, number: 7, product: 'couplet', stashed: true })).toBe(
+      `● ${STASH_TITLE_GLYPH} Plan — #7`
     );
   });
 });
