@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rusqlite::backup::{Backup, StepResult};
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 
 use crate::atomic_write::{self, NewFileMode};
@@ -26,6 +26,9 @@ const PAGES_PER_STEP: i32 = 1024;
 const BUSY_PAUSE: Duration = Duration::from_millis(10);
 const BUSY_RETRIES: u32 = 500;
 const EXPORT_VERSION: u32 = 1;
+/// Beside the export: the last export that listed entries, kept when an
+/// empty one replaced it (`keep_previous`).
+const EXPORT_PREV_FILE: &str = ".stash-export.prev.json";
 
 pub(crate) fn backup_name(date: &str) -> String {
     format!("stash-{date}.db")
@@ -109,12 +112,45 @@ fn copy_into(conn: &Connection, tmp: &Path) -> Result<(), String> {
     if !mode.eq_ignore_ascii_case("delete") {
         return Err(format!("stash backup: journal_mode stayed {mode}"));
     }
+    // The backup API copies pages as they are, so a database damaged in a
+    // way that still opens would come out damaged too — and push a good
+    // copy out of the rotation. Such a copy is never published. Damage shows
+    // either as rows other than `ok` or, when the check itself cannot walk a
+    // page, as an error.
+    let failed = |why: String| format!("stash backup failed its quick_check, not published: {why}");
+    let problems = dst
+        .prepare("PRAGMA quick_check")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|e| failed(e.to_string()))?;
+    if problems != ["ok"] {
+        let shown: Vec<&str> = problems.iter().take(3).map(String::as_str).collect();
+        return Err(failed(shown.join("; ")));
+    }
     Ok(())
+}
+
+/// Whether the backup at `path` holds at least one entry. Anything that does
+/// not open or read as one counts as no.
+fn has_entries(path: &Path) -> bool {
+    let Ok(conn) = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+        return false;
+    };
+    conn.query_row("SELECT count(*) FROM entries", [], |r| r.get::<_, i64>(0))
+        .is_ok_and(|n| n > 0)
 }
 
 /// Removes all but the `keep` newest backups. Only regular files named exactly
 /// `stash-YYYY-MM-DD.db` are candidates — never a `.tmp`, a stray file or a
 /// directory someone put here.
+///
+/// One exception to the count: when none of the `keep` newest holds an entry,
+/// the newest older one that does is kept as well, outside the quota. A stash
+/// whose database was lost and recreated empty would otherwise back up its
+/// emptiness once a launch and rotate out the last copy of the human's
+/// entries within a week.
 fn prune(dir: &Path, keep: usize) {
     let Ok(read) = fs::read_dir(dir) else { return };
     let mut names: Vec<String> = read
@@ -125,8 +161,17 @@ fn prune(dir: &Path, keep: usize) {
         .collect();
     // The date is zero-padded, so names sort like dates.
     names.sort_unstable_by(|a, b| b.cmp(a));
-    for old in names.into_iter().skip(keep) {
-        if let Err(e) = fs::remove_file(dir.join(&old)) {
+    let (kept, older) = names.split_at(keep.min(names.len()));
+    let last_with_entries = if kept.iter().any(|n| has_entries(&dir.join(n))) {
+        None
+    } else {
+        older.iter().find(|n| has_entries(&dir.join(n)))
+    };
+    for old in older {
+        if Some(old) == last_with_entries {
+            continue;
+        }
+        if let Err(e) = fs::remove_file(dir.join(old)) {
             eprintln!("stash: cannot prune backup {old}: {e}");
         }
     }
@@ -159,7 +204,8 @@ struct ExportEntry {
     top_line: i64,
 }
 
-fn export_json(conn: &Connection, now: i64) -> Result<String, String> {
+/// The export's JSON and how many entries it lists.
+fn export_json(conn: &Connection, now: i64) -> Result<(String, usize), String> {
     let mut stmt = conn
         .prepare(&format!(
             "SELECT {} FROM entries ORDER BY rowid",
@@ -189,13 +235,45 @@ fn export_json(conn: &Connection, now: i64) -> Result<String, String> {
             caret: r.caret,
             top_line: r.top_line,
         })
-        .collect();
-    serde_json::to_string_pretty(&Export {
+        .collect::<Vec<_>>();
+    let count = entries.len();
+    let json = serde_json::to_string_pretty(&Export {
         version: EXPORT_VERSION,
         exported_at: now,
         entries,
     })
-    .map_err(|e| format!("cannot serialize the stash export: {e}"))
+    .map_err(|e| format!("cannot serialize the stash export: {e}"))?;
+    Ok((json, count))
+}
+
+/// Whether an existing export is worth a second copy: it lists entries, or it
+/// is something that does not parse — never guess that away. Empty text is
+/// the 0600 placeholder `write_export` reserves, nothing to keep.
+fn worth_keeping(old: &str) -> bool {
+    if old.trim().is_empty() {
+        return false;
+    }
+    match serde_json::from_str::<serde_json::Value>(old) {
+        Ok(v) => !v["entries"].as_array().is_some_and(|a| a.is_empty()),
+        Err(_) => true,
+    }
+}
+
+/// Before an export with no entries replaces `path`: a non-empty export
+/// there is copied to `.stash-export.prev.json` first, so a stash that lost
+/// its database does not also lose the one plain listing of what it held.
+/// If that copy fails, the empty export is not written.
+fn keep_previous(path: &Path) -> Result<(), String> {
+    // Not a regular file: `write_export` refuses it, nothing to read here.
+    if !fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file()) {
+        return Ok(());
+    }
+    let old = fs::read_to_string(path)
+        .map_err(|e| format!("cannot read {} to keep it: {e}", path.display()))?;
+    if !worth_keeping(&old) {
+        return Ok(());
+    }
+    write_export(&path.with_file_name(EXPORT_PREV_FILE), &old)
 }
 
 /// In the user's folder, so through `atomic_write`; reserved 0600 first like a
@@ -237,7 +315,10 @@ impl Stash {
     /// the folder never appears for a stash nobody has written to.
     pub(crate) fn export(&mut self, now: i64) -> Result<(), String> {
         self.notes_dir()?;
-        let json = export_json(&self.conn, now)?;
+        let (json, count) = export_json(&self.conn, now)?;
+        if count == 0 {
+            keep_previous(&self.paths.export_path)?;
+        }
         write_export(&self.paths.export_path, &json)
     }
 
@@ -287,6 +368,140 @@ mod tests {
             .query_row("SELECT id FROM entries", [], |r| r.get(0))
             .unwrap();
         assert_eq!(id, note.id);
+    }
+
+    /// A backup-shaped database holding `entries` rows.
+    fn backup_with(path: &Path, entries: usize) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch("CREATE TABLE entries (id TEXT);")
+            .unwrap();
+        for i in 0..entries {
+            conn.execute("INSERT INTO entries (id) VALUES (?1)", [i.to_string()])
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn empty_backups_never_rotate_out_the_last_one_with_entries() {
+        // `stash.db` lost and recreated empty: a week of launches must not
+        // push out the last copy that still had the human's entries.
+        let (stash, root) = stash_in("backup-empty-rotation");
+        let dir = root.join("data/stash-backups");
+        fs::create_dir_all(&dir).unwrap();
+        backup_with(&dir.join("stash-2026-09-10.db"), 3);
+        for day in 11..=17 {
+            backup_with(&dir.join(format!("stash-2026-09-{day}.db")), 0);
+        }
+        stash.daily_backup(T0, MSK).unwrap().unwrap();
+        let names = names_in(&dir);
+        assert!(
+            names.contains(&"stash-2026-09-10.db".to_string()),
+            "{names:?}"
+        );
+        assert_eq!(names.len(), KEEP_BACKUPS + 1, "{names:?}");
+        assert!(
+            !names.contains(&"stash-2026-09-11.db".to_string()),
+            "an empty one still rotates: {names:?}"
+        );
+    }
+
+    #[test]
+    fn a_newer_backup_with_entries_lets_the_old_one_go() {
+        let (mut stash, root) = stash_in("backup-rotation-resumes");
+        stash.create_note("# Back", None, T0, MSK).unwrap();
+        let dir = root.join("data/stash-backups");
+        fs::create_dir_all(&dir).unwrap();
+        backup_with(&dir.join("stash-2026-09-10.db"), 3);
+        for day in 11..=16 {
+            backup_with(&dir.join(format!("stash-2026-09-{day}.db")), 0);
+        }
+        stash.daily_backup(T0, MSK).unwrap().unwrap();
+        let names = names_in(&dir);
+        assert!(
+            !names.contains(&"stash-2026-09-10.db".to_string()),
+            "{names:?}"
+        );
+        assert_eq!(names.len(), KEEP_BACKUPS);
+    }
+
+    #[test]
+    fn a_corrupt_database_is_not_published_as_a_backup() {
+        let root = scratch("backup-corrupt");
+        let db = root.join("stash.db");
+        {
+            let conn = crate::stash::db::open(&db).unwrap();
+            for i in 0..200 {
+                conn.execute(
+                    "INSERT INTO entries (id, kind, path, title, created_at, modified_at) \
+                     VALUES (?1, 'note', ?2, 't', 1, 1)",
+                    rusqlite::params![format!("s1-{i:04}"), format!("/n/{i}.md")],
+                )
+                .unwrap();
+            }
+        }
+        // The last connection closed, so the WAL is checkpointed into the
+        // file. Scribble over the `entries` tree's root page: the header on
+        // page 1 stays intact, so the database still opens.
+        let root_page: i64 = Connection::open(&db)
+            .unwrap()
+            .query_row(
+                "SELECT rootpage FROM sqlite_master WHERE name = 'entries'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mut bytes = fs::read(&db).unwrap();
+        let start = (root_page as usize - 1) * 4096;
+        bytes[start..start + 4096].fill(0xA5);
+        fs::write(&db, &bytes).unwrap();
+        let conn = Connection::open(&db).unwrap();
+
+        let dir = root.join("backups");
+        let err = daily_backup(&conn, &dir, "2026-09-26").unwrap_err();
+        assert!(err.contains("check"), "{err}");
+        assert_eq!(
+            names_in(&dir),
+            Vec::<String>::new(),
+            "neither a backup nor our temp"
+        );
+    }
+
+    #[test]
+    fn an_empty_export_keeps_the_last_one_with_entries_beside_it() {
+        let (mut stash, _root) = stash_in("export-empty");
+        stash.create_note("# Один", None, T0, MSK).unwrap();
+        stash.export(T0).unwrap();
+        let path = stash.paths.export_path.clone();
+        let full = fs::read_to_string(&path).unwrap();
+        stash.conn.execute_batch("DELETE FROM entries;").unwrap();
+        stash.export(T0 + 1).unwrap();
+
+        let prev = path.with_file_name(".stash-export.prev.json");
+        assert_eq!(fs::read_to_string(&prev).unwrap(), full);
+        assert_eq!(mode_of(&prev), 0o600);
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            json["entries"],
+            serde_json::json!([]),
+            "the export tells the truth"
+        );
+
+        // Another empty export: the previous one was empty, nothing to keep.
+        stash.export(T0 + 2).unwrap();
+        assert_eq!(fs::read_to_string(&prev).unwrap(), full);
+    }
+
+    #[test]
+    fn an_empty_first_export_leaves_no_previous_copy() {
+        let (mut stash, _root) = stash_in("export-empty-first");
+        stash.export(T0).unwrap();
+        stash.export(T0 + 1).unwrap();
+        let prev = stash
+            .paths
+            .export_path
+            .with_file_name(".stash-export.prev.json");
+        assert!(!prev.exists());
     }
 
     #[test]
