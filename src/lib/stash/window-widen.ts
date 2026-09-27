@@ -17,7 +17,14 @@
  * `core:window:default`): without them the IPC is rejected and — as the zoom
  * was before it (CLAUDE.md) — the feature is silently dead. The test reads
  * the capability file.
+ *
+ * While widened the session records the geometry from before
+ * (`session_hold_geometry`): `Moved`/`Resized` and the heartbeat read the
+ * live window, and a quit or a close with the stash open would otherwise
+ * bring the window back 680 px wide. Held before the window moves, released
+ * after the restore — whether or not the restore put it back.
  */
+import { invoke } from '@tauri-apps/api/core';
 import { LogicalPosition, LogicalSize, currentMonitor, getCurrentWindow } from '@tauri-apps/api/window';
 import { planWiden, stillWidened, type Size } from './drawer-width';
 
@@ -38,8 +45,20 @@ function near(a: { x: number; y: number }, b: { x: number; y: number }): boolean
   return Math.abs(a.x - b.x) <= 1 && Math.abs(a.y - b.y) <= 1;
 }
 
+type Geometry = Size & { x: number; y: number };
+
+/** Never throws: a session that cannot hold the old size must not stop the widen. */
+async function holdGeometry(geometry: Geometry | null): Promise<void> {
+  try {
+    await invoke('session_hold_geometry', { geometry });
+  } catch (err) {
+    console.error('stash: the session could not hold the window size', err);
+  }
+}
+
 export async function widenForStash(viewport: number = window.innerWidth): Promise<WidenMemo | null> {
   if (!inTauri()) return null;
+  let held = false;
   try {
     const win = getCurrentWindow();
     if (await win.isFullscreen()) return null;
@@ -63,6 +82,9 @@ export async function widenForStash(viewport: number = window.innerWidth): Promi
       workArea: { x: waPos.x, y: waPos.y, width: waSize.width, height: waSize.height },
     });
     if (!plan) return null;
+    const before = { width: inner.width, height: inner.height, x: pos.x, y: pos.y };
+    await holdGeometry(before);
+    held = true;
     // Move first, then grow: the frame never pokes past the screen edge.
     if (plan.position) await win.setPosition(new LogicalPosition(plan.position.x, plan.position.y));
     await win.setSize(new LogicalSize(plan.inner.width, plan.inner.height));
@@ -74,12 +96,14 @@ export async function widenForStash(viewport: number = window.innerWidth): Promi
     const widened = gotInner.toLogical(scale);
     const at = gotPos ? gotPos.toLogical(scale) : null;
     return {
-      before: { width: inner.width, height: inner.height, x: pos.x, y: pos.y },
+      before,
       widened: { width: widened.width, height: widened.height },
       at: at ? { x: at.x, y: at.y } : null,
     };
   } catch (err) {
     console.error('stash: could not widen the window', err);
+    // No memo, so no restore will release it.
+    if (held) await holdGeometry(null);
     return null;
   }
 }
@@ -98,5 +122,8 @@ export async function restoreWindow(memo: WidenMemo): Promise<void> {
     if (near({ x: pos.x, y: pos.y }, memo.at)) await win.setPosition(new LogicalPosition(memo.before.x, memo.before.y));
   } catch (err) {
     console.error('stash: could not restore the window', err);
+  } finally {
+    // Whatever the window is now — put back, or as the human left it — is live again.
+    await holdGeometry(null);
   }
 }

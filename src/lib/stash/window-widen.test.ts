@@ -62,6 +62,9 @@ vi.mock('@tauri-apps/api/window', () => {
   };
 });
 
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async () => null) }));
+
+import { invoke } from '@tauri-apps/api/core';
 import * as tauriWindow from '@tauri-apps/api/window';
 import { restoreWindow, widenForStash } from './window-widen';
 
@@ -81,6 +84,7 @@ beforeEach(() => {
   globals.__TAURI_INTERNALS__ = {};
   fake.__reset();
   for (const fn of Object.values(w)) fn.mockClear();
+  vi.mocked(invoke).mockClear();
 });
 afterEach(() => {
   delete globals.__TAURI_INTERNALS__;
@@ -160,6 +164,58 @@ describe('restoreWindow', () => {
     await restoreWindow(memo);
     expect(w.setSize).toHaveBeenCalled();
     expect(w.setPosition).not.toHaveBeenCalled();
+  });
+});
+
+describe('the session keeps the size from before', () => {
+  const holds = () =>
+    vi
+      .mocked(invoke)
+      .mock.calls.filter(([cmd]) => cmd === 'session_hold_geometry')
+      .map(([, args]) => (args as { geometry: unknown }).geometry);
+
+  it('held before the window moves, so no Resized can record 680 px', async () => {
+    await widenForStash(560);
+    expect(holds()).toEqual([{ width: 560, height: 700, x: 100, y: 50 }]);
+    expect(vi.mocked(invoke).mock.invocationCallOrder[0]).toBeLessThan(w.setSize.mock.invocationCallOrder[0]);
+  });
+
+  it('released after the restore — also when the human resized it and it stays', async () => {
+    const memo = {
+      before: { width: 560, height: 700, x: 100, y: 50 },
+      widened: { width: 680, height: 700 },
+      at: null,
+    };
+    fake.__at.pos = { x: 200, y: 100 };
+    w.innerSize.mockResolvedValueOnce(fake.__size(1360, 1400));
+    await restoreWindow(memo);
+    expect(holds()).toEqual([null]);
+    expect(vi.mocked(invoke).mock.invocationCallOrder[0]).toBeGreaterThan(w.setSize.mock.invocationCallOrder[0]);
+    vi.mocked(invoke).mockClear();
+    w.innerSize.mockResolvedValueOnce(fake.__size(1500, 1400));
+    await restoreWindow(memo);
+    expect(holds()).toEqual([null]);
+  });
+
+  it('a widen that fails after the hold releases it', async () => {
+    w.setSize.mockRejectedValueOnce(new Error('denied'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(await widenForStash(560)).toBeNull();
+    expect(holds()).toEqual([{ width: 560, height: 700, x: 100, y: 50 }, null]);
+    error.mockRestore();
+  });
+
+  it('a hold the session refuses does not stop the widen', async () => {
+    vi.mocked(invoke).mockRejectedValueOnce(new Error('no such command'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(await widenForStash(560)).not.toBeNull();
+    expect(w.setSize).toHaveBeenCalled();
+    error.mockRestore();
+  });
+
+  it('nothing is held for a window that is not widened', async () => {
+    expect(await widenForStash(700)).toBeNull();
+    expect(holds()).toEqual([]);
   });
 });
 

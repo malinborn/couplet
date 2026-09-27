@@ -357,6 +357,13 @@ pub struct SessionState {
     restoring: Mutex<Vec<WindowSnapshot>>,
     quitting: AtomicBool,
     dirty: AtomicBool,
+    /// Geometry recorded INSTEAD of the live one, per window: the stash
+    /// widens a narrow window while it is open (stash stage 04, D15) and puts
+    /// it back when it closes, so a quit or a close meanwhile must restore the
+    /// size the human chose — not 680 px. `Moved`/`Resized` and the heartbeat
+    /// all read the live window, hence one override here rather than in each.
+    /// Never locked together with `entries`.
+    held: Mutex<HashMap<String, (i32, i32, u32, u32)>>,
 }
 
 impl SessionState {
@@ -365,6 +372,7 @@ impl SessionState {
             entries: Mutex::new(HashMap::new()),
             pending: Mutex::new(Vec::new()),
             restoring: Mutex::new(Vec::new()),
+            held: Mutex::new(HashMap::new()),
             quitting: AtomicBool::new(false),
             dirty: AtomicBool::new(false),
         }
@@ -390,6 +398,8 @@ impl SessionState {
         if self.is_quitting() {
             return;
         }
+        let held = self.held.lock().unwrap().get(label).copied();
+        let (x, y, width, height) = held.unwrap_or((x, y, width, height));
         let mut map = self.entries.lock().unwrap();
         let entry = map
             .entry(label.to_string())
@@ -400,6 +410,22 @@ impl SessionState {
         entry.height = height;
         drop(map);
         self.touch();
+    }
+
+    /// `Some`: record this geometry for the window, now and instead of the
+    /// live one until released; `None`: release, the next event or heartbeat
+    /// records the live window again.
+    pub fn hold_geometry(&self, label: &str, geometry: Option<(i32, i32, u32, u32)>) {
+        {
+            let mut held = self.held.lock().unwrap();
+            match geometry {
+                Some(g) => held.insert(label.to_string(), g),
+                None => held.remove(label),
+            };
+        }
+        if let Some((x, y, width, height)) = geometry {
+            self.set_geometry(label, x, y, width, height);
+        }
     }
 
     /// Replace this window's tabs outright. The heartbeat goes through
@@ -537,6 +563,8 @@ impl SessionState {
         let mut map = self.entries.lock().unwrap();
         map.remove(label);
         drop(map);
+        // A later window may be given the same label.
+        self.held.lock().unwrap().remove(label);
         self.touch();
     }
 
@@ -1200,6 +1228,45 @@ pub async fn tabs_sync(
     Ok(())
 }
 
+/// A window's geometry as the frontend hands it to `session_hold_geometry`:
+/// logical pixels, outer position and inner size — `window_geometry`'s units.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldGeometry {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Rounded as `window_geometry` rounds; a size under 1 px, or anything not
+/// finite, is refused — it would restore a window nobody can see.
+fn held_geometry(g: &HeldGeometry) -> Result<(i32, i32, u32, u32), String> {
+    let finite = [g.x, g.y, g.width, g.height].iter().all(|v| v.is_finite());
+    if !finite || g.width < 1.0 || g.height < 1.0 {
+        return Err(format!("not a window geometry: {g:?}"));
+    }
+    Ok((
+        g.x.round() as i32,
+        g.y.round() as i32,
+        g.width.round() as u32,
+        g.height.round() as u32,
+    ))
+}
+
+/// The stash widened this window (stash stage 04, D15): until it is put back
+/// (`None`), the session keeps the geometry from before (`SessionState::hold_geometry`).
+#[tauri::command]
+pub async fn session_hold_geometry(
+    window: tauri::Window,
+    state: tauri::State<'_, SessionState>,
+    geometry: Option<HeldGeometry>,
+) -> Result<(), String> {
+    let held = geometry.as_ref().map(held_geometry).transpose()?;
+    state.hold_geometry(window.label(), held);
+    Ok(())
+}
+
 /// The valid numbers of the windows a restore will build.
 fn reserved_numbers<'a>(snapshots: impl Iterator<Item = &'a WindowSnapshot>) -> HashSet<u32> {
     snapshots
@@ -1521,6 +1588,55 @@ mod tests {
             .filter_map(|w| w.tabs[0].path.clone())
             .collect();
         assert_eq!(paths, vec!["/tmp/main.md", "/tmp/editor-2.md", "/tmp/editor-10.md"]);
+    }
+
+    #[test]
+    fn a_held_geometry_is_recorded_instead_of_the_live_one() {
+        let state = SessionState::new();
+        state.set_geometry("editor-1", 100, 50, 560, 700);
+        state.hold_geometry("editor-1", Some((100, 50, 560, 700)));
+        // The widen's own Resized, and every heartbeat after it.
+        state.set_geometry("editor-1", 100, 50, 680, 700);
+        let w = &state.snapshot(0).windows[0];
+        assert_eq!((w.x, w.y, w.width, w.height), (100, 50, 560, 700));
+        state.hold_geometry("editor-1", None);
+        state.set_geometry("editor-1", 90, 40, 600, 700);
+        let w = &state.snapshot(0).windows[0];
+        assert_eq!((w.x, w.y, w.width, w.height), (90, 40, 600, 700), "released: live again");
+    }
+
+    #[test]
+    fn holding_writes_the_held_geometry_at_once() {
+        let state = SessionState::new();
+        state.set_geometry("editor-1", 100, 50, 680, 700);
+        state.take_dirty();
+        state.hold_geometry("editor-1", Some((100, 50, 560, 700)));
+        let w = &state.snapshot(0).windows[0];
+        assert_eq!((w.width, w.height), (560, 700));
+        assert!(state.take_dirty(), "a quit right after must write it");
+    }
+
+    #[test]
+    fn a_hold_is_per_window_and_goes_with_the_window() {
+        let state = SessionState::new();
+        state.hold_geometry("editor-1", Some((0, 0, 560, 700)));
+        state.set_geometry("editor-2", 5, 5, 680, 700);
+        let w = state.snapshot(0).windows.into_iter().find(|w| w.x == 5).unwrap();
+        assert_eq!(w.width, 680, "another window's hold does not apply");
+        state.remove("editor-1");
+        state.set_geometry("editor-1", 1, 1, 680, 700);
+        let w = state.snapshot(0).windows.into_iter().find(|w| w.x == 1).unwrap();
+        assert_eq!(w.width, 680, "a label reused by a new window starts unheld");
+    }
+
+    #[test]
+    fn held_geometry_rounds_logical_pixels_and_refuses_nonsense() {
+        let g = |x: f64, y: f64, width: f64, height: f64| HeldGeometry { x, y, width, height };
+        assert_eq!(held_geometry(&g(99.6, 50.2, 678.5, 650.0)), Ok((100, 50, 679, 650)));
+        assert_eq!(held_geometry(&g(-1200.0, 0.0, 560.0, 700.0)), Ok((-1200, 0, 560, 700)), "a screen left of the main one");
+        assert!(held_geometry(&g(0.0, 0.0, 0.0, 700.0)).is_err());
+        assert!(held_geometry(&g(0.0, 0.0, 560.0, f64::NAN)).is_err());
+        assert!(held_geometry(&g(f64::INFINITY, 0.0, 560.0, 700.0)).is_err());
     }
 
     #[test]

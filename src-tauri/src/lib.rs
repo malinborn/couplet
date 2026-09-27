@@ -205,6 +205,7 @@ pub fn run() {
             session::tabs_sync,
             session::pending_session_count,
             session::restore_session,
+            session::session_hold_geometry,
             updater::claim_update_checker,
             updater::report_update,
             updater::dismiss_update,
