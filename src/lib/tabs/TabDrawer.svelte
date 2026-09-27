@@ -120,6 +120,8 @@
     onputaway,
     onstashopen,
     onstashremove,
+    onstashrestore,
+    onstashpurge,
     onstashtag,
     handle = $bindable(),
   }: {
@@ -160,6 +162,9 @@
     /** Open a stash entry here; `before`: its drop position in the tab list, `undefined` for a click or Enter. */
     onstashopen?: (entry: StashEntry, before: string | null | undefined) => void;
     onstashremove?: (entry: StashEntry) => void;
+    /** «вернуть» / «удалить навсегда» in the stash drawer's trash (stash stage 06). */
+    onstashrestore?: (entry: StashEntry) => void;
+    onstashpurge?: (entry: StashEntry) => void;
     onstashtag?: (entry: StashEntry, change: TagChange) => void;
     handle?: TabDrawerHandle;
   } = $props();
@@ -1587,6 +1592,8 @@
       onpress={onStashPress}
       onopen={(entry) => openStashEntry(entry, undefined, true)}
       onremove={(entry) => onstashremove?.(entry)}
+      onrestore={(entry) => onstashrestore?.(entry)}
+      onpurge={(entry) => onstashpurge?.(entry)}
       onsettag={(entry, change) => onstashtag?.(entry, change)}
       onfocusrequest={() => {
         if (stashOpen) focusSide('stash');

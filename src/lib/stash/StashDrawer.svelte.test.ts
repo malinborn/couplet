@@ -49,6 +49,9 @@ interface H {
   onpress: ReturnType<typeof vi.fn>;
   onsettag: ReturnType<typeof vi.fn>;
   onfocusrequest: ReturnType<typeof vi.fn>;
+  onremove: ReturnType<typeof vi.fn>;
+  onrestore: ReturnType<typeof vi.fn>;
+  onpurge: ReturnType<typeof vi.fn>;
   destroy: () => void;
 }
 
@@ -96,15 +99,25 @@ interface SetupOpts {
   list?: () => StashEntry[];
   /** `stash_search` (stage 05); absent: the local substring filter only. */
   search?: (args: StashSearchArgs) => Promise<StashSearchResult>;
+  /** The trash (stage 06); read on every entry into it. */
+  trash?: () => StashEntry[];
+  /** `counts.deleted`. */
+  deleted?: number;
 }
 
 async function setup(opts: SetupOpts = {}): Promise<H> {
   const store = createStashStore({
     list: async () => (opts.list ? opts.list() : ENTRIES),
-    counts: async () => ({ total: ENTRIES.length, stashedToday: 0, deleted: 0 }),
+    counts: async () => ({ total: ENTRIES.length, stashedToday: 0, deleted: opts.deleted ?? 0 }),
     holders: async (paths) => opts.holders ?? paths.map(() => null),
     windowRepo: async () => opts.repo ?? null,
     search: opts.search,
+    trash: {
+      list: async () => (opts.trash ? opts.trash() : []),
+      restore: async (id) => entry(id),
+      purge: async () => {},
+      remove: async () => ({ kind: 'removed' }),
+    },
   });
   const target = document.createElement('div');
   document.body.appendChild(target);
@@ -113,6 +126,9 @@ async function setup(opts: SetupOpts = {}): Promise<H> {
   const onpress = vi.fn();
   const onsettag = vi.fn();
   const onfocusrequest = vi.fn();
+  const onremove = vi.fn();
+  const onrestore = vi.fn();
+  const onpurge = vi.fn();
   const component = mount(StashDrawer, {
     target,
     props: {
@@ -127,7 +143,9 @@ async function setup(opts: SetupOpts = {}): Promise<H> {
       draggingId: null,
       onpress,
       onopen,
-      onremove: vi.fn(),
+      onremove,
+      onrestore,
+      onpurge,
       onsettag,
       onfocusrequest,
       get handle() {
@@ -151,6 +169,9 @@ async function setup(opts: SetupOpts = {}): Promise<H> {
     onpress,
     onsettag,
     onfocusrequest,
+    onremove,
+    onrestore,
+    onpurge,
     destroy: () => {
       unmount(component);
       target.remove();
@@ -551,5 +572,146 @@ describe('StashDrawer', () => {
     expect(drawer.classList.contains('drop-hot')).toBe(false);
     expect(h.handle().contains(0, 0)).toBe(false);
     expect(h.handle().left()).toBeNull();
+  });
+});
+
+describe('StashDrawer — the trash (stage 06)', () => {
+  const TRASH = [
+    entry('t1', {
+      title: 'Черновик поста про VPN',
+      tags: ['infra'],
+      deletedAt: NOW - 4400 * MIN,
+      preview: 'Черновик поста про VPN\nПочему мы ушли с OpenVPN на Xray',
+    }),
+    entry('t2', { title: 'Список покупок в офис', deletedAt: NOW - 17900 * MIN, preview: 'Список\nHDMI-кабели ×3' }),
+    entry('t3', {
+      title: 'Названия для тем',
+      repo: 'shelf',
+      tags: ['couplet', 'ideas'],
+      deletedAt: NOW - 2 * MIN,
+      preview: 'Названия для тем\naurora, blueprint',
+    }),
+  ];
+  const trashIds = () => [...h.root.querySelectorAll<HTMLElement>('[data-trash-id]')].map((el) => el.dataset.trashId);
+
+  async function inTrash(opts: SetupOpts = {}): Promise<void> {
+    h = await setup({ trash: () => TRASH, deleted: 3, ...opts });
+    h.root.querySelector<HTMLButtonElement>('.trash-bar .stash-btn')!.click();
+    await settle();
+  }
+
+  it('the stash view has the trash bar after the footer: «Удалённые · 3 · хранятся 30 дней»', async () => {
+    h = await setup({ deleted: 3 });
+    const bar = h.root.querySelector('.trash-bar')!;
+    expect(bar.previousElementSibling?.classList.contains('st-foot')).toBe(true);
+    expect(bar.querySelector('.stash-btn')?.textContent?.trim()).toBe('Удалённые');
+    expect(bar.querySelector('.stash-sum')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('· 3 · хранятся 30 дней');
+  });
+
+  it('the bar switches to the trash: newest deletion first, dimmed trash cards, never stash cards', async () => {
+    await inTrash();
+    expect(h.store.state.mode).toBe('trash');
+    expect(trashIds()).toEqual(['t3', 't1', 't2']);
+    expect(ids()).toEqual([]);
+    expect(h.root.querySelectorAll('.card.trashed')).toHaveLength(3);
+  });
+
+  it('the head says «Удалённые · 3» under the bin; the sorts go; the filter row is the hint', async () => {
+    await inTrash({ repo: 'shelf' });
+    const aside = h.root.querySelector('.stash-drawer')!;
+    expect(aside.classList.contains('trash-view')).toBe(true);
+    expect(h.root.querySelector('.drawer-title b')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('Удалённые · 3');
+    expect(h.root.querySelector('.st-filter')?.textContent?.trim()).toBe(
+      'заметки хранятся 30 дней, потом удаляются · Esc — назад в тайник'
+    );
+    expect(h.root.querySelector('.fchip')).toBeNull();
+    expect(h.root.querySelector('.f-add')).toBeNull();
+    expect(h.root.querySelector('.trash-bar .stash-sum')?.textContent?.replace(/\s+/g, ' ').trim()).toBe(
+      '· 4 в тайнике'
+    );
+  });
+
+  it('the repo chip does not filter the trash (D13)', async () => {
+    await inTrash({ repo: 'infra' });
+    expect(trashIds()).toEqual(['t3', 't1', 't2']);
+  });
+
+  it("typing filters the trash with the stash's rule and counts «k из N · esc — сброс»", async () => {
+    await inTrash();
+    for (const c of '#ide') h.store.update((s) => setStashQuery(s, s.query + c));
+    await settle();
+    expect(trashIds()).toEqual(['t3']);
+    expect(h.root.querySelector('.s-n')?.textContent).toBe('1 из 3 · esc — сброс');
+    h.store.update((s) => setStashQuery(s, 'zzz'));
+    await settle();
+    expect(trashIds()).toEqual([]);
+    expect(h.root.querySelector('.empty')?.textContent).toBe('Ничего не найдено');
+    expect(h.root.querySelector('.s-n')?.textContent).toBe('esc — сброс');
+  });
+
+  it('an empty trash says so', async () => {
+    await inTrash({ trash: () => [], deleted: 0 });
+    expect(h.root.querySelector('.empty')?.textContent).toBe('Удалённых заметок нет');
+  });
+
+  it('«вернуть» and «удалить навсегда» go up with the entry', async () => {
+    await inTrash();
+    const card = h.root.querySelector<HTMLElement>('[data-trash-id="t1"]')!;
+    card.querySelector<HTMLButtonElement>('.tr-restore')!.click();
+    card.querySelector<HTMLButtonElement>('.tr-purge')!.click();
+    expect(h.onrestore).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }));
+    expect(h.onpurge).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }));
+  });
+
+  it('a press on a trash card starts nothing', async () => {
+    await inTrash();
+    const card = h.root.querySelector<HTMLElement>('[data-trash-id="t1"] .card-name')!;
+    card.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }));
+    expect(h.onpress).not.toHaveBeenCalled();
+  });
+
+  it('nothing on screen can pulse while the trash is shown', async () => {
+    h = await setup({ trash: () => TRASH, deleted: 3 });
+    const shown = vi.spyOn(h.store, 'setShown');
+    h.root.querySelector<HTMLButtonElement>('.trash-bar .stash-btn')!.click();
+    await settle();
+    expect(shown).toHaveBeenLastCalledWith([]);
+  });
+
+  it('«← в тайник» comes back to the stash with an empty query', async () => {
+    await inTrash();
+    h.store.update((s) => setStashQuery(s, 'vpn'));
+    await settle();
+    h.root.querySelector<HTMLButtonElement>('.trash-bar .stash-btn')!.click();
+    await settle();
+    expect(h.store.state).toMatchObject({ mode: 'stash', query: '' });
+    expect(ids()).toEqual(['d', 'a', 'b', 'c']);
+    expect(h.root.querySelector('.stash-drawer')?.classList.contains('trash-view')).toBe(false);
+  });
+
+  it('caps the trash like the stash, with «ещё N»', async () => {
+    const many = Array.from({ length: STASH_RENDER_CAP + 5 }, (_, i) =>
+      entry(`t${i}`, { deletedAt: NOW - i * MIN, title: `note ${i}` })
+    );
+    await inTrash({ trash: () => many, deleted: many.length });
+    expect(trashIds()).toHaveLength(STASH_RENDER_CAP);
+    expect(h.root.querySelector('.more')?.textContent).toBe('ещё 5');
+  });
+
+  it('a search in the trash asks stash_search nothing', async () => {
+    const search = vi.fn(async (): Promise<StashSearchResult> => ({ hits: [], total: 0, nextCursor: null }));
+    await inTrash({ search });
+    h.store.update((s) => setStashQuery(s, 'openvpn'));
+    await settle();
+    await new Promise((resolve) => setTimeout(resolve, SEARCH_DEBOUNCE_MS + 20));
+    await settle();
+    expect(search).not.toHaveBeenCalled();
+    expect(trashIds()).toEqual(['t1']);
+  });
+
+  it('«удалить» on a note card of the stash goes up as a remove', async () => {
+    h = await setup();
+    h.root.querySelector<HTMLButtonElement>('[data-stash-id="a"] .card-rm')!.click();
+    expect(h.onremove).toHaveBeenCalledWith(expect.objectContaining({ id: 'a' }));
   });
 });

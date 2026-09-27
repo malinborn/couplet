@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { installCatalog } from '../i18n';
@@ -100,9 +103,12 @@ describe('StashCard', () => {
     expect(q(card, '.tag:not(.repo) .tag-b')?.textContent).toBe('#ops');
   });
 
-  it('a note: no remove action (stage 06), the note line, the title line dropped from the preview', () => {
+  it('a note: «удалить» to the trash (stage 06), the note line, the title line dropped from the preview', () => {
     const card = render(entry({ kind: 'note', title: 'Rota', repo: null, branch: null, path: '/d/n.md' }));
-    expect(q(card, '.card-rm')).toBeNull();
+    expect(q(card, '.card-rm')?.textContent).toBe('удалить');
+    expect(q(card, '.card-rm')?.title).toBe('Заметка уйдёт в корзину на 30 дней');
+    q(card, '.card-rm')!.click();
+    expect(spies.onremove).toHaveBeenCalledTimes(1);
     expect(q(card, '.card-path')).toBeNull();
     expect(q(card, '.card-meta')?.textContent).toContain('заметка ·');
     expect(q(card, '.card-preview')?.textContent).not.toContain('Rota');
@@ -119,12 +125,12 @@ describe('StashCard', () => {
     expect([...acts.children].map((el) => el.className.split(' ')[0])).toEqual(['tag-add', 'card-rm']);
   });
 
-  it('a note with its tag input open has no overlay left to show', async () => {
+  it('with its tag input open, a card keeps only its remove action in the overlay', async () => {
     const card = render(entry({ kind: 'note' }));
     expect(q(card, '.card-acts .tag-add')).not.toBeNull();
     q(card, '.tag-add')!.click();
     await tick();
-    expect(q(card, '.card-acts')).toBeNull();
+    expect([...q(card, '.card-acts')!.children].map((el) => el.className.split(' ')[0])).toEqual(['card-rm']);
   });
 
   it('draws the kind icon from the shared icon paths', () => {
@@ -316,5 +322,109 @@ describe('StashGlyph', () => {
     expect([...host.querySelectorAll('path')].map((p) => p.getAttribute('d'))).toEqual([...STASH_ICONS.tray]);
     unmount(glyph);
     host.remove();
+  });
+});
+
+describe('StashCard, trashed (stage 06)', () => {
+  const trashedNote = entry({
+    id: 't1',
+    kind: 'note',
+    title: 'Черновик поста про VPN',
+    path: '/n/.trash/t1.md',
+    repo: 'shelf-design',
+    branch: null,
+    tags: ['infra'],
+    stashedAt: null,
+    deletedAt: new Date(2026, 8, 23, 9, 10).getTime(),
+    preview: 'Черновик поста про VPN\nПочему мы ушли с OpenVPN на Xray\n- [ ] цифры по handshake',
+  });
+  const trashSpies = { onrestore: vi.fn(), onpurge: vi.fn() };
+
+  function renderTrashed(e: StashEntry, compact = false): HTMLElement {
+    target = document.createElement('div');
+    document.body.appendChild(target);
+    component = mount(StashCard, {
+      target,
+      props: {
+        entry: e,
+        title: e.title ?? 'Без названия',
+        match: { rank: 0 },
+        query: '',
+        holder: null,
+        kb: false,
+        expanded: false,
+        dragging: false,
+        compact,
+        pulse: false,
+        newTags: [],
+        now: NOW,
+        ...spies,
+        trashed: true,
+        ...trashSpies,
+      },
+    });
+    flushSync();
+    return target.querySelector<HTMLElement>('.card')!;
+  }
+
+  afterEach(() => {
+    trashSpies.onrestore.mockClear();
+    trashSpies.onpurge.mockClear();
+  });
+
+  it('is dimmed, marked for the trash, never a stash card (no drag, no open)', () => {
+    const card = renderTrashed(trashedNote);
+    expect(card.classList.contains('trashed')).toBe(true);
+    expect(card.dataset.trashId).toBe('t1');
+    expect(card.hasAttribute('data-stash-id')).toBe(false);
+  });
+
+  it('head, «удалена …», the preview without its title, plain tags', () => {
+    const card = renderTrashed(trashedNote);
+    expect(q(card, '.kind-ico')?.title).toBe('Удалённая заметка');
+    expect(q(card, '.card-name')?.textContent).toBe('Черновик поста про VPN');
+    expect(q(card, '.card-meta')?.textContent?.trim()).toBe('удалена 3 дня назад');
+    expect(q(card, '.card-preview')?.textContent).toContain('OpenVPN');
+    expect(q(card, '.card-preview')?.textContent).not.toContain('Черновик');
+    expect(q(card, '.tag.repo')?.textContent).toContain('shelf-design');
+    expect(q(card, '.tag:not(.repo)')?.textContent).toBe('#infra');
+    expect(card.querySelectorAll('.card-tags button')).toHaveLength(0);
+  });
+
+  it("has none of a stash card's actions", () => {
+    const card = renderTrashed(trashedNote);
+    expect(q(card, '.card-acts')).toBeNull();
+    expect(q(card, '.card-rm')).toBeNull();
+    expect(q(card, '.open-mark')).toBeNull();
+    expect(q(card, '.card-meta .aw')).toBeNull();
+  });
+
+  it('days left, «вернуть» and «удалить навсегда»', () => {
+    const card = renderTrashed(trashedNote);
+    expect(q(card, '.tr-actions .left')?.textContent).toBe('удалится через 27 дн.');
+    const restore = q(card, '.tr-restore') as HTMLButtonElement;
+    const purge = q(card, '.tr-purge') as HTMLButtonElement;
+    expect(restore.textContent).toBe('вернуть');
+    expect(restore.title).toBe('Вернуть в тайник вместе с тегами');
+    expect(purge.textContent).toBe('удалить навсегда');
+    expect(purge.title).toBe('Без возможности вернуть');
+    restore.click();
+    purge.click();
+    expect(trashSpies.onrestore).toHaveBeenCalledTimes(1);
+    expect(trashSpies.onpurge).toHaveBeenCalledTimes(1);
+  });
+
+  it('the compact rule that hides the meta line spares trashed cards (mockup `:not(.trashed)`)', () => {
+    // `import.meta.url` as a string: jsdom's own `URL` is not one Node's `fileURLToPath` accepts.
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'StashCard.svelte'), 'utf8');
+    expect(css).toContain('.card.compact:not(.trashed) .card-meta > :not(.aw)');
+    expect(css).not.toMatch(/\.card\.compact \.card-meta > :not\(\.aw\)/);
+  });
+
+  it("compact keeps «удалена …» (the stash card's rule exempts it) and one preview line", () => {
+    const card = renderTrashed(trashedNote, true);
+    expect(q(card, '.card-meta span')?.textContent).toBe('удалена 3 дня назад');
+    expect(card.querySelectorAll('.card-preview > div')).toHaveLength(1);
+    expect(q(card, '.card-preview')?.textContent).toBe('Почему мы ушли с OpenVPN на Xray');
   });
 });

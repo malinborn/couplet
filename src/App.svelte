@@ -1041,6 +1041,22 @@
     }
   }
 
+  /** «вернуть» (stage 06): back on top of the stash with its tags. */
+  async function restoreStashEntry(entry: StashEntry): Promise<void> {
+    const title = entryTitle(entry, stashUntitled());
+    const outcome = await stashStore.restoreEntry(entry);
+    if (outcome.kind === 'restored') quietStashToast({ what: 'restored', title, hiddenBy: outcome.hiddenBy });
+    else if (outcome.kind === 'failed') toasts.push({ kind: 'stash', note: { what: 'error', message: outcome.message } });
+  }
+
+  /** «удалить навсегда» (stage 06): no confirmation (plan D15). */
+  async function purgeStashEntry(entry: StashEntry): Promise<void> {
+    const title = entryTitle(entry, stashUntitled());
+    const outcome = await stashStore.purgeEntry(entry);
+    if (outcome.kind === 'purged') quietStashToast({ what: 'purged', title });
+    else if (outcome.kind === 'failed') toasts.push({ kind: 'stash', note: { what: 'error', message: outcome.message } });
+  }
+
   /** A tag chip added or removed on a card; the drawer pops its own additions (`markNewTags`). */
   async function tagStashEntry(entry: StashEntry, change: TagChange): Promise<void> {
     try {
@@ -2965,6 +2981,8 @@
   onputaway={(ids) => void putAway(ids)}
   onstashopen={(entry, before) => void openStashEntry(entry, before)}
   onstashremove={(entry) => void removeStashEntry(entry)}
+  onstashrestore={(entry) => void restoreStashEntry(entry)}
+  onstashpurge={(entry) => void purgeStashEntry(entry)}
   onstashtag={(entry, change) => void tagStashEntry(entry, change)}
 />
 

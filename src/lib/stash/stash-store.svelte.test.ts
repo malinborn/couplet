@@ -576,7 +576,10 @@ describe('the trash (stage 06)', () => {
       list: vi.fn(async () => [entry('t1', { deletedAt: T0 - 1 }), entry('t2', { deletedAt: T0 })]),
       restore: vi.fn(async (id: string) => entry(id, { stashedAt: T0 })),
       purge: vi.fn(async () => {}),
-      remove: vi.fn(async (id: string): Promise<DeleteOutcome> => ({ kind: 'trashed', entry: entry(id, { deletedAt: T0 }) })),
+      remove: vi.fn(async (id: string): Promise<DeleteOutcome> => ({
+        kind: 'trashed',
+        entry: entry(id, { deletedAt: T0 }),
+      })),
       ...over,
     };
   }
@@ -663,7 +666,9 @@ describe('the trash (stage 06)', () => {
   });
 
   it('the trash bar reads counts.deleted', async () => {
-    const s = createStashStore({ ...deps({ counts: vi.fn(async () => ({ total: 14, stashedToday: 3, deleted: 3 })) }) });
+    const s = createStashStore({
+      ...deps({ counts: vi.fn(async () => ({ total: 14, stashedToday: 3, deleted: 3 })) }),
+    });
     s.open();
     await flush();
     expect(s.trashTotal).toBe(3);
@@ -678,7 +683,7 @@ describe('the trash (stage 06)', () => {
     expect(s.entries.some((e) => e.id === 't2')).toBe(true);
   });
 
-  it('a restored note of the chip\'s own repo is not hidden', async () => {
+  it("a restored note of the chip's own repo is not hidden", async () => {
     const list = vi.fn(async () => [entry('t1', { deletedAt: T0, repo: 'infra' })]);
     const restore = vi.fn(async (id: string) => entry(id, { repo: 'infra' }));
     const { s } = await inTrash({ list, restore }, deps({ repo: 'infra' }));

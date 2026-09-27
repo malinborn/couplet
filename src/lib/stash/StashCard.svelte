@@ -7,14 +7,20 @@
    * (`data-stash-id`); the card owns its buttons and the tag input, whose keys
    * are its own (`TabDrawer` skips `.tag-edit` targets). Everything shown is
    * data — no `{@html}` over user text.
+   *
+   * `trashed` (stage 06, mockup `trCardHTML`) draws a card of «Удалённые»:
+   * dimmed, «удалена …», plain tags, «удалится через N дн.» with «вернуть» /
+   * «удалить навсегда». It carries `data-trash-id`, never `data-stash-id`, so
+   * the drawer never starts a drag or an open on it.
    */
   import { tick } from 'svelte';
-  import { t } from '../i18n';
+  import { plural, t } from '../i18n';
   import { firstPlainLine, highlight, hitSnippet, type Match } from '../tabs/drawer-filter';
   import { previewLines, type InlineSeg } from '../tabs/drawer-preview';
   import StashIcon from './StashIcon.svelte';
   import { highlightTerms, normalizeTag, segmentsFromRanges, TAG_MAX, type SearchTerm } from './stash-query';
   import { dropFirstLine, formatWhen, repoRelativePath, whenOf } from './stash-view';
+  import { TRASH_DAYS, trashDaysLeft } from './trash-view';
   import type { StashEntry, StashHit, TabHolder, TagChange } from './types';
 
   let {
@@ -39,6 +45,9 @@
     onhoverend,
     hit = null,
     terms = [],
+    trashed = false,
+    onrestore,
+    onpurge,
   }: {
     entry: StashEntry;
     title: string;
@@ -72,6 +81,12 @@
     hit?: StashHit | null;
     /** The query's text terms: short ones match titles only, so the title is marked with all of them. */
     terms?: readonly SearchTerm[];
+    /** A card of «Удалённые» (stage 06): a trashed note. */
+    trashed?: boolean;
+    /** «вернуть» (trashed only). */
+    onrestore?: () => void;
+    /** «удалить навсегда» (trashed only). */
+    onpurge?: () => void;
   } = $props();
 
   let adding = $state(false);
@@ -95,6 +110,10 @@
   );
   const noteMeta = $derived(t('stash.card.note_meta', { when: formatWhen(whenOf(entry.modifiedAt, now)) }));
   const hasTags = $derived(entry.repo !== null || entry.tags.length > 0 || adding);
+  const deleted = $derived(
+    entry.deletedAt === null ? '' : t('stash.trash.deleted', { when: formatWhen(whenOf(entry.deletedAt, now)) })
+  );
+  const daysLeft = $derived(plural(trashDaysLeft(entry.deletedAt ?? now, now), 'stash.trash.days_left'));
 
   async function startAdding(): Promise<void> {
     adding = true;
@@ -131,6 +150,50 @@
   {#each list as s, i (i)}{#if s.code}<code>{s.text}</code>{:else if s.bold}<strong>{s.text}</strong>{:else if s.italic}<em>{s.text}</em>{:else}{s.text}{/if}{/each}
 {/snippet}
 
+{#snippet previewBlock()}
+  {#if compact}
+    {#if firstLine}<div class="card-preview"><div>{firstLine}</div></div>{/if}
+  {:else if preview.length > 0}
+    <div class="card-preview">
+      {#each preview as line, i (i)}
+        <div>
+          {#if line.kind === 'heading'}<b>{#each line.segs as s, j (j)}{s.text}{/each}</b>
+          {:else if line.kind === 'quote'}<em>{@render segments(line.segs)}</em>
+          {:else}{line.kind === 'task' ? (line.done ? '☑ ' : '☐ ') : line.kind === 'bullet' ? '• ' : ''}{@render segments(
+              line.segs
+            )}
+          {/if}
+        </div>
+      {/each}
+    </div>
+  {/if}
+{/snippet}
+
+{#if trashed}
+  <div class="card note trashed" class:compact role="option" aria-selected="false" data-trash-id={entry.id}>
+    <div class="card-head">
+      <span class="kind-ico" title={t('stash.trash.kind_title')}><StashIcon name="note" stroke={1.4} /></span>
+      <span class="card-name">{title}</span>
+    </div>
+    <div class="card-meta"><span>{deleted}</span></div>
+    {@render previewBlock()}
+    {#if entry.repo !== null || entry.tags.length > 0}
+      <div class="card-tags">
+        {#if entry.repo}<span class="tag repo"><StashIcon name="repo" stroke={1.4} />{entry.repo}</span>{/if}
+        {#each entry.tags as tag (tag)}<span class="tag">#{tag}</span>{/each}
+      </div>
+    {/if}
+    <div class="tr-actions">
+      <span class="left">{daysLeft}</span>
+      <button class="tr-restore" type="button" tabindex="-1" title={t('stash.trash.restore_title')} onclick={onrestore}
+        >{t('stash.trash.restore')}</button
+      >
+      <button class="tr-purge" type="button" tabindex="-1" title={t('stash.trash.purge_title')} onclick={onpurge}
+        >{t('stash.trash.purge')}</button
+      >
+    </div>
+  </div>
+{:else}
 <div
   class="card"
   class:note={isNote}
@@ -161,34 +224,30 @@
         >{t(isNote ? 'stash.card.open_in_note' : 'stash.card.open_in_file', { n: holder.number ?? '?' })}</span
       >
     {/if}
-    {#if !adding || !isNote}
-      <span class="card-acts">
-        {#if !adding}
-          <button
-            class="tag-add"
-            type="button"
-            tabindex="-1"
-            title={t('stash.card.tag_add_title')}
-            onclick={(e) => {
-              e.stopPropagation();
-              void startAdding();
-            }}>{t('stash.card.tag_add')}</button
-          >
-        {/if}
-        {#if !isNote}
-          <button
-            class="card-rm"
-            type="button"
-            tabindex="-1"
-            title={t('stash.card.remove_file_title')}
-            onclick={(e) => {
-              e.stopPropagation();
-              onremove();
-            }}>{t('stash.card.remove_file')}</button
-          >
-        {/if}
-      </span>
-    {/if}
+    <span class="card-acts">
+      {#if !adding}
+        <button
+          class="tag-add"
+          type="button"
+          tabindex="-1"
+          title={t('stash.card.tag_add_title')}
+          onclick={(e) => {
+            e.stopPropagation();
+            void startAdding();
+          }}>{t('stash.card.tag_add')}</button
+        >
+      {/if}
+      <button
+        class="card-rm"
+        type="button"
+        tabindex="-1"
+        title={isNote ? t('stash.card.delete_title', { days: TRASH_DAYS }) : t('stash.card.remove_file_title')}
+        onclick={(e) => {
+          e.stopPropagation();
+          onremove();
+        }}>{isNote ? t('stash.card.delete') : t('stash.card.remove_file')}</button
+      >
+    </span>
   </div>
   <div class="card-meta">
     {#if away}<span class="aw">{away}</span>{/if}
@@ -202,21 +261,8 @@
       <div class="hit-l">{t('tabs.drawer.in_text')}</div>
       <div class="hit">{#each textHit as s, i (i)}{#if s.hit}<mark>{s.text}</mark>{:else}{s.text}{/if}{/each}</div>
     </div>
-  {:else if compact}
-    {#if firstLine}<div class="card-preview"><div>{firstLine}</div></div>{/if}
-  {:else if preview.length > 0}
-    <div class="card-preview">
-      {#each preview as line, i (i)}
-        <div>
-          {#if line.kind === 'heading'}<b>{#each line.segs as s, j (j)}{s.text}{/each}</b>
-          {:else if line.kind === 'quote'}<em>{@render segments(line.segs)}</em>
-          {:else}{line.kind === 'task' ? (line.done ? '☑ ' : '☐ ') : line.kind === 'bullet' ? '• ' : ''}{@render segments(
-              line.segs
-            )}
-          {/if}
-        </div>
-      {/each}
-    </div>
+  {:else}
+    {@render previewBlock()}
   {/if}
   {#if hasTags}
     <div class="card-tags">
@@ -272,6 +318,7 @@
     </div>
   {/if}
 </div>
+{/if}
 
 <style>
   /* The tabs drawer's card (TabCard.svelte, mockup `.card`), plus the stash's own parts. */
@@ -632,7 +679,7 @@
     font-size: 13px;
   }
 
-  .card.compact .card-meta > :not(.aw) {
+  .card.compact:not(.trashed) .card-meta > :not(.aw) {
     display: none;
   }
 
@@ -664,6 +711,79 @@
 
   .card.compact .card-tags {
     margin-top: 4px;
+  }
+
+  /* «Удалённые» (stage 06, mockup `.card.trashed`, `.tr-actions`). */
+  .card.trashed {
+    opacity: 0.66;
+  }
+
+  .card.trashed:hover {
+    opacity: 0.92;
+  }
+
+  .card.trashed .kind-ico {
+    color: var(--text-muted);
+  }
+
+  /* Plain labels here, not filters. */
+  .card.trashed .tag {
+    cursor: default;
+  }
+
+  .card.trashed .tag:hover {
+    border-color: transparent;
+  }
+
+  .card.trashed .tag.repo:hover {
+    border-color: color-mix(in oklab, var(--color-stash) 45%, transparent);
+  }
+
+  .tr-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+    font-size: 11px;
+  }
+
+  .tr-actions .left {
+    flex: 1;
+    min-width: 0;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .tr-actions button {
+    flex: 0 0 auto;
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+    border-radius: 6px;
+    padding: 2px 8px;
+    font: inherit;
+    font-size: 11px;
+    color: var(--text-subtle);
+    cursor: pointer;
+    white-space: nowrap;
+    transition:
+      border-color 0.12s,
+      color 0.12s;
+  }
+
+  .tr-actions button:hover {
+    border-color: var(--text-muted);
+    color: var(--text-primary);
+  }
+
+  .tr-actions .tr-restore {
+    border-color: var(--stash-line);
+    color: var(--text-primary);
+  }
+
+  .tr-actions .tr-restore:hover {
+    border-color: var(--color-stash);
   }
 
   @keyframes stPulse {

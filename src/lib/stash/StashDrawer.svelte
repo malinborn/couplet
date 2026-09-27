@@ -20,6 +20,11 @@
    * cover it: this component never listens on `window`. It answers the keys
    * the tabs drawer routes to it (`handle.key`) and reports presses on cards
    * (`onpress`) — the tabs drawer decides click vs drag.
+   *
+   * Stage 06: the same drawer shows «Удалённые» while `stash.state.mode` is
+   * `'trash'` — the bin in the head, the retention hint for a filter row, no
+   * sorts, trashed cards (`data-trash-id`: no drag, no open, no ring) and the
+   * trash bar at the bottom that switches between the two.
    */
   import { tick } from 'svelte';
   import { flip } from 'svelte/animate';
@@ -30,6 +35,8 @@
   import { EXPAND_MS } from '../tabs/drawer-state';
   import StashCard from './StashCard.svelte';
   import StashIcon from './StashIcon.svelte';
+  import TrashBar from './TrashBar.svelte';
+  import { TRASH_DAYS, filterTrash } from './trash-view';
   import type { StashStore } from './stash-store.svelte';
   import {
     STASH_SORT_KEYS,
@@ -60,6 +67,8 @@
     onpress,
     onopen,
     onremove,
+    onrestore,
+    onpurge,
     onsettag,
     onfocusrequest,
     handle = $bindable(),
@@ -81,6 +90,10 @@
     /** Enter: open here and close both drawers. */
     onopen: (entry: StashEntry) => void;
     onremove: (entry: StashEntry) => void;
+    /** «вернуть» on a trash card (stage 06). */
+    onrestore: (entry: StashEntry) => void;
+    /** «удалить навсегда» on a trash card (stage 06). */
+    onpurge: (entry: StashEntry) => void;
     onsettag: (entry: StashEntry, change: TagChange) => void;
     /** A press inside: the stash takes the keys. */
     onfocusrequest: () => void;
@@ -103,6 +116,8 @@
 
   const open = $derived(stash.state.open);
   const focused = $derived(open && stash.state.focus === 'stash');
+  /** A boolean, so the effects below re-run on the switch only, not on every state update. */
+  const inTrash = $derived(stash.state.mode === 'trash');
   /** The query's text: what `stash_search` matches and the cards mark. Tags stay stage 04's client rule. */
   const terms = $derived(drawerTerms(stash.state.query));
   /**
@@ -130,21 +145,25 @@
    * hits Rust counted, so under them this is an upper bound.
    */
   const unfetched = $derived(stash.hits ? Math.max(0, stash.searchTotal - stash.hits.length) : 0);
-  const more = $derived(view.rows.length - rows.length + unfetched);
-  const visible = $derived(rows.map((r) => r.entry.id));
-  const kbId = $derived(focused ? stashKbTarget(stash.state, visible) : null);
-  const searchNote = $derived(
-    stash.state.query
-      ? [
-          view.rows.length > 0
-            ? t('tabs.drawer.search_count', { shown: view.rows.length + unfetched, total: view.total })
-            : '',
-          t('tabs.drawer.search_reset'),
-        ]
-          .filter(Boolean)
-          .join(' · ')
-      : ''
+  /** The trash, filtered (newest deletion first, the repo chip ignored — D13). */
+  const trashRows = $derived(inTrash ? filterTrash(stash.trashEntries, stash.state.query, untitled) : []);
+  const trashShown = $derived(trashRows.slice(0, STASH_RENDER_CAP));
+  /** The head's count: the list once read, the bar's count until then. */
+  const trashCount = $derived(stash.trashLoaded ? stash.trashEntries.length : stash.trashTotal);
+  const more = $derived(
+    inTrash ? trashRows.length - trashShown.length : view.rows.length - rows.length + unfetched
   );
+  /** No keyboard ring in the trash (mockup `stView = []`). */
+  const visible = $derived(inTrash ? [] : rows.map((r) => r.entry.id));
+  const kbId = $derived(focused ? stashKbTarget(stash.state, visible) : null);
+  const searchNote = $derived.by(() => {
+    if (!stash.state.query) return '';
+    const shown = inTrash ? trashRows.length : view.rows.length;
+    const count = inTrash
+      ? t('tabs.drawer.search_count', { shown, total: trashCount })
+      : t('tabs.drawer.search_count', { shown: shown + unfetched, total: view.total });
+    return [shown > 0 ? count : '', t('tabs.drawer.search_reset')].filter(Boolean).join(' · ');
+  });
   const filterNote = $derived.by(() => {
     const counts = { shown: view.rows.length, total: view.total };
     const base =
@@ -152,6 +171,10 @@
     return view.openHere > 0 ? `${base} ${t('stash.filter.in_tabs', { n: view.openHere })}` : base;
   });
   const emptyText = $derived.by(() => {
+    if (inTrash) {
+      if (!stash.trashLoaded || trashRows.length > 0) return null;
+      return stash.state.query ? t('tabs.drawer.empty') : t('stash.trash.empty');
+    }
     if (!stash.loaded || view.rows.length > 0) return null;
     if (stash.state.query) return t('tabs.drawer.empty');
     // The chip is a repo filter (the mockup's copy still spoke of a tag): `openHere` counts within it.
@@ -173,8 +196,9 @@
   // The store searches again after every list load, so no listener here.
   // Reads `searchQuery` only; the repo chip filters the hits in `stashView`,
   // with the rule it has without a query (`SearchRequest`).
+  // The trash filters on the client (A8): its query is never sent.
   $effect(() => {
-    stash.search({ query: searchQuery, tag: null, deleted: false });
+    stash.search({ query: inTrash ? '' : searchQuery, tag: null, deleted: false });
   });
 
   // What is on screen: only a card the human can see pulses after a reload.
@@ -271,6 +295,16 @@
 
   function left(): number | null {
     return open && asideEl ? asideEl.getBoundingClientRect().left : null;
+  }
+
+  /** The trash bar: switch the view, with the keys in the stash drawer (mockup `trashBtn`). */
+  function toggleTrash(): void {
+    stash.toggleTrash();
+    stash.update((s) => focusDrawer(s, 'stash'));
+    clearTimeout(expandTimer);
+    expandedId = null;
+    if (listEl) listEl.scrollTop = 0;
+    focusList();
   }
 
   function setQuery(query: string): void {
@@ -396,6 +430,7 @@
 >
   <aside
     class="drawer stash-drawer"
+    class:trash-view={inTrash}
     class:focused
     class:drop-ready={open && dropReady && !dropHot}
     class:drop-hot={open && dropHot}
@@ -406,14 +441,18 @@
     <div class="drawer-head">
       <div class="drawer-title">
         <b
-          ><span class="st-g"><StashIcon name="tray" /></span>{t('stash.drawer.title')}
-          <span class="cnt">· {view.total}</span></b
+          ><span class="st-g"><StashIcon name={inTrash ? 'bin' : 'tray'} /></span>{inTrash
+            ? t('stash.trash.title')
+            : t('stash.drawer.title')}
+          <span class="cnt">· {inTrash ? trashCount : view.total}</span></b
         >
         <small class="type-hint" class:off={!!stash.state.query}>{@render magnifier()}{t('stash.drawer.type_hint')}</small>
         <small class="focus-hint">{t('stash.drawer.focus_stash')} <kbd>→</kbd></small>
       </div>
       <div class="st-filter">
-        {#if stash.state.repoChip !== null}
+        {#if inTrash}
+          <span class="f-note">{t('stash.trash.hint', { days: TRASH_DAYS })}</span>
+        {:else if stash.state.repoChip !== null}
           <span class="fchip" title={t('stash.filter.chip_title', { n: windowNumber ?? '', repo: stash.state.repoChip })}
             ><StashIcon name="repo" stroke={1.4} />{stash.state.repoChip}<button
               class="fchip-x"
@@ -432,7 +471,7 @@
             >+ <StashIcon name="repo" stroke={1.4} />{stash.repo}</button
           >
         {/if}
-        <span class="f-note">{filterNote}</span>
+        {#if !inTrash}<span class="f-note">{filterNote}</span>{/if}
       </div>
       <div class="sorts">
         <span class="lbl">{t('tabs.drawer.sort_label')}</span>
@@ -471,7 +510,37 @@
       onpointerdown={onListPointerDown}
       oncontextmenu={(e) => e.preventDefault()}
     >
-      {#if listOn}
+      {#if listOn && inTrash}
+        {#each trashShown as entry (entry.id)}
+          <div class="card-slot" animate:flip={{ duration: motion(300), easing: cubicOut }} in:arriveR out:collapseR>
+            <StashCard
+              {entry}
+              title={entryTitle(entry, untitled)}
+              match={{ rank: 0 }}
+              query=""
+              holder={null}
+              kb={false}
+              expanded={false}
+              dragging={false}
+              {compact}
+              pulse={false}
+              newTags={[]}
+              {now}
+              trashed
+              onrestore={() => onrestore(entry)}
+              onpurge={() => onpurge(entry)}
+              onremove={() => {}}
+              onfilter={() => {}}
+              onsettag={() => {}}
+              ondone={focusList}
+              onhoverstart={() => {}}
+              onhoverend={() => {}}
+            />
+          </div>
+        {/each}
+        {#if more > 0}<div class="more">{t('stash.drawer.more', { n: more })}</div>{/if}
+        {#if emptyText}<div class="empty">{emptyText}</div>{/if}
+      {:else if listOn}
         {#each rows as row (row.entry.id)}
           <div class="card-slot" animate:flip={{ duration: motion(300), easing: cubicOut }} in:arriveR out:collapseR>
             <StashCard
@@ -512,6 +581,8 @@
         {t('stash.foot.keys_tail')}</span
       >
     </div>
+
+    <TrashBar mode={stash.state.mode} trashTotal={stash.trashTotal} stashTotal={view.total} ontoggle={toggleTrash} />
 
     <div class="drop-veil" aria-hidden="true">
       <span><StashIcon name="tray" />{t('stash.bar.drop')}</span>
@@ -762,6 +833,10 @@
     opacity: 0.6;
     font-size: 11px;
     padding: 0 1px;
+  }
+
+  .stash-drawer.trash-view .sorts {
+    display: none;
   }
 
   .narrow .sorts .lbl,
