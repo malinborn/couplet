@@ -373,9 +373,13 @@ pub fn on_file_written(path: &str, text: &str) {
         return;
     };
     let now = clock::now_ms();
-    let (path, text) = (path.to_owned(), text.to_owned());
+    // The title, not the text: `title_of` stops at the first non-blank line,
+    // so it is cheap here on the save's thread, and the task does not carry a
+    // copy of every autosaved document — most of which are not in the stash.
+    let title = notes::title_of(text);
+    let path = path.to_owned();
     tauri::async_runtime::spawn_blocking(move || {
-        match hook.state.with(|s| s.file_written(&path, &text, now)) {
+        match hook.state.with(|s| s.file_written(&path, title.as_deref(), now)) {
             Ok(true) => (hook.notify)("title"),
             Ok(false) => {}
             Err(e) => eprintln!("stash: after saving {path}: {e}"),

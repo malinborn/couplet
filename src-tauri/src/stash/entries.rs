@@ -528,7 +528,14 @@ impl Stash {
     /// Only moves forward in time, so a late, older save cannot roll a title
     /// back (plan D9); a trashed row is left alone (roadmap A8). `true` when the
     /// title changed — the one case worth a `stash-changed { reason: "title" }`.
-    pub fn file_written(&mut self, path: &str, text: &str, now: i64) -> Result<bool, String> {
+    /// `title` is `notes::title_of` of the saved text, taken by the caller so
+    /// the save hook never has to copy the document.
+    pub fn file_written(
+        &mut self,
+        path: &str,
+        title: Option<&str>,
+        now: i64,
+    ) -> Result<bool, String> {
         let path = crate::path_norm::normalize_str(path);
         let path = path.as_str();
         let row: Option<(String, String)> = self
@@ -544,7 +551,7 @@ impl Stash {
             return Ok(false);
         };
         let title = if kind == StashKind::Note.as_str() {
-            notes::title_of(text).unwrap_or_default()
+            title.unwrap_or_default().to_string()
         } else {
             old_title.clone()
         };
@@ -1336,7 +1343,7 @@ mod tests {
         let note = stash.create_note("# Old", None, T0, MSK).unwrap();
         assert!(
             stash
-                .file_written(&note.path, "# New\nbody", T0 + 10)
+                .file_written(&note.path, Some("New"), T0 + 10)
                 .unwrap(),
             "title changed"
         );
@@ -1344,17 +1351,27 @@ mod tests {
         assert_eq!((e.title.as_deref(), e.modified_at), (Some("New"), T0 + 10));
         assert!(
             !stash
-                .file_written(&note.path, "# New\nmore body", T0 + 20)
+                .file_written(&note.path, Some("New"), T0 + 20)
                 .unwrap(),
             "same title: no event"
         );
         assert_eq!(stash.get(&note.id).unwrap().modified_at, T0 + 20);
         assert!(
-            !stash.file_written(&note.path, "# Stale", T0 + 15).unwrap(),
+            !stash
+                .file_written(&note.path, Some("Stale"), T0 + 15)
+                .unwrap(),
             "an older save landing late changes nothing"
         );
         let e = stash.get(&note.id).unwrap();
         assert_eq!((e.title.as_deref(), e.modified_at), (Some("New"), T0 + 20));
+    }
+
+    #[test]
+    fn a_note_saved_without_a_title_shows_none() {
+        let (mut stash, _root) = stash_in("written-untitled");
+        let note = stash.create_note("# Old", None, T0, MSK).unwrap();
+        assert!(stash.file_written(&note.path, None, T0 + 10).unwrap());
+        assert_eq!(stash.get(&note.id).unwrap().title, None);
     }
 
     #[test]
@@ -1371,7 +1388,7 @@ mod tests {
             path.file_name().unwrap().to_string_lossy()
         );
         assert_ne!(dotted, note.path);
-        assert!(stash.file_written(&dotted, "# New", T0 + 10).unwrap());
+        assert!(stash.file_written(&dotted, Some("New"), T0 + 10).unwrap());
         let e = stash.get(&note.id).unwrap();
         assert_eq!((e.title.as_deref(), e.modified_at), (Some("New"), T0 + 10));
     }
@@ -1388,7 +1405,7 @@ mod tests {
             .entry
             .id;
         assert!(!stash
-            .file_written(&file, "# Another heading", Y2100)
+            .file_written(&file, Some("Another heading"), Y2100)
             .unwrap());
         let e = stash.get(&id).unwrap();
         assert_eq!(e.title.as_deref(), Some("readme.md"));
@@ -1402,7 +1419,7 @@ mod tests {
     fn saving_a_file_outside_the_stash_changes_nothing() {
         let (mut stash, root) = stash_in("written-none");
         let file = user_file(&root, "x.md", "x");
-        assert!(!stash.file_written(&file, "y", T0).unwrap());
+        assert!(!stash.file_written(&file, Some("y"), T0).unwrap());
         assert_eq!(rows(&stash, "entries"), 0);
     }
 
@@ -1413,7 +1430,9 @@ mod tests {
         let (mut stash, _root) = stash_in("written-trashed");
         let note = stash.create_note("# Old", None, T0, MSK).unwrap();
         set_columns(&stash, &note.id, &format!("deleted_at = {}", T0 + 1));
-        assert!(!stash.file_written(&note.path, "# New", T0 + 10).unwrap());
+        assert!(!stash
+            .file_written(&note.path, Some("New"), T0 + 10)
+            .unwrap());
         let e = stash.get(&note.id).unwrap();
         assert_eq!((e.title.as_deref(), e.modified_at), (Some("Old"), T0));
     }
