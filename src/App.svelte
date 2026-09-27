@@ -66,7 +66,7 @@
   import { tabCaption } from './lib/stash/tab-caption';
   import { createStashStore } from './lib/stash/stash-store.svelte';
   import { putAwayNote, putAwayTabs } from './lib/stash/put-away';
-  import { awaitPull, openFromStash } from './lib/stash/open-from-stash';
+  import { awaitPull, handOverPulled, openFromStash } from './lib/stash/open-from-stash';
   import { restoreWindow, widenForStash, type WidenMemo } from './lib/stash/window-widen';
   import { onStashOpenEdge } from './lib/stash/stash-open-edge.svelte';
   import { entryTitle } from './lib/stash/stash-view';
@@ -999,12 +999,9 @@
     if (opened.kind === 'opened') {
       quietStashToast({ what: 'opened', title, isNote, from: null });
     } else if (opened.kind === 'pulled') {
-      // The holder runs the move (`tab-pull`); the tab comes in through `tabs-arrive`.
-      if (await awaitPull(() => has(entry.path))) {
-        quietStashToast({ what: 'opened', title, isNote, from: opened.number });
-      } else {
-        toasts.push({ kind: 'stash', note: { what: 'pull-failed', number: opened.number, label: opened.label } });
-      }
+      quietStashToast({ what: 'opened', title, isNote, from: opened.number });
+    } else if (opened.kind === 'pull-failed') {
+      toasts.push({ kind: 'stash', note: { what: 'pull-failed', number: opened.number, label: opened.label } });
     } else if (opened.kind === 'failed' && opened.error !== null) {
       toasts.push({ kind: 'stash', note: { what: 'error', message: opened.error } });
     }
@@ -2318,15 +2315,16 @@
       stashStore.changed(reason, ids);
     });
     // Stash stage 04 (D9): another window opens from its stash a tab this one
-    // holds. The plan-05 move, run here where its dirty checks live; no
-    // «Перенесено» toast — the human is in the other window, which announces
-    // the arrival.
+    // holds. The plan-05 move, run here where its dirty checks live.
     const unlistenTabPull = onTabPull(({ path, target }) => {
       void tabSourcesReady
-        .then(async () => {
-          const tab = tabs.findByPath(path);
-          if (tab) await tabs.moveTabs([tab.id], { kind: 'window', label: target });
-        })
+        .then(() =>
+          handOverPulled(path, target, {
+            findByPath: (p) => tabs.findByPath(p),
+            moveTabs: (ids, to) => tabs.moveTabs(ids, to),
+            reportStranded,
+          })
+        )
         .catch((err: unknown) => console.error('Failed to hand a tab to another window:', err));
     });
 

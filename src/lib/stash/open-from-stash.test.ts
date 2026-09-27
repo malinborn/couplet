@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PullAnswer, StashEntry } from './types';
-import { PULL_WAIT_MS, awaitPull, openFromStash, type OpenFromStashDeps } from './open-from-stash';
+import type { MoveOutcome, Stranded } from '../tabs/controller';
+import type { MoveTarget } from '../tabs/carousel';
+import { PULL_WAIT_MS, awaitPull, handOverPulled, openFromStash, type OpenFromStashDeps } from './open-from-stash';
 
 const entry = {
   id: 's1',
@@ -20,8 +22,9 @@ const entry = {
   preview: '',
 } satisfies StashEntry;
 
-function deps(answer: PullAnswer, has = true) {
+function deps(answer: PullAnswer, has = true, arrives = true) {
   return {
+    wait: vi.fn(async (_has: () => boolean) => arrives),
     requestMove: vi.fn(async (_path: string): Promise<PullAnswer> => answer),
     activate: vi.fn(async (_tabId: string) => {}),
     openPath: vi.fn(async (_path: string, _position: { cursor: number; topLine: number }) => {}),
@@ -40,12 +43,31 @@ describe('openFromStash', () => {
     expect(d.touch).toHaveBeenCalledWith('/r/a.md');
   });
 
-  it('held elsewhere: asked to move here, nothing opened here', async () => {
+  it('held elsewhere: asked to move here, nothing opened here; touched once it arrived', async () => {
     const d = deps({ kind: 'requested', label: 'editor-19', number: 19 });
+    d.touch.mockImplementation(async () => {
+      // Not before the tab is here: a pull that never lands is not an open.
+      expect(d.wait).toHaveBeenCalled();
+    });
     expect(await openFromStash(entry, undefined, d)).toEqual({ kind: 'pulled', label: 'editor-19', number: 19 });
     expect(d.openPath).not.toHaveBeenCalled();
     expect(d.activate).not.toHaveBeenCalled();
     expect(d.touch).toHaveBeenCalledWith('/r/a.md');
+  });
+
+  it('held elsewhere and it never came: not touched, the caller offers «Перейти»', async () => {
+    const d = deps({ kind: 'requested', label: 'editor-19', number: 19 }, false, false);
+    expect(await openFromStash(entry, undefined, d)).toEqual({ kind: 'pull-failed', label: 'editor-19', number: 19 });
+    expect(d.touch).not.toHaveBeenCalled();
+  });
+
+  it('the wait watches this window for the path', async () => {
+    const d = deps({ kind: 'requested', label: 'editor-19', number: 19 });
+    await openFromStash(entry, undefined, d);
+    const watched = d.wait.mock.calls[0][0];
+    d.has.mockClear();
+    watched();
+    expect(d.has).toHaveBeenCalledWith('/r/a.md');
   });
 
   it('free: opened at its caret, placed where it was dropped', async () => {
@@ -87,6 +109,39 @@ describe('openFromStash', () => {
     await Promise.resolve();
     expect(error).toHaveBeenCalled();
     error.mockRestore();
+  });
+});
+
+describe('handOverPulled', () => {
+  function holder(outcome: MoveOutcome | undefined, tab: { id: string } | null = { id: 't4' }) {
+    return {
+      findByPath: vi.fn((_path: string) => tab ?? undefined),
+      moveTabs: vi.fn(async (_ids: readonly string[], _target: MoveTarget) => outcome),
+      reportStranded: vi.fn((_stranded: readonly Stranded[]) => {}),
+    };
+  }
+
+  it('moves the tab to the window that asked', async () => {
+    const d = holder({ kind: 'moved', label: 'editor-2', number: 2, count: 1 });
+    await handOverPulled('/r/a.md', 'editor-2', d);
+    expect(d.moveTabs).toHaveBeenCalledWith(['t4'], { kind: 'window', label: 'editor-2' });
+    expect(d.reportStranded).not.toHaveBeenCalled();
+  });
+
+  it('a failed move says why here, where the tab stayed', async () => {
+    const d = holder({ kind: 'failed', error: 'target gone' });
+    await handOverPulled('/r/a.md', 'editor-2', d);
+    expect(d.reportStranded).toHaveBeenCalledWith([{ path: '/r/a.md', error: 'target gone' }]);
+  });
+
+  it('a refusal already has its toast (mayLeave); a tab no longer here is nothing to move', async () => {
+    const refused = holder({ kind: 'refused' });
+    await handOverPulled('/r/a.md', 'editor-2', refused);
+    expect(refused.reportStranded).not.toHaveBeenCalled();
+    const gone = holder(undefined, null);
+    await handOverPulled('/r/a.md', 'editor-2', gone);
+    expect(gone.moveTabs).not.toHaveBeenCalled();
+    expect(gone.reportStranded).not.toHaveBeenCalled();
   });
 });
 
