@@ -209,8 +209,14 @@ pub fn resolve_scope(arg: &ScopeArg, cwd: &Path) -> Scope {
 
 /// `get` without a range returns at most this many lines…
 pub const GET_MAX_LINES: usize = 500;
-/// …and at most this many bytes (a single longer first line comes back whole).
+/// …and at most this many bytes: a single longer line is cut at a char
+/// boundary (`Sliced::cut`).
 pub const GET_MAX_BYTES: usize = 64 * 1024;
+/// `get` reads at most this much of a note file: a bigger one is readable
+/// through `get` only up to here, and its line count is then unknown. The
+/// same as the CLI's stdin cap for `add`, so a note an agent added is always
+/// whole.
+pub const GET_READ_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 const DAY_MS: i64 = 86_400_000;
 const HOUR_MS: i64 = 3_600_000;
@@ -319,8 +325,20 @@ pub struct Sliced {
     /// The lines actually returned; `[0, 0]` for an empty note.
     pub lines: [usize; 2],
     pub total_lines: usize,
-    /// Fewer lines than asked for came back (a cap was hit).
+    /// Fewer lines than asked for came back (a cap was hit), or the last
+    /// line came back cut.
     pub truncated: bool,
+    /// The one line returned was longer than `GET_MAX_BYTES` and was cut.
+    pub cut: bool,
+}
+
+/// The longest prefix of `s` within `max` bytes that ends on a char boundary.
+fn cut_at_boundary(s: &str, max: usize) -> &str {
+    let mut end = max.min(s.len());
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 /// The asked-for lines of `text` (all of them by default), within
@@ -335,6 +353,7 @@ pub fn slice_lines(text: &str, range: Option<LineRange>) -> Result<Sliced, Strin
             lines: [0, 0],
             total_lines: 0,
             truncated: false,
+            cut: false,
         });
     }
     if range.from > total {
@@ -346,23 +365,31 @@ pub fn slice_lines(text: &str, range: Option<LineRange>) -> Result<Sliced, Strin
     let wanted_to = range.to.unwrap_or(total).min(total);
     let mut out = String::new();
     let mut last = range.from - 1;
+    let mut cut = false;
     for (i, line) in all[range.from - 1..wanted_to].iter().enumerate() {
-        let over_lines = i >= GET_MAX_LINES;
-        let over_bytes = !out.is_empty() && out.len() + 1 + line.len() > GET_MAX_BYTES;
-        if over_lines || over_bytes {
+        let sep = usize::from(i > 0);
+        if i >= GET_MAX_LINES || (i > 0 && out.len() + sep + line.len() > GET_MAX_BYTES) {
             break;
         }
         if i > 0 {
             out.push('\n');
         }
-        out.push_str(line);
         last = range.from + i;
+        if out.len() + line.len() > GET_MAX_BYTES {
+            // Only the first line gets here (any later one broke above, to
+            // come first in the next range): no answer outgrows the cap.
+            out.push_str(cut_at_boundary(line, GET_MAX_BYTES - out.len()));
+            cut = true;
+            break;
+        }
+        out.push_str(line);
     }
     Ok(Sliced {
         text: out,
         lines: [range.from, last],
         total_lines: total,
-        truncated: last < wanted_to,
+        truncated: last < wanted_to || cut,
+        cut,
     })
 }
 
@@ -689,41 +716,80 @@ pub fn get(ctx: &Ctx, id: &str, lines: Option<LineRange>) -> StashAnswer {
         answer.hint = Some(format!("a file reference: read {} directly", entry.path));
         return answer;
     }
-    let text = match read_note(Path::new(&entry.path)) {
+    let (text, whole) = match read_note(Path::new(&entry.path)) {
         Ok(t) => t,
         Err(e) => {
             return StashAnswer::error(format!("cannot read the note file {}: {e}", entry.path))
         }
     };
-    match slice_lines(&text, lines) {
-        Ok(s) => {
-            if s.truncated {
-                answer.hint = Some(format!(
-                    "showing lines {}–{} of {}; the rest with lines {}:",
-                    s.lines[0],
-                    s.lines[1],
-                    s.total_lines,
-                    s.lines[1] + 1
-                ));
-            }
-            answer.text = Some(s.text);
-            answer.lines = Some(s.lines);
-            answer.total_lines = Some(s.total_lines);
-            answer.truncated = Some(s.truncated);
-            answer
+    let mib = GET_READ_MAX_BYTES >> 20;
+    let s = match slice_lines(&text, lines) {
+        Ok(s) => s,
+        Err(_) if !whole => {
+            return StashAnswer::error(format!(
+                "that range is past the first {mib} MiB of the note, all get reads: read {} directly",
+                entry.path
+            ))
         }
-        Err(e) => StashAnswer::error(e),
+        Err(e) => return StashAnswer::error(e),
+    };
+    // Past the read cap the line count is unknown, and a range that runs to
+    // the end did not reach it.
+    let reached_end = s.lines[1] == s.total_lines;
+    let truncated = s.truncated || (!whole && reached_end && lines.is_none_or(|r| r.to.is_none()));
+    let of = if whole { format!(" of {}", s.total_lines) } else { String::new() };
+    let mut hint = Vec::new();
+    if s.cut {
+        hint.push(format!(
+            "line {} is longer than 64 KiB and was cut; read {} for all of it",
+            s.lines[1], entry.path
+        ));
     }
+    if truncated && s.lines[1] < s.total_lines {
+        hint.push(format!(
+            "showing lines {}–{}{of}; the rest with lines {}:",
+            s.lines[0],
+            s.lines[1],
+            s.lines[1] + 1
+        ));
+    }
+    if !whole {
+        hint.push(format!(
+            "the note is over {mib} MiB: get reads its first {mib} MiB only (total lines unknown); read {} for the rest",
+            entry.path
+        ));
+    }
+    answer.hint = (!hint.is_empty()).then(|| hint.join("; "));
+    answer.text = Some(s.text);
+    answer.lines = Some(s.lines);
+    answer.total_lines = whole.then_some(s.total_lines);
+    answer.truncated = Some(truncated);
+    answer
 }
 
-/// A note's text through `open_readable_now`: a FIFO or a dataless iCloud
-/// file swapped in at the note's path fails at once instead of hanging.
-fn read_note(path: &Path) -> Result<String, String> {
-    let mut text = String::new();
+/// A note's text through `open_readable_now` (a FIFO or a dataless iCloud
+/// file swapped in at the note's path fails at once instead of hanging),
+/// at most `GET_READ_MAX_BYTES` of it: `(text, whole)`. A cut that lands
+/// inside a UTF-8 sequence drops that char; invalid UTF-8 before it is an
+/// error, as for a whole file.
+fn read_note(path: &Path) -> Result<(String, bool), String> {
+    let mut bytes = Vec::new();
     entries::open_readable_now(path)?
-        .read_to_string(&mut text)
+        .take(GET_READ_MAX_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
-    Ok(text)
+    let whole = bytes.len() <= GET_READ_MAX_BYTES;
+    bytes.truncate(GET_READ_MAX_BYTES);
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok((text, whole)),
+        Err(e) if !whole && e.utf8_error().error_len().is_none() => {
+            let valid = e.utf8_error().valid_up_to();
+            let mut bytes = e.into_bytes();
+            bytes.truncate(valid);
+            String::from_utf8(bytes).map(|t| (t, false)).map_err(|e| e.to_string())
+        }
+        Err(_) => Err("stream did not contain valid UTF-8".to_string()),
+    }
 }
 
 /// The reason every CLI/MCP write gives a running app (roadmap A6).
@@ -1834,7 +1900,8 @@ mod tests {
                 text: "a\nb\nc".to_string(),
                 lines: [1, 3],
                 total_lines: 3,
-                truncated: false
+                truncated: false,
+                cut: false
             }
         );
         assert_eq!(
@@ -1843,7 +1910,8 @@ mod tests {
                 text: String::new(),
                 lines: [0, 0],
                 total_lines: 0,
-                truncated: false
+                truncated: false,
+                cut: false
             }
         );
     }
@@ -1898,13 +1966,30 @@ mod tests {
         assert!(s.truncated);
         assert!(s.text.len() <= GET_MAX_BYTES);
         assert!(s.lines[1] < 300);
-        let huge = "y".repeat(GET_MAX_BYTES * 2);
+    }
+
+    #[test]
+    fn a_line_longer_than_the_byte_cap_is_cut_at_a_char_boundary() {
+        // `€` is 3 bytes and 64 KiB is not a multiple of 3: a byte cut would
+        // split one.
+        let huge = "€".repeat(GET_MAX_BYTES);
         let one = slice_lines(&huge, None).unwrap();
-        assert_eq!(
-            (one.text.len(), one.truncated),
-            (GET_MAX_BYTES * 2, false),
-            "one line comes back whole"
-        );
+        assert!(one.text.len() <= GET_MAX_BYTES && one.text.len() > GET_MAX_BYTES - 4);
+        assert!(one.text.chars().all(|c| c == '€'));
+        assert_eq!((one.lines, one.total_lines, one.truncated, one.cut), ([1, 1], 1, true, true));
+        // After short lines the long one waits for the next range…
+        let mixed = format!("a\nb\n{huge}\nc");
+        let first = slice_lines(&mixed, None).unwrap();
+        assert_eq!((first.text.as_str(), first.lines, first.cut), ("a\nb", [1, 2], false));
+        // …and there, alone, it is cut; so is a range that names it.
+        let alone = slice_lines(&mixed, Some(LineRange { from: 3, to: Some(3) })).unwrap();
+        assert_eq!((alone.lines, alone.truncated, alone.cut), ([3, 3], true, true));
+        assert!(alone.text.len() <= GET_MAX_BYTES);
+        // Empty lines first do not let a long one through whole.
+        let after_blank = format!("\n\n{huge}");
+        let s = slice_lines(&after_blank, None).unwrap();
+        assert!(s.text.len() <= GET_MAX_BYTES, "{}", s.text.len());
+        assert_eq!(s.lines, [1, 2]);
     }
 
     #[test]
@@ -2344,6 +2429,51 @@ mod tests {
             )
             .ok
         );
+    }
+
+    #[test]
+    fn get_never_answers_more_than_the_byte_cap() {
+        let loc = temp_location("get-long-line", true);
+        let cwd = outside_git();
+        // A one-line note: minified JSON, a pasted data URI.
+        let one_line = seed(&loc, &format!("# t\n{}\nend", "z".repeat(GET_MAX_BYTES * 3)), None, &[]);
+        let first = get(&ctx(&loc, &cwd), &one_line, None);
+        assert_eq!((first.lines, first.truncated), (Some([1, 1]), Some(true)));
+        let cut = get(&ctx(&loc, &cwd), &one_line, Some(LineRange { from: 2, to: Some(2) }));
+        assert!(cut.text.as_deref().unwrap().len() <= GET_MAX_BYTES);
+        assert_eq!((cut.lines, cut.total_lines, cut.truncated), (Some([2, 2]), Some(3), Some(true)));
+        let hint = cut.hint.unwrap();
+        assert!(hint.contains("line 2") && hint.contains("cut") && hint.contains("3:"), "{hint}");
+    }
+
+    #[test]
+    fn get_reads_at_most_the_read_cap_of_a_huge_note() {
+        let loc = temp_location("get-huge", true);
+        let cwd = outside_git();
+        let id = seed(&loc, "# huge", None, &[]);
+        let path = stored(&loc, &id).path;
+        // Lines of 1202 bytes well past the read cap; 4 MiB falls inside a
+        // two-byte `я` (4 MiB mod 1202 = 526, an odd offset in the line).
+        let line = format!("x{}\n", "я".repeat(600));
+        assert_eq!((line.len(), GET_READ_MAX_BYTES % line.len()), (1202, 526));
+        let body = line.repeat(GET_READ_MAX_BYTES / line.len() + 100);
+        fs::write(&path, &body).unwrap();
+        let head = get(&ctx(&loc, &cwd), &id, None);
+        assert!(head.ok, "{head:?}");
+        assert_eq!((head.lines, head.truncated), (Some([1, 54]), Some(true)));
+        assert_eq!(head.total_lines, None, "unknown past the read cap");
+        let far = get(&ctx(&loc, &cwd), &id, Some(LineRange { from: 3000, to: Some(3010) }));
+        assert_eq!(far.total_lines, None);
+        assert!(far.hint.as_deref().unwrap().contains("4 MiB"), "{far:?}");
+        assert!(far.text.as_deref().unwrap().starts_with("xя"));
+        // The last line read ends inside a char: dropped, not an error.
+        let tail = get(&ctx(&loc, &cwd), &id, Some(LineRange { from: 3489, to: None }));
+        assert!(tail.ok, "{tail:?}");
+        assert_eq!(tail.lines, Some([3489, 3490]));
+        assert!(tail.text.unwrap().ends_with('я'));
+        let past = get(&ctx(&loc, &cwd), &id, Some(LineRange { from: 1_000_000, to: None }));
+        assert!(!past.ok);
+        assert!(past.error.as_deref().unwrap().contains(&path), "{past:?}");
     }
 
     #[test]

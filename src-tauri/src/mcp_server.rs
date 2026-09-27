@@ -399,7 +399,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "stash_get",
-            "description": "The text of ONE stash note, by an id from stash_search or stash_list. A long note stops at 500 lines with `truncated: true`, `total_lines` and a `hint` naming the next range: ask for it with `lines` only if you need it. A file entry returns its path and no text — read the file itself. Notes are ordinary .md files: `show` and `edit` work on the returned `path`. Reading marks nothing as opened.",
+            "description": "The text of ONE stash note, by an id from stash_search or stash_list. A long note stops at 500 lines or 64 KiB with `truncated: true`, `total_lines` and a `hint` naming the next range: ask for it with `lines` only if you need it. A single line over 64 KiB comes back cut. A file entry returns its path and no text — read the file itself. Notes are ordinary .md files: `show` and `edit` work on the returned `path`. Reading marks nothing as opened.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
