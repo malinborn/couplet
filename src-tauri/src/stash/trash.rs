@@ -60,14 +60,17 @@ fn split_name(name: &str) -> (&str, Option<&str>) {
 }
 
 /// `dir/file_name`, or the first `stem-N.ext` (N = 2…999) that is free on disk
-/// and not held by another row (`taken`). Only a hint: the move itself is
-/// what refuses a name taken since (`move_into`).
+/// — its comment sidecar's name included, or the sidecar could not follow
+/// the note (D16) — and not held by another row (`taken`). Only a hint: the
+/// move itself is what refuses a name taken since (`move_into`).
 pub(crate) fn unique_target(
     dir: &Path,
     file_name: &str,
     taken: impl Fn(&Path) -> bool,
 ) -> Result<PathBuf, String> {
-    let free = |p: &Path| !occupied(p) && !taken(p);
+    let sidecar_free =
+        |p: &Path| crate::comments::sidecar_path(p).is_none_or(|s| !occupied(&s));
+    let free = |p: &Path| !occupied(p) && sidecar_free(p) && !taken(p);
     let first = dir.join(file_name);
     if free(&first) {
         return Ok(first);
@@ -1140,6 +1143,15 @@ mod tests {
     }
 
     #[test]
+    fn unique_target_skips_a_name_whose_comment_sidecar_is_taken() {
+        // A leftover sidecar (a failed sidecar purge) makes its document's
+        // name taken: the note's own sidecar could not follow it there.
+        let dir = scratch("trash-uniq-sidecar");
+        fs::write(dir.join(".mdmini_comments_a.md"), "stale threads").unwrap();
+        assert_eq!(unique_target(&dir, "a.md", never_taken).unwrap(), dir.join("a-2.md"));
+    }
+
+    #[test]
     fn unique_target_treats_a_dangling_symlink_as_taken() {
         let dir = scratch("trash-uniq-dangling");
         symlink(dir.join("nowhere"), dir.join("a.md")).unwrap();
@@ -1577,6 +1589,28 @@ mod tests {
         let moved_side = crate::comments::sidecar_path(Path::new(&path)).unwrap();
         assert_eq!(fs::read_to_string(moved_side).unwrap(), "threads");
         assert!(!side.exists());
+    }
+
+    #[test]
+    fn delete_never_leaves_the_sidecar_behind_for_a_stale_one_in_the_trash() {
+        let (mut stash, _root) = stash_in("trash-del-sidecar-stale");
+        let e = note(&mut stash, "x");
+        let name = PathBuf::from(&e.path).file_name().unwrap().to_owned();
+        let trash = stash.paths.trash_dir.clone();
+        fs::create_dir_all(&trash).unwrap();
+        let stale = crate::comments::sidecar_path(&trash.join(&name)).unwrap();
+        fs::write(&stale, "stale threads").unwrap();
+        let side = crate::comments::sidecar_path(Path::new(&e.path)).unwrap();
+        fs::write(&side, "threads").unwrap();
+
+        stash.delete_entry(&e.id, T0).unwrap();
+
+        let (path, _, _) = row(&stash, &e.id).unwrap();
+        assert!(path.ends_with("-2.md"), "{path}");
+        let moved_side = crate::comments::sidecar_path(Path::new(&path)).unwrap();
+        assert_eq!(fs::read_to_string(moved_side).unwrap(), "threads");
+        assert!(!side.exists(), "the deleted text's threads must not stay readable");
+        assert_eq!(fs::read_to_string(&stale).unwrap(), "stale threads");
     }
 
     #[test]
