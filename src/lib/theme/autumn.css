@@ -28,6 +28,7 @@
   --color-bold: #8a3f22;
   --color-italic: #6b3a66;
   --color-link: #3b5c96;
+  --color-stash: var(--color-link);
   --color-code-bg: #ebd8bf;
   --color-code-text: #3b1d36;
   --color-selection: #f3c8a2;
@@ -94,6 +95,7 @@
   --color-bold: #ffa45c;
   --color-italic: #dcb6d8;
   --color-link: #a3bdec;
+  --color-stash: var(--color-link);
   --color-code-bg: #382040;
   --color-code-text: #f2e1cd;
   --color-selection: #5c2e4a;

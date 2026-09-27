@@ -267,12 +267,12 @@
     text-overflow: ellipsis;
   }
 
-  /* The stash glyph before a note's name; the mockup's `--stash` is the theme's link colour. */
+  /* The stash glyph before a note's name, in the stash colour (the mockup's `--stash`). */
   .card-name .sg {
     display: inline-flex;
     vertical-align: -2px;
     margin-right: 5px;
-    color: var(--color-link);
+    color: var(--color-stash);
   }
 
   /* A file that is also in the stash: a small tray after its name, no text (spec «Отметка тайника»). */
@@ -282,7 +282,7 @@
     place-items: center;
     width: 14px;
     height: 14px;
-    color: color-mix(in oklab, var(--color-link) 70%, var(--text-muted));
+    color: color-mix(in oklab, var(--color-stash) 70%, var(--text-muted));
   }
 
   .card.untitled .card-name {

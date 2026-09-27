@@ -16,7 +16,7 @@ A theme is a set of CSS custom properties on `:root[data-theme='<id>']`. Compone
 | Surfaces | `--bg-base` (page, fields), `--bg-surface` (panels), `--bg-overlay`, `--highlight` (hover), `--color-code-bg`, `--color-line-highlight`, `--color-table-even-bg`, `--color-selection` |
 | Text | `--text-primary`, `--text-subtle` (secondary, placeholders), `--text-muted` (quietest), `--color-code-text`, `--color-cursor` |
 | Borders and rules | `--border` (UI), `--color-border`, `--color-table-border`, `--color-hr`, `--color-blockquote-border` |
-| Accent | `--color-glow` (RGB triple), `--color-link`, `--color-checkbox` |
+| Accent | `--color-glow` (RGB triple), `--color-link`, `--color-checkbox`, `--color-stash` (the stash drawer; every theme sets it to `var(--color-link)` — change the value, not the components, to tune a theme) |
 | Markdown | `--color-heading`, `--heading-tone-1` … `--heading-tone-6`, `--color-bold`, `--color-italic`, `--color-strikethrough`, `--color-list-marker` |
 | AI | `--ai-edit-bg`, `--ai-edit-shimmer`, `--ai-ask-bg`, `--ai-ask-border`, `--ai-ask-chip-bg`, `--ai-ask-chip-hover-bg`, `--ai-ask-accent`, `--ai-ask-accent-text` |
 | Fonts | `--font-text`, `--font-code` |
@@ -24,6 +24,8 @@ A theme is a set of CSS custom properties on `:root[data-theme='<id>']`. Compone
 **Optional hooks**, which a theme may define on top of the set. Every read of one carries a fallback: `--heading-grad-1` … `-6`, `--heading-grad-span`, `--color-caret-top`, `--color-caret-bottom`, `--color-task-done`, `--color-task-done-line`, `--task-done-grad`, `--table-header-grad`, `--table-header-text`, `--bg-image`. A theme defining anything else fails the test. Declare a new hook in `OPTIONAL_HOOKS` first.
 
 **`tabs-*` tokens** are not theme tokens. They live on plain `:root` in `src/styles/tabs.css` (`--tabs-ai-*`, `--tabs-brand-*`, `--tabs-ease`, `--tabs-ui`, `--tabs-shadow-rgb`, `--tabs-shadow-a`), with per-theme overrides beside them there (`aurora-light`, `$='dark'`).
+
+**`stash-*` tokens** (`--stash-tint`, `--stash-line`, `--stash-soft`) are not theme tokens either: they live on plain `:root` in `src/styles/stash.css`, mixed from `--color-stash`. `src/lib/stash/stash-tokens.test.ts` pins both halves.
 
 ## Allowlist in the guard
 

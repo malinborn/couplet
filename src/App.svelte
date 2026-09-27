@@ -128,6 +128,7 @@
   import './styles/global.css';
   import './styles/editor.css';
   import './styles/tabs.css';
+  import './styles/stash.css';
 
   const theme = createThemeStore();
   const engine = createEngineStore();

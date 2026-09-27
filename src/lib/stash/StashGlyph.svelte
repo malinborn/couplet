@@ -2,8 +2,8 @@
   /**
    * The stash glyph — the mockup's tray (`ICONS.tray` in
    * docs/investigations/2026-09-26-stash-mockup/stash-drawers.html). It draws
-   * in `currentColor`: the caller sets the theme's link colour, as the
-   * mockup's `--stash` does (stage 04 may give the stash a token of its own).
+   * in `currentColor`: the caller sets `var(--color-stash)`, the theme token
+   * that plays the mockup's `--stash`.
    * `label`: announced; otherwise decorative.
    */
   let { size = 13, label = null }: { size?: number; label?: string | null } = $props();
