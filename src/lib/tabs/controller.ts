@@ -389,6 +389,18 @@ export function createTabController(deps: TabControllerDeps) {
   const birthing = new Set<string>();
   /** Tab id → when its last birth failed (`NOTE_RETRY_MS`). */
   const birthFailedAt = new Map<string, number>();
+  /**
+   * Tab id → the note a birth created whose claim did not land, and the text
+   * it holds. A retry claims that note again instead of creating another:
+   * every retry would otherwise leave one more copy of the text in the stash.
+   */
+  const unclaimedNotes = new Map<string, { path: string; text: string }>();
+
+  /** `tabId` left this window: its birth bookkeeping goes with it. */
+  function forgetBirth(tabId: string): void {
+    unclaimedNotes.delete(tabId);
+    birthFailedAt.delete(tabId);
+  }
 
   /**
    * The last change to the live document since its tab was shown — typing,
@@ -533,15 +545,23 @@ export function createTabController(deps: TabControllerDeps) {
       const text = heldText(tabId);
       if (text === null || isBlankText(text)) return { kind: 'skipped' };
       let created: string;
+      const unclaimed = unclaimedNotes.get(tabId);
       try {
-        created = (await notes.create(text)).path;
+        if (unclaimed === undefined) {
+          created = (await notes.create(text)).path;
+        } else {
+          created = unclaimed.path;
+          // Nobody's tab holds it yet: the text typed since goes in before the claim.
+          if (unclaimed.text !== text) await deps.disk.write(created, text, 'lf');
+        }
       } catch (err) {
         return failBirth(tabId, message(err), quiet);
       }
       // The note holds `text` from here on, whatever happens to the tab.
+      unclaimedNotes.set(tabId, { path: created, text });
       const step = decideSaveAs(await notes.claim(tabId, created), created);
       if (step.kind === 'blocked') return failBirth(tabId, `the tab could not take ${created}`, quiet);
-      birthFailedAt.delete(tabId);
+      forgetBirth(tabId);
       if (!findById(list, tabId)) return { kind: 'skipped' };
       if (tabId === list.activeId) {
         // Read and flagged with no await in between, then flushed: what was
@@ -1080,6 +1100,7 @@ export function createTabController(deps: TabControllerDeps) {
         closing.path === null ? (cached?.state?.doc.toString() ?? cached?.content ?? null) : null;
       cache.delete(tabId);
       deps.ai.forget(tabId);
+      forgetBirth(tabId);
       publish(removeTab(list, tabId).state);
       await finish({ cursor: cached?.cursor ?? 0, topLine: cached?.topLine ?? 1 }, discarded);
       deps.settled();
@@ -1132,6 +1153,7 @@ export function createTabController(deps: TabControllerDeps) {
     deps.editor.stripForBackground();
     cache.delete(tabId);
     deps.ai.forget(tabId);
+    forgetBirth(tabId);
     for (const id of next.failed) cache.delete(id);
     publish(next.working);
     if (next.tab === null) {
@@ -1258,7 +1280,10 @@ export function createTabController(deps: TabControllerDeps) {
       deps.settled();
       return { kind: 'failed', error };
     }
-    for (const id of moving) cache.delete(id);
+    for (const id of moving) {
+      cache.delete(id);
+      forgetBirth(id);
+    }
     if (next?.tab && entry) await settle(next.tab, entry.restore, false);
     else deps.settled();
     // D6: an emptied window closes — after Rust holds its tabs elsewhere, and

@@ -2393,6 +2393,83 @@ describe('notes', () => {
     expect(h.files.get('/notes/n1.md')).toBe('x');
   });
 
+  it('ARetryAfterARefusedClaimClaimsTheSameNote_NeverASecondCreate', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.notes.claim.mockResolvedValueOnce({ kind: 'refused' });
+    h.type('x');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.controller.list.tabs[0].path).toBeNull();
+
+    h.type('y');
+    h.clock.now += NOTE_RETRY_MS;
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledTimes(1);
+    expect(h.notes.claim).toHaveBeenCalledTimes(2);
+    expect(h.notes.claim).toHaveBeenLastCalledWith('u', '/notes/n1.md');
+    expect(h.controller.list.tabs[0].path).toBe('/notes/n1.md');
+    // What was typed since the note was created ends up in it.
+    expect(h.files.get('/notes/n1.md')).toBe('xy');
+    expect(h.files.has('/notes/n2.md')).toBe(false);
+    expect(h.doc.dirty).toBe(false);
+  });
+
+  it('ABackgroundRetryWritesTheTabsTextIntoTheRememberedNoteBeforeClaimingIt', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.notes.claim.mockResolvedValueOnce({ kind: 'refused' });
+    h.type('x');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    h.type('y');
+    h.clock.now += NOTE_RETRY_MS;
+    await h.controller.activate('a');
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledTimes(1);
+    const u = h.controller.list.tabs.find((t) => t.id === 'u');
+    expect(u?.path).toBe('/notes/n1.md');
+    expect(h.files.get('/notes/n1.md')).toBe('xy');
+    await h.controller.activate('u');
+    expect(h.live().doc.toString()).toBe('xy');
+    expect(h.doc.dirty).toBe(false);
+  });
+
+  it('ARememberedNoteThatCannotTakeTheNewTextIsAFailedBirth', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.notes.claim.mockResolvedValueOnce({ kind: 'refused' });
+    h.type('x');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    h.type('y');
+    h.setWriteFails(true);
+    h.clock.now += NOTE_RETRY_MS;
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledTimes(1);
+    expect(h.notes.claim).toHaveBeenCalledTimes(1);
+    expect(h.controller.list.tabs[0].path).toBeNull();
+    expect(h.notes.failed).toHaveBeenLastCalledWith('EACCES');
+    expect(h.live().doc.toString()).toBe('xy');
+  });
+
+  it('ClosingATabForgetsItsRememberedNote', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.notes.claim.mockResolvedValue({ kind: 'refused' });
+    h.type('x');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    await h.controller.closeActive();
+    expect(h.notes.create).toHaveBeenCalledTimes(1);
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'x', false);
+    // The same id back (a move returning it): a fresh birth, not the old note.
+    h.notes.claim.mockResolvedValue({ kind: 'claimed', path: '/notes/n2.md' });
+    await h.controller.arrive([untitledTab('u', 'again')]);
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledTimes(2);
+    expect(h.files.get('/notes/n1.md')).toBe('x');
+    expect(h.files.get('/notes/n2.md')).toBe('again');
+  });
+
   it('ClosingATabWhoseBirthFailedStillKeepsTheRescueCopy', async () => {
     const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
     h.notes.create.mockRejectedValue(new Error('EPERM'));
