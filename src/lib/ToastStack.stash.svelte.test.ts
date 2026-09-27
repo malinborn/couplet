@@ -46,6 +46,29 @@ describe('ToastStack — stash notices', () => {
     expect(target.querySelector('.md-toast')).toBeNull();
   });
 
+  it('a delete a tab held back offers «Перейти» to that window (stage 06)', () => {
+    const { store, onRevealWindow } = render();
+    store.push({
+      kind: 'stash',
+      note: { what: 'kept', reason: 'unsaved', title: 'Планы', label: 'editor-2', number: 2 },
+    });
+    flushSync();
+    expect(target.querySelector('.md-toast-text')?.textContent?.trim()).toBe(
+      'Заметка Планы открыта в #2 и ещё не сохранена — не удалена'
+    );
+    target.querySelector<HTMLButtonElement>('.md-toast-action')!.click();
+    flushSync();
+    expect(onRevealWindow).toHaveBeenCalledWith('editor-2');
+  });
+
+  it('the trash reports go nowhere: no «Перейти»', () => {
+    const { store } = render();
+    store.push({ kind: 'stash', note: { what: 'trashed', title: 'Планы' } });
+    flushSync();
+    expect(target.querySelector('.md-toast-text')?.textContent?.trim()).toBe('Заметка Планы в удалённых');
+    expect(target.querySelector('.md-toast-action')).toBeNull();
+  });
+
   it('a notice with no dim part draws no empty dim line', () => {
     const { store } = render();
     store.push({ kind: 'stash', note: { what: 'pull-failed', number: 19, label: 'editor-19' } });

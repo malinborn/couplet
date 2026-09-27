@@ -80,4 +80,38 @@ describe('stashToastText', () => {
       dim: 'database is locked',
     });
   });
+
+  describe('the trash (stage 06)', () => {
+    it('a note went to the trash', () => {
+      expect(stashToastText({ what: 'trashed', title: 'Черновик' })).toEqual({
+        text: 'Заметка Черновик в удалённых',
+        dim: '· 30 дней можно вернуть',
+      });
+    });
+
+    it('a note came back — and says when the repo chip hides it', () => {
+      expect(stashToastText({ what: 'restored', title: 'Идеи', hiddenBy: null })).toEqual({
+        text: 'Заметка Идеи вернулась в тайник',
+        dim: '· с тегами, наверху',
+      });
+      expect(stashToastText({ what: 'restored', title: 'Идеи', hiddenBy: 'infra' }).dim).toBe(
+        '· с тегами, наверху · скрыта фильтром #infra'
+      );
+    });
+
+    it('a note was purged', () => {
+      expect(stashToastText({ what: 'purged', title: 'Идеи' })).toEqual({
+        text: 'Заметка Идеи удалена навсегда',
+        dim: '',
+      });
+    });
+
+    it('a note stayed, and why; an unknown window number reads «?»', () => {
+      const kept = (reason: 'unsaved' | 'timeout' | 'open', number: number | null) =>
+        stashToastText({ what: 'kept', reason, title: 'Планы', label: 'editor-2', number }).text;
+      expect(kept('unsaved', 2)).toBe('Заметка Планы открыта в #2 и ещё не сохранена — не удалена');
+      expect(kept('timeout', 2)).toBe('Окно #2 не ответило — заметка Планы не удалена');
+      expect(kept('open', null)).toBe('Заметку Планы снова открыли в #? — не удалена');
+    });
+  });
 });

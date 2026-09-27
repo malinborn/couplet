@@ -9,6 +9,8 @@
  * a drawer IPC call that failed (list, tag, delete, move).
  */
 import { plural, t } from '../i18n';
+import { TRASH_DAYS } from './trash-view';
+import type { KeptReason } from './types';
 
 export type StashToastNote =
   | {
@@ -41,7 +43,17 @@ export type StashToastNote =
   | { what: 'removed'; title: string }
   | { what: 'widened' }
   | { what: 'pull-failed'; number: number | null; label: string }
-  | { what: 'error'; message: string };
+  | { what: 'error'; message: string }
+  /** Stage 06: a note went to the trash («удалить»). */
+  | { what: 'trashed'; title: string }
+  /** «вернуть»; `hiddenBy`: the repo chip that hides it in the stash now. */
+  | { what: 'restored'; title: string; hiddenBy: string | null }
+  | { what: 'purged'; title: string }
+  /**
+   * A delete that did not happen: a tab in window `label` still holds the
+   * note. Stands until dismissed; «Перейти» shows that window.
+   */
+  | { what: 'kept'; reason: KeptReason; title: string; label: string; number: number | null };
 
 export interface StashToastText {
   text: string;
@@ -93,5 +105,21 @@ export function stashToastText(note: StashToastNote): StashToastText {
       return { text: t('toast.stash.pull_failed', { n: note.number ?? '?' }), dim: '' };
     case 'error':
       return { text: t('toast.stash.error'), dim: note.message };
+    case 'trashed':
+      return {
+        text: t('toast.stash.trashed', { title: note.title }),
+        dim: t('toast.stash.trashed_tail', { days: TRASH_DAYS }),
+      };
+    case 'restored': {
+      const tail = t('toast.stash.restored_tail');
+      return {
+        text: t('toast.stash.restored', { title: note.title }),
+        dim: note.hiddenBy === null ? tail : `${tail} ${t('toast.stash.restored_hidden', { repo: note.hiddenBy })}`,
+      };
+    }
+    case 'purged':
+      return { text: t('toast.stash.purged', { title: note.title }), dim: '' };
+    case 'kept':
+      return { text: t(`toast.stash.kept_${note.reason}`, { title: note.title, number: note.number ?? '?' }), dim: '' };
   }
 }

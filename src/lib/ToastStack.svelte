@@ -16,7 +16,7 @@
      */
     onFormatJson,
     /**
-     * «Перейти» on a `tabs-moved` toast and on a stash `pull-failed` one: bring
+     * «Перейти» on a `tabs-moved` toast and on a stash `pull-failed` or `kept` one: bring
      * that window forward (`reveal_other_window`).
      */
     onRevealWindow,
@@ -185,7 +185,7 @@
           {@const text = stashToastText(note)}
           <span class="md-toast-text">{text.text}</span>
           {#if text.dim}<span class="md-toast-dim">{text.dim}</span>{/if}
-          {#if note.what === 'pull-failed'}
+          {#if note.what === 'pull-failed' || note.what === 'kept'}
             <button
               class="md-toast-cmd md-toast-action"
               onclick={() => {

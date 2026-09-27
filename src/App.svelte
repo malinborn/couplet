@@ -1027,10 +1027,17 @@
    */
   async function removeStashEntry(entry: StashEntry): Promise<void> {
     const outcome = await stashStore.removeEntry(entry);
+    const title = entryTitle(entry, stashUntitled());
     if (outcome.kind === 'failed') {
       toasts.push({ kind: 'stash', note: { what: 'error', message: outcome.message } });
     } else if (outcome.kind === 'removed') {
-      quietStashToast({ what: 'removed', title: entryTitle(entry, stashUntitled()) });
+      quietStashToast({ what: 'removed', title });
+    } else if (outcome.kind === 'trashed') {
+      quietStashToast({ what: 'trashed', title });
+    } else if (outcome.kind === 'kept') {
+      // Stands: the human has to go to that window and deal with the tab.
+      const { reason, label, number } = outcome;
+      toasts.push({ kind: 'stash', note: { what: 'kept', reason, title, label, number } });
     }
   }
 
