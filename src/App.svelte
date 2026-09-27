@@ -59,6 +59,7 @@
     stashDelete,
     stashEntryForPath,
     stashDropDone,
+    stashNoteSavedAs,
     stashPurge,
     stashRestore,
     stashSearch,
@@ -119,7 +120,7 @@
   import { emptyTabList, type TabListState, type TabMeta } from './lib/tabs/tab-model';
   import type { CarouselWindow, MoveTarget } from './lib/tabs/carousel';
   import { stripLeavingState } from './lib/tabs/tab-cache';
-  import { decideSaveAs } from './lib/tabs/save-as';
+  import { decideSaveAs, savedAsReport, type SavedAsReport } from './lib/tabs/save-as';
   import { createCommentWriter, adoptStartedDraft } from './lib/comment-writer';
   import {
     addAiComment,
@@ -491,16 +492,21 @@
     const path = await showSaveDialog(name);
     if (!path) return;
     const fileName = path.split('/').pop() ?? path;
-    await tabs.runExclusive(async () => {
+    const report = await tabs.runExclusive(async (): Promise<SavedAsReport | null> => {
       if (tabId === null || !tabs.list.tabs.some((tab) => tab.id === tabId)) {
         toasts.push({ kind: 'save-as-blocked', fileName, reason: 'tab-gone' });
-        return;
+        return null;
       }
       if (tabs.list.activeId !== tabId) {
         // The human's choice wins over the agent's switch. A refusal has
         // already said why (unsaved-blocked, save-error, open-error).
-        if ((await tabs.activateNow(tabId)) !== 'ok') return;
+        if ((await tabs.activateNow(tabId)) !== 'ok') return null;
       }
+      // A14: a note leaves the stash only if the new file holds exactly what
+      // its old file holds — so the old file gets the last keystrokes first
+      // (under the autosave's own gate; a paused one leaves the note behind).
+      const oldPath = fileState.filePath;
+      await autoSave.flush();
       // Claimed before anything is written: the tab must own `path` first, or
       // a file another tab holds ends up in two autosaving editors.
       const claim = await invoke<TabClaim>('tab_claim', { tabId, path }).catch((err: unknown) => {
@@ -513,16 +519,26 @@
         if (step.focusOtherWindow) {
           await invoke('focus_if_open', { path }).catch(logTabIpc('focus_if_open'));
         }
-        return;
+        return null;
       }
       fileState.filePath = step.path;
       tabs.renameActive(step.path);
       await performSave();
+      // Read as the save left it: a failed write keeps the tab dirty.
+      const report = savedAsReport(oldPath, step.path, { path: fileState.filePath, dirty: fileState.isDirty });
       // The claim pointed the watcher at the path before the save created it,
       // and a file that does not exist yet is not watched.
       await invoke('tab_activate', { tabId }).catch(logTabIpc('tab_activate'));
       recentFiles.add(step.path);
+      return report;
     });
+    // After the tab queue is released: Rust reads both files, and a slow
+    // volume must not hold agents behind it. Rust decides whether it was a note.
+    if (report) {
+      void stashNoteSavedAs(report.oldPath, report.newPath).catch((err: unknown) =>
+        console.error('stash_note_saved_as failed:', err)
+      );
+    }
   }
 
   async function handleOpen(): Promise<void> {

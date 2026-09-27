@@ -16,6 +16,7 @@ import {
   stashEntryForPath,
   stashGet,
   stashList,
+  stashNoteSavedAs,
   stashPurge,
   stashPutAway,
   stashRestore,
@@ -142,6 +143,12 @@ describe('stash ipc for the trash (stage 06)', () => {
     expect(call()).toEqual(['stash_purge', { id: 's2' }]);
     await stashDropDone(7, true);
     expect(call()).toEqual(['stash_drop_done', { requestId: 7, dropped: true }]);
+  });
+
+  it('reports a Save As with both paths, camelCased', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(true);
+    await expect(stashNoteSavedAs('/n/s1.md', '/work/plan.md')).resolves.toBe(true);
+    expect(call()).toEqual(['stash_note_saved_as', { oldPath: '/n/s1.md', newPath: '/work/plan.md' }]);
   });
 });
 

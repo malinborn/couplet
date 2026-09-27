@@ -141,6 +141,15 @@ export function stashDropDone(requestId: number, dropped: boolean): Promise<void
   return invoke<void>('stash_drop_done', { requestId, dropped });
 }
 
+/**
+ * A Save As moved `oldPath` to `newPath` (A14). Rust trashes `oldPath` only if
+ * it was a live note whose bytes the new file holds; `true` = moved. Fire and
+ * forget, never awaited in the tab queue: Rust reads both files.
+ */
+export function stashNoteSavedAs(oldPath: string, newPath: string): Promise<boolean> {
+  return invoke<boolean>('stash_note_saved_as', { oldPath, newPath });
+}
+
 /** Per path, the other window holding it («открыта в #N»); `null` for nobody or this window. */
 export function tabHolders(paths: string[]): Promise<(TabHolder | null)[]> {
   return invoke<(TabHolder | null)[]>('tab_holders', { paths });

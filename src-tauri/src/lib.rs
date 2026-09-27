@@ -204,6 +204,7 @@ pub fn run() {
             stash::commands::stash_restore,
             stash::commands::stash_purge,
             stash::commands::stash_drop_done,
+            stash::commands::stash_note_saved_as,
             stash::commands::stash_search,
             recovery::save_recovery,
             recovery::delete_recovery,

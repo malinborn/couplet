@@ -5,7 +5,7 @@
 //! verifies and only then removes the source.
 
 use std::fs;
-use std::io::{ErrorKind, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -676,6 +676,113 @@ pub(crate) fn restore(state: &StashState, id: &str, now: i64) -> Result<StashEnt
         }
     }
     Ok(entry)
+}
+
+// ---- Save As from a note (roadmap A14, stash-questions Q3) ----
+
+/// The most `note_saved_as` reads of either file to compare them. A larger
+/// note simply stays in the stash (a duplicate, never a loss).
+const SAVED_AS_COMPARE_CAP: u64 = 16 * 1024 * 1024;
+
+/// The whole file, for a byte compare: `open_readable_now`'s refusals (no
+/// FIFO hang, no iCloud download), and nothing over the cap.
+fn read_for_compare(path: &Path) -> Result<Vec<u8>, String> {
+    let file = super::entries::open_readable_now(path)?;
+    let mut bytes = Vec::new();
+    file.take(SAVED_AS_COMPARE_CAP + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > SAVED_AS_COMPARE_CAP {
+        return Err(format!("larger than {SAVED_AS_COMPARE_CAP} bytes"));
+    }
+    Ok(bytes)
+}
+
+/// Whether both files hold the same bytes, lengths first; `Err` when either
+/// cannot be read now.
+fn same_bytes(a: &Path, b: &Path) -> Result<bool, String> {
+    let len = |p: &Path| {
+        fs::metadata(p)
+            .map(|m| m.len())
+            .map_err(|e| format!("{}: {e}", p.display()))
+    };
+    if len(a)? != len(b)? {
+        return Ok(false);
+    }
+    let read = |p: &Path| read_for_compare(p).map_err(|e| format!("{}: {e}", p.display()));
+    Ok(read(a)? == read(b)?)
+}
+
+impl Stash {
+    /// `note_saved_as`'s locked half: the note `id` into the trash, like a
+    /// delete, but only while its row is still a live note naming `old` and
+    /// its file is still there. `false`: something changed since the compare,
+    /// and nothing was touched.
+    pub(crate) fn trash_saved_note(&mut self, id: &str, old: &str, now: i64) -> Result<bool, String> {
+        let r = row(&self.conn, id)?;
+        if r.kind != StashKind::Note.as_str()
+            || r.deleted_at.is_some()
+            || r.path != old
+            || !occupied(Path::new(old))
+        {
+            return Ok(false);
+        }
+        self.trash_note(id, old, now)?;
+        Ok(true)
+    }
+}
+
+/// «Сохранить как…» from a note (A14): once the tab has claimed `new` and
+/// written it, the note has moved out of the stash. Its old file goes into
+/// the trash and its row becomes trashed — restorable from «Удалённые» and
+/// purged after 30 days like any delete (Q3) — but only when every check
+/// holds: the paths differ, no tab holds `old` any more (`held`, the
+/// registry's owner check: nothing may autosave it back), `old` is a live
+/// note, and `new` holds exactly the old file's bytes. Anything else leaves
+/// the note in the stash (a duplicate, never a loss) and answers `None`.
+///
+/// Both paths are normalized first, and the two files are read with no lock
+/// held; `held` takes its own short `OpenFiles` lock and returns before the
+/// stash lock is taken (A11). `Some(id)`: the entry now trashed.
+pub(crate) fn note_saved_as(
+    state: &StashState,
+    old: &str,
+    new: &str,
+    held: impl Fn(&str) -> bool,
+    now: i64,
+) -> Result<Option<String>, String> {
+    let old = crate::path_norm::normalize_str(old);
+    let new = crate::path_norm::normalize_str(new);
+    if old == new {
+        return Ok(None);
+    }
+    if held(&old) {
+        eprintln!("[stash::trash] saved as {new}, but a tab still holds {old}: the note stays");
+        return Ok(None);
+    }
+    let id = match state.with(|s| s.entry_for_path(&old))? {
+        Some(e) if e.kind == StashKind::Note && e.deleted_at.is_none() => e.id,
+        _ => return Ok(None),
+    };
+    match same_bytes(Path::new(&old), Path::new(&new)) {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!("[stash::trash] {new} differs from note {id}: the note stays");
+            return Ok(None);
+        }
+        Err(e) => {
+            eprintln!("[stash::trash] note {id} saved as {new} not compared ({e}): the note stays");
+            return Ok(None);
+        }
+    }
+    let offset = clock::local_offset_secs(now.div_euclid(1000));
+    state.with(|s| {
+        let moved = s.trash_saved_note(&id, &old, now)?;
+        if moved {
+            s.after_write(now, offset);
+        }
+        Ok(moved.then_some(id))
+    })
 }
 
 // ---- the delete flow (D2/D3) ----
@@ -2385,5 +2492,211 @@ mod tests {
 
         assert!(!done.changed());
         assert!(!export.exists());
+    }
+
+    // ---- Save As from a note (A14, stash-questions Q3) ----
+
+    fn nobody_holds(_: &str) -> bool {
+        false
+    }
+
+    /// `path` spelled through `link -> target`, where `path` lies under `target`.
+    fn spelled_via(path: &str, target: &Path, link: &Path) -> PathBuf {
+        let target = crate::path_norm::normalize_str(&target.to_string_lossy());
+        link.join(Path::new(path).strip_prefix(&target).unwrap())
+    }
+
+    fn live_row(state: &StashState, id: &str) -> (String, Option<i64>, Option<i64>) {
+        state.with(|s| Ok(row(s, id))).unwrap().unwrap()
+    }
+
+    #[test]
+    fn a_note_saved_as_elsewhere_goes_into_the_trash_and_the_new_file_stays() {
+        let (state, root) = state_in("trash-saved-as");
+        let text = "# План\nтайное слово\n";
+        let e = state.with(|s| s.create_note(text, None, T0, MSK)).unwrap();
+        state.with(|s| s.tag(&e.id, &["work".to_string()], &[])).unwrap();
+        let side = crate::comments::sidecar_path(Path::new(&e.path)).unwrap();
+        fs::write(&side, "threads").unwrap();
+        let new = user_file(&root, "plans/План.md", text);
+
+        let moved = note_saved_as(&state, &e.path, &new, nobody_holds, T0 + 5).unwrap();
+
+        assert_eq!(moved, Some(e.id.clone()));
+        let (trashed, deleted_at, _) = live_row(&state, &e.id);
+        assert_eq!(deleted_at, Some(T0 + 5));
+        let trash = state.with(|s| Ok(s.paths.trash_dir.clone())).unwrap();
+        assert_eq!(Path::new(&trashed).parent().unwrap(), trash);
+        assert_eq!(fs::read(&trashed).unwrap(), text.as_bytes());
+        assert!(!Path::new(&e.path).exists());
+        let trashed_side = crate::comments::sidecar_path(Path::new(&trashed)).unwrap();
+        assert_eq!(fs::read_to_string(trashed_side).unwrap(), "threads");
+        assert!(!state.with(|s| Ok(indexed(s, &e.id))).unwrap());
+        assert_eq!(state.with(|s| Ok(tags(s, &e.id))).unwrap(), vec!["work".to_string()]);
+        assert_eq!(fs::read_to_string(&new).unwrap(), text);
+        let export = state.with(|s| Ok(s.paths.export_path.clone())).unwrap();
+        assert!(export.exists(), "after_write ran");
+    }
+
+    #[test]
+    fn a_note_whose_saved_copy_differs_stays_in_the_stash() {
+        let (state, root) = state_in("trash-saved-as-differs");
+        let e = state.with(|s| s.create_note("первое", None, T0, MSK)).unwrap();
+        let new = user_file(&root, "copy.md", "первое и ещё");
+        let before = live_row(&state, &e.id);
+
+        assert_eq!(note_saved_as(&state, &e.path, &new, nobody_holds, T0 + 5).unwrap(), None);
+
+        assert_eq!(live_row(&state, &e.id), before);
+        assert_eq!(fs::read_to_string(&e.path).unwrap(), "первое");
+        assert!(state.with(|s| Ok(indexed(s, &e.id))).unwrap());
+        assert_eq!(fs::read_to_string(&new).unwrap(), "первое и ещё");
+        let export = state.with(|s| Ok(s.paths.export_path.clone())).unwrap();
+        assert!(!export.exists());
+    }
+
+    #[test]
+    fn a_note_whose_saved_copy_cannot_be_read_stays_in_the_stash() {
+        let (state, root) = state_in("trash-saved-as-unreadable");
+        let e = state.with(|s| s.create_note("x", None, T0, MSK)).unwrap();
+        let before = live_row(&state, &e.id);
+        let missing = root.join("work").join("gone.md");
+        let dir = root.join("work").join("a-dir.md");
+        fs::create_dir_all(&dir).unwrap();
+
+        for new in [&missing, &dir] {
+            let new = new.to_string_lossy();
+            assert_eq!(note_saved_as(&state, &e.path, &new, nobody_holds, T0 + 5).unwrap(), None);
+        }
+
+        assert_eq!(live_row(&state, &e.id), before);
+        assert_eq!(fs::read_to_string(&e.path).unwrap(), "x");
+    }
+
+    #[test]
+    fn a_file_reference_saved_as_is_left_alone() {
+        let (state, root) = state_in("trash-saved-as-file-ref");
+        let (fref, path) = state.with(|s| Ok(file_ref(s, &root, "a.md", "text"))).unwrap();
+        let new = user_file(&root, "b.md", "text");
+        let before = live_row(&state, &fref.id);
+
+        let old = path.to_string_lossy();
+        assert_eq!(note_saved_as(&state, &old, &new, nobody_holds, T0 + 5).unwrap(), None);
+
+        assert_eq!(live_row(&state, &fref.id), before);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "text");
+    }
+
+    #[test]
+    fn a_trashed_note_is_left_alone() {
+        let (state, root) = state_in("trash-saved-as-trashed");
+        let e = state.with(|s| s.create_note("x", None, T0, MSK)).unwrap();
+        state.with(|s| s.delete_entry(&e.id, T0 + 1)).unwrap();
+        let before = live_row(&state, &e.id);
+        let new = user_file(&root, "x.md", "x");
+
+        // By its old name (no row names it now) and by its trash path.
+        for old in [e.path.clone(), before.0.clone()] {
+            assert_eq!(note_saved_as(&state, &old, &new, nobody_holds, T0 + 5).unwrap(), None);
+        }
+
+        assert_eq!(live_row(&state, &e.id), before);
+        assert_eq!(fs::read_to_string(&before.0).unwrap(), "x");
+    }
+
+    #[test]
+    fn a_note_a_tab_still_holds_is_left_alone() {
+        let (state, root) = state_in("trash-saved-as-held");
+        let e = state.with(|s| s.create_note("x", None, T0, MSK)).unwrap();
+        let new = user_file(&root, "x.md", "x");
+        let before = live_row(&state, &e.id);
+        let held = e.path.clone();
+
+        let moved = note_saved_as(&state, &e.path, &new, |p| p == held, T0 + 5).unwrap();
+
+        assert_eq!(moved, None);
+        assert_eq!(live_row(&state, &e.id), before);
+        assert_eq!(fs::read_to_string(&e.path).unwrap(), "x");
+    }
+
+    #[test]
+    fn save_as_onto_the_note_itself_is_left_alone() {
+        let (state, root) = state_in("trash-saved-as-same");
+        let e = state.with(|s| s.create_note("x", None, T0, MSK)).unwrap();
+        let before = live_row(&state, &e.id);
+        let alias = root.join("alias");
+        symlink(root.join("home"), &alias).unwrap();
+        let other_spelling = spelled_via(&e.path, &root.join("home"), &alias);
+
+        for new in [PathBuf::from(&e.path), other_spelling] {
+            let new = new.to_string_lossy();
+            assert_eq!(note_saved_as(&state, &e.path, &new, nobody_holds, T0 + 5).unwrap(), None);
+        }
+
+        assert_eq!(live_row(&state, &e.id), before);
+        assert_eq!(fs::read_to_string(&e.path).unwrap(), "x");
+    }
+
+    #[test]
+    fn save_as_paths_are_normalized_before_anything_is_looked_up() {
+        let (state, root) = state_in("trash-saved-as-spelling");
+        let e = state.with(|s| s.create_note("x", None, T0, MSK)).unwrap();
+        let new = user_file(&root, "x.md", "x");
+        let (home_alias, work_alias) = (root.join("h"), root.join("w"));
+        symlink(root.join("home"), &home_alias).unwrap();
+        symlink(root.join("work"), &work_alias).unwrap();
+        let old = spelled_via(&e.path, &root.join("home"), &home_alias);
+        let new_spelled = spelled_via(&new, &root.join("work"), &work_alias);
+        assert_ne!(old.to_string_lossy(), e.path);
+        // The owner check sees the registry's spelling, not the caller's.
+        let asked = std::cell::RefCell::new(Vec::new());
+
+        let moved = note_saved_as(
+            &state,
+            &old.to_string_lossy(),
+            &new_spelled.to_string_lossy(),
+            |p| {
+                asked.borrow_mut().push(p.to_string());
+                false
+            },
+            T0 + 5,
+        )
+        .unwrap();
+
+        assert_eq!(moved, Some(e.id.clone()));
+        assert_eq!(asked.into_inner(), vec![e.path.clone()]);
+        assert!(!Path::new(&e.path).exists());
+        assert_eq!(fs::read_to_string(&new).unwrap(), "x");
+    }
+
+    #[test]
+    fn a_saved_as_note_whose_row_cannot_be_updated_is_back_at_its_name() {
+        let (state, root) = state_in("trash-saved-as-rollback");
+        let e = state.with(|s| s.create_note("x", None, T0, MSK)).unwrap();
+        let new = user_file(&root, "x.md", "x");
+        state.with(|s| {
+            fail_next_update(s);
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(note_saved_as(&state, &e.path, &new, nobody_holds, T0 + 5).is_err());
+
+        assert_eq!(fs::read_to_string(&e.path).unwrap(), "x");
+        assert_eq!(live_row(&state, &e.id).1, None);
+        assert!(state.with(|s| Ok(indexed(s, &e.id))).unwrap());
+        let trash = state.with(|s| Ok(s.paths.trash_dir.clone())).unwrap();
+        assert!(names_in(&trash).is_empty());
+    }
+
+    #[test]
+    fn trash_saved_note_changes_nothing_once_the_row_names_another_path() {
+        let (mut stash, _root) = stash_in("trash-saved-as-guard");
+        let e = note(&mut stash, "x");
+
+        assert!(!stash.trash_saved_note(&e.id, "/elsewhere/x.md", T0).unwrap());
+
+        assert_eq!(row(&stash, &e.id).unwrap().1, None);
+        assert_eq!(fs::read_to_string(&e.path).unwrap(), "x");
     }
 }

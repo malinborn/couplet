@@ -354,6 +354,38 @@ pub async fn stash_purge(
     Ok(())
 }
 
+/// «Сохранить как…» from a note (A14): the frontend reports every Save As of
+/// a saved file once the new path is claimed and written; Rust decides
+/// whether `old_path` was a live note whose bytes the new file holds, and
+/// only then trashes it (`trash::note_saved_as`). `true`: moved, and
+/// `deleted` was emitted. The frontend ignores the answer.
+#[tauri::command]
+pub async fn stash_note_saved_as(
+    app: AppHandle,
+    state: State<'_, StashState>,
+    old_path: String,
+    new_path: String,
+) -> Result<bool, String> {
+    let (held_app, state) = (app.clone(), state.inner().clone());
+    let moved = tauri::async_runtime::spawn_blocking(move || {
+        let held = |path: &str| {
+            // A11: `OpenFiles` alone, released before the stash lock is taken.
+            let Some(open_files) = held_app.try_state::<crate::window::OpenFiles>() else {
+                return true;
+            };
+            let reg = open_files.0.lock().unwrap_or_else(|p| p.into_inner());
+            trash::live_owner(&reg, path, |label| held_app.get_webview_window(label).is_some()).is_some()
+        };
+        trash::note_saved_as(&state, &old_path, &new_path, held, clock::now_ms())
+    })
+    .await
+    .map_err(|e| format!("stash task failed: {e}"))??;
+    if let Some(id) = &moved {
+        emit_changed(&app, "deleted", Some(vec![id.clone()]));
+    }
+    Ok(moved.is_some())
+}
+
 /// The answer to `stash-drop-tab`. Accepted only from the window the request
 /// went to; a late one (after the timeout) is dropped on purpose — that
 /// delete has already answered `kept`.
