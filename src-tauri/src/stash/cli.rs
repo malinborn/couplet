@@ -191,7 +191,14 @@ pub fn resolve_scope(arg: &ScopeArg, cwd: &Path) -> Scope {
         },
         ScopeArg::Repo(r) if r.contains('/') => {
             let dir = PathBuf::from(crate::resolve_path(r.trim(), cwd.to_str()));
-            repo(repo_of_dir(&dir).unwrap_or_else(|| crate::git_info::dir_name(&dir)))
+            let name = repo_of_dir(&dir).unwrap_or_else(|| crate::git_info::dir_name(&dir));
+            // Through stage 02's rule, which the SQL filter also applies: a
+            // path with no name (`/`) filters nothing, so it must not be
+            // echoed as a repo either.
+            match entries::normalize_repo(Some(&name)) {
+                Some(name) => repo(name),
+                None => resolve_scope(&ScopeArg::Default, cwd),
+            }
         }
         ScopeArg::Repo(r) => match entries::normalize_repo(Some(r)) {
             Some(name) => repo(name),
@@ -1595,6 +1602,28 @@ mod tests {
         assert_eq!(
             resolve_scope(&ScopeArg::Repo("  ".to_string()), &cwd),
             resolve_scope(&ScopeArg::Default, &cwd)
+        );
+    }
+
+    #[test]
+    fn a_repo_path_with_no_name_is_the_default_scope() {
+        // `/` echoed as `{"repo":"/"}` while SQL filtered on nothing: the
+        // whole stash, printed as "N of M in repo /".
+        let cwd = temp_repo("alpha-root").join("sub");
+        for r in ["/", "//", " / "] {
+            assert_eq!(
+                resolve_scope(&ScopeArg::Repo(r.to_string()), &cwd),
+                resolve_scope(&ScopeArg::Default, &cwd),
+                "{r:?}"
+            );
+        }
+        let loose = outside_git();
+        assert_eq!(
+            resolve_scope(&ScopeArg::Repo("/".to_string()), &loose),
+            Scope {
+                repo: None,
+                all: true
+            }
         );
     }
 
