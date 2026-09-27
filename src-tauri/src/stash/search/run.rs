@@ -744,6 +744,29 @@ mod tests {
     }
 
     #[test]
+    fn a_word_final_sigma_is_found_and_marked_however_it_is_typed() {
+        // «ΟΔΟΣ» lower-cases to «οδος» as a word but to «οδοσ» letter by
+        // letter; FTS5 folds all three sigmas alike, so every fold here must
+        // too — or a hit comes back with nothing marked.
+        let d = db("sigma");
+        d.note("n1", "# Заметка\nΟΔΟΣ και δρόμος", 1);
+        for q in ["ΟΔΟΣ", "οδος", "οδοσ"] {
+            let p = page(
+                &d,
+                SearchArgs {
+                    query: q.into(),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(page_ids(&p), vec!["n1"], "{q}");
+            assert_eq!(p.hits[0].ranges, vec![(0, 4)], "{q}");
+        }
+        d.note("n2", "# ΟΔΟΣ\nтекст", 2);
+        assert_eq!(ids(&d, "Σ"), vec!["n2"], "a short term folds like the title");
+        assert_eq!(ids(&d, "ς"), vec!["n2"]);
+    }
+
+    #[test]
     fn a_title_only_hit_on_a_note_has_no_snippet() {
         // A note's first line is its title, shown on the card already: cut
         // from the rest, a hit only in the title leaves nothing to mark, and

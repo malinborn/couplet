@@ -4,6 +4,8 @@
 //! not FTS5 `snippet()`: that one counts its window in tokens (≤ 64, and a
 //! trigram token is about one character) and returns no offsets.
 
+use super::query::fold_char;
+
 /// About this many characters of text around the match.
 pub const SNIPPET_CHARS: usize = 200;
 /// How much text before the earliest match is kept.
@@ -43,7 +45,7 @@ pub fn hit_snippet(body: &str, note: bool, needles: &[String]) -> Snippet {
     s
 }
 
-/// `needles` are lower-cased already (`Term::folded`). `ё` stays `ё` (D13).
+/// `needles` are folded already (`Term::folded`, `query::fold`).
 pub fn make_snippet(body: &str, needles: &[String]) -> Snippet {
     // One-for-one, so every char index stays valid: a snippet is one run of text.
     let chars: Vec<char> = body.chars().map(|c| if c == '\n' { ' ' } else { c }).collect();
@@ -54,13 +56,14 @@ pub fn make_snippet(body: &str, needles: &[String]) -> Snippet {
 
 /// Every occurrence of every needle, as char ranges of `chars`, sorted.
 fn find_all(chars: &[char], needles: &[String]) -> Vec<(usize, usize)> {
-    // Fold once: `folded[k]` came from `chars[origin[k]]`. One char may fold
-    // to several ('İ' → "i̇"), so the two sequences can differ in length and a
-    // match must be mapped back through `origin`, never read off `folded`.
+    // Fold once, with the needles' own fold: `folded[k]` came from
+    // `chars[origin[k]]`. One char may fold to several ('İ' → "i̇"), so the
+    // two sequences can differ in length and a match must be mapped back
+    // through `origin`, never read off `folded`.
     let mut folded: Vec<char> = Vec::with_capacity(chars.len());
     let mut origin: Vec<usize> = Vec::with_capacity(chars.len());
-    for (i, c) in chars.iter().enumerate() {
-        for l in c.to_lowercase() {
+    for (i, &c) in chars.iter().enumerate() {
+        for l in fold_char(c) {
             folded.push(l);
             origin.push(i);
         }
@@ -92,7 +95,9 @@ fn window(chars: &[char], first: Option<(usize, usize)>) -> (usize, usize) {
         return (0, len);
     }
     let (anchor, anchor_end) = first.unwrap_or((0, 0));
-    let mut start = anchor.saturating_sub(LEAD_CHARS);
+    // A match near the end would leave the window short: start early enough
+    // to show `SNIPPET_CHARS` whenever the body has them.
+    let mut start = anchor.saturating_sub(LEAD_CHARS).min(len - SNIPPET_CHARS);
     if start > 0 {
         if let Some(p) = (start..(start + WORD_SNAP).min(anchor)).find(|&i| chars[i] == ' ') {
             start = p + 1;
@@ -264,6 +269,26 @@ mod tests {
         assert_eq!(slice16(&s.text, a, b), "тайник");
         let before: String = s.text.chars().take_while(|&c| c != 'т').collect();
         assert_eq!(a as usize, before.encode_utf16().count());
+    }
+
+    #[test]
+    fn a_needle_folded_as_a_word_marks_a_word_final_sigma() {
+        let needle = crate::stash::search::query::fold("ΟΔΟΣ");
+        let s = make_snippet("στον ΟΔΟΣ", &[needle]);
+        assert_eq!(s.ranges, vec![(5, 9)]);
+    }
+
+    #[test]
+    fn a_match_near_the_end_still_fills_the_window() {
+        let body = format!("{} тайник конец", "слово ".repeat(100));
+        let s = make_snippet(&body, &needles(&["тайник"]));
+        assert!(!s.text.ends_with('…'), "{:?}", s.text);
+        assert!(s.text.starts_with('…'));
+        let shown = s.text.chars().count() - 1;
+        assert!(shown > SNIPPET_CHARS - WORD_SNAP && shown <= SNIPPET_CHARS, "{shown}");
+        assert!(s.text.starts_with("…слово"), "{:?}", s.text);
+        let (a, b) = s.ranges[0];
+        assert_eq!(slice16(&s.text, a, b), "тайник");
     }
 
     #[test]

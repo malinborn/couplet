@@ -23,8 +23,21 @@ impl Term {
     }
 
     pub fn folded(&self) -> String {
-        self.text.to_lowercase()
+        fold(&self.text)
     }
+}
+
+/// The one case fold of search: needles, `stash_fold` titles and snippet
+/// bodies all go through it, so an FTS hit is always marked. Char by char,
+/// not `str::to_lowercase`: that one turns a word-final Σ into ς, while a
+/// body folded one char at a time (to map offsets back) gets σ. FTS5's own
+/// fold makes all three sigmas one, and so does this. `ё` stays `ё` (D13).
+pub fn fold_char(c: char) -> impl Iterator<Item = char> {
+    c.to_lowercase().map(|l| if l == 'ς' { 'σ' } else { l })
+}
+
+pub fn fold(s: &str) -> String {
+    s.chars().flat_map(fold_char).collect()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -208,6 +221,17 @@ mod tests {
         // building terms by hand must not be able to break out of the string.
         let terms = vec![term("ab\"c OR x")];
         assert_eq!(fts_match(&terms).as_deref(), Some("\"ab\"\"c OR x\""));
+    }
+
+    #[test]
+    fn fold_is_char_by_char_with_every_sigma_alike() {
+        // `str::to_lowercase` turns a word-final Σ into ς, `char::to_lowercase`
+        // into σ; FTS5 folds both to σ, so this fold does too.
+        assert_eq!(fold("ΟΔΟΣ"), "οδοσ");
+        assert_eq!(fold("οδος"), "οδοσ");
+        assert_eq!(fold("ТАЙНИК Ok"), "тайник ok");
+        assert_eq!(fold("Ёлка"), "ёлка", "ё stays ё (D13)");
+        assert_eq!(term("ΟΔΟΣ").folded(), "οδοσ");
     }
 
     #[test]

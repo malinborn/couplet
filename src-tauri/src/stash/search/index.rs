@@ -17,6 +17,7 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::path::Path;
 
+use super::query::fold;
 use super::text::{cap, is_markdown_path, plain_text, read_capped, Loaded};
 use crate::stash::db::err;
 use crate::stash::StashKind;
@@ -31,7 +32,8 @@ const REBUILD_CHUNK_ROWS: usize = 64;
 const REBUILD_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 
 /// SQLite's own `lower()` and `LIKE` fold ASCII only; «ок» must find «ОК».
-/// Registered by `stash::db::open` on every connection (app, CLI, MCP).
+/// The same fold as the query's terms (`query::fold`). Registered by
+/// `stash::db::open` on every connection (app, CLI, MCP).
 pub fn register_functions(conn: &Connection) -> rusqlite::Result<()> {
     conn.create_scalar_function(
         "stash_fold",
@@ -39,7 +41,7 @@ pub fn register_functions(conn: &Connection) -> rusqlite::Result<()> {
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         |ctx| {
             let s: Option<String> = ctx.get(0)?;
-            Ok(s.map(|s| s.to_lowercase()))
+            Ok(s.map(|s| fold(&s)))
         },
     )
 }
@@ -546,6 +548,11 @@ mod tests {
             .query_row("SELECT stash_fold('ТАЙНИК Ok')", [], |r| r.get(0))
             .unwrap();
         assert_eq!(folded, "тайник ok");
+        let sigma: String = d
+            .conn
+            .query_row("SELECT stash_fold('ΟΔΟΣ')", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sigma, "οδοσ", "the snippet's and the query's fold");
     }
 
     // A8: a trashed row is never in the index, whoever writes its body.
