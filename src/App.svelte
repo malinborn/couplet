@@ -68,6 +68,7 @@
   import { putAwayNote, putAwayTabs } from './lib/stash/put-away';
   import { awaitPull, openFromStash } from './lib/stash/open-from-stash';
   import { restoreWindow, widenForStash, type WidenMemo } from './lib/stash/window-widen';
+  import { onStashOpenEdge } from './lib/stash/stash-open-edge.svelte';
   import { entryTitle } from './lib/stash/stash-view';
   import type { StashToastNote } from './lib/stash/stash-toast';
   import type { StashEntry, TagChange } from './lib/stash/types';
@@ -1050,9 +1051,9 @@
 
   /** The window widened for the stash (D15) — put back when it closes, if still as widened. */
   let widened: WidenMemo | null = null;
-  $effect(() => {
-    const open = stashStore.state.open;
-    untrack(() => {
+  onStashOpenEdge(
+    () => stashStore.state.open,
+    (open) => {
       if (open) {
         void widenForStash().then((memo) => {
           if (!memo) return;
@@ -1069,8 +1070,8 @@
         widened = null;
         void restoreWindow(memo);
       }
-    });
-  });
+    }
+  );
 
   /** A move from the drawer's carousel (plan 05). A refusal already has its toast (`mayLeave`). */
   async function moveTabs(tabIds: string[], target: MoveTarget): Promise<void> {
