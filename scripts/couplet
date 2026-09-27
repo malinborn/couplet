@@ -63,12 +63,13 @@ ensure_running() {
   fi
 }
 
-# `couplet help` / `agent` / `question` / `answer` / `watch` are local and
-# offline (no socket, no running app required) — hand off straight to the
-# binary's `ai` client without the launch-wait logic below. Comments live in
-# files beside the document, so question/answer/watch don't depend on
-# whether couplet is open.
-if [ "$1" = "help" ] || [ "$1" = "agent" ] || [ "$1" = "question" ] || [ "$1" = "answer" ] || [ "$1" = "watch" ]; then
+# `couplet help` / `agent` / `question` / `answer` / `watch` / `stash` are
+# local and offline (no socket, no running app required) — hand off straight
+# to the binary's `ai` client without the launch-wait logic below. Comments
+# live in files beside the document, and the stash is a database the binary
+# opens itself, so none of these depend on whether couplet is open. (`stash`
+# writes do tell a running couplet, best effort — never by launching it.)
+if [ "$1" = "help" ] || [ "$1" = "agent" ] || [ "$1" = "question" ] || [ "$1" = "answer" ] || [ "$1" = "watch" ] || [ "$1" = "stash" ]; then
   exec "$BIN" ai "$@"
 fi
 
