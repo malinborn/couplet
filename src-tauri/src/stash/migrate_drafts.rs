@@ -417,6 +417,15 @@ pub(crate) fn run_at_startup(app: &tauri::AppHandle, loaded: Option<Session>) ->
     let backup = loaded.clone();
     // A panic here would come back on every launch — the drafts are still
     // there — so it must cost this launch's import, not the app.
+    //
+    // The one deliberate exception to "only SQL under the stash lock" (A11):
+    // the whole import — reading drafts, writing note files, the session
+    // rewrite, the trash moves — runs inside a single `with`. It runs once, in
+    // `setup`, before any window exists: no command, save hook or close can
+    // be waiting on the lock yet, and the only competitor is
+    // `backup_in_background`, which simply runs after it. Splitting it into
+    // lock/unlock phases would buy nothing and weaken the per-draft ordering
+    // the module comment relies on.
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         state.with(|s| Ok(import_drafts(s, &dirs, loaded, clock::now_ms())))
     }));
