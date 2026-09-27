@@ -201,6 +201,27 @@ pub fn reindex_path(conn: &Connection, path: &str, text: &str) -> Result<bool, S
     write_row(conn, &row, &body)
 }
 
+/// The FTS title of the live entry at `path` (normalized) set to its stored
+/// title, its body kept: a save renamed the note but its file could not be
+/// re-read for a body. The title comes from `entries`, whichever save wrote
+/// it last, so no stamp guard is needed. `Ok(false)`: not a live, indexed
+/// entry.
+pub fn retitle_path(conn: &Connection, path: &str) -> Result<bool, String> {
+    let Some(row) = find(conn, "path", path)? else {
+        return Ok(false);
+    };
+    if row.deleted {
+        return Ok(false);
+    }
+    let changed = conn
+        .execute(
+            "UPDATE entries_fts SET title = ?1 WHERE rowid = ?2",
+            params![row.title, row.rowid],
+        )
+        .map_err(err)?;
+    Ok(changed > 0)
+}
+
 /// Drop entry `id` from the index. Call it BEFORE deleting the `entries` row,
 /// in the same transaction: afterwards its rowid can no longer be found.
 pub fn unindex_entry(conn: &Connection, id: &str) -> Result<(), String> {

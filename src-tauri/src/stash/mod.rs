@@ -559,11 +559,21 @@ fn saved(
         }
     };
     if written.stamped {
-        // Unreadable now (logged by `read`): the index keeps the last body.
-        if let Some(text) = read(&path) {
-            if let Err(e) = state.with(|s| s.reindex_written(&path, &text, written.stamp)) {
-                eprintln!("stash search: reindex {path}: {e}");
+        match read(&path) {
+            Some(text) => {
+                if let Err(e) = state.with(|s| s.reindex_written(&path, &text, written.stamp)) {
+                    eprintln!("stash search: reindex {path}: {e}");
+                }
             }
+            // Unreadable now (logged by `read`): the index keeps the last
+            // body, but a new title is in `entries` already and must be
+            // found by, not only shown.
+            None if written.title_changed => {
+                if let Err(e) = state.with(|s| search::retitle_path(&s.conn, &path)) {
+                    eprintln!("stash search: retitle {path}: {e}");
+                }
+            }
+            None => {}
         }
     }
     if written.title_changed {

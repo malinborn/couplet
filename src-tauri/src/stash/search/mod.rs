@@ -17,7 +17,7 @@ mod text;
 
 pub(crate) use index::{
     ensure_index, index_text, read_body, read_saved, register_functions, reindex_path,
-    unindex_entry, write_body,
+    retitle_path, unindex_entry, write_body,
 };
 pub(crate) use run::{select_page, SearchArgs, SearchPage};
 
@@ -171,6 +171,38 @@ mod hooks_tests {
         );
         assert_eq!(found_in(&state, "вторая"), vec![note.id]);
         assert!(found_in(&state, "первая").is_empty());
+    }
+
+    #[test]
+    fn a_renamed_note_whose_file_cannot_be_reread_gets_its_new_title_indexed() {
+        let (state, _root) = state_in("hook-retitle");
+        let note = state
+            .with(|s| s.create_note("# Старое имя\nтекст про ключи", None, T0, MSK))
+            .unwrap();
+        let notified = Cell::new(false);
+        saved(
+            &state,
+            &note.path,
+            Some("Новое имя"),
+            T0 + 10,
+            |_: &str| None,
+            &|_: &str| notified.set(true),
+        );
+        assert!(notified.get());
+        let fts_title: String = state
+            .with(|s| {
+                s.conn
+                    .query_row(
+                        "SELECT f.title FROM entries_fts f JOIN entries e ON e.rowid = f.rowid WHERE e.id = ?1",
+                        [&note.id],
+                        |r| r.get(0),
+                    )
+                    .map_err(crate::stash::db::err)
+            })
+            .unwrap();
+        assert_eq!(fts_title, "Новое имя");
+        assert_eq!(found_in(&state, "Новое"), vec![note.id.clone()]);
+        assert_eq!(found_in(&state, "ключи"), vec![note.id], "the body it had is kept");
     }
 
     #[test]
