@@ -223,11 +223,23 @@ describe('StashDrawer', () => {
 
   it('empty: says why', async () => {
     h = await setup({ openHere: ENTRIES.map((e) => e.path) });
-    expect(h.root.querySelector('.empty')?.textContent).toBe('Всё с этим тегом уже открыто вкладками');
+    expect(h.root.querySelector('.empty')?.textContent).toBe('Всё из тайника уже открыто вкладками');
     key('z');
     key('z');
     await settle();
     expect(h.root.querySelector('.empty')?.textContent).toBe('Ничего не найдено');
+  });
+
+  it('empty under the repo chip speaks of the repo, not of a tag (Task 24)', async () => {
+    h = await setup({ repo: 'p1' });
+    expect(h.root.querySelector('.empty')?.textContent).toBe('Из репо p1 в тайнике ничего нет');
+    h.destroy();
+    h = await setup({ repo: 'shelf', openHere: ['/n/a.md', '/n/b.md', '/n/d.md'] });
+    expect(h.root.querySelector('.empty')?.textContent).toBe('Всё из репо shelf уже открыто вкладками');
+    installCatalog('en');
+    h.destroy();
+    h = await setup({ repo: 'p1' });
+    expect(h.root.querySelector('.empty')?.textContent).toBe('Nothing from p1 in the stash');
   });
 
   it('a tag added on a card pops at once and goes up as a change', async () => {

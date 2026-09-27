@@ -137,8 +137,14 @@
   const emptyText = $derived.by(() => {
     if (!stash.loaded || view.rows.length > 0) return null;
     if (stash.state.query) return t('tabs.drawer.empty');
+    // The chip is a repo filter (the mockup's copy still spoke of a tag): `openHere` counts within it.
+    const repo = stash.state.repoChip;
+    if (repo !== null) {
+      return view.openHere > 0
+        ? t('stash.drawer.empty_open_here_repo', { repo })
+        : t('stash.drawer.empty_repo', { repo });
+    }
     if (view.openHere > 0) return t('stash.drawer.empty_open_here');
-    if (stash.state.repoChip !== null) return t('stash.drawer.empty_repo', { repo: stash.state.repoChip });
     return t('stash.drawer.empty_all');
   });
 
