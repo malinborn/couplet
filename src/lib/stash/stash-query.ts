@@ -216,15 +216,29 @@ export function isLongTerm(term: SearchTerm): boolean {
   return [...term.text].length >= TRIGRAM_MIN;
 }
 
+/**
+ * Rust's `query::fold`: lower-cased one code point at a time, every sigma
+ * made σ. Not `toLowerCase` on the whole string, which turns a word-final Σ
+ * into ς — «οδοσ» would then mark nothing in «ΟΔΟΣ», which Rust found.
+ */
+function foldSearch(s: string): string {
+  let out = '';
+  for (const c of s) {
+    const l = c.toLowerCase();
+    out += l === 'ς' ? 'σ' : l;
+  }
+  return out;
+}
+
 /** `text` split into runs, every occurrence of every term marked, overlaps merged. */
 export function highlightTerms(text: string, terms: readonly SearchTerm[]): Segment[] {
-  const lower = text.toLowerCase();
-  // Lowercasing can change the length ('İ'); offsets into `lower` would then
+  const lower = foldSearch(text);
+  // Folding can change the length ('İ'); offsets into `lower` would then
   // cut `text` in the wrong places.
   if (lower.length !== text.length) return [{ text, hit: false }];
   const ranges: [number, number][] = [];
   for (const term of terms) {
-    const needle = term.text.toLowerCase();
+    const needle = foldSearch(term.text);
     if (!needle) continue;
     for (let j = lower.indexOf(needle); j !== -1; j = lower.indexOf(needle, j + needle.length)) {
       ranges.push([j, j + needle.length]);

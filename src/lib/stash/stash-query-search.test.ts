@@ -131,6 +131,20 @@ describe('highlightTerms', () => {
     expect(highlightTerms('Ёлка', [t('ёлка')])).toEqual([{ text: 'Ёлка', hit: true }]);
   });
 
+  it('folds every sigma to one, as Rust `query::fold` does', () => {
+    // `toLowerCase` turns a word-final Σ into ς; Rust folds char by char and
+    // maps ς to σ, so Rust matched «ΟΔΟΣ» for either spelling.
+    const whole = (text: string) => [{ text, hit: true }];
+    expect(highlightTerms('ΟΔΟΣ', [t('οδοσ')])).toEqual(whole('ΟΔΟΣ'));
+    expect(highlightTerms('ΟΔΟΣ', [t('οδος')])).toEqual(whole('ΟΔΟΣ'));
+    expect(highlightTerms('οδος', [t('ΟΔΟΣ')])).toEqual(whole('οδος'));
+    expect(highlightTerms('ΟΔΟΣ ΚΑΙ', [t('οσ κ')])).toEqual([
+      { text: 'ΟΔ', hit: false },
+      { text: 'ΟΣ Κ', hit: true },
+      { text: 'ΑΙ', hit: false },
+    ]);
+  });
+
   it('leaves the text unmarked without terms', () => {
     expect(highlightTerms('заметка', [])).toEqual([{ text: 'заметка', hit: false }]);
   });
