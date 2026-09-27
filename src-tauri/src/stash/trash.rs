@@ -137,17 +137,7 @@ fn link_then_unlink(from: &Path, to: &Path) -> Result<(), MoveError> {
 pub(crate) fn copy_verify_remove(from: &Path, to: &Path) -> Result<(), MoveError> {
     let bytes = fs::read(from)?;
     let mode = fs::metadata(from)?.permissions().mode() & 0o7777;
-    {
-        let mut out = fs::OpenOptions::new().write(true).create_new(true).open(to)?;
-        out.write_all(&bytes)?;
-        out.set_permissions(fs::Permissions::from_mode(mode))?;
-        out.sync_all()?;
-    }
-    if fs::read(to)? != bytes {
-        // Only the copy this call just created is removed; the source is intact.
-        let _ = fs::remove_file(to);
-        return Err(MoveError::Other(format!("copy to {} did not verify", to.display())));
-    }
+    copy_new_verified(&bytes, mode, to)?;
     fs::remove_file(from).map_err(|e| {
         MoveError::Other(format!(
             "{} copied to {} but not removed: {e}",
@@ -155,6 +145,33 @@ pub(crate) fn copy_verify_remove(from: &Path, to: &Path) -> Result<(), MoveError
             to.display()
         ))
     })
+}
+
+/// `bytes` into a new file `to` (never over an existing one), `mode`, on
+/// disk (`sync_all`) and read back equal. A copy that fails after `to` was
+/// created is removed — only that copy: `create_new` made it this call's.
+fn copy_new_verified(bytes: &[u8], mode: u32, to: &Path) -> Result<(), MoveError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    // Private from the first byte; the final mode is set once written.
+    let mut out = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(to)?;
+    let written = (|| -> Result<(), MoveError> {
+        out.write_all(bytes)?;
+        out.set_permissions(fs::Permissions::from_mode(mode))?;
+        out.sync_all()?;
+        drop(out);
+        if fs::read(to)? != bytes {
+            return Err(MoveError::Other(format!("copy to {} did not verify", to.display())));
+        }
+        Ok(())
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(to);
+    }
+    written
 }
 
 /// Move `from` into `dir` under `file_name` or its first free suffix; a name
@@ -716,6 +733,32 @@ fn same_bytes(a: &Path, b: &Path) -> Result<bool, String> {
     Ok(read(a)? == read(b)?)
 }
 
+/// The old note's comment sidecar, copied beside the new document before the
+/// note goes (I1): comment IPC works per path, so threads left only with the
+/// trashed note would be out of the new document's reach and purged with it.
+/// The documents are byte-identical, so the anchors still hold. `Ok`: no
+/// sidecar, or a verified copy (`copy_new_verified`: never over an existing
+/// sidecar); the old one still travels into the trash with its note — the
+/// second copy. `Err`: the note must stay.
+fn copy_comments_along(old: &Path, new: &Path) -> Result<(), String> {
+    let Some(from) = crate::comments::sidecar_path(old) else {
+        return Ok(());
+    };
+    let meta = match fs::symlink_metadata(&from) {
+        Ok(m) => m,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("{}: {e}", from.display())),
+    };
+    if !meta.file_type().is_file() {
+        return Err(format!("{} is not a regular file", from.display()));
+    }
+    let to = crate::comments::sidecar_path(new)
+        .ok_or_else(|| format!("{} has no comment file name", new.display()))?;
+    let bytes = read_for_compare(&from).map_err(|e| format!("{}: {e}", from.display()))?;
+    copy_new_verified(&bytes, meta.permissions().mode() & 0o7777, &to)
+        .map_err(|e| format!("{}: {e}", to.display()))
+}
+
 impl Stash {
     /// `note_saved_as`'s locked half: the note `id` into the trash, like a
     /// delete, but only while its row is still a live note naming `old` and
@@ -788,6 +831,12 @@ pub(crate) fn note_saved_as(
             eprintln!("[stash::trash] note {id} saved as {new} not compared ({e}): the note stays");
             return Ok(None);
         }
+    }
+    // Unlocked, like the compare. A copy made here stays beside the new
+    // document even if the note does not move after all: a duplicate.
+    if let Err(e) = copy_comments_along(Path::new(&old), Path::new(&new)) {
+        eprintln!("[stash::trash] note {id}'s comments not copied beside {new} ({e}): the note stays");
+        return Ok(None);
     }
     let offset = clock::local_offset_secs(now.div_euclid(1000));
     state.with(|s| {
@@ -2581,6 +2630,96 @@ mod tests {
         assert_eq!(fs::read_to_string(&new).unwrap(), text);
         let export = state.with(|s| Ok(s.paths.export_path.clone())).unwrap();
         assert!(export.exists(), "after_write ran");
+    }
+
+    fn sidecar_of(path: &str) -> PathBuf {
+        crate::comments::sidecar_path(Path::new(path)).unwrap()
+    }
+
+    #[test]
+    fn a_saved_as_note_takes_a_copy_of_its_comments_to_the_new_file() {
+        // Comment IPC works per path: threads left beside the trashed note
+        // would be unreachable from the new document, and purged in 30 days.
+        let (state, root) = state_in("trash-saved-as-comments");
+        let text = "# План\n";
+        let e = state.with(|s| s.create_note(text, None, T0, MSK)).unwrap();
+        fs::write(sidecar_of(&e.path), "threads").unwrap();
+        fs::set_permissions(sidecar_of(&e.path), fs::Permissions::from_mode(0o600)).unwrap();
+        let new = user_file(&root, "plans/План.md", text);
+
+        let moved = note_saved_as(&state, &e.path, &new, nobody_holds, T0 + 5).unwrap();
+
+        assert_eq!(moved, Some(e.id.clone()));
+        let new_side = sidecar_of(&crate::path_norm::normalize_str(&new));
+        assert_eq!(fs::read_to_string(&new_side).unwrap(), "threads");
+        assert_eq!(fs::metadata(&new_side).unwrap().permissions().mode() & 0o7777, 0o600);
+        // The second copy: the old sidecar travelled into the trash (D16).
+        let (trashed, _, _) = live_row(&state, &e.id);
+        assert_eq!(fs::read_to_string(sidecar_of(&trashed)).unwrap(), "threads");
+        assert!(!sidecar_of(&e.path).exists());
+    }
+
+    #[test]
+    fn a_saved_as_note_whose_comments_cannot_follow_stays_in_the_stash() {
+        let text = "# План\n";
+        // 1. The new document's sidecar name is taken: never overwritten.
+        let (state, root) = state_in("trash-saved-as-comments-taken");
+        let e = state.with(|s| s.create_note(text, None, T0, MSK)).unwrap();
+        fs::write(sidecar_of(&e.path), "threads").unwrap();
+        let new = user_file(&root, "plan.md", text);
+        let theirs = sidecar_of(&crate::path_norm::normalize_str(&new));
+        fs::write(&theirs, "their threads").unwrap();
+        let before = live_row(&state, &e.id);
+
+        assert_eq!(note_saved_as(&state, &e.path, &new, nobody_holds, T0 + 5).unwrap(), None);
+
+        assert_eq!(live_row(&state, &e.id), before);
+        assert_eq!(fs::read_to_string(&e.path).unwrap(), text);
+        assert_eq!(fs::read_to_string(sidecar_of(&e.path)).unwrap(), "threads");
+        assert_eq!(fs::read_to_string(&theirs).unwrap(), "their threads");
+
+        // 2. The copy cannot be written (the new file's folder refuses it).
+        let (state, root) = state_in("trash-saved-as-comments-refused");
+        let e = state.with(|s| s.create_note(text, None, T0, MSK)).unwrap();
+        fs::write(sidecar_of(&e.path), "threads").unwrap();
+        let new = user_file(&root, "ro/plan.md", text);
+        let dir = Path::new(&new).parent().unwrap().to_path_buf();
+        let before = live_row(&state, &e.id);
+        let got = {
+            let _ro = ReadOnly::new(&dir);
+            note_saved_as(&state, &e.path, &new, nobody_holds, T0 + 5).unwrap()
+        };
+        assert_eq!(got, None);
+        assert_eq!(live_row(&state, &e.id), before);
+        assert_eq!(fs::read_to_string(sidecar_of(&e.path)).unwrap(), "threads");
+        assert_eq!(names_in(&dir), vec!["plan.md".to_string()]);
+
+        // 3. The sidecar is not a regular file: nothing to copy safely.
+        let (state, root) = state_in("trash-saved-as-comments-symlink");
+        let e = state.with(|s| s.create_note(text, None, T0, MSK)).unwrap();
+        fs::write(root.join("elsewhere"), "not threads").unwrap();
+        symlink(root.join("elsewhere"), sidecar_of(&e.path)).unwrap();
+        let new = user_file(&root, "plan.md", text);
+        let before = live_row(&state, &e.id);
+        assert_eq!(note_saved_as(&state, &e.path, &new, nobody_holds, T0 + 5).unwrap(), None);
+        assert_eq!(live_row(&state, &e.id), before);
+        assert!(!sidecar_of(&crate::path_norm::normalize_str(&new)).exists());
+    }
+
+    #[test]
+    fn a_saved_as_note_without_comments_makes_no_sidecar() {
+        let (state, root) = state_in("trash-saved-as-no-comments");
+        let e = state.with(|s| s.create_note("x", None, T0, MSK)).unwrap();
+        let new = user_file(&root, "x.md", "x");
+
+        assert_eq!(
+            note_saved_as(&state, &e.path, &new, nobody_holds, T0 + 5).unwrap(),
+            Some(e.id.clone())
+        );
+
+        assert!(!sidecar_of(&crate::path_norm::normalize_str(&new)).exists());
+        let parent = Path::new(&new).parent().unwrap();
+        assert_eq!(names_in(parent), vec!["x.md".to_string()]);
     }
 
     #[test]
