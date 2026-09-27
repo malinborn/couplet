@@ -538,7 +538,7 @@ After a successful write the CLI/MCP sends one line to the command socket, with 
 {"v": 1, "cmd": "stash-changed", "reason": "external", "ids": ["s1790378408605-3f9a"]}
 ```
 
-The app answers `{"ok":true}` at once, without asking any window, and emits `stash-changed` to its windows once, so every open drawer reloads and pulses the named cards. The event's reason is always `external`, whatever `reason` the request carries: any local process can write the socket, and another reason (`deleted`, say) would change what the drawers do with the named entries; `ids` is optional, keeps only entry ids, at most 50. No first-use toast, no pending request.
+The app answers `{"ok":true}` at once, without asking any window, and emits `stash-changed` to its windows once, so every open drawer reloads. A card pulses only when an entry already shown in the drawer was put away again (its «отложено» time moved, e.g. `add --path` of a file already in the stash); a brand-new entry simply appears, without a pulse. The event's reason is always `external`, whatever `reason` the request carries: any local process can write the socket, and another reason (`deleted`, say) would change what the drawers do with the named entries; `ids` is optional, keeps only entry ids, at most 50. No first-use toast, no pending request.
 
 ### Dev builds: `--product`, never `--socket` alone
 

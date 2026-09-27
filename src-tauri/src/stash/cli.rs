@@ -814,7 +814,8 @@ const NOTIFY_REASON: &str = "external";
 const NOTIFY_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Tell a running couplet the stash changed under it, so its drawers reload
-/// and pulse `ids` (plan D12). Best effort by design: the write is already on
+/// (plan D12; a card pulses only if its entry was already shown and put away
+/// again — `pulses()` in `stash-state.ts`). Best effort by design: the write is already on
 /// disk, and an app that is not running reads the database fresh when it
 /// starts — there is nobody to tell and nothing to report. Never launches the
 /// app; a socket nobody listens on fails the connect at once.
