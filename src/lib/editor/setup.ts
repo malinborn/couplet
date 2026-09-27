@@ -16,6 +16,7 @@ import { slashCommands } from './slash-commands';
 import type { SlashAction } from './slash-actions';
 import { themeAction, themePickerExtensions, renderThemeSwatch, type ThemeControl } from './slash-theme';
 import { toneAction, tonePickerExtensions } from './slash-tone';
+import { stashAction, type StashControl } from './slash-stash';
 import { livePreviewPlugin } from './preview/plugin';
 import { tableModeField } from './preview/table-state';
 import { mermaidViewField } from './preview/mermaid-state';
@@ -58,13 +59,16 @@ export function openExternalUrl(url: string): Promise<void> {
  */
 export interface EditorDeps {
   themeControl?: ThemeControl;
+  /** Enables `/stash` (⌃T's put-away). Omitted by the landing's demo cards. */
+  stashControl?: StashControl;
 }
 
 export function createExtensions(deps: EditorDeps = {}): Extension[] {
-  const { themeControl } = deps;
-  const actions: SlashAction[] = themeControl
-    ? [themeAction(themeControl), toneAction(themeControl)]
-    : [];
+  const { themeControl, stashControl } = deps;
+  const actions: SlashAction[] = [
+    ...(themeControl ? [themeAction(themeControl), toneAction(themeControl)] : []),
+    ...(stashControl ? [stashAction(stashControl)] : []),
+  ];
 
   return [
     editorTheme,

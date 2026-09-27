@@ -22,6 +22,7 @@
   --color-bold: #0f2f66;
   --color-italic: #3a5f92;
   --color-link: #0a6ea8;
+  --color-stash: var(--color-link);
   --color-code-bg: #eae7db;
   --color-code-text: #1d3b63;
   --color-selection: #dbe6f2;
@@ -76,6 +77,7 @@
   --color-bold: #ffffff;
   --color-italic: #b9d6f2;
   --color-link: #7fd4ff;
+  --color-stash: var(--color-link);
   --color-code-bg: #103462;
   --color-code-text: #dbe7f5;
   --color-selection: #1d4a85;

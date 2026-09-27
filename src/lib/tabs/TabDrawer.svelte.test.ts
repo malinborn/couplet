@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { flushSync, mount, tick, unmount } from 'svelte';
+import { flushSync, mount, tick, unmount, type ComponentProps } from 'svelte';
 import TabDrawer, { type TabDrawerHandle } from './TabDrawer.svelte';
 import { EditorView } from '@codemirror/view';
 import { EditorSelection } from '@codemirror/state';
@@ -8,6 +8,9 @@ import { HOVER_CLOSE_MS, HOVER_OPEN_MS } from './drawer-state';
 import type { TabListState, TabMeta } from './tab-model';
 import { GOT_MS, type CarouselWindow } from './carousel';
 import { DOUBLE_CLICK_MS, ctrlDigitHandler, type RenumberResult, type RevealResult } from './window-number';
+import type { StashMark } from '../stash/marks';
+import { RELOAD_COALESCE_MS, createStashStore, type StashStore } from '../stash/stash-store.svelte';
+import type { StashEntry } from '../stash/types';
 
 /*
  * The drawer's keyboard and pointer contract against a stand-in for the
@@ -72,7 +75,17 @@ beforeAll(() => {
   CSS.escape ??= (s: string) => s;
 });
 
-function setup(list: TabListState = initialList()): Harness {
+interface SetupOptions {
+  /** Text the controller holds per tab id; a tab missing here is read from disk (''). Default: '' for all. */
+  held?: Record<string, string>;
+  marks?: (path: string | null) => StashMark | null;
+}
+
+function setup(
+  list: TabListState = initialList(),
+  options: SetupOptions = {},
+  extra: Partial<ComponentProps<typeof TabDrawer>> = {}
+): Harness {
   const editor = document.createElement('div');
   editor.setAttribute('contenteditable', 'true');
   editor.tabIndex = 0;
@@ -93,38 +106,43 @@ function setup(list: TabListState = initialList()): Harness {
   const onclose = vi.fn();
   const component = mount(TabDrawer, {
     target,
-    props: {
-      get list() {
-        return props.list;
+    // `Object.assign` onto the literal keeps its getters; the extra props are plain values.
+    props: Object.assign(
+      {
+        get list() {
+          return props.list;
+        },
+        windowNumber: 3,
+        get compact() {
+          return props.compact;
+        },
+        get showTime() {
+          return props.showTime;
+        },
+        source: {
+          held: (id: string) => (options.held ? (options.held[id] ?? null) : ''),
+          read: () => Promise.resolve(''),
+          gitInfo: (paths: string[]) => Promise.resolve(paths.map(() => null)),
+        },
+        onactivate,
+        onclose,
+        onreorder,
+        onnewwindows: () => {},
+        carouselSource: { windows: () => windows() },
+        onmove,
+        oncarousel,
+        onrestorefocus,
+        onrenumber,
+        marks: options.marks,
+        get handle() {
+          return props.handle;
+        },
+        set handle(v: TabDrawerHandle | undefined) {
+          props.handle = v;
+        },
       },
-      windowNumber: 3,
-      get compact() {
-        return props.compact;
-      },
-      get showTime() {
-        return props.showTime;
-      },
-      source: {
-        held: () => '',
-        read: () => Promise.resolve(''),
-        gitInfo: (paths: string[]) => Promise.resolve(paths.map(() => null)),
-      },
-      onactivate,
-      onclose,
-      onreorder,
-      onnewwindows: () => {},
-      carouselSource: { windows: () => windows() },
-      onmove,
-      oncarousel,
-      onrestorefocus,
-      onrenumber,
-      get handle() {
-        return props.handle;
-      },
-      set handle(v: TabDrawerHandle | undefined) {
-        props.handle = v;
-      },
-    },
+      extra
+    ),
   });
   flushSync();
   return {
@@ -610,6 +628,7 @@ describe('TabDrawer — the window carousel (plan 05)', () => {
     branch: null,
     tabCount: 1,
     activePath: `/p/${label}.md`,
+    activeIsNote: false,
     head: '',
   });
   const page = () => h.root().parentElement!;
@@ -1321,7 +1340,7 @@ describe('TabDrawer — ⌦ / ⌫ close the ⇧-selection (spec §6)', () => {
 
   it('not while the carousel is up', async () => {
     h.windows.mockResolvedValue([
-      { label: 'editor-2', number: 7, project: 'p', branch: null, tabCount: 1, activePath: '/p/x.md', head: '' },
+      { label: 'editor-2', number: 7, project: 'p', branch: null, tabCount: 1, activePath: '/p/x.md', activeIsNote: false, head: '' },
     ]);
     await selectBAndC();
     press('g', { metaKey: true, ctrlKey: true });
@@ -1410,5 +1429,688 @@ describe('TabDrawer — when each tab was last touched', () => {
     const head = timeOf('c', '.card-head');
     expect(head?.textContent).toBe('2 hours ago');
     expect(head?.nextElementSibling?.classList.contains('card-kbd')).toBe(true);
+  });
+});
+
+describe('TabDrawer — notes and the stash mark (stash spec «Отметка тайника»)', () => {
+  it('ShowsANoteByItsTitleWithTheStashGlyphAndABlankTabAsANewNote', async () => {
+    h.destroy();
+    const list: TabListState = {
+      tabs: [
+        { id: 'n', path: '/notes/2026-09-27-0215-a3f9.md', dirty: false, openedAt: 1, viewedAt: 0, unviewed: false },
+        { id: 'u', path: null, dirty: false, openedAt: 2, viewedAt: 0, unviewed: false },
+        { id: 'f', path: '/p/a.md', dirty: false, openedAt: 3, viewedAt: 0, unviewed: false },
+      ],
+      activeId: 'n',
+    };
+    const held: Record<string, string> = { n: '# План\nтело', u: '' };
+    const marks = (p: string | null): StashMark | null =>
+      p === '/notes/2026-09-27-0215-a3f9.md'
+        ? { kind: 'note', title: 'План', repo: 'couplet' }
+        : p === '/p/a.md'
+          ? { kind: 'file', title: 'a.md', repo: null }
+          : null;
+    h = setup(list, { held, marks });
+    h.handle().toggle();
+    await settle();
+    const cards = [...h.root().querySelectorAll('.card')];
+    expect(cards[0].querySelector('.card-name')?.textContent).toContain('План');
+    expect(cards[0].querySelector('.card-name .sg svg')).not.toBeNull();
+    expect(cards[0].querySelector('.card-meta')?.textContent).toContain('couplet');
+    // A note's preview is its body: the title line is already the card's name.
+    expect(cards[0].querySelector('.card-preview')?.textContent).toContain('тело');
+    expect(cards[0].querySelector('.card-preview')?.textContent).not.toContain('План');
+    expect(cards[1].querySelector('.card-name')?.textContent).toContain('New note');
+    expect(cards[1].querySelector('.card-meta')?.textContent).toContain('empty — vanishes when closed');
+    expect(cards[2].querySelector('.in-stash svg')).not.toBeNull();
+    expect(cards[2].querySelector('.card-name .sg')).toBeNull();
+    expect(h.root().textContent).not.toMatch(/в тайнике|in the stash/i);
+  });
+});
+
+function stashEntry(id: string, path: string, over: Partial<StashEntry> = {}): StashEntry {
+  return {
+    id,
+    kind: 'note',
+    path,
+    title: id,
+    repo: null,
+    branch: null,
+    tags: [],
+    createdAt: 0,
+    modifiedAt: 1,
+    stashedAt: null,
+    openedAt: null,
+    deletedAt: null,
+    caret: 0,
+    topLine: 1,
+    preview: '',
+    ...over,
+  };
+}
+
+/** s3 is `/p/alpha.md` — open here as tab `a`, so the stash hides it. */
+function fakeStash(): StashStore {
+  const entries = [
+    stashEntry('s1', '/n/one.md', { title: 'One note', modifiedAt: 1 }),
+    stashEntry('s2', '/n/two.md', { title: 'Beta note', modifiedAt: 2 }),
+    stashEntry('s3', '/p/alpha.md', { title: 'alpha.md', kind: 'file' }),
+  ];
+  return createStashStore({
+    list: async () => entries,
+    counts: async () => ({ total: entries.length, stashedToday: 1, deleted: 0 }),
+    holders: async (paths) => paths.map(() => null),
+    windowRepo: async () => null,
+  });
+}
+
+async function settleLong(): Promise<void> {
+  for (let i = 0; i < 4; i++) await settle();
+}
+
+const stashIds = () => [...h.root().querySelectorAll<HTMLElement>('[data-stash-id]')].map((x) => x.dataset.stashId);
+
+describe('TabDrawer — hosts the stash (stash stage 04)', () => {
+  let stash: StashStore;
+  const onstashopen = vi.fn();
+  const onputaway = vi.fn();
+
+  beforeEach(() => {
+    h?.destroy();
+    stash = fakeStash();
+    onstashopen.mockClear();
+    onputaway.mockClear();
+    h = setup(initialList(), {}, { stash, onstashopen, onputaway, onstashremove: vi.fn(), onstashtag: vi.fn() });
+  });
+
+  it('the bar counts are read as the drawer opens and followed only while it is open', async () => {
+    h.destroy();
+    const counts = vi.fn(async () => ({ total: 3, stashedToday: 1, deleted: 0 }));
+    stash = createStashStore({
+      list: async () => [],
+      counts,
+      holders: async (paths) => paths.map(() => null),
+      windowRepo: async () => null,
+    });
+    h = setup(initialList(), {}, { stash, onstashopen, onputaway, onstashremove: vi.fn(), onstashtag: vi.fn() });
+    vi.useFakeTimers();
+    try {
+      stash.changed('put-away', ['x']);
+      vi.advanceTimersByTime(RELOAD_COALESCE_MS);
+      expect(counts, 'nothing shows them').not.toHaveBeenCalled();
+      h.handle().toggle();
+      expect(counts).toHaveBeenCalledTimes(1);
+      stash.changed('put-away', ['x']);
+      vi.advanceTimersByTime(RELOAD_COALESCE_MS);
+      expect(counts).toHaveBeenCalledTimes(2);
+      h.handle().close();
+      stash.changed('put-away', ['x']);
+      vi.advanceTimersByTime(RELOAD_COALESCE_MS);
+      expect(counts).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('has the stash bar and a closed stash drawer', async () => {
+    h.handle().toggle();
+    await settle();
+    expect(el('.stash-bar')).not.toBeNull();
+    expect(h.root().querySelector('.stash-wrap')).not.toBeNull();
+    expect(h.root().querySelector('.stash-wrap.open')).toBeNull();
+  });
+
+  it('the bar button opens the stash; an entry open here as a tab is not in it', async () => {
+    h.handle().toggle();
+    await settle();
+    el('.stash-btn').click();
+    await settleLong();
+    expect(stash.state.open).toBe(true);
+    expect(h.root().querySelector('.stash-wrap.open')).not.toBeNull();
+    expect(stashIds()).toEqual(['s2', 's1']);
+  });
+
+  it('the stash drawer is a sibling of the tabs drawer inside the display: contents root', async () => {
+    h.handle().toggleStash();
+    await settleLong();
+    const wrap = h.root().querySelector('.stash-wrap');
+    expect(wrap?.parentElement).toBe(h.root());
+    expect(h.root().querySelector('.drawer-wrap')?.contains(wrap ?? null)).toBe(false);
+  });
+
+  it('closing the tabs drawer closes the stash too', async () => {
+    h.handle().toggleStash();
+    await settleLong();
+    h.handle().close();
+    await settle();
+    expect(stash.state.open).toBe(false);
+    expect(h.root().classList.contains('open')).toBe(false);
+  });
+
+  it('toggleStash from a closed drawer opens both, then closes the stash alone', async () => {
+    h.handle().toggleStash();
+    await settleLong();
+    expect(h.root().classList.contains('open')).toBe(true);
+    expect(stash.state.focus).toBe('stash');
+    h.handle().toggleStash();
+    await settle();
+    expect(stash.state.open).toBe(false);
+    expect(h.root().classList.contains('open')).toBe(true);
+  });
+
+  it('both open veil the page like the carousel (D17), and the veil lifts with the stash', async () => {
+    h.handle().toggle();
+    await settle();
+    expect(h.oncarousel).toHaveBeenLastCalledWith(false);
+    h.handle().toggleStash();
+    await settleLong();
+    expect(h.root().classList.contains('stash-open')).toBe(true);
+    expect(h.oncarousel).toHaveBeenLastCalledWith(true);
+    h.handle().toggleStash();
+    await settle();
+    expect(h.root().classList.contains('stash-open')).toBe(false);
+    expect(h.oncarousel).toHaveBeenLastCalledWith(false);
+  });
+
+  it('widths come from drawerLayout: wide, then squeezed halves with compact cards (D4)', async () => {
+    const width = window.innerWidth;
+    try {
+      window.innerWidth = 1200;
+      window.dispatchEvent(new Event('resize'));
+      h.handle().toggleStash();
+      await settleLong();
+      expect(el('.drawer-wrap').style.width).toBe('420px');
+      expect(el('.stash-wrap').style.width).toBe('400px');
+      expect(stash.width).toBe(400);
+      expect(h.root().classList.contains('compact')).toBe(false);
+
+      window.innerWidth = 800;
+      window.dispatchEvent(new Event('resize'));
+      await settle();
+      expect(el('.drawer-wrap').style.width).toBe('380px');
+      expect(el('.stash-wrap').style.width).toBe('380px');
+      expect(h.root().classList.contains('narrow')).toBe(true);
+      expect(h.root().classList.contains('compact'), 'squeezed: compact cards').toBe(true);
+      expect(el('.stash-wrap').classList.contains('compact')).toBe(true);
+
+      h.handle().toggleStash();
+      await settle();
+      expect(el('.drawer-wrap').style.width, 'the stylesheet width again').toBe('');
+      expect(h.root().classList.contains('compact')).toBe(false);
+    } finally {
+      window.innerWidth = width;
+      window.dispatchEvent(new Event('resize'));
+    }
+  });
+});
+
+describe('TabDrawer — a blank tab in Compact (stage-03 carry-over)', () => {
+  it('reads just «empty», not the full sentence', async () => {
+    h.destroy();
+    const list: TabListState = { tabs: [tab('a', '/p/alpha.md'), tab('u', null)], activeId: 'a' };
+    h = setup(list, { held: { u: '' } });
+    h.props.compact = true;
+    h.handle().toggle();
+    await settle();
+    expect(card('u').querySelector('.card-imeta')?.textContent).toBe('empty');
+    h.props.compact = false;
+    await settle();
+    expect(card('u').querySelector('.card-meta')?.textContent).toContain('empty — vanishes when closed');
+  });
+});
+
+describe('TabDrawer — one keyboard for two drawers (stash stage 04)', () => {
+  let stash: StashStore;
+  const onstashopen = vi.fn();
+
+  beforeEach(async () => {
+    h?.destroy();
+    stash = fakeStash();
+    onstashopen.mockClear();
+    h = setup(initialList(), {}, { stash, onstashopen, onputaway: vi.fn(), onstashremove: vi.fn(), onstashtag: vi.fn() });
+    h.handle().toggle();
+    await settle();
+  });
+
+  const page = () => h.root().parentElement!;
+  const stashQuery = () => page().querySelector('.stash-drawer .s-q')?.textContent ?? '';
+
+  function shiftClick(id: string): void {
+    pointer(card(id), 'pointerdown', { button: 0, shiftKey: true, clientX: 100, clientY: 100 });
+    pointer(window, 'pointerup', { button: 0, clientX: 100, clientY: 100 });
+  }
+
+  it('→ opens the stash with the keys; letters filter the stash, not the tabs', async () => {
+    press('ArrowRight');
+    await settleLong();
+    expect(page().querySelector('.stash-drawer.focused')).not.toBeNull();
+    expect(page().querySelector('#tab-drawer.focused')).toBeNull();
+    press('b');
+    await settle();
+    expect(stashQuery()).toBe('b');
+    expect(query()).toBe('');
+    expect(h.editorKeys).toEqual([]);
+  });
+
+  it('in the trash (stash stage 06) the sort keys, ↑/↓ and Enter stop at the stash; ← still gives the keys back', async () => {
+    press('ArrowRight');
+    await settleLong();
+    stash.enterTrash();
+    await settleLong();
+    // ⌘ on a Mac, ⌃ elsewhere (`isMacPlatform`): both, so the test holds on either.
+    for (const [k, code] of [
+      ['u', 'KeyU'],
+      ['l', 'KeyL'],
+    ]) {
+      expect(press(k, { code, metaKey: true, ctrlKey: true }).defaultPrevented).toBe(true);
+    }
+    for (const k of ['ArrowDown', 'ArrowUp', 'Enter']) expect(press(k).defaultPrevented).toBe(true);
+    expect(stash.state).toMatchObject({ mode: 'trash', sort: 'changed', kb: null });
+    expect(h.editorKeys).toEqual([]);
+    press('ArrowLeft');
+    await settle();
+    expect(stash.state.focus).toBe('tabs');
+    expect(stash.state.mode).toBe('trash');
+  });
+
+  it('DOM focus follows the drawer that has the keys (D5)', async () => {
+    press('ArrowRight');
+    await settleLong();
+    expect(page().querySelector('.stash-drawer')?.contains(document.activeElement)).toBe(true);
+    press('ArrowLeft');
+    await settleLong();
+    expect(el('#tab-drawer').contains(document.activeElement)).toBe(true);
+  });
+
+  it('← gives the keys back; the tabs drawer glows and filters', async () => {
+    press('ArrowRight');
+    await settleLong();
+    press('ArrowLeft');
+    await settle();
+    expect(page().querySelector('#tab-drawer.focused')).not.toBeNull();
+    expect(page().querySelector('.stash-drawer.focused')).toBeNull();
+    press('g');
+    await settle();
+    expect(query()).toBe('g');
+    expect(stashQuery()).toBe('');
+  });
+
+  it('a modified arrow moves no keys between the drawers', async () => {
+    press('ArrowRight', { shiftKey: true });
+    await settleLong();
+    expect(stash.state.open).toBe(false);
+  });
+
+  it('Esc in the stash clears its query, then closes the stash alone', async () => {
+    press('ArrowRight');
+    await settleLong();
+    press('o');
+    await settle();
+    press('Escape');
+    await settle();
+    expect(stashQuery()).toBe('');
+    expect(stash.state.open).toBe(true);
+    press('Escape');
+    await settle();
+    expect(stash.state.open).toBe(false);
+    expect(h.root().classList.contains('open')).toBe(true);
+  });
+
+  it('Esc in the tabs drawer closes both', async () => {
+    press('ArrowRight');
+    await settleLong();
+    press('ArrowLeft');
+    await settle();
+    press('Escape');
+    await settle();
+    expect(h.root().classList.contains('open')).toBe(false);
+    expect(stash.state.open).toBe(false);
+  });
+
+  it('Enter opens the stash top result here and closes both drawers', async () => {
+    press('ArrowRight');
+    await settleLong();
+    press('b');
+    await settle();
+    press('Enter');
+    await settle();
+    expect(onstashopen).toHaveBeenCalledWith(expect.objectContaining({ id: 's2' }), undefined);
+    expect(h.root().classList.contains('open')).toBe(false);
+  });
+
+  it('⌃T targets: the selection, the ring, the active tab — nothing while the stash has the keys', async () => {
+    expect(h.handle().putAwayTargets()).toEqual(['a']);
+    shiftClick('c');
+    await settle();
+    expect(h.handle().putAwayTargets()).toEqual(['c']);
+    press('ArrowRight');
+    await settleLong();
+    expect(h.handle().putAwayTargets()).toBeNull();
+    h.handle().close();
+    await settle();
+    expect(h.handle().putAwayTargets()).toBeUndefined();
+  });
+
+  describe('⌘G while the stash has the keys (M10)', () => {
+    let was = 0;
+    function viewport(width: number): void {
+      window.innerWidth = width;
+      window.dispatchEvent(new Event('resize'));
+    }
+    beforeEach(() => {
+      was = window.innerWidth;
+    });
+    afterEach(() => viewport(was));
+
+    it('reaches the carousel: the stash stays open and types nothing', async () => {
+      viewport(1200);
+      press('ArrowRight');
+      await settleLong();
+      const e = press('g', { metaKey: true, ctrlKey: true });
+      await settleLong();
+      expect(e.defaultPrevented).toBe(true);
+      expect(page().querySelector('.carousel')).not.toBeNull();
+      expect(stash.state.open).toBe(true);
+      expect(stashQuery()).toBe('');
+    });
+
+    it('squeezed, it closes the stash first (D20)', async () => {
+      viewport(800);
+      press('ArrowRight');
+      await settleLong();
+      press('g', { metaKey: true, ctrlKey: true });
+      await settleLong();
+      expect(stash.state.open).toBe(false);
+      expect(page().querySelector('.carousel')).not.toBeNull();
+    });
+
+    it('during the «got» pulse after a pick, keys still go to the stash, not the tabs search', async () => {
+      viewport(1200);
+      press('ArrowRight');
+      await settleLong();
+      press('g', { metaKey: true, ctrlKey: true });
+      await settleLong();
+      press('Enter');
+      await settle();
+      expect(h.onmove).toHaveBeenCalled();
+      expect(page().querySelector('.carousel'), 'still pulsing').not.toBeNull();
+      press('b');
+      await settle();
+      expect(stashQuery()).toBe('b');
+      expect(query()).toBe('');
+      expect(page().querySelector('.stash-drawer')?.contains(document.activeElement)).toBe(true);
+    });
+  });
+
+  it('⌃T targets the card under the keyboard ring when nothing is selected', async () => {
+    press('ArrowDown');
+    await settle();
+    press('ArrowDown');
+    await settle();
+    const ringed = h.root().querySelector<HTMLElement>('[data-tab-id].kb');
+    expect(ringed?.dataset.tabId).toBeDefined();
+    expect(ringed?.dataset.tabId).not.toBe('a');
+    expect(h.handle().putAwayTargets()).toEqual([ringed?.dataset.tabId]);
+  });
+});
+
+describe('TabDrawer — cards cross between the drawers (stash stage 04)', () => {
+  let stash: StashStore;
+  const onstashopen = vi.fn();
+  const onputaway = vi.fn();
+  const page = () => h.root().parentElement!;
+
+  beforeEach(async () => {
+    h?.destroy();
+    stash = fakeStash();
+    onstashopen.mockClear();
+    onputaway.mockClear();
+    h = setup(initialList(), {}, { stash, onstashopen, onputaway, onstashremove: vi.fn(), onstashtag: vi.fn() });
+    h.handle().toggle();
+    await settle();
+  });
+
+  function shiftClick(id: string): void {
+    pointer(card(id), 'pointerdown', { button: 0, shiftKey: true, clientX: 100, clientY: 100 });
+    pointer(window, 'pointerup', { button: 0, clientX: 100, clientY: 100 });
+  }
+
+  function drag(from: Element, to: { x: number; y: number }, start = { x: 10, y: 10 }): void {
+    pointer(from, 'pointerdown', { button: 0, buttons: 1, clientX: start.x, clientY: start.y });
+    pointer(window, 'pointermove', { buttons: 1, clientX: to.x, clientY: to.y });
+    flushSync();
+    pointer(window, 'pointermove', { buttons: 1, clientX: to.x + 1, clientY: to.y });
+    flushSync();
+  }
+
+  function withViewport(width: number): () => void {
+    const was = window.innerWidth;
+    window.innerWidth = width;
+    window.dispatchEvent(new Event('resize'));
+    return () => {
+      window.innerWidth = was;
+      window.dispatchEvent(new Event('resize'));
+    };
+  }
+
+  it('a tab card dragged shows the drop zone; dropped on it, the tab is put away', async () => {
+    el('.stash-bar').getBoundingClientRect = () => new DOMRect(0, 700, 400, 58);
+    drag(card('b'), { x: 50, y: 720 });
+    expect(el('.stash-bar').classList.contains('dropmode')).toBe(true);
+    expect(el('.stash-bar').classList.contains('hot')).toBe(true);
+    expect(page().querySelector('.ghost.as-stash')).not.toBeNull();
+    pointer(window, 'pointerup', { clientX: 51, clientY: 720 });
+    await settle();
+    expect(onputaway).toHaveBeenCalledWith(['b']);
+    expect(h.onreorder).not.toHaveBeenCalled();
+  });
+
+  it('the drop lands where the pointer is let go, not where it last moved (M11)', async () => {
+    el('.stash-bar').getBoundingClientRect = () => new DOMRect(0, 700, 400, 58);
+    el('.tab-list').getBoundingClientRect = () => new DOMRect(0, 0, 400, 600);
+    drag(card('b'), { x: 50, y: 720 });
+    expect(el('.stash-bar').classList.contains('hot')).toBe(true);
+    // Released over the list with no pointermove in between: a reorder, not a put-away.
+    pointer(window, 'pointerup', { clientX: 100, clientY: 300 });
+    await settle();
+    expect(onputaway).not.toHaveBeenCalled();
+    expect(h.onreorder).toHaveBeenCalled();
+
+    h.onreorder.mockClear();
+    drag(card('c'), { x: 100, y: 300 });
+    pointer(window, 'pointerup', { clientX: 60, clientY: 720 });
+    await settle();
+    expect(onputaway).toHaveBeenCalledWith(['c']);
+    expect(h.onreorder).not.toHaveBeenCalled();
+  });
+
+  it('dropped on the open stash drawer, it is put away too', async () => {
+    h.handle().toggleStash();
+    await settleLong();
+    page().querySelector<HTMLElement>('.stash-wrap')!.getBoundingClientRect = () => new DOMRect(600, 0, 400, 768);
+    drag(card('b'), { x: 700, y: 300 });
+    expect(page().querySelector('.stash-drawer.drop-hot')).not.toBeNull();
+    pointer(window, 'pointerup', { clientX: 701, clientY: 300 });
+    await settle();
+    expect(onputaway).toHaveBeenCalledWith(['b']);
+    expect(h.onmove).not.toHaveBeenCalled();
+  });
+
+  it('a stash card dropped on the tab list opens there, both drawers stay', async () => {
+    h.handle().toggleStash();
+    await settleLong();
+    el('.tab-list').getBoundingClientRect = () => new DOMRect(0, 0, 300, 600);
+    el('#tab-drawer').getBoundingClientRect = () => new DOMRect(0, 0, 420, 768);
+    const s2 = page().querySelector('[data-stash-id="s2"]')!;
+    drag(s2, { x: 100, y: 300 }, { x: 700, y: 100 });
+    expect(page().querySelector('.ghost.as-open')).not.toBeNull();
+    expect(page().querySelector('.ghost-name')?.textContent?.trim()).toBe('Beta note');
+    pointer(window, 'pointerup', { clientX: 101, clientY: 300 });
+    await settle();
+    expect(onstashopen).toHaveBeenCalledWith(expect.objectContaining({ id: 's2' }), null);
+    expect(h.root().classList.contains('open')).toBe(true);
+    expect(stash.state.open).toBe(true);
+  });
+
+  it('a stash card dropped anywhere else opens nothing', async () => {
+    h.handle().toggleStash();
+    await settleLong();
+    const s2 = page().querySelector('[data-stash-id="s2"]')!;
+    drag(s2, { x: 600, y: 300 }, { x: 700, y: 100 });
+    expect(page().querySelector('.ghost.cancel')).not.toBeNull();
+    pointer(window, 'pointerup', { clientX: 601, clientY: 300 });
+    await settle();
+    expect(onstashopen).not.toHaveBeenCalled();
+    expect(onputaway).not.toHaveBeenCalled();
+    expect(h.onreorder).not.toHaveBeenCalled();
+  });
+
+  it('a click on a stash card opens it here and closes both', async () => {
+    h.handle().toggleStash();
+    await settleLong();
+    const s1 = page().querySelector('[data-stash-id="s1"]')!;
+    pointer(s1, 'pointerdown', { button: 0, buttons: 1, clientX: 700, clientY: 100 });
+    expect(onstashopen, 'a press alone opens nothing yet').not.toHaveBeenCalled();
+    pointer(window, 'pointerup', { clientX: 700, clientY: 100 });
+    await settle();
+    expect(onstashopen).toHaveBeenCalledWith(expect.objectContaining({ id: 's1' }), undefined);
+    expect(h.root().classList.contains('open')).toBe(false);
+  });
+
+  it('«В тайник» in the selection bar puts the selection away', async () => {
+    shiftClick('b');
+    shiftClick('c');
+    await settle();
+    const button = [...page().querySelectorAll<HTMLButtonElement>('.sel-bar button')].find(
+      (b) => b.textContent === 'To stash'
+    )!;
+    button.click();
+    await settle();
+    expect(onputaway).toHaveBeenCalledWith(['b', 'c']);
+  });
+
+  it('the carousel keeps to the page between the drawers (D20)', async () => {
+    const restore = withViewport(1200);
+    try {
+      h.handle().toggleStash();
+      await settleLong();
+      page().querySelector<HTMLElement>('.stash-drawer')!.getBoundingClientRect = () => new DOMRect(800, 6, 400, 756);
+      drag(card('b'), { x: 600, y: 300 });
+      await settle();
+      const carousel = page().querySelector<HTMLElement>('.carousel');
+      expect(carousel).not.toBeNull();
+      expect(carousel?.style.right).toBe('400px');
+    } finally {
+      restore();
+    }
+  });
+
+  it('no carousel between squeezed drawers (D20)', async () => {
+    const restore = withViewport(800);
+    try {
+      h.handle().toggleStash();
+      await settleLong();
+      page().querySelector<HTMLElement>('.stash-drawer')!.getBoundingClientRect = () => new DOMRect(420, 6, 380, 756);
+      drag(card('b'), { x: 400, y: 300 });
+      await settle();
+      expect(page().querySelector('.carousel')).toBeNull();
+    } finally {
+      restore();
+    }
+  });
+
+  it('⌃T mid-drag of tab cards puts those away and ends the drag with no drop (I3)', async () => {
+    el('.tab-list').getBoundingClientRect = () => new DOMRect(0, 0, 300, 600);
+    drag(card('b'), { x: 100, y: 300 });
+    expect(page().querySelector('.ghost')).not.toBeNull();
+    expect(h.handle().putAwayTargets()).toEqual(['b']);
+    await settle();
+    expect(page().querySelector('.ghost'), 'the drag is over').toBeNull();
+    pointer(window, 'pointerup', { clientX: 101, clientY: 300 });
+    await settle();
+    expect(h.onreorder).not.toHaveBeenCalled();
+    expect(onputaway).not.toHaveBeenCalled();
+  });
+
+  it('⌃T mid-drag of a stash card, or with ⌘G’s carousel up, targets nothing (I3)', async () => {
+    h.handle().toggleStash();
+    await settleLong();
+    const s2 = page().querySelector('[data-stash-id="s2"]')!;
+    drag(s2, { x: 600, y: 300 }, { x: 700, y: 100 });
+    expect(page().querySelector('.ghost')).not.toBeNull();
+    expect(h.handle().putAwayTargets()).toBeNull();
+    expect(page().querySelector('.ghost'), 'the stash drag goes on').not.toBeNull();
+    pointer(window, 'pointerup', { clientX: 601, clientY: 300 });
+    await settle();
+    press('ArrowLeft');
+    await settle();
+    press('g', { metaKey: true, ctrlKey: true });
+    await settle();
+    expect(page().querySelector('.carousel')).not.toBeNull();
+    expect(h.handle().putAwayTargets()).toBeNull();
+  });
+
+  it('⌘G with the stash open in narrow mode closes the stash first (D20)', async () => {
+    const restore = withViewport(800);
+    try {
+      h.handle().toggleStash();
+      await settleLong();
+      press('ArrowLeft');
+      await settle();
+      press('g', { metaKey: true, ctrlKey: true });
+      await settle();
+      expect(stash.state.open).toBe(false);
+      expect(page().querySelector('.carousel')).not.toBeNull();
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe('TabDrawer — the drag ghost speaks like the card (stage-03 carry-over)', () => {
+  const page = () => h.root().parentElement!;
+
+  beforeEach(async () => {
+    h.destroy();
+    const list: TabListState = {
+      tabs: [
+        { id: 'n', path: '/notes/2026-09-27-0215-a3f9.md', dirty: false, openedAt: 1, viewedAt: 0, unviewed: false },
+        { id: 'u', path: null, dirty: false, openedAt: 2, viewedAt: 0, unviewed: false },
+        { id: 'w', path: null, dirty: false, openedAt: 3, viewedAt: 0, unviewed: false },
+      ],
+      activeId: 'n',
+    };
+    const marks = (p: string | null): StashMark | null =>
+      p === '/notes/2026-09-27-0215-a3f9.md' ? { kind: 'note', title: 'План', repo: 'couplet' } : null;
+    h = setup(list, { held: { n: '# План\nтело', u: '', w: 'draft text' }, marks });
+    h.handle().toggle();
+    await settle();
+  });
+
+  function grab(id: string): void {
+    pointer(card(id), 'pointerdown', { button: 0, buttons: 1, clientX: 10, clientY: 10 });
+    pointer(window, 'pointermove', { buttons: 1, clientX: 600, clientY: 300 });
+    flushSync();
+  }
+
+  const ghost = () => ({
+    name: page().querySelector('.ghost-name')?.textContent?.trim(),
+    meta: page().querySelector('.ghost-meta')?.textContent?.trim(),
+  });
+
+  it('a note: its title and its repo', () => {
+    grab('n');
+    expect(ghost()).toEqual({ name: 'План', meta: 'couplet' });
+  });
+
+  it('a blank new tab: «New note» and just «empty»', () => {
+    grab('u');
+    expect(ghost()).toEqual({ name: 'New note', meta: 'empty' });
+  });
+
+  it('an untitled tab with text: «not saved»', () => {
+    grab('w');
+    expect(ghost().name).toBe('draft text');
+    expect(ghost().meta).toBe('not saved');
   });
 });

@@ -258,6 +258,9 @@ pub fn build_menu(
                 .accelerator("CmdOrCtrl+W")
                 .build(app)?,
         )
+        // ⌃T is a page key (`src/lib/stash/stash-keys.ts`): a Ctrl-only
+        // accelerator never fires from the keyboard in this app. No key here.
+        .item(&MenuItemBuilder::with_id("stash_put_away", t("menu.file.stash_put_away")).build(app)?)
         .separator()
         .item(&MenuItemBuilder::with_id("recent_files", t("menu.file.recent_files")).build(app)?)
         .item(&transient_submenu)
@@ -338,6 +341,11 @@ pub fn build_menu(
                 .accelerator("CmdOrCtrl+J")
                 .build(app)?,
         )
+        // The stash drawer (stash stage 04). No accelerator on purpose: ⌃S is
+        // a page key — a Ctrl-only key equivalent never fires from the
+        // keyboard while a window is key (see next_tab below) — handled in
+        // `src/lib/stash/stash-keys.ts`.
+        .item(&MenuItemBuilder::with_id("toggle_stash", t("menu.view.toggle_stash")).build(app)?)
         .item(&tabs_compact)
         .item(&tabs_dates)
         .separator()

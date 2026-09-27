@@ -1,5 +1,7 @@
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+import type { StashDropRequest } from '../stash/stash-drop';
+import type { StashChanged } from '../stash/types';
 import type { RecentSnapshot } from '../stores.svelte';
 import type { PendingTab } from './commands';
 
@@ -45,12 +47,14 @@ export type MenuAction =
   | 'next_tab'
   | 'prev_tab'
   | 'toggle_drawer'
+  | 'toggle_stash'
   | 'toggle_tabs_compact:on'
   | 'toggle_tabs_compact:off'
   | 'toggle_tabs_dates:on'
   | 'toggle_tabs_dates:off'
   | 'transient_ignored_keep'
   | 'transient_ignored_close'
+  | 'stash_put_away'
   | `select_tab_${'1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'}`;
 
 /**
@@ -119,6 +123,45 @@ export function onFileChangedExternally(handler: (path: string) => void): Promis
  */
 export function onWindowNumber(handler: (n: number) => void): Promise<() => void> {
   return getCurrentWebviewWindow().listen<number>('window-number', (event) => {
+    handler(event.payload);
+  });
+}
+
+/**
+ * Something in the stash changed (roadmap «Event», payload A6). Rust emits it
+ * once with `app.emit`; listened to per window, because a global `listen`'s
+ * target is `Any` and would also catch emits targeted at other windows.
+ * `ids` is `undefined` when Rust did not say which entries changed.
+ */
+export function onStashChanged(
+  handler: (reason: string, ids: string[] | undefined) => void
+): Promise<() => void> {
+  return getCurrentWebviewWindow().listen<StashChanged>('stash-changed', (event) => {
+    handler(event.payload.reason, event.payload.ids);
+  });
+}
+
+/** Stash stage 04: another window asks for the tab holding `path` (`tab_request_move`). */
+export interface TabPullRequest {
+  path: string;
+  /** The window label the tab should move to. */
+  target: string;
+}
+
+/** Targeted at the holder alone; listened to per window like every targeted event here. */
+export function onTabPull(handler: (request: TabPullRequest) => void): Promise<() => void> {
+  return getCurrentWebviewWindow().listen<TabPullRequest>('tab-pull', (event) => {
+    handler(event.payload);
+  });
+}
+
+/**
+ * Stash stage 06: Rust asks the window holding a note's tab to drop it before
+ * the note moves to the trash. Targeted at that window alone; always answered
+ * with `stash_drop_done` (`stash/stash-drop.ts`).
+ */
+export function onStashDropTab(handler: (request: StashDropRequest) => void): Promise<() => void> {
+  return getCurrentWebviewWindow().listen<StashDropRequest>('stash-drop-tab', (event) => {
     handler(event.payload);
   });
 }

@@ -11,6 +11,7 @@
   "menu.file.save": "Save",
   "menu.file.save_as": "Save As...",
   "menu.file.close": "Close Tab",
+  "menu.file.stash_put_away": "Put Away in Stash",
   "menu.file.recent_files": "Recent Files...",
   "menu.file.transient_title": "Unanswered Quick Looks After an Hour",
   "menu.file.transient_keep": "Keep",
@@ -75,5 +76,7 @@
   "doc.connect.skill_only_body": "The same prompt, except it does not touch your main config. The cost: your agent will not work out on its own when couplet is worth reaching for, so you will have to call the skill by hand (`/couplet`, or \"use the couplet skill\"). That is why we still recommend the first one —",
   "doc.connect.back_to_it": "back to it",
   "doc.connect.heading_config_location": "Where the main config lives",
-  "doc.connect.config_location_body": "The prompt above already knows these places; the list is here in case your agent asks."
+  "doc.connect.config_location_body": "The prompt above already knows these places; the list is here in case your agent asks.",
+
+  "menu.view.toggle_stash": "Stash"
 }

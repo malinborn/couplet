@@ -29,6 +29,7 @@ mod recent;
 mod recovery;
 mod routing;
 mod session;
+mod stash;
 mod tab_commands;
 mod tabs;
 mod typing;
@@ -156,6 +157,8 @@ pub fn run() {
         .manage(ai_socket::AiPending::new())
         .manage(ai_socket::AiQueue::new())
         .manage(typing::TypingClock::new())
+        // Stash stage 06: pending `stash-drop-tab` requests. Reads no disk.
+        .manage(stash::DropRequests::default())
         .invoke_handler(tauri::generate_handler![
             commands::read_file,
             commands::write_file,
@@ -169,6 +172,7 @@ pub fn run() {
             comment_pause::commit_document_pauses,
             window::get_window_init,
             tab_commands::tab_owner,
+            tab_commands::window_project,
             tab_commands::tab_open,
             tab_commands::tab_claim,
             tab_commands::tab_release,
@@ -176,6 +180,8 @@ pub fn run() {
             tab_commands::tab_close,
             tab_commands::tab_move,
             tab_commands::tab_carousel_windows,
+            tab_commands::tab_holders,
+            tab_commands::tab_request_move,
             git_info::tab_git_info,
             window::open_file_window_cmd,
             window::focus_if_open,
@@ -186,12 +192,28 @@ pub fn run() {
             recent::recent_files_list,
             recent::recent_files_add,
             recent::recent_files_import,
+            stash::commands::stash_create_note,
+            stash::commands::stash_put_away,
+            stash::commands::stash_list,
+            stash::commands::stash_get,
+            stash::commands::stash_entry_for_path,
+            stash::commands::stash_tag,
+            stash::commands::stash_touch_opened,
+            stash::commands::stash_counts,
+            stash::commands::stash_delete,
+            stash::commands::stash_restore,
+            stash::commands::stash_purge,
+            stash::commands::stash_drop_done,
+            stash::commands::stash_drop_pending,
+            stash::commands::stash_note_saved_as,
+            stash::commands::stash_search,
             recovery::save_recovery,
             recovery::delete_recovery,
             recovery::check_recovery,
             session::tabs_sync,
             session::pending_session_count,
             session::restore_session,
+            session::session_hold_geometry,
             updater::claim_update_checker,
             updater::report_update,
             updater::dismiss_update,
@@ -225,6 +247,24 @@ pub fn run() {
             // list would silently load empty.
             // No IPC reaches a command before `setup` returns.
             app.manage(recent::RecentFiles::load());
+            // After `paths::init`, for the same reason as `RecentFiles`: the
+            // database lives in the data directory it names. Opening touches
+            // only that directory; the notes folder (`~/couplet/`) is created by
+            // the first stash write — a new note, or the metadata export that
+            // follows every write command (put away, tag). A stash that cannot
+            // open is managed anyway, as unavailable: its commands answer with
+            // the reason, the app runs on and the database file is left alone
+            // (plan D11). Unless the reason is permanent it retries on a later
+            // call, so the hook and the backup are wired either way: against
+            // an unavailable stash they fail harmlessly, and a stash that opens
+            // later still gets its title updates.
+            let stash_state = stash::StashState::open(stash::StashPaths::resolve());
+            let emitter = app.handle().clone();
+            stash::install_write_hook(stash_state.clone(), move |reason| {
+                stash::emit_changed(&emitter, reason, None);
+            });
+            stash_state.backup_in_background();
+            app.manage(stash_state);
             // Before anything can register a file to `main` (CLI args, the
             // pending-files list) and before its frontend asks for its number.
             window::number_main_window(app.handle());
@@ -257,7 +297,10 @@ pub fn run() {
             // enabled state depends on whether there is anything to restore.
             let pending_count = {
                 let state = app.state::<SessionState>();
-                match session::read_session() {
+                // Stash plan 03: untitled drafts become notes before any window
+                // is planned from the session — a restored tab opens its note.
+                // Needs `StashState`, managed above.
+                match stash::migrate_drafts::run_at_startup(app.handle(), session::read_session()) {
                     Some(loaded) => {
                         let count = loaded.windows.len();
                         state.set_pending(loaded.windows);
@@ -266,6 +309,16 @@ pub fn run() {
                     None => 0,
                 }
             };
+            // Stash plan 05: the search index is derived — rebuilt off the main
+            // thread when missing, corrupt, outdated or stale. After the draft
+            // import, which holds the stash lock here on the main thread.
+            app.state::<stash::StashState>().ensure_index_in_background(app.handle().clone());
+            // Stash plan 06: reconcile interrupted trash moves and purge what
+            // is 30 days old — now, then once a day. Also after the draft
+            // import (the lock again); alongside the index check, whose
+            // writes are guarded by path and `modified_at`, so the two may
+            // interleave.
+            stash::start_housekeeping(app.state::<stash::StashState>().inner().clone(), app.handle().clone());
 
             let (menu, theme_items, engine_items, view_toggles, session_menu_items, transient_items) =
                 menu::build_menu(app.handle(), pending_count, explicit_language.as_deref())?;
@@ -408,18 +461,40 @@ pub fn run() {
             // Crash-safety net. The authoritative save happens on the way out
             // (see `save_session_on_exit`); this only catches a hard kill.
             let ticker_handle = app.handle().clone();
-            std::thread::spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_millis(1000));
-                let state = ticker_handle.state::<SessionState>();
-                if state.is_quitting() {
-                    return;
-                }
-                if state.take_dirty() {
-                    let snapshot = state.snapshot(session::now_secs());
-                    let _ = session::write_session(&snapshot);
-                    // Must include the pending restore's buffers, not just the
-                    // live ones — see `referenced_untitled`.
-                    session::prune_untitled_files(&state.referenced_untitled());
+            std::thread::spawn(move || {
+                // `None`: purge on the first tick — an app that ran for weeks
+                // empties the trash when it is next launched.
+                let mut last_purge: Option<std::time::Instant> = None;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(1000));
+                    let state = ticker_handle.state::<SessionState>();
+                    if state.is_quitting() {
+                        return;
+                    }
+                    // No live window (launch before the first heartbeat, or the
+                    // last window destroyed ahead of the exit path): the file on
+                    // disk stands — `snapshot_to_write` says why. The GC waits
+                    // too: in the second case the file still names the destroyed
+                    // window's draft, which nothing in memory references any
+                    // more, and trashing it would restore that tab empty-handed.
+                    if state.take_dirty() {
+                        if let Some(snapshot) = state.snapshot_to_write(session::now_secs()) {
+                            let _ = session::write_session(&snapshot);
+                            // Includes the pending restore's buffers, not just the
+                            // live ones, and everything the file just written
+                            // names — see `untitled_to_keep_after`. What it leaves
+                            // out goes to `session/.trash/`, never away.
+                            session::prune_untitled_files(&state.untitled_to_keep_after(&snapshot));
+                        }
+                    }
+                    let purge_due = match last_purge {
+                        None => true,
+                        Some(at) => at.elapsed() >= session::DRAFTS_TRASH_PURGE_EVERY,
+                    };
+                    if purge_due {
+                        session::purge_drafts_trash(session::now_secs());
+                        last_purge = Some(std::time::Instant::now());
+                    }
                 }
             });
 
@@ -464,6 +539,23 @@ pub fn run() {
                         reg.window(label).cloned()
                     };
                     if let Some(tabs) = closing {
+                        // Spec: a window closing puts its notes away (stash
+                        // plan 03, D8). Not while quitting: `save_session_on_exit`
+                        // does it once for every live window. Read before
+                        // `remove` below erases the carets; the stash work goes
+                        // to the blocking pool — this is the main thread — with
+                        // the registry and session locks already released (A11).
+                        if !session_state.is_quitting() {
+                            let left = stash::lifecycle::left_with_window(
+                                &tabs,
+                                session_state.snapshot_for(label).as_ref(),
+                            );
+                            stash::lifecycle::documents_left_later(
+                                app,
+                                left,
+                                stash::lifecycle::Leaving::WithWindow,
+                            );
+                        }
                         let stack = app.state::<closed::ClosedStack>();
                         if closed::record_window_close(&session_state, &stack, label, &tabs) > 0 {
                             closed::refresh_reopen_item(app);
@@ -583,15 +675,27 @@ fn save_session_on_exit(app: &tauri::AppHandle) {
     // `RunEvent::Exit` alone. A comment paused seconds before a quit has to be
     // handed over on the way out, or nothing is left to hand it over.
     comment_pause::commit_all_open(app);
-    let snapshot = state.snapshot(session::now_secs());
+    let snapshot = state.snapshot_to_write_counting_live(session::now_secs());
     state.mark_quitting();
-    // A quit records the session, it never erases it. An empty snapshot here
-    // means the windows were already gone before we were called — not that the
-    // user had nothing open — so the last good file on disk is the better answer.
-    if snapshot.windows.is_empty() {
-        return;
+    // A quit records the session, it never erases it: with no live window
+    // left, the last good file on disk stands (`snapshot_to_write` says why
+    // that also keeps the un-restored drafts named).
+    if let Some((snapshot, live)) = snapshot {
+        let _ = session::write_session(&snapshot);
+        // After the session: it matters more. The live windows' notes are
+        // stamped put away, never discarded — the last ≤300 ms of typing may
+        // not be on disk (stash plan 03, D6/D8). Synchronously, on the main
+        // thread: a task handed to the pool here would race the process exit.
+        // Bounded: one lookup and one transaction, by id, no disk; skipped
+        // after ~1 s of a busy stash (the session file names the notes).
+        stash::lifecycle::documents_left_at_quit(
+            app,
+            &stash::lifecycle::left_at_quit(&snapshot, live),
+        );
     }
-    let _ = session::write_session(&snapshot);
+    // A red button on the last window destroys it and exits right behind
+    // it; its put-away may still be on the blocking pool (bounded wait).
+    stash::lifecycle::wait_for_pending();
 }
 
 /// The window a document-scoped menu action belongs to — see `menu_route`.
@@ -922,5 +1026,107 @@ mod cli_script_tests {
         assert_eq!(out.status.code(), Some(1));
         assert!(out.stdout.is_empty());
         assert!(!binary_ran);
+    }
+
+    /// What one run of the script did: its output, the fake binary's argv
+    /// (one per line), whether `open` ran, and whether the pending-files
+    /// list was written.
+    #[cfg(target_os = "macos")]
+    struct Recorded {
+        out: std::process::Output,
+        argv: Option<String>,
+        open_ran: bool,
+        pending_written: bool,
+    }
+
+    /// Runs a copy of the script with `args` against a fake bundle whose
+    /// binary records its arguments, with a fake `open` first on PATH. Every
+    /// path the script could reach outside its bundle — both sockets and the
+    /// pending-files list — is rewritten into the scratch dir too, so a run
+    /// that takes the wrong branch (a regression, or the red phase of a test)
+    /// can never write the owner's `/tmp/couplet-pending-files`, probe or
+    /// delete the release app's sockets, or launch anything.
+    #[cfg(target_os = "macos")]
+    fn run_recording(tag: &str, args: &[&str], claudecode: bool) -> Recorded {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("couplet-cli-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let app = dir.join("couplet.app");
+        let macos = app.join("Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        let argv = dir.join("binary-argv");
+        let bin = macos.join("couplet");
+        std::fs::write(&bin, format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", argv.display())).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let fake_bin = dir.join("fakebin");
+        std::fs::create_dir_all(&fake_bin).unwrap();
+        let opened = dir.join("open-ran");
+        let open = fake_bin.join("open");
+        std::fs::write(&open, format!("#!/bin/sh\ntouch '{}'\n", opened.display())).unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let pending = dir.join("pending-files");
+
+        let scratch = [
+            ("APP", app.clone()),
+            ("SOCK", dir.join("si.sock")),
+            ("CMD_SOCK", dir.join("cmd.sock")),
+            ("PENDING", pending.clone()),
+        ];
+        let mut rewritten = 0;
+        let script: String = SCRIPT
+            .lines()
+            .map(|l| match scratch.iter().find(|(name, _)| l.starts_with(&format!("{name}=\""))) {
+                Some((name, path)) => {
+                    rewritten += 1;
+                    format!("{name}=\"{}\"", path.display())
+                }
+                None => l.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(rewritten, scratch.len(), "every outside path of the script is rewritten");
+        for real in [raw("SOCK"), raw("CMD_SOCK"), raw("PENDING"), raw("APP")] {
+            assert!(!script.contains(&real), "the copy still names {real}");
+        }
+        let script_path = dir.join("couplet");
+        std::fs::write(&script_path, script).unwrap();
+
+        let path_env = format!("{}:{}", fake_bin.display(), std::env::var("PATH").unwrap_or_default());
+        let mut cmd = std::process::Command::new("bash");
+        cmd.arg(&script_path).args(args).env("PATH", path_env).stdin(std::process::Stdio::null());
+        if claudecode {
+            cmd.env("CLAUDECODE", "1");
+        } else {
+            cmd.env_remove("CLAUDECODE");
+        }
+        let out = cmd.output().unwrap();
+        let recorded = Recorded {
+            out,
+            argv: std::fs::read_to_string(&argv).ok(),
+            open_ran: opened.exists(),
+            pending_written: pending.exists(),
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        recorded
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stash_goes_to_the_binary_and_never_launches_the_app() {
+        for (args, claudecode, expected) in [
+            (vec!["stash", "search", "HDMI", "--json"], false, "ai\nstash\nsearch\nHDMI\n--json\n"),
+            (vec!["stash", "get", "s1-a"], false, "ai\nstash\nget\ns1-a\n"),
+            (vec!["stash", "add", "--tag", "ideas"], false, "ai\nstash\nadd\n--tag\nideas\n"),
+            // An agent (CLAUDECODE set) must not be taken for a routed open.
+            (vec!["stash", "list", "--since", "yesterday"], true, "ai\nstash\nlist\n--since\nyesterday\n"),
+            // Nor a stash flag that looks like a routing one.
+            (vec!["stash", "list", "-b"], false, "ai\nstash\nlist\n-b\n"),
+        ] {
+            let r = run_recording("stash", &args, claudecode);
+            assert!(r.out.status.success(), "{args:?}: {:?}", r.out);
+            assert_eq!(r.argv.as_deref(), Some(expected), "{args:?}");
+            assert!(!r.open_ran, "{args:?} must not launch the app");
+            assert!(!r.pending_written, "{args:?} must not take the file-open path");
+        }
     }
 }

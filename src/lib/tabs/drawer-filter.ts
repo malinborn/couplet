@@ -60,6 +60,31 @@ export function indexText(md: string): SearchIndex {
   return { lines, lower: lines.map((l) => l.toLowerCase()) };
 }
 
+/**
+ * `indexText(md).lines[0] ?? ''` without the index: walks line by line and
+ * stops at the first line with text, so a card's one-line preview does not
+ * split, clean and lowercase a whole long note (it runs for every tab on
+ * every drawer refresh).
+ */
+export function firstPlainLine(md: string): string {
+  let inCode = false;
+  let start = 0;
+  for (;;) {
+    const nl = md.indexOf('\n', start);
+    let raw = nl === -1 ? md.slice(start) : md.slice(start, nl);
+    // As `LINE_BREAK`: a `\r` goes only with the `\n` after it.
+    if (nl !== -1 && raw.endsWith('\r')) raw = raw.slice(0, -1);
+    if (FENCE.test(raw)) {
+      inCode = !inCode;
+    } else {
+      const plain = inCode ? raw.trim() : plainLine(raw);
+      if (plain) return plain;
+    }
+    if (nl === -1) return '';
+    start = nl + 1;
+  }
+}
+
 export function matchEntry(entry: FilterEntry, query: string): Match | null {
   const q = query.toLowerCase();
   if (!q) return null;

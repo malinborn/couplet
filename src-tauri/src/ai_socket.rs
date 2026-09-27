@@ -103,6 +103,20 @@ pub enum AiRequest {
         #[allow(dead_code)] // protocol version, reserved for the future MCP wrapper
         v: u32,
     },
+    /// A CLI/MCP write landed in `stash.db` behind the app's back. Answered
+    /// by Rust at once: the app emits `stash-changed` once so drawers reload.
+    /// Best effort on the sender's side — nothing depends on it arriving.
+    #[serde(rename = "stash-changed")]
+    StashChanged {
+        v: u32,
+        /// Sent as `external` by the CLI/MCP; the app never trusts it and
+        /// always emits `external` (`stash_changed_event`).
+        #[serde(default)]
+        reason: String,
+        /// The entries written (checked and capped by `stash_ids`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ids: Option<Vec<String>>,
+    },
 }
 
 impl AiRequest {
@@ -113,11 +127,12 @@ impl AiRequest {
             | AiRequest::Ask { path, .. }
             | AiRequest::Open { path, .. }
             | AiRequest::Close { path, .. } => path,
-            AiRequest::Windows { .. } => "",
+            AiRequest::Windows { .. } | AiRequest::StashChanged { .. } => "",
         }
     }
 
-    /// The path to normalize at the socket's door; `None` for `windows`.
+    /// The path to normalize at the socket's door; `None` for `windows` and
+    /// `stash-changed`.
     fn path_mut(&mut self) -> Option<&mut String> {
         match self {
             AiRequest::Show { path, .. }
@@ -125,7 +140,7 @@ impl AiRequest {
             | AiRequest::Ask { path, .. }
             | AiRequest::Open { path, .. }
             | AiRequest::Close { path, .. } => Some(path),
-            AiRequest::Windows { .. } => None,
+            AiRequest::Windows { .. } | AiRequest::StashChanged { .. } => None,
         }
     }
 
@@ -135,7 +150,11 @@ impl AiRequest {
         match self {
             AiRequest::Show { focus, .. } => focus.unwrap_or(true),
             AiRequest::Open { focus, .. } => *focus,
-            AiRequest::Edit { .. } | AiRequest::Ask { .. } | AiRequest::Close { .. } | AiRequest::Windows { .. } => false,
+            AiRequest::Edit { .. }
+            | AiRequest::Ask { .. }
+            | AiRequest::Close { .. }
+            | AiRequest::Windows { .. }
+            | AiRequest::StashChanged { .. } => false,
         }
     }
 
@@ -149,7 +168,7 @@ impl AiRequest {
             | AiRequest::Edit { window_binding, .. }
             | AiRequest::Ask { window_binding, .. }
             | AiRequest::Open { window_binding, .. } => *window_binding,
-            AiRequest::Close { .. } | AiRequest::Windows { .. } => None,
+            AiRequest::Close { .. } | AiRequest::Windows { .. } | AiRequest::StashChanged { .. } => None,
         }
     }
 }
@@ -251,11 +270,10 @@ pub struct AiResponse {
 }
 
 impl AiResponse {
-    // Counterpart to `error()` below — not called from non-test Rust yet: the
-    // "ok" response for `edit`/`show` is built by the frontend and only
-    // deserialized here via `ai_respond`. Kept public for symmetry and for the
-    // CLI client (Task 5) to construct local responses with.
-    #[allow(dead_code)]
+    // Counterpart to `error()` below. The "ok" response for `edit`/`show` is
+    // built by the frontend and only deserialized here via `ai_respond`; Rust
+    // builds its own for the requests it answers itself (`windows`,
+    // `stash-changed`) and for local CLI answers.
     pub fn ok() -> Self {
         Self { ok: true, ..Default::default() }
     }
@@ -831,6 +849,7 @@ fn payload_for(req: &AiRequest, id: u64, first_use: bool) -> AiCommandPayload {
         AiRequest::Close { .. } => p.cmd = "close".to_string(),
         // Answered by Rust itself, never delivered to a window.
         AiRequest::Windows { .. } => p.cmd = "windows".to_string(),
+        AiRequest::StashChanged { .. } => p.cmd = "stash-changed".to_string(),
     }
     p
 }
@@ -916,6 +935,14 @@ fn dispatch(app: &AppHandle, mut req: AiRequest, tx: mpsc::Sender<AiResponse>) -
             return Dispatched::ANSWERED;
         }
         AiRequest::Close { .. } => return Dispatched { id: dispatch_close(app, &req, tx), quiet: false },
+        // Before `mark_connected`: a CLI write is not an agent connecting, so
+        // no first-use toast; no window, no `AiPending` either.
+        AiRequest::StashChanged { ids, .. } => {
+            let (reason, ids) = stash_changed_event(ids.clone());
+            crate::stash::emit_changed(app, reason, ids);
+            let _ = tx.send(AiResponse::ok());
+            return Dispatched::ANSWERED;
+        }
         _ => {}
     }
 
@@ -1051,6 +1078,29 @@ fn request_path(raw: &str) -> Result<String, String> {
         return Err("path must be absolute".to_string());
     }
     Ok(normalized.to_string_lossy().into_owned())
+}
+
+/// What a `stash-changed` request makes the app emit: always reason
+/// `external` (A6), whatever the client said — any local process can write
+/// the socket, and a reason such as `deleted` would make the drawers drop
+/// the named entries' marks. Only the ids are taken, checked and capped.
+fn stash_changed_event(ids: Option<Vec<String>>) -> (&'static str, Option<Vec<String>>) {
+    ("external", stash_ids(ids))
+}
+
+/// At most this many ids ride one `stash-changed`; a write from the CLI or
+/// MCP names one entry.
+const STASH_CHANGED_MAX_IDS: usize = 50;
+
+/// The ids of a `stash-changed` request that look like entry ids, capped.
+/// `None` when none is left: the event then says "something changed".
+fn stash_ids(raw: Option<Vec<String>>) -> Option<Vec<String>> {
+    let ids: Vec<String> = raw?
+        .into_iter()
+        .filter(|id| crate::stash::is_id(id))
+        .take(STASH_CHANGED_MAX_IDS)
+        .collect();
+    (!ids.is_empty()).then_some(ids)
 }
 
 /// `close`: to the window holding the file. Registered **without a path**:
@@ -1266,7 +1316,7 @@ enum CliVerb {
     Watch,
 }
 
-const USAGE: &str = "usage: couplet ai show <file> [--line N | --find TEXT] [-t N] [-b | -f] [--transient] [--socket PATH]\n       couplet ai edit <file> [--show] [--allow-empty] [-t N] [--socket PATH]\n       couplet ai ask <file> --question TEXT --option TEXT [--option TEXT ...] [--multi] [--free-text] [--at-line N | --at-find TEXT] [--timeout SECS] [-t N] [--socket PATH]\n       couplet ai open <file>... [-t N] [-b | -f] [--socket PATH]\n       couplet ai ls [--json] [--socket PATH]\n       couplet ai close <file> [--socket PATH]\n       couplet ai help\n       couplet ai agent [--mcp]\n       couplet ai question [<file>]\n       couplet ai answer <file> --id ID\n       couplet ai watch [<dir>]";
+const USAGE: &str = "usage: couplet ai show <file> [--line N | --find TEXT] [-t N] [-b | -f] [--transient] [--socket PATH]\n       couplet ai edit <file> [--show] [--allow-empty] [-t N] [--socket PATH]\n       couplet ai ask <file> --question TEXT --option TEXT [--option TEXT ...] [--multi] [--free-text] [--at-line N | --at-find TEXT] [--timeout SECS] [-t N] [--socket PATH]\n       couplet ai open <file>... [-t N] [-b | -f] [--socket PATH]\n       couplet ai ls [--json] [--socket PATH]\n       couplet ai close <file> [--socket PATH]\n       couplet ai help\n       couplet ai agent [--mcp]\n       couplet ai question [<file>]\n       couplet ai answer <file> --id ID\n       couplet ai watch [<dir>]\n       couplet ai stash search|list|get|add|tag ... (couplet ai stash for its usage)";
 
 /// `-t N` / `--window N`: a window number, plain digits from 1 (spec §3: the
 /// CLI has no `#`).
@@ -1590,7 +1640,12 @@ USAGE
   couplet question [<file>]
   couplet answer <file> --id ID < reply-text
   couplet watch [<dir>]
-  couplet mcp [--socket PATH]
+  couplet stash search <query> [--tag T] [--repo R | --all] [--kind note|file] [--limit N] [--cursor C] [--json]
+  couplet stash list [--since S] [--tag T] [--repo R | --all] [--kind note|file] [--sort changed|opened|kind] [--limit N] [--cursor C] [--json]
+  couplet stash get <id> [--lines A:B] [--json]
+  couplet stash add [--tag T ...] < text  |  couplet stash add --path <file> [--tag T ...]
+  couplet stash tag <id> [--add T ...] [--remove T ...]
+  couplet mcp [--socket PATH] [--product NAME]
   couplet help
   couplet agent [--mcp]
 
@@ -1748,6 +1803,46 @@ COMMENTS — the reverse direction: the user comments, you answer
     couplet question docs/spec.md
     echo "Because nginx was broken on that host." | couplet answer docs/spec.md --id c-7f3a2c
 
+STASH — the notes and file references the user put away («тайник»)
+  couplet stash search <query> ...    Best matches: id, title, kind, tags, when
+                                      put away, path, and a ~200-character
+                                      snippet around the match. Never full text.
+  couplet stash list [--since S] ...  Metadata only: what was put away, when,
+                                      with which tags. S: today, yesterday, 12h,
+                                      7d, YYYY-MM-DD or unix ms.
+  couplet stash get <id> [--lines A:B]
+                                      The text of ONE note — at most 500 lines
+                                      without --lines; a file entry prints its
+                                      path. Nothing is marked as opened.
+  couplet stash add [--tag T ...] < text
+  couplet stash add --path <file> [--tag T ...]
+                                      A new note from stdin, or a reference to a
+                                      file (the file is never changed). Adding a
+                                      file twice keeps one entry.
+  couplet stash tag <id> --add T --remove U
+
+  LOCAL: these read and write the stash database directly — couplet does not
+  need to be running (a running couplet is told about writes and refreshes).
+  A write before couplet has ever been opened on this Mac is refused.
+  Scope: the git repository of the current directory; --all for everything,
+  --repo NAME (or a path inside a repository) for another. Search/list print
+  the scope, and a hint when widening might help. The trash is never shown.
+  Search first, get one, never dump: read the snippets, then get only the
+  entry you need.
+  --json prints one line: {"ok":true,"scope":{"repo":"couplet"},"total":7,
+  "hits":[{"id":…,"snippet":…}],"next_cursor":"…"} — the same text the MCP
+  stash_* tools return. No next_cursor: the last page. A search's next page
+  re-runs the search: an entry changed between pages may be
+  skipped or repeated (list pages are stable).
+  Exit codes: 0 ok, 1 rejected ("ok":false), 2 usage error, no text on
+  stdin, or bad --product/--socket. Without --json an error is one line on
+  stderr, "couplet: <error>".
+
+  Examples:
+    couplet stash search "HDMI переговорка" --tag infra --limit 5 --json
+    couplet stash get s1790378408605-3f9a --lines 1:80
+    echo "# Идея" | couplet stash add --tag ideas
+
 JSON RESPONSE CONTRACT
   show, edit, ask, close, ls --json and a routed open each print exactly one
   line of JSON to stdout. Without CLAUDECODE (a human), the error of a routed
@@ -1779,13 +1874,16 @@ EXIT CODES
         than 6 --option flags or no --question, or couplet isn't running /
         didn't start in time.
 
-MCP — stdio MCP server exposing show/edit/ask as tools, for agents that speak MCP
-  couplet mcp [--socket PATH]
+MCP — stdio MCP server exposing show/edit/ask and the stash as tools, for agents that speak MCP
+  couplet mcp [--socket PATH] [--product NAME]
       Runs a Model Context Protocol server on stdin/stdout instead of the CLI
       verbs above: same show/edit/ask operations, wrapped as MCP tools over
-      JSON-RPC 2.0. Launches couplet via `open` if the command socket is down
-      (skipped when --socket is given explicitly). Register once with:
+      JSON-RPC 2.0, plus stash_search/list/get/add/tag (answered from the
+      stash database itself, like couplet stash). Launches couplet via `open`
+      if the command socket is down (skipped when --socket or a non-release
+      --product is given). Register once with:
         claude mcp add --scope user couplet -- couplet mcp
+      couplet mcp --product couplet-dev targets a dev build (socket and stash).
       See docs/ai-interface.md ("MCP server") for the generic mcpServers JSON
       shape and the full method/tool reference.
 
@@ -1810,6 +1908,9 @@ DEV BUILDS
     Release (couplet)   /tmp/couplet_cmd.sock
     Dev (couplet-dev)   /tmp/couplet_dev_cmd.sock
   Pass --socket explicitly to target a dev build's socket.
+  For stash verbs pass --product couplet-dev instead: it names the dev
+  build's stash database, notes folder and socket together. --socket alone
+  is refused there, so a dev call can never write into the release stash.
 
 See docs/ai-interface.md in the couplet repository for the full protocol,
 routing behavior, and troubleshooting."###
@@ -1846,7 +1947,18 @@ A thread the user is still typing has `status=paused` and is deliberately invisi
 
 If your harness can react to a stream (Claude Code: `Monitor({command: "couplet watch", description: "new couplet comments", persistent: true})`), arm it once per session and you get woken in this same session, with your context intact, instead of polling. `persistent: true` matters: without it the monitor dies after five minutes and its silence looks exactly like "no comments". Also add a `Stop` hook running `couplet question` that blocks the turn while anything is open — a monitor that emits too much is stopped by the harness without telling you, and the hook is what stops comments piling up unseen.
 
-If your harness cannot do either, check `couplet question` at natural points: before asking the user something in chat, and before reporting that you are done. A comment line is an interruption, not a user message — finish the current step cleanly, then answer. If a comment asks for a change rather than an answer, make it with `edit`, then close the thread with `answer`."#;
+If your harness cannot do either, check `couplet question` at natural points: before asking the user something in chat, and before reporting that you are done. A comment line is an interruption, not a user message — finish the current step cleanly, then answer. If a comment asks for a change rather than an answer, make it with `edit`, then close the thread with `answer`.
+
+### The user's stash
+
+The user puts notes and file references away into couplet's stash («тайник») and expects you to find things there. These verbs read the stash directly — couplet does not need to be running:
+
+- `couplet stash search "HDMI переговорка" [--tag infra] [--kind note|file] [--all] [--limit 5] --json` — the best matches, each with a ~200-character snippet, never the full text.
+- `couplet stash get <id> [--lines 120:180] --json` — the text of one note (a long one stops at 500 lines; the answer says how to get the rest). A file entry gives its path: read the file itself.
+- `couplet stash list [--since yesterday] [--tag infra] --json` — metadata only: what was put away, when, with which tags.
+- `echo "text" | couplet stash add [--tag t]` or `couplet stash add --path <file> [--tag t]` — only when the user asks you to keep something; `couplet stash tag <id> --add t --remove u`.
+
+Search first, get one, never dump: do not page through the whole stash or `get` every hit — read the snippets and fetch only the entry you need. Results are scoped to the git repository of your current directory (the answer's `scope` says so); when its `hint` says there is nothing here, retry with `--all` before telling the user nothing exists. A note is an ordinary `.md` file: `couplet show`/`edit` work on the `path` it returns."#;
 
 /// Common instruction-file locations, shared by `couplet agent`'s CLI-syntax
 /// snippet and its `--mcp` behavioral-snippet counterpart below.
@@ -1899,7 +2011,15 @@ pub(crate) const MCP_AGENT_SNIPPET: &str = r#"## couplet via MCP — how to use 
 - A monitor line is an interruption, not a message from the user. Bring the current step to a consistent state first, then answer at that checkpoint — abandoning a half-finished edit to reply is worse for them than replying a minute later.
 - Use the `question` tool to read open threads and `answer` to reply. Also check `question` before asking them something in chat and before reporting that you are done: they may have already answered you in the document.
 - If a comment asks for a change rather than an answer, make it with `edit`, then close the thread with `answer`.
-- Add a `Stop` hook that runs `couplet question` and blocks the turn while anything is still open. This is the backstop that matters: a monitor emitting too much is stopped by the harness, and you will not necessarily notice — without the hook, comments pile up in silence."#;
+- Add a `Stop` hook that runs `couplet question` and blocks the turn while anything is still open. This is the backstop that matters: a monitor emitting too much is stopped by the harness, and you will not necessarily notice — without the hook, comments pile up in silence.
+
+### The user's stash
+
+- The user keeps notes and file references in couplet's stash; `stash_search`, `stash_list` and `stash_get` read it even when couplet is not running.
+- Search first, get one, never dump. `stash_search` returns snippets, not text: read them, pick the entry you need and `stash_get` only that one. Do not page through the whole stash, and do not `stash_get` every hit to be sure.
+- `stash_list` is for "what did I put away yesterday" (`since: "yesterday"`) or "everything tagged infra" — metadata only.
+- Results are scoped to the git repository of your working directory; the answer's `scope` says so. When its `hint` says there is nothing here, retry with `all: true` before telling the user nothing exists.
+- `stash_add` and `stash_tag` change the user's stash: only when they ask you to keep or tag something. A note is an ordinary `.md` file — `show` and `edit` work on the `path` an answer returns."#;
 
 /// Text for `couplet agent --mcp` — printed by `couplet help` for `couplet agent
 /// [--mcp]`. Local and offline.
@@ -2065,6 +2185,11 @@ fn run_ls(socket_path: &Path, json: bool) -> i32 {
 /// binary path, `args[1]` is `"ai"`); everything from `args[2]` on is the verb
 /// and its flags. Returns the process exit code.
 pub fn run_ai_cli(args: Vec<String>) -> i32 {
+    // `stash` has its own parser and talks to stash.db directly (plan D13) —
+    // no command socket except the best-effort notify, never a launch.
+    if args.get(2).map(String::as_str) == Some("stash") {
+        return crate::stash::cli::run(&args[3..]);
+    }
     let parsed = match parse_cli_args(&args[2.min(args.len())..]) {
         Ok(p) => p,
         Err(e) => {
@@ -3198,7 +3323,17 @@ mod tests {
         assert!(text.contains("AGENTS.md"));
         assert!(text.contains("## couplet AI interface"));
         assert!(text.contains("--mcp"), "should point at agent --mcp for MCP setups");
-        for needle in ["-t 7", "couplet ls", "couplet close", "--transient", "\"focused\":false"] {
+        for needle in [
+            "-t 7",
+            "couplet ls",
+            "couplet close",
+            "--transient",
+            "\"focused\":false",
+            "couplet stash search",
+            "couplet stash get",
+            "Search first, get one, never dump",
+            "--all",
+        ] {
             assert!(text.contains(needle), "agent snippet missing {needle}");
         }
     }
@@ -3218,9 +3353,28 @@ mod tests {
         // This is a behavioral snippet, not CLI syntax — it should not carry
         // the `couplet ask <file> --question ...` shell-command shape.
         assert!(!text.contains("couplet ask <file>"));
-        for needle in ["window_binding", "`windows`", "`close`", "transient", "focused: false"] {
+        for needle in [
+            "window_binding",
+            "`windows`",
+            "`close`",
+            "transient",
+            "focused: false",
+            "`stash_search`",
+            "`stash_get`",
+            "Search first, get one, never dump",
+            "all: true",
+        ] {
             assert!(text.contains(needle), "MCP snippet missing {needle}");
         }
+        // The MCP snippet stays free of CLI syntax.
+        assert!(!text.contains("couplet stash search"));
+    }
+
+    #[test]
+    fn the_docs_carry_both_snippets_verbatim() {
+        let doc = include_str!("../../docs/ai-interface.md");
+        assert!(doc.contains(AGENT_SNIPPET), "docs/ai-interface.md is out of sync with AGENT_SNIPPET");
+        assert!(doc.contains(MCP_AGENT_SNIPPET), "docs/ai-interface.md is out of sync with MCP_AGENT_SNIPPET");
     }
 
     #[test]
@@ -3546,5 +3700,113 @@ mod tests {
             .unwrap_err();
         assert_eq!(code, 2);
         assert_eq!(line, r#"{"ok":false,"error":"couplet is not running"}"#);
+    }
+
+    #[test]
+    fn stash_changed_parses_and_carries_no_path() {
+        let mut req = parse_request(r#"{"v":1,"cmd":"stash-changed","reason":"external"}"#).unwrap();
+        assert!(matches!(&req, AiRequest::StashChanged { reason, ids: None, .. } if reason == "external"));
+        assert!(req.path_mut().is_none());
+        assert_eq!(req.path(), "");
+        assert!(!req.focus());
+        assert_eq!(req.window_binding(), None);
+        assert_eq!(payload_for(&req, 1, false).cmd, "stash-changed");
+        // `reason` and `ids` are optional on the wire.
+        assert!(matches!(
+            parse_request(r#"{"v":1,"cmd":"stash-changed"}"#).unwrap(),
+            AiRequest::StashChanged { reason, ids: None, .. } if reason.is_empty()
+        ));
+        assert!(matches!(
+            parse_request(r#"{"v":1,"cmd":"stash-changed","ids":["s1-00ab"]}"#).unwrap(),
+            AiRequest::StashChanged { ids: Some(ids), .. } if ids == vec!["s1-00ab".to_string()]
+        ));
+    }
+
+    #[test]
+    fn stash_changed_goes_on_the_wire_as_its_own_command() {
+        let line = serde_json::to_string(&AiRequest::StashChanged { v: 1, reason: "external".to_string(), ids: None }).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!((v["cmd"].as_str(), v["reason"].as_str(), v["v"].as_u64()), (Some("stash-changed"), Some("external"), Some(1)));
+        assert!(v.get("ids").is_none(), "no ids: the key is left out, {line}");
+        let with_ids = AiRequest::StashChanged { v: 1, reason: "external".to_string(), ids: Some(vec!["s1-00ab".to_string()]) };
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&with_ids).unwrap()).unwrap();
+        assert_eq!(v["ids"], serde_json::json!(["s1-00ab"]));
+    }
+
+    #[test]
+    fn a_stash_changed_request_is_always_emitted_as_external() {
+        // Any local client can write the socket: its word would make the
+        // drawers treat the named entries as deleted (A6 fixes `external`).
+        for raw in [
+            r#"{"v":1,"cmd":"stash-changed","reason":"deleted","ids":["s1-00ab"]}"#,
+            r#"{"v":1,"cmd":"stash-changed","reason":"put-away","ids":["s1-00ab"]}"#,
+            r#"{"v":1,"cmd":"stash-changed","reason":"external","ids":["s1-00ab"]}"#,
+        ] {
+            let AiRequest::StashChanged { ids, .. } = parse_request(raw).unwrap() else {
+                panic!("{raw}")
+            };
+            assert_eq!(stash_changed_event(ids), ("external", Some(vec!["s1-00ab".to_string()])), "{raw}");
+        }
+        assert_eq!(stash_changed_event(None), ("external", None));
+    }
+
+    #[test]
+    fn stash_changed_ids_are_entry_ids_only_and_few() {
+        assert_eq!(stash_ids(None), None);
+        assert_eq!(stash_ids(Some(vec![])), None);
+        let raw = vec!["s1790378408605-3f9a".to_string(), "../etc".to_string(), "s1-zz".to_string(), "S1-00ab".to_string()];
+        assert_eq!(stash_ids(Some(raw)), Some(vec!["s1790378408605-3f9a".to_string()]));
+        assert_eq!(stash_ids(Some(vec!["x".to_string()])), None, "nothing valid: no ids at all");
+        let many: Vec<String> = (0..80).map(|i| format!("s{i}-00ab")).collect();
+        assert_eq!(stash_ids(Some(many)).map(|v| v.len()), Some(STASH_CHANGED_MAX_IDS));
+    }
+
+    #[test]
+    fn ai_stash_is_handed_to_the_stash_cli_before_the_verb_parser() {
+        // The `ai` parser does not know `stash`…
+        assert!(parse_cli_args(&args(&["stash", "list"])).unwrap_err().contains("unknown command"));
+        // …so a bare `stash` is the stash parser's usage error (exit 2, read
+        // before any stdin or disk)…
+        assert_eq!(run_ai_cli(args(&["couplet", "ai", "stash"])), 2);
+        // …and only the stash CLI answers a search with exit 0: a product
+        // whose stash does not exist reads as an empty page and creates
+        // nothing (A12). The application-data and home bases are a scratch
+        // dir's, so even a regression cannot touch the real ones.
+        let root = crate::atomic_write::testkit::scratch("ai-stash-handoff");
+        let (data, home) = (root.join("data"), root.join("home"));
+        let code = crate::stash::cli::with_bases(&data, &home, || {
+            run_ai_cli(args(&["couplet", "ai", "stash", "search", "x", "--all", "--product", "couplet-handoff", "--json"]))
+        });
+        assert_eq!(code, 0);
+        assert!(!data.exists() && !home.exists(), "a read creates nothing");
+    }
+
+    #[test]
+    fn help_and_usage_teach_the_stash_verbs() {
+        let help = help_text();
+        for needle in [
+            "couplet stash search",
+            "couplet stash list",
+            "couplet stash get",
+            "couplet stash add",
+            "couplet stash tag",
+            "Search first, get one, never dump",
+            "--product couplet-dev",
+            "skipped or repeated",
+        ] {
+            assert!(help.contains(needle), "help missing {needle}");
+        }
+        assert!(USAGE.contains("couplet ai stash"));
+        // The USAGE lines page like the stash CLI's own usage: an agent
+        // reading `couplet help` must be able to get a list's next page.
+        for verb in ["search", "list"] {
+            let line = help
+                .lines()
+                .find(|l| l.trim_start().starts_with(&format!("couplet stash {verb} ")))
+                .unwrap_or_else(|| panic!("no usage line for stash {verb}"));
+            for flag in ["--limit N", "--cursor C", "--json"] {
+                assert!(line.contains(flag), "stash {verb} usage lacks {flag}: {line}");
+            }
+        }
     }
 }

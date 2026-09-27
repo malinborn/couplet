@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -268,7 +268,7 @@ pub fn untitled_file_name(tab_id: &str) -> String {
 }
 
 /// Whether `name` is an untitled sidecar of this build or an older one — what
-/// `prune_untitled_files` may delete when nothing refers to it. Its temp file
+/// `prune_untitled_files` may move to the trash when nothing refers to it. Its temp file
 /// (`<name>.tmp`) is not.
 pub fn is_untitled_sidecar(name: &str) -> bool {
     (name.starts_with(DRAFT_PREFIX) || name.starts_with(LEGACY_UNTITLED_PREFIX)) && name.ends_with(".md")
@@ -322,6 +322,32 @@ pub(crate) fn label_order(label: &str) -> (u8, u32) {
     (1, n)
 }
 
+/// The windows of the previous session nobody has restored yet — still in
+/// `pending`, or taken by a restore that has not seeded them — that hold an
+/// untitled draft. `snapshot_to_write` writes them after the live windows.
+///
+/// Restoring is opt-in, so a launch may never restore; without these, the
+/// file it writes stops naming their drafts and the next launch's GC takes
+/// them (the 2026-09-26 loss, stash-01 plan). A window of file tabs only is
+/// not carried: its files are on disk, and carrying it would grow the restore
+/// offer with every launch. A window with any live tab has been seeded by a
+/// restore and is written as that live window, never twice.
+fn unrestored_draft_windows<'a>(
+    live: &[WindowSnapshot],
+    waiting: impl Iterator<Item = &'a WindowSnapshot>,
+) -> Vec<WindowSnapshot> {
+    let live_ids: HashSet<&str> = live
+        .iter()
+        .flat_map(|w| w.tabs.iter())
+        .map(|t| t.tab_id.as_str())
+        .collect();
+    waiting
+        .filter(|w| w.tabs.iter().any(|t| t.path.is_none() && t.untitled.is_some()))
+        .filter(|w| !w.tabs.iter().any(|t| live_ids.contains(t.tab_id.as_str())))
+        .map(WindowSnapshot::normalized)
+        .collect()
+}
+
 /// The live session plus whatever was loaded from disk at startup.
 pub struct SessionState {
     entries: Mutex<HashMap<String, WindowSnapshot>>,
@@ -331,6 +357,13 @@ pub struct SessionState {
     restoring: Mutex<Vec<WindowSnapshot>>,
     quitting: AtomicBool,
     dirty: AtomicBool,
+    /// Geometry recorded INSTEAD of the live one, per window: the stash
+    /// widens a narrow window while it is open (stash stage 04, D15) and puts
+    /// it back when it closes, so a quit or a close meanwhile must restore the
+    /// size the human chose — not 680 px. `Moved`/`Resized` and the heartbeat
+    /// all read the live window, hence one override here rather than in each.
+    /// Never locked together with `entries`.
+    held: Mutex<HashMap<String, (i32, i32, u32, u32)>>,
 }
 
 impl SessionState {
@@ -339,6 +372,7 @@ impl SessionState {
             entries: Mutex::new(HashMap::new()),
             pending: Mutex::new(Vec::new()),
             restoring: Mutex::new(Vec::new()),
+            held: Mutex::new(HashMap::new()),
             quitting: AtomicBool::new(false),
             dirty: AtomicBool::new(false),
         }
@@ -364,6 +398,8 @@ impl SessionState {
         if self.is_quitting() {
             return;
         }
+        let held = self.held.lock().unwrap().get(label).copied();
+        let (x, y, width, height) = held.unwrap_or((x, y, width, height));
         let mut map = self.entries.lock().unwrap();
         let entry = map
             .entry(label.to_string())
@@ -374,6 +410,22 @@ impl SessionState {
         entry.height = height;
         drop(map);
         self.touch();
+    }
+
+    /// `Some`: record this geometry for the window, now and instead of the
+    /// live one until released; `None`: release, the next event or heartbeat
+    /// records the live window again.
+    pub fn hold_geometry(&self, label: &str, geometry: Option<(i32, i32, u32, u32)>) {
+        {
+            let mut held = self.held.lock().unwrap();
+            match geometry {
+                Some(g) => held.insert(label.to_string(), g),
+                None => held.remove(label),
+            };
+        }
+        if let Some((x, y, width, height)) = geometry {
+            self.set_geometry(label, x, y, width, height);
+        }
     }
 
     /// Replace this window's tabs outright. The heartbeat goes through
@@ -511,6 +563,8 @@ impl SessionState {
         let mut map = self.entries.lock().unwrap();
         map.remove(label);
         drop(map);
+        // A later window may be given the same label.
+        self.held.lock().unwrap().remove(label);
         self.touch();
     }
 
@@ -532,15 +586,84 @@ impl SessionState {
         self.entries.lock().unwrap().get(label).cloned()
     }
 
+    /// The session `snapshot_to_write` builds, written or not.
+    #[cfg(test)]
     pub fn snapshot(&self, saved_at: u64) -> Session {
+        self.snapshot_counting_live(saved_at).0
+    }
+
+    /// The session to write — the live windows (main first), then the
+    /// un-restored ones that hold drafts (`unrestored_draft_windows`) — or
+    /// `None` to leave the file on disk alone. Every write goes through here:
+    /// the crash-safety ticker and the exit path both.
+    ///
+    /// `None` when no window is live. On the way out that means the windows
+    /// were destroyed before the exit path ran (the red button on the last
+    /// window) — not that the user had nothing open — so the last good file is
+    /// the better answer; and a tick landing between that `Destroyed` and the
+    /// exit is the same moment seen from the ticker. The carried windows must
+    /// not count: `[W1]` written over the ticker's `[main, W1]` would drop
+    /// `main`. At launch the live session is empty too, until the first window
+    /// seeds or heartbeats — skipping then leaves the file `pending` was read
+    /// from, which is exactly what a write would have carried.
+    ///
+    /// Skipping keeps the un-restored drafts named too. `pending` was read
+    /// from the file on disk, so until this run writes, that file names every
+    /// window in it; and every write of this run carries them. Either way the
+    /// file left standing names them.
+    pub fn snapshot_to_write(&self, saved_at: u64) -> Option<Session> {
+        self.snapshot_to_write_counting_live(saved_at)
+            .map(|(session, _)| session)
+    }
+
+    /// `snapshot_to_write`, plus how many of its leading windows are live.
+    /// The quit path puts away only those windows' notes (stash plan 03, D8):
+    /// the carried ones were never open this run.
+    pub fn snapshot_to_write_counting_live(&self, saved_at: u64) -> Option<(Session, usize)> {
+        let (session, live) = self.snapshot_counting_live(saved_at);
+        (live > 0).then_some((session, live))
+    }
+
+    /// The sidecars a GC run right after writing `written` must keep: every
+    /// name that file refers to, plus every one referenced now
+    /// (`referenced_untitled`).
+    ///
+    /// Both halves. `referenced_untitled` alone misses a window removed after
+    /// the snapshot was taken — its draft would go to the trash while the file
+    /// just written still names it, and the next launch would restore the tab
+    /// without it. `written` alone misses a draft registered since.
+    pub fn untitled_to_keep_after(&self, written: &Session) -> HashSet<String> {
+        let mut keep = self.referenced_untitled();
+        keep.extend(
+            written
+                .windows
+                .iter()
+                .flat_map(|w| w.tabs.iter())
+                .filter_map(|t| t.untitled.clone()),
+        );
+        keep
+    }
+
+    /// `snapshot`, plus how many of its windows are live — both under one
+    /// hold of the locks, so the count describes the same session.
+    fn snapshot_counting_live(&self, saved_at: u64) -> (Session, usize) {
+        // entries → pending → restoring: the one lock order (`referenced_untitled`).
         let map = self.entries.lock().unwrap();
+        let pending = self.pending.lock().unwrap();
+        let restoring = self.restoring.lock().unwrap();
         let mut labelled: Vec<(&String, &WindowSnapshot)> = map.iter().collect();
         labelled.sort_by_key(|(label, _)| label_order(label));
-        Session {
+        let mut windows: Vec<WindowSnapshot> =
+            labelled.into_iter().map(|(_, w)| w.normalized()).collect();
+        let live = windows.len();
+        let carried = unrestored_draft_windows(&windows, pending.iter().chain(restoring.iter()));
+        windows.extend(carried);
+        let session = Session {
             version: SESSION_VERSION,
             saved_at,
-            windows: labelled.into_iter().map(|(_, w)| w.normalized()).collect(),
-        }
+            windows,
+        };
+        (session, live)
     }
 
     pub fn set_pending(&self, windows: Vec<WindowSnapshot>) {
@@ -575,10 +698,10 @@ impl SessionState {
     /// Sidecar file names referenced by any tab of the live session, the
     /// restore still on offer, or the restore being opened right now.
     ///
-    /// All of them matter. At startup the live session is deliberately empty — so
-    /// that the first write of the new run supersedes the file — while `pending`
+    /// All of them matter. At startup the live session is empty while `pending`
     /// still holds the previous run's windows. Collecting only the live half makes
-    /// the ticker delete exactly the unsaved buffers the user is about to reopen.
+    /// the ticker trash exactly the unsaved buffers the user is about to reopen.
+    /// This protects them for this run; `snapshot_to_write` carries them to the next one.
     pub fn referenced_untitled(&self) -> HashSet<String> {
         // All three locks at once, in the one order used everywhere
         // (entries → pending → restoring): read one at a time, a window could be
@@ -669,7 +792,15 @@ pub fn now_secs() -> u64 {
 /// Atomic write, same tmp+rename shape as `recovery.rs`. Always v2, always
 /// `session-v2.json` — `session.json` is left alone for a rollback.
 pub fn write_session(session: &Session) -> Result<(), String> {
-    let path = data_file(SESSION_FILE)?;
+    write_session_in(&crate::paths::app_data_dir()?, session)
+}
+
+/// `write_session` into `dir` — the draft importer's (it rewrites the loaded
+/// session before any window exists), and its tests'. Plain tmp + rename,
+/// not `atomic_write::save`: `dir` is the app's own data dir, where there is
+/// no user metadata to keep (CLAUDE.md).
+pub fn write_session_in(dir: &Path, session: &Session) -> Result<(), String> {
+    let path = dir.join(SESSION_FILE);
     let tmp = path.with_extension("json.tmp");
     let data = serde_json::to_string_pretty(session)
         .map_err(|e| format!("Failed to serialize session: {}", e))?;
@@ -729,28 +860,175 @@ pub fn write_untitled(file_name: &str, content: &str) -> Result<(), String> {
     })
 }
 
-/// Delete untitled sidecars nothing refers to any more.
+/// Folder inside `session/` that receives every draft the session lets go of.
+/// A dot-name: `is_untitled_sidecar` never matches it, so the GC never
+/// treats the folder itself as something to move.
+const DRAFTS_TRASH_DIR: &str = ".trash";
+
+/// Marks when a file entered the trash, inside its name: `rename` keeps the
+/// old mtime, so the name is the only record of when it was thrown away.
+const TRASHED_MARK: &str = ".trashed-";
+
+/// `Ok` only when `trash` is a real directory. A symlink there would send
+/// the drafts — and the purge's deletions — to wherever it points. The note
+/// trash (`stash::trash`) checks its own folder with it too.
+pub(crate) fn require_real_trash_dir(trash: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(trash) {
+        Ok(meta) if meta.file_type().is_dir() => Ok(()),
+        Ok(_) => Err(format!("{} is not a real directory", trash.display())),
+        Err(e) => Err(format!("{}: {e}", trash.display())),
+    }
+}
+
+/// Hard-link `src` into `trash` under the first free name for `stem` thrown
+/// away at `now_secs`: `<stem>.trashed-<secs>.md`, then `…-<secs>-1.md`, …
 ///
-/// Take the names from `SessionState::referenced_untitled`, never from the live
+/// The link is the free-name check: `hard_link` refuses a name that exists
+/// (`AlreadyExists`, next name), where a check followed by `rename` would
+/// replace a file that appeared in between. `src` is never touched.
+fn link_into_trash(src: &Path, trash: &Path, stem: &str, now_secs: u64) -> Result<PathBuf, String> {
+    for n in 0..1000u32 {
+        let name = if n == 0 {
+            format!("{stem}{TRASHED_MARK}{now_secs}.md")
+        } else {
+            format!("{stem}{TRASHED_MARK}{now_secs}-{n}.md")
+        };
+        let dest = trash.join(name);
+        match fs::hard_link(src, &dest) {
+            Ok(()) => return Ok(dest),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("link {} into the trash: {e}", src.display())),
+        }
+    }
+    Err(format!("no free trash name for {stem}"))
+}
+
+/// When a trash file was thrown away, read back from its name. `None` for
+/// any name this module did not make — the purge never touches those. The
+/// tail is exactly what `link_into_trash` writes: `<secs>` or `<secs>-<n>`.
+fn trashed_at(name: &str) -> Option<u64> {
+    let rest = name.strip_suffix(".md")?;
+    let at = rest.rfind(TRASHED_MARK)?;
+    let tail = &rest[at + TRASHED_MARK.len()..];
+    let (secs, n) = match tail.split_once('-') {
+        Some((secs, n)) => (secs, Some(n)),
+        None => (tail, None),
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits(secs) || n.is_some_and(|n| !digits(n)) {
+        return None;
+    }
+    secs.parse().ok()
+}
+
+/// Move one sidecar into `trash`: link it in (`link_into_trash`), then
+/// unlink the original — at every moment at least one name holds the text.
+/// When the link fails the file stays where it was; when only the unlink
+/// fails both names remain, which the next pass retries.
+pub(crate) fn move_to_trash(src: &Path, trash: &Path, now_secs: u64) -> Result<PathBuf, String> {
+    let name = src
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("not a UTF-8 file name: {}", src.display()))?;
+    let stem = name.strip_suffix(".md").unwrap_or(name);
+    fs::create_dir_all(trash).map_err(|e| format!("create {}: {e}", trash.display()))?;
+    require_real_trash_dir(trash)?;
+    let dest = link_into_trash(src, trash, stem, now_secs)?;
+    fs::remove_file(src).map_err(|e| format!("{name} is in the trash but still in session/: {e}"))?;
+    Ok(dest)
+}
+
+/// Move untitled sidecars nothing refers to any more into `session/.trash/`.
+/// Never deletes: a draft leaves the session only with a copy kept.
+///
+/// Take the names from `SessionState::untitled_to_keep_after`, never from the live
 /// snapshot alone — see that method for why.
 pub fn prune_untitled_files(referenced: &HashSet<String>) {
     let Ok(dir) = session_dir() else { return };
-    prune_untitled_files_in(&dir, referenced);
+    prune_untitled_files_in(&dir, referenced, now_secs());
 }
 
 /// `prune_untitled_files` in `dir`: both sidecar prefixes (`is_untitled_sidecar`).
-fn prune_untitled_files_in(dir: &std::path::Path, referenced: &HashSet<String>) {
+fn prune_untitled_files_in(dir: &Path, referenced: &HashSet<String>, now_secs: u64) {
     let Ok(entries) = fs::read_dir(dir) else { return };
+    let trash = dir.join(DRAFTS_TRASH_DIR);
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if !is_untitled_sidecar(name) {
+        if !is_untitled_sidecar(name) || referenced.contains(name) {
             continue;
         }
-        if !referenced.contains(name) {
+        if let Err(e) = move_to_trash(&entry.path(), &trash, now_secs) {
+            eprintln!("session: kept an unreferenced draft in place: {e}");
+        }
+    }
+}
+
+/// `<app data dir>/session/.trash/` — created on demand by whoever puts
+/// something there.
+pub fn drafts_trash_dir() -> Result<PathBuf, String> {
+    Ok(session_dir()?.join(DRAFTS_TRASH_DIR))
+}
+
+/// How long a draft stays in `session/.trash/`, counted from the stamp in its name.
+pub const DRAFTS_TRASH_KEEP_SECS: u64 = 30 * 24 * 60 * 60;
+
+/// How often a running app purges the trash; it also purges on its first tick.
+pub const DRAFTS_TRASH_PURGE_EVERY: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+
+/// Delete trash files thrown away more than `DRAFTS_TRASH_KEEP_SECS` ago —
+/// the end of the retention the trash promised, the only deletion of user
+/// text there is.
+pub fn purge_drafts_trash(now_secs: u64) {
+    let Ok(trash) = drafts_trash_dir() else { return };
+    purge_trash_in(&trash, now_secs);
+}
+
+/// `purge_drafts_trash` in `trash`. Only regular files whose name carries a
+/// stamp this module wrote; anything else is left alone.
+fn purge_trash_in(trash: &Path, now_secs: u64) {
+    if fs::symlink_metadata(trash).is_err() {
+        return; // Nothing thrown away yet.
+    }
+    if let Err(e) = require_real_trash_dir(trash) {
+        eprintln!("session: not purging the draft trash: {e}");
+        return;
+    }
+    let Ok(entries) = fs::read_dir(trash) else { return };
+    for entry in entries.flatten() {
+        // `DirEntry::file_type` does not follow symlinks: a link is never
+        // "a file", so neither it nor its target is ever removed.
+        if !entry.file_type().is_ok_and(|t| t.is_file()) {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(at) = name.to_str().and_then(trashed_at) else { continue };
+        if now_secs.saturating_sub(at) > DRAFTS_TRASH_KEEP_SECS {
             let _ = fs::remove_file(entry.path());
         }
     }
+}
+
+/// ⌘W on an untitled tab with text — a deliberate discard (tabs spec §8) —
+/// keeps that text as `session/.trash/closed-<tab_id>.trashed-<secs>.md`.
+/// The sidecar alone can be a heartbeat (5 s) behind what was on screen.
+pub fn rescue_untitled(tab_id: &str, text: &str) -> Result<PathBuf, String> {
+    rescue_untitled_in(&drafts_trash_dir()?, tab_id, text, now_secs())
+}
+
+fn rescue_untitled_in(trash: &Path, tab_id: &str, text: &str, now_secs: u64) -> Result<PathBuf, String> {
+    if !is_valid_tab_id(tab_id) {
+        return Err(format!("invalid tab id: {tab_id:?}"));
+    }
+    fs::create_dir_all(trash).map_err(|e| format!("create {}: {e}", trash.display()))?;
+    require_real_trash_dir(trash)?;
+    let tmp = trash.join(format!(".closed-{tab_id}.tmp"));
+    fs::write(&tmp, text).map_err(|e| format!("write the rescue copy: {e}"))?;
+    // Linked, not renamed, so an earlier trash file of the same name is never
+    // replaced. The temp is only a second name for what the link now holds.
+    let linked = link_into_trash(&tmp, trash, &format!("closed-{tab_id}"), now_secs);
+    let _ = fs::remove_file(&tmp);
+    linked.map_err(|e| format!("save the rescue copy: {e}"))
 }
 
 /// A window's position and size in **logical** pixels.
@@ -951,6 +1229,45 @@ pub async fn tabs_sync(
     Ok(())
 }
 
+/// A window's geometry as the frontend hands it to `session_hold_geometry`:
+/// logical pixels, outer position and inner size — `window_geometry`'s units.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldGeometry {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Rounded as `window_geometry` rounds; a size under 1 px, or anything not
+/// finite, is refused — it would restore a window nobody can see.
+fn held_geometry(g: &HeldGeometry) -> Result<(i32, i32, u32, u32), String> {
+    let finite = [g.x, g.y, g.width, g.height].iter().all(|v| v.is_finite());
+    if !finite || g.width < 1.0 || g.height < 1.0 {
+        return Err(format!("not a window geometry: {g:?}"));
+    }
+    Ok((
+        g.x.round() as i32,
+        g.y.round() as i32,
+        g.width.round() as u32,
+        g.height.round() as u32,
+    ))
+}
+
+/// The stash widened this window (stash stage 04, D15): until it is put back
+/// (`None`), the session keeps the geometry from before (`SessionState::hold_geometry`).
+#[tauri::command]
+pub async fn session_hold_geometry(
+    window: tauri::Window,
+    state: tauri::State<'_, SessionState>,
+    geometry: Option<HeldGeometry>,
+) -> Result<(), String> {
+    let held = geometry.as_ref().map(held_geometry).transpose()?;
+    state.hold_geometry(window.label(), held);
+    Ok(())
+}
+
 /// The valid numbers of the windows a restore will build.
 fn reserved_numbers<'a>(snapshots: impl Iterator<Item = &'a WindowSnapshot>) -> HashSet<u32> {
     snapshots
@@ -1044,6 +1361,26 @@ mod tests {
             saved_at: 0,
             windows,
         }
+    }
+
+    fn scratch_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("couplet-{tag}-{}", new_tab_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Names of the regular files directly in `dir`, sorted; empty when `dir` is missing.
+    fn files_in(dir: &std::path::Path) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
     }
 
     #[test]
@@ -1153,6 +1490,27 @@ mod tests {
     }
 
     #[test]
+    fn write_session_in_writes_v2_into_the_given_directory() {
+        let dir = crate::atomic_write::testkit::scratch("session-in");
+        let mut s = session(vec![window(vec![tab("a", Some("/tmp/a.md"))])]);
+        s.saved_at = 1_790_378_100;
+        write_session_in(&dir, &s).unwrap();
+        let back = parse_session(&fs::read_to_string(dir.join(SESSION_FILE)).unwrap()).unwrap();
+        assert_eq!(back.version, SESSION_VERSION);
+        assert_eq!(back.saved_at, s.saved_at);
+        assert_eq!(back.windows[0].tabs[0].path.as_deref(), Some("/tmp/a.md"));
+        assert!(!dir.join("session-v2.json.tmp").exists());
+        assert!(!dir.join("session.json").exists(), "v1 is left alone for a rollback");
+
+        // A second write replaces the first whole.
+        let s2 = session(vec![window(vec![tab("b", Some("/tmp/b.md"))])]);
+        write_session_in(&dir, &s2).unwrap();
+        let back = parse_session(&fs::read_to_string(dir.join(SESSION_FILE)).unwrap()).unwrap();
+        assert_eq!(back.windows.len(), 1);
+        assert_eq!(back.windows[0].tabs[0].path.as_deref(), Some("/tmp/b.md"));
+    }
+
+    #[test]
     fn choose_session_migrates_v1_when_there_is_no_v2_yet() {
         let v1 = r#"{"version":1,"savedAt":0,"windows":[{"path":"/v1.md","x":0,"y":0,"width":9,"height":9}]}"#;
         let s = choose_session(None, Some(v1)).unwrap();
@@ -1234,6 +1592,55 @@ mod tests {
     }
 
     #[test]
+    fn a_held_geometry_is_recorded_instead_of_the_live_one() {
+        let state = SessionState::new();
+        state.set_geometry("editor-1", 100, 50, 560, 700);
+        state.hold_geometry("editor-1", Some((100, 50, 560, 700)));
+        // The widen's own Resized, and every heartbeat after it.
+        state.set_geometry("editor-1", 100, 50, 680, 700);
+        let w = &state.snapshot(0).windows[0];
+        assert_eq!((w.x, w.y, w.width, w.height), (100, 50, 560, 700));
+        state.hold_geometry("editor-1", None);
+        state.set_geometry("editor-1", 90, 40, 600, 700);
+        let w = &state.snapshot(0).windows[0];
+        assert_eq!((w.x, w.y, w.width, w.height), (90, 40, 600, 700), "released: live again");
+    }
+
+    #[test]
+    fn holding_writes_the_held_geometry_at_once() {
+        let state = SessionState::new();
+        state.set_geometry("editor-1", 100, 50, 680, 700);
+        state.take_dirty();
+        state.hold_geometry("editor-1", Some((100, 50, 560, 700)));
+        let w = &state.snapshot(0).windows[0];
+        assert_eq!((w.width, w.height), (560, 700));
+        assert!(state.take_dirty(), "a quit right after must write it");
+    }
+
+    #[test]
+    fn a_hold_is_per_window_and_goes_with_the_window() {
+        let state = SessionState::new();
+        state.hold_geometry("editor-1", Some((0, 0, 560, 700)));
+        state.set_geometry("editor-2", 5, 5, 680, 700);
+        let w = state.snapshot(0).windows.into_iter().find(|w| w.x == 5).unwrap();
+        assert_eq!(w.width, 680, "another window's hold does not apply");
+        state.remove("editor-1");
+        state.set_geometry("editor-1", 1, 1, 680, 700);
+        let w = state.snapshot(0).windows.into_iter().find(|w| w.x == 1).unwrap();
+        assert_eq!(w.width, 680, "a label reused by a new window starts unheld");
+    }
+
+    #[test]
+    fn held_geometry_rounds_logical_pixels_and_refuses_nonsense() {
+        let g = |x: f64, y: f64, width: f64, height: f64| HeldGeometry { x, y, width, height };
+        assert_eq!(held_geometry(&g(99.6, 50.2, 678.5, 650.0)), Ok((100, 50, 679, 650)));
+        assert_eq!(held_geometry(&g(-1200.0, 0.0, 560.0, 700.0)), Ok((-1200, 0, 560, 700)), "a screen left of the main one");
+        assert!(held_geometry(&g(0.0, 0.0, 0.0, 700.0)).is_err());
+        assert!(held_geometry(&g(0.0, 0.0, 560.0, f64::NAN)).is_err());
+        assert!(held_geometry(&g(f64::INFINITY, 0.0, 560.0, 700.0)).is_err());
+    }
+
+    #[test]
     fn set_tabs_keeps_geometry() {
         let state = SessionState::new();
         state.set_geometry("editor-1", 7, 8, 500, 600);
@@ -1263,8 +1670,166 @@ mod tests {
         // the very buffer the user was about to reopen.
         let state = SessionState::new();
         state.set_pending(vec![window(vec![untitled_tab("m", "untitled-main.md")])]);
-        assert!(state.snapshot(0).windows.is_empty(), "live session is empty");
+        assert!(state.snapshot_for("main").is_none(), "no live window holds it");
         assert!(state.referenced_untitled().contains("untitled-main.md"));
+    }
+
+    #[test]
+    fn a_session_written_before_the_restore_still_names_its_drafts() {
+        let state = SessionState::new();
+        state.set_pending(vec![window(vec![untitled_tab("plans", "draft-plans.md")])]);
+        state.set_tabs("main", vec![tab("blank", None)], Some("blank".to_string()));
+        let written = state.snapshot(1);
+        assert_eq!(written.windows.len(), 2, "main, then the window nobody restored");
+        assert_eq!(written.windows[1].tabs[0].untitled.as_deref(), Some("draft-plans.md"));
+    }
+
+    #[test]
+    fn upgrade_then_language_restart_before_a_restore_keeps_the_draft() {
+        // 2026-09-26: `brew upgrade` 2.0.0 -> 2.0.1. 2.0.1's first run held
+        // 2.0.0's session in `pending`; nobody restored it (the welcome window
+        // was in front); 18 s later a language switch restarted the app, and
+        // the restarted process's first tick deleted the draft.
+        let dir = scratch_dir("incident");
+        std::fs::write(dir.join("draft-plans.md"), "- [ ] plans").unwrap();
+
+        let first = SessionState::new();
+        first.set_pending(vec![window(vec![untitled_tab("plans", "draft-plans.md")])]);
+        first.set_tabs("main", vec![tab("blank", None)], Some("blank".to_string()));
+        first.set_tabs(
+            "editor-1",
+            vec![tab("welcome", Some("/tmp/welcome-2.0.1-en.md"))],
+            Some("welcome".to_string()),
+        );
+        prune_untitled_files_in(&dir, &first.referenced_untitled(), 1);
+        // What the first tick, the quit and the language restart all write.
+        let on_disk = serde_json::to_string(&first.snapshot(1)).unwrap();
+
+        let second = SessionState::new();
+        second.set_pending(parse_session(&on_disk).expect("parses").windows);
+        second.set_tabs("main", vec![tab("blank-2", None)], Some("blank-2".to_string()));
+        prune_untitled_files_in(&dir, &second.referenced_untitled(), 2);
+
+        assert_eq!(std::fs::read_to_string(dir.join("draft-plans.md")).unwrap(), "- [ ] plans");
+        assert!(files_in(&dir.join(".trash")).is_empty(), "nothing was thrown away");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_window_the_restore_has_not_reached_yet_is_still_written() {
+        let state = SessionState::new();
+        state.set_pending(vec![window(vec![untitled_tab("u", "draft-u.md")])]);
+        let _taken = state.take_pending();
+        let written = state.snapshot(0);
+        assert_eq!(written.windows.len(), 1, "a quit mid-restore keeps it");
+        assert_eq!(written.windows[0].tabs[0].untitled.as_deref(), Some("draft-u.md"));
+    }
+
+    #[test]
+    fn with_no_live_window_nothing_is_written_even_with_drafts_waiting() {
+        // A launch before its first heartbeat, or a quit after the last
+        // window is gone. The carried window alone must not count as
+        // "something to record": the file on disk already names it (see
+        // `snapshot_to_write`).
+        let state = SessionState::new();
+        state.set_pending(vec![window(vec![untitled_tab("u", "draft-u.md")])]);
+        assert!(state.snapshot_to_write(0).is_none());
+    }
+
+    #[test]
+    fn with_live_windows_they_are_written_with_the_unrestored_drafts() {
+        let state = SessionState::new();
+        state.set_pending(vec![window(vec![untitled_tab("u", "draft-u.md")])]);
+        state.set_tabs("main", vec![untitled_tab("m", "draft-m.md")], Some("m".to_string()));
+        let written = state.snapshot_to_write(0).expect("a live window is worth recording");
+        let drafts: Vec<Option<&str>> =
+            written.windows.iter().map(|w| w.tabs[0].untitled.as_deref()).collect();
+        assert_eq!(drafts, vec![Some("draft-m.md"), Some("draft-u.md")], "live first, then carried");
+    }
+
+    #[test]
+    fn the_quit_snapshot_counts_its_live_windows_ahead_of_the_carried_ones() {
+        // The quit puts away only what was open (stash plan 03, D8): the
+        // carried window's file tab left no tab and must not be stamped.
+        let state = SessionState::new();
+        state.set_pending(vec![window(vec![
+            tab("c", Some("/n/c.md")),
+            untitled_tab("u", "draft-u.md"),
+        ])]);
+        state.set_tabs("main", vec![tab("a", Some("/n/a.md"))], Some("a".to_string()));
+        let (written, live) = state
+            .snapshot_to_write_counting_live(0)
+            .expect("a live window is worth recording");
+        assert_eq!((written.windows.len(), live), (2, 1));
+        assert_eq!(written.windows[0].tabs[0].tab_id, "a", "live first");
+        assert_eq!(
+            Some(written.windows),
+            state.snapshot_to_write(0).map(|s| s.windows),
+            "the same session"
+        );
+        state.remove("main");
+        assert!(state.snapshot_to_write_counting_live(0).is_none());
+    }
+
+    #[test]
+    fn closing_the_last_window_keeps_the_file_that_names_both_drafts() {
+        // Review I1: an un-restored draft W1 is carried; the user types in
+        // `main` (draft-m); the ticker writes [main, W1]; the red button
+        // destroys `main`. Neither the exit path nor a tick that lands before
+        // it may write the snapshot then ([W1]) — it would drop `main` — so
+        // the ticker's file stands.
+        let state = SessionState::new();
+        state.set_pending(vec![window(vec![untitled_tab("u", "draft-u.md")])]);
+        state.set_tabs("main", vec![untitled_tab("m", "draft-m.md")], Some("m".to_string()));
+        let on_disk = serde_json::to_string(&state.snapshot_to_write(1).unwrap()).unwrap();
+        state.remove("main");
+        assert!(state.take_dirty(), "the destroy wakes the ticker");
+        assert!(state.snapshot_to_write(2).is_none(), "nothing overwrites the ticker's file");
+        let next = parse_session(&on_disk).expect("parses");
+        let names: HashSet<&str> = next
+            .windows
+            .iter()
+            .flat_map(|w| w.tabs.iter())
+            .filter_map(|t| t.untitled.as_deref())
+            .collect();
+        assert_eq!(names, HashSet::from(["draft-m.md", "draft-u.md"]));
+    }
+
+    #[test]
+    fn the_gc_after_a_write_keeps_what_the_file_names_and_what_is_referenced_now() {
+        // `main` goes away between the snapshot and the GC: the file just
+        // written still names its draft. A window opened in between holds a
+        // draft the file does not name yet. Both stay.
+        let dir = scratch_dir("keep-after-write");
+        std::fs::write(dir.join("draft-m.md"), "main's text").unwrap();
+        std::fs::write(dir.join("draft-n.md"), "new text").unwrap();
+        let state = SessionState::new();
+        state.set_tabs("main", vec![untitled_tab("m", "draft-m.md")], Some("m".to_string()));
+        let written = state.snapshot_to_write(1).unwrap();
+        state.remove("main");
+        state.set_tabs("editor-1", vec![untitled_tab("n", "draft-n.md")], Some("n".to_string()));
+        prune_untitled_files_in(&dir, &state.untitled_to_keep_after(&written), 1);
+        assert_eq!(std::fs::read_to_string(dir.join("draft-m.md")).unwrap(), "main's text");
+        assert_eq!(std::fs::read_to_string(dir.join("draft-n.md")).unwrap(), "new text");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_restored_window_is_written_once_as_the_live_window() {
+        let state = SessionState::new();
+        state.set_pending(vec![window(vec![untitled_tab("u", "draft-u.md")])]);
+        let taken = state.take_pending();
+        state.seed("editor-1", taken[0].clone());
+        assert_eq!(state.snapshot(0).windows.len(), 1, "seeded, not also carried");
+        state.finish_restore();
+        assert_eq!(state.snapshot(0).windows.len(), 1);
+    }
+
+    #[test]
+    fn an_unrestored_window_of_files_only_is_not_carried() {
+        let state = SessionState::new();
+        state.set_pending(vec![window(vec![tab("a", Some("/tmp/a.md"))])]);
+        assert!(state.snapshot(0).windows.is_empty(), "its files are on disk");
     }
 
     #[test]
@@ -1340,20 +1905,212 @@ mod tests {
 
     #[test]
     fn the_prune_keeps_referenced_sidecars_of_both_prefixes() {
-        let dir = std::env::temp_dir().join(format!("couplet-prune-{}", new_tab_id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch_dir("prune");
         for name in ["draft-a.md", "draft-b.md", "untitled-c.md", "untitled-d.md", "notes.md"] {
             std::fs::write(dir.join(name), "x").unwrap();
         }
         let referenced: HashSet<String> = ["draft-a.md", "untitled-c.md"].map(String::from).into();
-        prune_untitled_files_in(&dir, &referenced);
-        let mut left: Vec<String> = std::fs::read_dir(&dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        left.sort();
-        assert_eq!(left, vec!["draft-a.md", "notes.md", "untitled-c.md"]);
+        prune_untitled_files_in(&dir, &referenced, 1_000);
+        assert_eq!(files_in(&dir), vec!["draft-a.md", "notes.md", "untitled-c.md"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_prune_moves_unreferenced_drafts_to_the_trash_and_deletes_nothing() {
+        let dir = scratch_dir("prune-trash");
+        std::fs::write(dir.join("draft-b.md"), "b text").unwrap();
+        std::fs::write(dir.join("untitled-editor-1.md"), "legacy text").unwrap();
+        prune_untitled_files_in(&dir, &HashSet::new(), 1_000);
+
+        assert!(files_in(&dir).is_empty(), "no sidecar left in session/");
+        let trash = dir.join(".trash");
+        assert_eq!(
+            files_in(&trash),
+            vec!["draft-b.trashed-1000.md", "untitled-editor-1.trashed-1000.md"]
+        );
+        assert_eq!(std::fs::read_to_string(trash.join("draft-b.trashed-1000.md")).unwrap(), "b text");
+        assert_eq!(
+            std::fs::read_to_string(trash.join("untitled-editor-1.trashed-1000.md")).unwrap(),
+            "legacy text"
+        );
+
+        // The trash folder itself is never prey for the next pass.
+        prune_untitled_files_in(&dir, &HashSet::new(), 2_000);
+        assert_eq!(files_in(&trash).len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_same_name_thrown_away_in_the_same_second_gets_its_own_trash_name() {
+        let dir = scratch_dir("prune-clash");
+        let trash = dir.join(".trash");
+        std::fs::create_dir_all(&trash).unwrap();
+        std::fs::write(trash.join("draft-b.trashed-1000.md"), "first").unwrap();
+        std::fs::write(dir.join("draft-b.md"), "second").unwrap();
+
+        prune_untitled_files_in(&dir, &HashSet::new(), 1_000);
+
+        assert_eq!(files_in(&trash), vec!["draft-b.trashed-1000-1.md", "draft-b.trashed-1000.md"]);
+        assert_eq!(std::fs::read_to_string(trash.join("draft-b.trashed-1000.md")).unwrap(), "first");
+        assert_eq!(std::fs::read_to_string(trash.join("draft-b.trashed-1000-1.md")).unwrap(), "second");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn linking_into_the_trash_never_replaces_an_occupied_name() {
+        // Review M2: a free-name check followed by `rename` could replace a
+        // file that appeared in between. The link itself refuses a taken name.
+        let dir = scratch_dir("link-occupied");
+        let trash = dir.join(".trash");
+        std::fs::create_dir_all(&trash).unwrap();
+        std::fs::write(trash.join("draft-b.trashed-1000.md"), "first").unwrap();
+        std::fs::write(trash.join("draft-b.trashed-1000-1.md"), "second").unwrap();
+        let src = dir.join("draft-b.md");
+        std::fs::write(&src, "third").unwrap();
+
+        let dest = link_into_trash(&src, &trash, "draft-b", 1000).unwrap();
+
+        assert_eq!(dest, trash.join("draft-b.trashed-1000-2.md"));
+        assert_eq!(std::fs::read_to_string(trash.join("draft-b.trashed-1000.md")).unwrap(), "first");
+        assert_eq!(std::fs::read_to_string(trash.join("draft-b.trashed-1000-1.md")).unwrap(), "second");
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "third");
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), "third", "a link removes nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_move_the_trash_refuses_leaves_the_draft_in_place() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch_dir("move-refused");
+        let trash = dir.join(".trash");
+        std::fs::create_dir_all(&trash).unwrap();
+        std::fs::set_permissions(&trash, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let src = dir.join("draft-b.md");
+        std::fs::write(&src, "keep me").unwrap();
+
+        let moved = move_to_trash(&src, &trash, 1000);
+
+        std::fs::set_permissions(&trash, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(moved.is_err());
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), "keep me");
+        assert!(files_in(&trash).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rescue_never_replaces_an_existing_trash_file() {
+        let root = scratch_dir("rescue-occupied");
+        let trash = root.join(".trash");
+        std::fs::create_dir_all(&trash).unwrap();
+        std::fs::write(trash.join("closed-1-2-3.trashed-500.md"), "earlier").unwrap();
+
+        let path = rescue_untitled_in(&trash, "1-2-3", "later", 500).unwrap();
+
+        assert_eq!(path, trash.join("closed-1-2-3.trashed-500-1.md"));
+        assert_eq!(std::fs::read_to_string(trash.join("closed-1-2-3.trashed-500.md")).unwrap(), "earlier");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "later");
+        assert_eq!(files_in(&trash).len(), 2, "no temp file left");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_symlinked_trash_is_never_purged() {
+        let root = scratch_dir("purge-symlinked");
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("draft-old.trashed-1.md"), "not ours").unwrap();
+        let trash = root.join(".trash");
+        std::os::unix::fs::symlink(&elsewhere, &trash).unwrap();
+
+        purge_trash_in(&trash, u64::MAX);
+
+        assert_eq!(files_in(&elsewhere), vec!["draft-old.trashed-1.md"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_file_symlink_inside_the_trash_survives_the_purge() {
+        // `DirEntry::file_type` does not follow symlinks: an old-stamped link
+        // is not a regular file, so neither it nor its target is touched.
+        let root = scratch_dir("purge-file-link");
+        let target = root.join("target.md");
+        std::fs::write(&target, "outside").unwrap();
+        let trash = root.join(".trash");
+        std::fs::create_dir_all(&trash).unwrap();
+        let link = trash.join("old-link.trashed-1.md");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        purge_trash_in(&trash, u64::MAX);
+
+        assert!(std::fs::symlink_metadata(&link).is_ok(), "the link is still there");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "outside");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_symlinked_trash_is_never_written() {
+        let root = scratch_dir("move-symlinked");
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let trash = root.join(".trash");
+        std::os::unix::fs::symlink(&elsewhere, &trash).unwrap();
+        let src = root.join("draft-b.md");
+        std::fs::write(&src, "keep me").unwrap();
+
+        assert!(move_to_trash(&src, &trash, 1000).is_err());
+        assert!(rescue_untitled_in(&trash, "1-2-3", "text", 1000).is_err());
+
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), "keep me");
+        assert!(files_in(&elsewhere).is_empty(), "nothing lands through the link");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn trashed_at_reads_the_stamp_back_and_refuses_foreign_names() {
+        assert_eq!(trashed_at("draft-b.trashed-1000.md"), Some(1000));
+        assert_eq!(trashed_at("draft-b.trashed-1000-3.md"), Some(1000));
+        assert_eq!(trashed_at("closed-1-2-3.trashed-77.md"), Some(77));
+        for foreign in [
+            "notes.md",
+            "draft-b.md",
+            "draft-b.trashed-.md",
+            "draft-b.trashed-12x.md",
+            ".closed-1-2-3.tmp",
+            "x.trashed-5-foo.md",
+            "x.trashed-5-.md",
+            "x.trashed-5-1-2.md",
+            "x.trashed--5.md",
+        ] {
+            assert_eq!(trashed_at(foreign), None, "{foreign}");
+        }
+    }
+
+    #[test]
+    fn the_purge_removes_only_trash_older_than_thirty_days() {
+        let trash = scratch_dir("purge");
+        let now = 100 * DRAFTS_TRASH_KEEP_SECS;
+        let old = format!("draft-old.trashed-{}.md", now - DRAFTS_TRASH_KEEP_SECS - 1);
+        let edge = format!("draft-edge.trashed-{}.md", now - DRAFTS_TRASH_KEEP_SECS);
+        let fresh = format!("closed-1-2-3.trashed-{}.md", now - 10);
+        for name in [old.as_str(), edge.as_str(), fresh.as_str(), "notes.md", ".closed-9.tmp"] {
+            std::fs::write(trash.join(name), "x").unwrap();
+        }
+        std::fs::create_dir_all(trash.join("sub.trashed-1.md")).unwrap();
+
+        purge_trash_in(&trash, now);
+
+        let mut expected = vec![".closed-9.tmp".to_string(), fresh, edge, "notes.md".to_string()];
+        expected.sort();
+        assert_eq!(files_in(&trash), expected, "only the file past 30 days goes");
+        assert!(trash.join("sub.trashed-1.md").is_dir(), "a directory is never removed");
+        let _ = std::fs::remove_dir_all(&trash);
+    }
+
+    #[test]
+    fn purging_a_trash_that_does_not_exist_is_a_noop() {
+        let missing = std::env::temp_dir().join(format!("couplet-no-trash-{}", new_tab_id()));
+        purge_trash_in(&missing, u64::MAX);
+        assert!(!missing.exists());
     }
 
     #[test]
@@ -1817,5 +2574,25 @@ mod tests {
         state.move_tab("main", "editor-2", moved_snap("a", None));
         assert_eq!(state.snapshot_for("main").unwrap().tabs.len(), 1);
         assert!(state.snapshot_for("editor-2").is_none());
+    }
+
+    #[test]
+    fn a_rescue_copy_lands_in_the_trash_with_the_text() {
+        let root = scratch_dir("rescue");
+        let trash = root.join(".trash");
+        let path = rescue_untitled_in(&trash, "1-2-3", "- [ ] plan", 500).unwrap();
+        assert_eq!(path, trash.join("closed-1-2-3.trashed-500.md"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "- [ ] plan");
+        assert_eq!(files_in(&trash), vec!["closed-1-2-3.trashed-500.md"], "no temp file left");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_rescue_refuses_a_tab_id_that_could_name_another_file() {
+        let root = scratch_dir("rescue-bad-id");
+        let trash = root.join(".trash");
+        assert!(rescue_untitled_in(&trash, "../x", "text", 1).is_err());
+        assert!(files_in(&trash).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

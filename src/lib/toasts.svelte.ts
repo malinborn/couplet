@@ -5,6 +5,7 @@
  * explicit rather than insertion-based, because the update check only fires 15s
  * after launch and would otherwise land below the session toast.
  */
+import type { StandingStashNote, StashToastNote } from './stash/stash-toast';
 
 export type ToastPayload =
   /**
@@ -105,6 +106,30 @@ export type ToastPayload =
    * read or save of the document.
    */
   | { kind: 'reload-error'; fileName: string; message: string }
+  /**
+   * A note could not be created (stash plan 03, D3) — the notes folder is not
+   * writable, the database is locked. The text is still in the tab and in its
+   * session draft, and the birth is tried again as the human types; withdrawn
+   * by the next note that is created. `notPutAway`: instead, an explicit
+   * put-away closed its tab but the stash did not take the document (it is
+   * still on disk where it was).
+   */
+  | { kind: 'stash-error'; message: string; notPutAway?: boolean }
+  /**
+   * Stash stage 04: every drawer report — put away, opened / moved here,
+   * removed, trashed, restored, the window widened. One kind, so a newer
+   * report replaces the last; App dismisses them itself (like `tabs-moved`).
+   * Text: `stashToastText`. Deliberately not `stash-error`: a drawer notice
+   * must not replace (and so hide) a standing "notes are not being created".
+   */
+  | { kind: 'stash'; note: StashToastNote }
+  /**
+   * The drawer notes that stay until closed: a failed drawer call, a delete a
+   * tab held back (`kept`), a pull that failed. Their own kind (review M3):
+   * under `stash` the next quiet report replaced one and then went by itself,
+   * so the refusal was never read. A newer standing note replaces the last.
+   */
+  | { kind: 'stash-standing'; note: StandingStashNote }
   | { kind: 'update'; latest: string; current: string; highlight?: string }
   /**
    * Answers to a manual "Check for Updates…" click (#82) — the automatic
@@ -176,6 +201,8 @@ const ORDER: Record<ToastKind, number> = {
   'open-error': 0,
   // Same rank, and this one does guard work: autosave is paused while it is up.
   'reload-error': 0,
+  // Same rank: notes are not being created, and the next safety net is a draft.
+  'stash-error': 0,
   update: 1,
   // Direct responses to the same menu click that produces `update` above —
   // sorts right beside it rather than with the "just clicked" group below,
@@ -202,6 +229,9 @@ const ORDER: Record<ToastKind, number> = {
   'tabs-moved': 4,
   'save-as-blocked': 4,
   'window-number': 4,
+  // Answers a drawer action the user just took, like the rest of this group.
+  stash: 4,
+  'stash-standing': 4,
   // Sorts below everything: it is the only toast that is still waiting on a
   // decision, so it belongs closest to the pointer that has to make it.
   'json-offer': 5,

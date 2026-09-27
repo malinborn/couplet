@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { filterEntries, highlight, hitSnippet, indexText, matchEntry, plainLine } from './drawer-filter';
+import { filterEntries, firstPlainLine, highlight, hitSnippet, indexText, matchEntry, plainLine } from './drawer-filter';
 
 describe('plainLine', () => {
   it('StripsMarkdownMarkers', () => {
@@ -29,6 +29,28 @@ describe('indexText', () => {
   it('HandlesWindowsLineEndings', () => {
     const index = indexText('# Title\r\n```\r\ncode\r\n```\r\nText\r\n');
     expect(index.lines).toEqual(['Title', 'code', 'Text']);
+  });
+});
+
+describe('firstPlainLine', () => {
+  it('IsTheFirstLineOfTheIndex_WithoutBuildingIt', () => {
+    const cases = [
+      '',
+      '\n\n',
+      '   \n\t\n',
+      'plain',
+      '\n\n## Heading\nbody',
+      '```js\nconst X = 1;\n```\nText',
+      '```\n\n```\n# After an empty fence',
+      '```sh\n# install deps\n```',
+      '~~~\n  indented code  \n~~~',
+      '\r\n\r\n- [x] done **bold**\r\nnext',
+      '> quote `code`',
+      '- \n* \nreal',
+      '```\nunclosed fence',
+      '```',
+    ];
+    for (const md of cases) expect(firstPlainLine(md), JSON.stringify(md)).toBe(indexText(md).lines[0] ?? '');
   });
 });
 

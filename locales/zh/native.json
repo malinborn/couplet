@@ -11,6 +11,7 @@
   "menu.file.save": "保存",
   "menu.file.save_as": "另存为…",
   "menu.file.close": "关闭标签页",
+  "menu.file.stash_put_away": "Put Away in Stash",
   "menu.file.recent_files": "最近的文件…",
   "menu.file.transient_title": "一小时后未回应的快速查看",
   "menu.file.transient_keep": "保留",
@@ -75,5 +76,7 @@
   "doc.connect.skill_only_body": "同样的提示词，只是不会动你的主配置文件。代价是：智能体不会自己判断什么时候该用 couplet，所以你得手动调用这个技能（`/couplet`，或者说「使用 couplet 技能」）。这就是为什么我们仍然推荐第一种方案 —",
   "doc.connect.back_to_it": "回到那里",
   "doc.connect.heading_config_location": "主配置文件都在哪里",
-  "doc.connect.config_location_body": "上面的提示词已经知道这些位置；这里列出来，以防你的智能体问起。"
+  "doc.connect.config_location_body": "上面的提示词已经知道这些位置；这里列出来，以防你的智能体问起。",
+
+  "menu.view.toggle_stash": "Stash"
 }

@@ -22,7 +22,13 @@ pub async fn read_file(path: String) -> Result<String, String> {
 /// gives new files, exactly as the original `fs::write` did.
 #[command]
 pub async fn write_file(path: String, content: String) -> Result<(), String> {
-    atomic_write::save(Path::new(&path), &content, NewFileMode::Umask)
+    atomic_write::save(Path::new(&path), &content, NewFileMode::Umask)?;
+    // After the save, never instead of it: the stash's title and modified time
+    // are bookkeeping, and a stash failure must not fail a save. The hook only
+    // queues work on the blocking pool; this function holds no lock, so the
+    // stash lock is never taken under `OpenFiles`/`PendingFiles` (roadmap A11).
+    crate::stash::on_file_written(&path, &content);
+    Ok(())
 }
 
 #[command]
@@ -276,6 +282,38 @@ mod tests {
 
         assert_eq!(fs::read_to_string(&doc).unwrap(), "new\n");
         assert_eq!(mode_of(&doc), mode_of(&reference));
+    }
+
+    #[test]
+    fn saving_a_stash_note_updates_its_title_through_the_hook() {
+        // The only test that installs the process-wide hook (a `OnceLock`); a
+        // second installer anywhere in the test binary would fail here.
+        let root = scratch("stash-hook");
+        let state = crate::stash::StashState::open(Ok(crate::stash::testkit::paths_in(&root)));
+        let note = state
+            .with(|s| s.create_note("# Old", None, crate::stash::testkit::T0, 0))
+            .unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        assert!(crate::stash::install_write_hook(
+            state.clone(),
+            move |reason| {
+                let _ = tx.send(reason.to_string());
+            }
+        ));
+
+        tauri::async_runtime::block_on(write_file(note.path.clone(), "# New title\n".to_string()))
+            .unwrap();
+
+        // Roadmap A6: the hook's reason is `title`, sent only when it changed.
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap(),
+            "title"
+        );
+        assert_eq!(
+            state.with(|s| s.get(&note.id)).unwrap().title.as_deref(),
+            Some("New title")
+        );
+        assert_eq!(fs::read_to_string(&note.path).unwrap(), "# New title\n");
     }
 
     #[test]

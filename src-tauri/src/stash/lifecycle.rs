@@ -1,0 +1,1542 @@
+//! What leaving the tabs means for the stash (stash plan 03, D5-D8). Decided
+//! here, from the database, never from a frontend's cache: `tab_close` (⌘W,
+//! ⌃T, `/stash`, an agent's close, an expired quick look), a window's red
+//! button and a quit all come through `documents_left`.
+//!
+//! Lock discipline (I3, A11): the stash lock covers SQL only. Documents go
+//! lookup (SQL) → the user's disk (unlocked) → write (SQL); the caller runs
+//! all of it off the main thread with no other lock held — except a quit,
+//! which runs it on the main thread because the process is ending, bounded
+//! by `QUIT_BUDGET`.
+
+use std::fs;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
+
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use tauri::{AppHandle, Manager};
+
+use crate::session::{Session, SessionState, WindowSnapshot};
+use crate::tabs::WindowTabs;
+
+use super::entries::{kind_of_new, plan_put_away};
+use super::{clock, db, emit_changed, search, PutAway, Stash, StashKind, StashState};
+
+/// How a document left the tabs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Leaving {
+    /// ⌘W and every close that goes its way. The frontend flushed first.
+    Closed,
+    /// ⌃T / `/stash` / File → «Отложить в тайник»: `Closed`, and a file
+    /// becomes a reference.
+    PutAway,
+    /// The red button or a quit (D8): nothing was flushed, so a note is put
+    /// away but never discarded (D6), and a file is left as it is.
+    WithWindow,
+}
+
+/// What the stash did with a document that left. The id is the entry's.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Left {
+    Untouched,
+    PutAway(String),
+    Discarded(String),
+}
+
+/// A blank note is tiny; anything bigger is not read to find out.
+const BLANK_READ_LIMIT: u64 = 64 * 1024;
+
+/// What `remove_if_blank` did.
+#[derive(Debug, PartialEq, Eq)]
+enum Blank {
+    /// It was blank, and it is gone.
+    Removed,
+    /// It is at its name with whatever text it holds: not blank, not provably
+    /// blank, or a newer save took the name back meanwhile.
+    Stays,
+    /// Text reached the file while it was set aside, and a newer save took its
+    /// name meanwhile: the set-aside text is kept at this path (a visible name
+    /// in the same folder), the newer save at the note's own name.
+    Recovered(PathBuf),
+}
+
+/// Whether the regular file at `path` — never through a symlink — holds only
+/// whitespace, read through one handle. Anything that cannot prove it
+/// (missing, a symlink, not UTF-8, unreadable, large) is not blank.
+fn holds_only_whitespace(path: &Path) -> bool {
+    if !fs::symlink_metadata(path).is_ok_and(|m| m.is_file()) {
+        return false;
+    }
+    let Ok(file) = fs::File::open(path) else {
+        return false;
+    };
+    if !file
+        .metadata()
+        .is_ok_and(|m| m.is_file() && m.len() <= BLANK_READ_LIMIT)
+    {
+        return false;
+    }
+    let mut bytes = Vec::new();
+    file.take(BLANK_READ_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .is_ok()
+        && bytes.len() as u64 <= BLANK_READ_LIMIT
+        && std::str::from_utf8(&bytes).is_ok_and(|t| t.trim().is_empty())
+}
+
+/// Tells one process's asides apart.
+static ASIDE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// A hidden name beside `path` (same folder, so the rename stays on one
+/// volume) that no save and no other close uses.
+fn aside_name(path: &Path) -> Option<PathBuf> {
+    let name = path.file_name()?.to_str()?;
+    let n = ASIDE_SEQ.fetch_add(1, Ordering::Relaxed);
+    Some(path.with_file_name(format!(".{name}.discard-{}-{n}", std::process::id())))
+}
+
+/// Removes `path` if it is a regular file holding only whitespace. See
+/// `remove_if_blank_with`.
+fn remove_if_blank(path: &Path, now_secs: u64) -> Blank {
+    remove_if_blank_with(path, now_secs, || {})
+}
+
+/// `remove_if_blank`; `between` runs after the first look and before the file
+/// is set aside — where a save racing the close lands (tests).
+///
+/// Check-then-unlink would delete whatever an atomic save (tmp + rename) put
+/// at the name after the check. So a file that looks blank is first renamed
+/// aside — from then on no save can reach it — re-read there, and unlinked
+/// only if it is still blank; otherwise it goes back (`settle_aside`). Never
+/// loses text: at every moment the text is at the name or at the aside.
+fn remove_if_blank_with(path: &Path, now_secs: u64, between: impl FnOnce()) -> Blank {
+    if !holds_only_whitespace(path) {
+        return Blank::Stays;
+    }
+    between();
+    let Some(aside) = aside_name(path) else {
+        return Blank::Stays;
+    };
+    // A name taken by something else is never renamed over.
+    if fs::symlink_metadata(&aside).is_ok() || fs::rename(path, &aside).is_err() {
+        return Blank::Stays;
+    }
+    settle_aside(&aside, path, now_secs)
+}
+
+/// Decides what happens to a file set aside from `path`: unlinked if it is
+/// still blank, else put back. `hard_link` refuses an existing name, so the
+/// put-back never overwrites a save that landed at `path` meanwhile; that
+/// text stays at `path` and the aside's is kept under
+/// `<stem>.recovered-<secs>.md` (numbered when taken).
+fn settle_aside(aside: &Path, path: &Path, now_secs: u64) -> Blank {
+    if holds_only_whitespace(aside) {
+        if fs::symlink_metadata(path).is_ok() {
+            // A newer save is at the name: that is the note now. The aside
+            // held only whitespace.
+            let _ = fs::remove_file(aside);
+            return Blank::Stays;
+        }
+        // Unlinked, not trashed: a trash copy of whitespace keeps nothing,
+        // and the spec wants an empty document to vanish without a trace.
+        // (A save landing after this is a file with no entry — text on disk,
+        // never lost.)
+        if fs::remove_file(aside).is_ok() {
+            return Blank::Removed;
+        }
+    }
+    if fs::hard_link(aside, path).is_ok() {
+        let _ = fs::remove_file(aside);
+        return Blank::Stays;
+    }
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("note");
+    for n in 0..100u32 {
+        let name = match n {
+            0 => format!("{stem}.recovered-{now_secs}.md"),
+            n => format!("{stem}.recovered-{now_secs}-{n}.md"),
+        };
+        let kept = path.with_file_name(name);
+        match fs::hard_link(aside, &kept) {
+            Ok(()) => {
+                let _ = fs::remove_file(aside);
+                return Blank::Recovered(kept);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => break,
+        }
+    }
+    // Could not name it anywhere else: the text stays at the aside, intact.
+    Blank::Recovered(aside.to_path_buf())
+}
+
+/// Inside the caller's transaction: the live note row `id` and its search
+/// row, the search row first — afterwards its rowid can't be found, and
+/// SQLite gives the freed rowid to the next entry. Anything else under that
+/// id (trashed meanwhile, A8) is left alone, its search row included.
+fn drop_discarded_row(tx: &Connection, id: &str) -> Result<(), String> {
+    let live = tx
+        .query_row(
+            "SELECT 1 FROM entries WHERE id = ?1 AND kind = 'note' AND deleted_at IS NULL",
+            [id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(db::err)?
+        .is_some();
+    if !live {
+        return Ok(());
+    }
+    search::unindex_entry(tx, id)?;
+    tx.execute(
+        "DELETE FROM entries WHERE id = ?1 AND kind = 'note' AND deleted_at IS NULL",
+        [id],
+    )
+    .map_err(db::err)?;
+    Ok(())
+}
+
+impl Stash {
+    /// Drops the row of a note whose blank file `lifecycle` already removed.
+    /// A row trashed meanwhile is left alone (A8). Tags go with it (cascade).
+    fn forget_discarded_note(&mut self, id: &str) -> Result<(), String> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db::err)?;
+        drop_discarded_row(&tx, id)?;
+        tx.commit().map_err(db::err)
+    }
+
+    /// The write half of `notes_left`, one IMMEDIATE transaction: the rows of
+    /// `discarded` notes (their blank files already gone) dropped, every note
+    /// in `stamps` — `(id, caret, top_line)` — stamped put away at `now`, then
+    /// one export/backup. By id, SQL only: a note keeps the repo it was
+    /// written in, so nothing on disk is asked. A row trashed meanwhile is
+    /// left alone (A8). Answers the ids actually stamped.
+    fn settle_left(
+        &mut self,
+        discarded: &[String],
+        stamps: &[(String, i64, i64)],
+        now: i64,
+    ) -> Result<Vec<String>, String> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db::err)?;
+        for id in discarded {
+            drop_discarded_row(&tx, id)?;
+        }
+        let mut stamped = Vec::with_capacity(stamps.len());
+        for (id, caret, top_line) in stamps {
+            let changed = tx
+                .execute(
+                    "UPDATE entries SET stashed_at = ?1, caret = ?2, top_line = ?3 \
+                     WHERE id = ?4 AND kind = 'note' AND deleted_at IS NULL",
+                    params![now, caret, top_line, id],
+                )
+                .map_err(db::err)?;
+            if changed > 0 {
+                stamped.push(id.clone());
+            }
+        }
+        tx.commit().map_err(db::err)?;
+        if !discarded.is_empty() || !stamped.is_empty() {
+            self.after_write(now, clock::local_offset_secs(now.div_euclid(1000)));
+        }
+        Ok(stamped)
+    }
+}
+
+/// `StashState::with`, or — with a `deadline` — `with_until`, with SQLite's
+/// own wait (the CLI or MCP holding the file) cut to what is left of it, and
+/// the usual busy timeout put back afterwards.
+fn locked<T>(
+    state: &StashState,
+    deadline: Option<Instant>,
+    f: impl FnOnce(&mut Stash) -> Result<T, String>,
+) -> Result<T, String> {
+    let Some(deadline) = deadline else {
+        return state.with(f);
+    };
+    state.with_until(deadline, |s| {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err("stash busy: out of time".to_string());
+        }
+        s.conn.busy_timeout(left).map_err(db::err)?;
+        let out = f(s);
+        if let Err(e) = s.conn.busy_timeout(db::BUSY_TIMEOUT) {
+            eprintln!("stash: busy timeout not restored: {e}");
+        }
+        out
+    })
+}
+
+/// ⌘W (`Closed`), the red button and a quit (`WithWindow`) for `docs`, in two
+/// SQL phases with the user's disk between them, whatever their number:
+///
+/// 1. one lock: every path's entry (`entry_for_path`);
+/// 2. unlocked, `Closed` only: a live note whose file — a couplet-named file
+///    directly in the notes folder — holds only whitespace is discarded
+///    (`remove_if_blank`; spec: «пустой документ при закрытии просто
+///    исчезает»; D6: only after the frontend flushed — the red button and ⌘Q
+///    leave the last ≤300 ms unflushed, so a blank file proves nothing then);
+/// 3. one lock, one transaction: `settle_left`.
+///
+/// Files are never touched here — a file enters the stash only on `PutAway`
+/// — and neither is a trashed entry (A8). Discarding deletes no user text:
+/// the file goes before the row, and only once re-read blank.
+///
+/// With a `deadline` (the quit path, on the main thread) each lock and each
+/// SQLite wait gives up when it passes: the session file already names the
+/// notes, and a quit may not hang on a busy stash.
+fn notes_left(
+    state: &StashState,
+    docs: &[(String, usize, usize)],
+    leaving: Leaving,
+    now: i64,
+    deadline: Option<Instant>,
+) -> LeftReport {
+    let looked = locked(state, deadline, |s| {
+        // Each document's live note entry, if it has one.
+        let mut looked: Vec<Option<String>> = Vec::with_capacity(docs.len());
+        for (path, ..) in docs {
+            looked.push(
+                s.entry_for_path(path)?
+                    .filter(|e| e.kind == StashKind::Note && e.deleted_at.is_none())
+                    .map(|e| e.id),
+            );
+        }
+        // Named under the lock, spelled outside it (A11: SQL only).
+        Ok((looked, s.paths.notes_dir.clone()))
+    });
+    let (looked, notes_dir) = match looked {
+        Ok(found) => found,
+        Err(e) => {
+            eprintln!("stash: {} documents left the tabs: {e}", docs.len());
+            return LeftReport::failed_all(docs, &e);
+        }
+    };
+    let mut notes_dir_spelled: Option<PathBuf> = None;
+    let now_secs = u64::try_from(now.div_euclid(1000)).unwrap_or(0);
+    let mut discarded: Vec<(String, String)> = Vec::new();
+    let mut stamps: Vec<(String, i64, i64)> = Vec::new();
+    let mut stamped_paths: Vec<String> = Vec::new();
+    for ((path, cursor, top_line), id) in docs.iter().zip(looked) {
+        let Some(id) = id else {
+            continue;
+        };
+        if leaving == Leaving::Closed {
+            let notes_dir = notes_dir_spelled
+                .get_or_insert_with(|| crate::path_norm::normalize_path(&notes_dir));
+            if kind_of_new(Path::new(path), notes_dir) == StashKind::Note {
+                match remove_if_blank(Path::new(path), now_secs) {
+                    Blank::Removed => {
+                        discarded.push((path.clone(), id));
+                        continue;
+                    }
+                    Blank::Recovered(kept) => eprintln!(
+                        "stash: {path} changed while it was being discarded; its earlier text is kept at {}",
+                        kept.display()
+                    ),
+                    Blank::Stays => {}
+                }
+            }
+        }
+        stamps.push((
+            id,
+            i64::try_from(*cursor).unwrap_or(0),
+            i64::try_from(*top_line).unwrap_or(1),
+        ));
+        stamped_paths.push(path.clone());
+    }
+    let mut report = LeftReport {
+        discarded: discarded.iter().map(|(_, id)| id.clone()).collect(),
+        ..LeftReport::default()
+    };
+    if discarded.is_empty() && stamps.is_empty() {
+        return report;
+    }
+    let ids: Vec<String> = report.discarded.clone();
+    match locked(state, deadline, |s| s.settle_left(&ids, &stamps, now)) {
+        Ok(stamped) => report.put_away = stamped,
+        Err(e) => {
+            // The discarded files are gone whatever the database says, so they
+            // stay in `discarded` (nothing to reopen); every document failed.
+            eprintln!("stash: {} documents left the tabs: {e}", docs.len());
+            report.failed = discarded
+                .into_iter()
+                .map(|(path, _)| path)
+                .chain(stamped_paths)
+                .map(|path| (path, e.clone()))
+                .collect();
+        }
+    }
+    report
+}
+
+/// ⌃T / `/stash` / the menu item on one document: a file becomes a reference,
+/// a live note is put away — or discarded when its file holds only
+/// whitespace (as on ⌘W, after the frontend flushed). The full put-away path
+/// (`plan_put_away`: metadata, a title, a `.git` walk — the user's disk,
+/// unlocked). A trashed entry refuses (A8).
+fn put_away_one(
+    state: &StashState,
+    path: &str,
+    cursor: usize,
+    top_line: usize,
+    project: Option<&str>,
+    now: i64,
+) -> Result<Left, String> {
+    // The folder's spelling asks the file system: named under the lock,
+    // spelled outside it — only SQL under the stash lock (A11).
+    let (entry, notes_dir) =
+        state.with(|s| Ok((s.entry_for_path(path)?, s.paths.notes_dir.clone())))?;
+    let notes_dir = crate::path_norm::normalize_path(&notes_dir);
+    match &entry {
+        Some(e) if e.deleted_at.is_some() => return Err(format!("in the trash: {path}")),
+        Some(e) if e.kind == StashKind::Note => {
+            let is_note_file = kind_of_new(Path::new(path), &notes_dir) == StashKind::Note;
+            let now_secs = u64::try_from(now.div_euclid(1000)).unwrap_or(0);
+            let blank = if is_note_file {
+                remove_if_blank(Path::new(path), now_secs)
+            } else {
+                Blank::Stays
+            };
+            if let Blank::Recovered(kept) = &blank {
+                eprintln!(
+                    "stash: {path} changed while it was being discarded; its earlier text is kept at {}",
+                    kept.display()
+                );
+            }
+            if blank == Blank::Removed {
+                let id = e.id.clone();
+                state.with(|s| s.forget_discarded_note(&id))?;
+                return Ok(Left::Discarded(id));
+            }
+        }
+        _ => {}
+    }
+    let req = PutAway {
+        paths: vec![path.to_string()],
+        caret: i64::try_from(cursor).ok(),
+        top_line: i64::try_from(top_line).ok(),
+        tags: Vec::new(),
+        project: project.map(str::to_string),
+    };
+    let plan = plan_put_away(&req, &notes_dir, now)?;
+    let results = state.with(|s| s.put_away_probed(plan, now))?;
+    results
+        .into_iter()
+        .next()
+        .map(|r| Left::PutAway(r.entry.id))
+        .ok_or_else(|| format!("nothing put away for {path}"))
+}
+
+/// One document left the tabs at `cursor` / `top_line` — `put_away_one` for
+/// `PutAway`, `notes_left` otherwise. `project`: the window's project root,
+/// a put-away file's repo outside any git repository (A3).
+pub(crate) fn document_left(
+    state: &StashState,
+    path: &str,
+    cursor: usize,
+    top_line: usize,
+    leaving: Leaving,
+    project: Option<&str>,
+    now: i64,
+) -> Result<Left, String> {
+    if leaving == Leaving::PutAway {
+        return put_away_one(state, path, cursor, top_line, project, now);
+    }
+    let mut report = notes_left(
+        state,
+        &[(path.to_string(), cursor, top_line)],
+        leaving,
+        now,
+        None,
+    );
+    if let Some((_, e)) = report.failed.pop() {
+        return Err(e);
+    }
+    Ok(match (report.put_away.pop(), report.discarded.pop()) {
+        (Some(id), _) => Left::PutAway(id),
+        (None, Some(id)) => Left::Discarded(id),
+        (None, None) => Left::Untouched,
+    })
+}
+
+/// What the stash did with the documents that left, by entry id, and what it
+/// could not do, by path — `(path, reason)`.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct LeftReport {
+    pub put_away: Vec<String>,
+    pub discarded: Vec<String>,
+    pub failed: Vec<(String, String)>,
+}
+
+impl LeftReport {
+    fn failed_all(docs: &[(String, usize, usize)], reason: &str) -> Self {
+        Self {
+            failed: docs
+                .iter()
+                .map(|(path, ..)| (path.clone(), reason.to_string()))
+                .collect(),
+            ..Self::default()
+        }
+    }
+
+    fn changed(&self) -> bool {
+        !self.put_away.is_empty() || !self.discarded.is_empty()
+    }
+
+    /// Whether ⌘⇧T may offer the closed document again: not when the stash
+    /// discarded it — its file is gone.
+    pub(crate) fn reopenable(&self) -> bool {
+        self.discarded.is_empty()
+    }
+
+    /// What `tab_close` answers: an explicit put-away (⌃T, `/stash`, the menu
+    /// item) that did not happen says why — the tab is closed either way.
+    /// ⌘W and a window closing are best effort and answer nothing.
+    pub(crate) fn failure(&self, leaving: Leaving) -> Option<String> {
+        if leaving != Leaving::PutAway || self.failed.is_empty() {
+            return None;
+        }
+        Some(
+            self.failed
+                .iter()
+                .map(|(_, reason)| reason.as_str())
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    }
+}
+
+/// What leaving means for each of `docs`. Blocking. An explicit put-away
+/// goes document by document (`put_away_one`), then one export/backup; ⌘W
+/// and a window closing go all at once (`notes_left`). A document the stash
+/// could not take is in `failed`, logged, and fails nothing else.
+pub(crate) fn documents_left_in(
+    state: &StashState,
+    docs: &[(String, usize, usize)],
+    leaving: Leaving,
+    project: Option<&str>,
+    now: i64,
+) -> LeftReport {
+    if leaving != Leaving::PutAway {
+        return notes_left(state, docs, leaving, now, None);
+    }
+    let mut report = LeftReport::default();
+    for (path, cursor, top_line) in docs {
+        match document_left(state, path, *cursor, *top_line, leaving, project, now) {
+            Ok(Left::Untouched) => {}
+            Ok(Left::PutAway(id)) => report.put_away.push(id),
+            Ok(Left::Discarded(id)) => report.discarded.push(id),
+            Err(e) => {
+                eprintln!("stash: {path} left the tabs: {e}");
+                report.failed.push((path.clone(), e));
+            }
+        }
+    }
+    if report.changed() {
+        let offset = clock::local_offset_secs(now.div_euclid(1000));
+        let _ = state.with(|s| {
+            s.after_write(now, offset);
+            Ok(())
+        });
+    }
+    report
+}
+
+/// How long a quit may spend on the stash, locks and SQLite waits included.
+const QUIT_BUDGET: Duration = Duration::from_secs(1);
+
+/// The quit path (`save_session_on_exit`, main thread): the live windows'
+/// notes stamped put away (never discarded, D6/D8), by id, in one
+/// transaction, within `QUIT_BUDGET`. A stash busy past it is skipped — the
+/// session file just written names the notes. No event: nothing is left to
+/// refresh.
+pub(crate) fn documents_left_at_quit(app: &AppHandle, docs: &[(String, usize, usize)]) {
+    if docs.is_empty() {
+        return;
+    }
+    let Some(state) = app.try_state::<StashState>() else {
+        return;
+    };
+    let deadline = Instant::now() + QUIT_BUDGET;
+    let report = notes_left(
+        &state,
+        docs,
+        Leaving::WithWindow,
+        clock::now_ms(),
+        Some(deadline),
+    );
+    if !report.failed.is_empty() {
+        eprintln!(
+            "stash: quitting with {} notes not stamped put away; the session names them",
+            report.failed.len()
+        );
+    }
+}
+
+/// The `stash-changed` events a report makes (A6): the entries put away under
+/// `put-away`, the discarded ones — their rows are gone — under `deleted`.
+fn changed_events(report: &LeftReport) -> Vec<(&'static str, Vec<String>)> {
+    [
+        ("put-away", &report.put_away),
+        ("deleted", &report.discarded),
+    ]
+    .into_iter()
+    .filter(|(_, ids)| !ids.is_empty())
+    .map(|(reason, ids)| (reason, ids.clone()))
+    .collect()
+}
+
+/// `documents_left_in` in the live app, then its `stash-changed` events
+/// (`changed_events`) — unless the app is quitting, when no drawer is left to
+/// refresh. Blocking: call it on the blocking pool (a quit excepted), with no
+/// other lock held.
+pub(crate) fn documents_left(
+    app: &AppHandle,
+    docs: &[(String, usize, usize)],
+    leaving: Leaving,
+    project: Option<&str>,
+) -> LeftReport {
+    if docs.is_empty() {
+        return LeftReport::default();
+    }
+    let Some(state) = app.try_state::<StashState>() else {
+        return LeftReport::failed_all(docs, "stash unavailable");
+    };
+    let report = documents_left_in(&state, docs, leaving, project, clock::now_ms());
+    let quitting = app
+        .try_state::<SessionState>()
+        .is_some_and(|s| s.is_quitting());
+    if !quitting {
+        for (reason, ids) in changed_events(&report) {
+            emit_changed(app, reason, Some(ids));
+        }
+    }
+    report
+}
+
+/// Stash work handed to the blocking pool that a quit must not cut short.
+///
+/// Closing the last window by its red button destroys it and then exits the
+/// process at once (nothing prevents the exit): a put-away still queued or
+/// running on the pool would simply never land. The quit path waits for
+/// these — bounded, since it runs on the main thread.
+struct InFlight {
+    count: Mutex<usize>,
+    idle: Condvar,
+}
+
+/// One unit of `InFlight` work; counted from `enter` until dropped.
+pub(crate) struct Pending<'a>(&'a InFlight);
+
+impl InFlight {
+    const fn new() -> Self {
+        Self {
+            count: Mutex::new(0),
+            idle: Condvar::new(),
+        }
+    }
+
+    fn enter(&self) -> Pending<'_> {
+        *self.count.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        Pending(self)
+    }
+
+    /// Waits until nothing is in flight, at most `timeout`. `true`: idle.
+    fn wait_idle(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut count = self.count.lock().unwrap_or_else(|e| e.into_inner());
+        while *count > 0 {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            count = self
+                .idle
+                .wait_timeout(count, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        true
+    }
+}
+
+impl Drop for Pending<'_> {
+    fn drop(&mut self) {
+        let mut count = self.0.count.lock().unwrap_or_else(|e| e.into_inner());
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            self.0.idle.notify_all();
+        }
+    }
+}
+
+static IN_FLIGHT: InFlight = InFlight::new();
+
+/// Counts the caller's stash work in flight until the guard drops. Take it
+/// before handing the work to the pool, so a quit sees it even queued.
+pub(crate) fn pending() -> Pending<'static> {
+    IN_FLIGHT.enter()
+}
+
+/// How long a quit waits for stash work in flight. SQL plus a note's own
+/// metadata normally takes milliseconds; this is for a stash waiting out its
+/// busy timeout, and a quit may not hang on it.
+const QUIT_WAIT: Duration = Duration::from_secs(3);
+
+/// The quit path: waits (bounded) for stash work still in flight.
+pub(crate) fn wait_for_pending() {
+    if !IN_FLIGHT.wait_idle(QUIT_WAIT) {
+        eprintln!("stash: quitting with a put-away still in flight");
+    }
+}
+
+/// `documents_left` on the blocking pool, for a caller on the main thread
+/// (the red button's `Destroyed`). Counted in flight from here, so a quit
+/// right behind it waits for it.
+pub(crate) fn documents_left_later(
+    app: &AppHandle,
+    docs: Vec<(String, usize, usize)>,
+    leaving: Leaving,
+) {
+    if docs.is_empty() {
+        return;
+    }
+    let pending = pending();
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _pending = pending;
+        // Best effort: `documents_left_in` logged whatever failed.
+        // A closing window stamps notes only; no file is put away, so no project.
+        let _ = documents_left(&app, &docs, leaving, None);
+    });
+}
+
+/// A closing window's file tabs, with the carets its last heartbeat recorded.
+/// Read before `SessionState::remove` erases them.
+pub(crate) fn left_with_window(
+    tabs: &WindowTabs,
+    snapshot: Option<&WindowSnapshot>,
+) -> Vec<(String, usize, usize)> {
+    tabs.tabs
+        .iter()
+        .filter_map(|t| {
+            let path = t.path.clone()?;
+            let (cursor, top_line) = snapshot
+                .and_then(|s| s.tabs.iter().find(|s| s.tab_id == t.id))
+                .map(|s| (s.cursor, s.top_line))
+                .unwrap_or((0, 1));
+            Some((path, cursor, top_line))
+        })
+        .collect()
+}
+
+/// The file tabs of the first `live` windows of the session written on quit
+/// (`SessionState::snapshot_to_write_counting_live`). The windows after them
+/// are carried un-restored from the previous run: not open, so nothing of
+/// theirs left the tabs — stamping them would raise their notes on every quit.
+pub(crate) fn left_at_quit(session: &Session, live: usize) -> Vec<(String, usize, usize)> {
+    session
+        .windows
+        .iter()
+        .take(live)
+        .flat_map(|w| w.tabs.iter())
+        .filter_map(|t| t.path.clone().map(|p| (p, t.cursor, t.top_line)))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stash::testkit::{paths_in, rows, set_columns, user_file, MSK, T0};
+    use std::path::{Path, PathBuf};
+
+    const NOW: i64 = T0 + 60_000;
+
+    fn state_in(tag: &str) -> (StashState, PathBuf) {
+        let root = crate::atomic_write::testkit::scratch(&format!("lifecycle-{tag}"));
+        (StashState::open(Ok(paths_in(&root))), root)
+    }
+
+    fn note(state: &StashState, text: &str) -> crate::stash::StashEntry {
+        state.with(|s| s.create_note(text, None, T0, MSK)).unwrap()
+    }
+
+    fn by_path(state: &StashState, path: &str) -> Option<crate::stash::StashEntry> {
+        state.with(|s| s.entry_for_path(path)).unwrap()
+    }
+
+    #[test]
+    fn a_closed_note_is_put_away_with_its_caret() {
+        let (state, _root) = state_in("note");
+        let note = note(&state, "# Plan\nbody");
+        assert_eq!(
+            document_left(&state, &note.path, 7, 3, Leaving::Closed, None, NOW).unwrap(),
+            Left::PutAway(note.id.clone())
+        );
+        let e = state.with(|s| s.get(&note.id)).unwrap();
+        assert_eq!(e.stashed_at, Some(NOW));
+        assert_eq!((e.caret, e.top_line), (7, 3));
+    }
+
+    #[test]
+    fn a_closed_blank_note_disappears_without_a_trace() {
+        let (state, _root) = state_in("blank");
+        let note = note(&state, "x");
+        std::fs::write(&note.path, " \n\t\n").unwrap();
+        assert_eq!(
+            document_left(&state, &note.path, 0, 1, Leaving::Closed, None, NOW).unwrap(),
+            Left::Discarded(note.id.clone())
+        );
+        assert!(!Path::new(&note.path).exists(), "the empty file is gone");
+        assert!(by_path(&state, &note.path).is_none(), "and so is its entry");
+    }
+
+    #[test]
+    fn a_blank_note_put_away_with_ctrl_t_disappears_too() {
+        let (state, _root) = state_in("blank-put-away");
+        let note = note(&state, "x");
+        std::fs::write(&note.path, "").unwrap();
+        assert_eq!(
+            document_left(&state, &note.path, 0, 1, Leaving::PutAway, None, NOW).unwrap(),
+            Left::Discarded(note.id.clone())
+        );
+        assert!(!Path::new(&note.path).exists());
+    }
+
+    /// A discarded note's search row goes with its entry. SQLite hands the
+    /// freed rowid to the next entry, which must not inherit the old text.
+    fn discard_leaves_no_search_row(tag: &str, leaving: Leaving) {
+        let (state, _root) = state_in(tag);
+        let note = note(&state, "секретный план");
+        std::fs::write(&note.path, "\n").unwrap();
+        assert_eq!(
+            document_left(&state, &note.path, 0, 1, leaving, None, NOW).unwrap(),
+            Left::Discarded(note.id.clone())
+        );
+        assert_eq!(state.with(|s| Ok(rows(s, "entries_fts"))).unwrap(), 0);
+        let next = state
+            .with(|s| s.create_note("другое", None, T0, MSK))
+            .unwrap();
+        state
+            .with(|s| {
+                assert!(crate::stash::search::found(&s.conn, "секретный").is_empty());
+                assert_eq!(
+                    crate::stash::search::found(&s.conn, "другое"),
+                    vec![next.id.clone()]
+                );
+                assert_eq!(rows(s, "entries_fts"), 1);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn a_blank_note_discarded_on_close_leaves_no_search_row() {
+        // `settle_left`'s discard.
+        discard_leaves_no_search_row("blank-fts-close", Leaving::Closed);
+    }
+
+    #[test]
+    fn a_blank_note_discarded_by_ctrl_t_leaves_no_search_row() {
+        // `forget_discarded_note`.
+        discard_leaves_no_search_row("blank-fts-put-away", Leaving::PutAway);
+    }
+
+    #[test]
+    fn a_missing_note_file_is_never_taken_for_a_blank_one() {
+        let (state, _root) = state_in("missing");
+        let note = note(&state, "keep");
+        std::fs::remove_file(&note.path).unwrap();
+        assert_eq!(
+            document_left(&state, &note.path, 0, 1, Leaving::Closed, None, NOW).unwrap(),
+            Left::PutAway(note.id.clone()),
+            "an unreadable file proves nothing; the entry stays"
+        );
+    }
+
+    #[test]
+    fn a_note_file_that_is_not_text_is_never_taken_for_a_blank_one() {
+        let (state, _root) = state_in("binary");
+        let note = note(&state, "x");
+        std::fs::write(&note.path, [0xff, b' ', b'\n']).unwrap();
+        assert_eq!(
+            document_left(&state, &note.path, 0, 1, Leaving::Closed, None, NOW).unwrap(),
+            Left::PutAway(note.id.clone())
+        );
+        assert!(Path::new(&note.path).exists());
+    }
+
+    #[test]
+    fn a_blank_file_outside_the_notes_folder_is_never_removed() {
+        // Whatever a row claims, only a couplet-named file directly in the
+        // notes folder may be removed.
+        let (state, root) = state_in("not-a-note");
+        let note = note(&state, "x");
+        let blank = user_file(&root, "blank.md", "  \n");
+        state
+            .with(|s| {
+                set_columns(s, &note.id, &format!("path = '{blank}'"));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            document_left(&state, &blank, 0, 1, Leaving::Closed, None, NOW).unwrap(),
+            Left::PutAway(note.id.clone())
+        );
+        assert!(Path::new(&blank).exists(), "the user's file stays");
+    }
+
+    #[test]
+    fn a_blank_symlink_in_the_notes_folder_is_never_followed_into_a_removal() {
+        let (state, root) = state_in("symlink");
+        let note = note(&state, "x");
+        let target = user_file(&root, "target.md", "\n");
+        std::fs::remove_file(&note.path).unwrap();
+        std::os::unix::fs::symlink(&target, &note.path).unwrap();
+        // Put away, not discarded. (Which entry is stamped is `plan_put_away`'s
+        // business: its normalization resolves the link to the target.)
+        assert!(matches!(
+            document_left(&state, &note.path, 0, 1, Leaving::Closed, None, NOW).unwrap(),
+            Left::PutAway(_)
+        ));
+        assert!(Path::new(&target).exists());
+        assert!(std::fs::symlink_metadata(&note.path).is_ok());
+    }
+
+    #[test]
+    fn a_trashed_note_is_left_alone() {
+        let (state, _root) = state_in("trashed");
+        let note = note(&state, "x");
+        std::fs::write(&note.path, "").unwrap();
+        state
+            .with(|s| {
+                set_columns(s, &note.id, "deleted_at = 5, stashed_at = NULL");
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            document_left(&state, &note.path, 3, 2, Leaving::Closed, None, NOW).unwrap(),
+            Left::Untouched
+        );
+        assert!(
+            document_left(&state, &note.path, 3, 2, Leaving::PutAway, None, NOW).is_err(),
+            "⌃T on a trashed note refuses"
+        );
+        let e = state.with(|s| s.get(&note.id)).unwrap();
+        assert_eq!((e.deleted_at, e.stashed_at, e.caret), (Some(5), None, 0));
+        assert!(
+            Path::new(&note.path).exists(),
+            "even a blank trashed note keeps its file"
+        );
+    }
+
+    #[test]
+    fn a_closed_file_is_left_alone_unless_it_is_put_away() {
+        let (state, root) = state_in("file");
+        let file = user_file(&root, "plan.md", "# plan");
+
+        assert_eq!(
+            document_left(&state, &file, 0, 1, Leaving::Closed, None, NOW).unwrap(),
+            Left::Untouched
+        );
+        assert!(
+            by_path(&state, &file).is_none(),
+            "an open file never enters the stash by itself"
+        );
+
+        let Left::PutAway(id) = document_left(&state, &file, 4, 2, Leaving::PutAway, None, NOW).unwrap()
+        else {
+            panic!("⌃T puts a file away");
+        };
+        let e = by_path(&state, &file).expect("⌃T made it a reference");
+        assert_eq!((e.id, e.kind), (id, StashKind::File));
+        assert_eq!((e.caret, e.top_line), (4, 2));
+        assert!(Path::new(&file).exists(), "the file itself is untouched");
+    }
+
+    #[test]
+    fn a_loose_file_put_away_by_ctrl_t_takes_the_windows_project_name() {
+        // Roadmap A3, `tab_close`'s path: the window's project reaches the put-away.
+        let (state, root) = state_in("put-away-project");
+        let file = user_file(&root, "loose.md", "l");
+        document_left(&state, &file, 0, 1, Leaving::PutAway, Some("/x/proj"), NOW).unwrap();
+        assert_eq!(by_path(&state, &file).unwrap().repo.as_deref(), Some("proj"));
+        // ⌘W is no put-away: the project is not even looked at.
+        let other = user_file(&root, "other.md", "o");
+        document_left(&state, &other, 0, 1, Leaving::Closed, Some("/x/proj"), NOW).unwrap();
+        assert!(by_path(&state, &other).is_none());
+    }
+
+    #[test]
+    fn a_stashed_file_closed_with_cmd_w_keeps_its_stamp() {
+        let (state, root) = state_in("stashed-file");
+        let file = user_file(&root, "plan.md", "");
+        document_left(&state, &file, 4, 2, Leaving::PutAway, None, NOW).unwrap();
+        assert_eq!(
+            document_left(&state, &file, 9, 9, Leaving::Closed, None, NOW + 1).unwrap(),
+            Left::Untouched
+        );
+        let e = by_path(&state, &file).unwrap();
+        assert_eq!((e.stashed_at, e.caret), (Some(NOW), 4));
+        assert!(
+            Path::new(&file).exists(),
+            "a blank file reference is never discarded"
+        );
+    }
+
+    #[test]
+    fn a_window_closing_never_discards_even_a_blank_note() {
+        // The red button and ⌘Q do not flush the last keystrokes: blank on disk
+        // is not proof the buffer was blank (D6).
+        let (state, _root) = state_in("window");
+        let note = note(&state, "x");
+        std::fs::write(&note.path, "").unwrap();
+        assert_eq!(
+            document_left(&state, &note.path, 5, 2, Leaving::WithWindow, None, NOW).unwrap(),
+            Left::PutAway(note.id.clone())
+        );
+        assert!(Path::new(&note.path).exists());
+        let e = state.with(|s| s.get(&note.id)).unwrap();
+        assert_eq!((e.stashed_at, e.caret, e.top_line), (Some(NOW), 5, 2));
+    }
+
+    #[test]
+    fn a_window_closing_leaves_files_and_trashed_notes_alone() {
+        let (state, root) = state_in("window-files");
+        let open = user_file(&root, "open.md", "a");
+        assert_eq!(
+            document_left(&state, &open, 1, 1, Leaving::WithWindow, None, NOW).unwrap(),
+            Left::Untouched
+        );
+        assert!(
+            by_path(&state, &open).is_none(),
+            "a file never enters the stash by itself"
+        );
+
+        let stashed = user_file(&root, "stashed.md", "b");
+        document_left(&state, &stashed, 4, 2, Leaving::PutAway, None, NOW).unwrap();
+        assert_eq!(
+            document_left(&state, &stashed, 9, 9, Leaving::WithWindow, None, NOW + 1).unwrap(),
+            Left::Untouched
+        );
+        let e = by_path(&state, &stashed).unwrap();
+        assert_eq!(
+            (e.stashed_at, e.caret),
+            (Some(NOW), 4),
+            "a reference keeps its stamp"
+        );
+
+        let trashed = note(&state, "x");
+        state
+            .with(|s| {
+                set_columns(s, &trashed.id, "deleted_at = 5, stashed_at = NULL");
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            document_left(&state, &trashed.path, 3, 2, Leaving::WithWindow, None, NOW).unwrap(),
+            Left::Untouched
+        );
+        let e = state.with(|s| s.get(&trashed.id)).unwrap();
+        assert_eq!((e.deleted_at, e.stashed_at), (Some(5), None));
+    }
+
+    #[test]
+    fn a_window_takes_its_file_tabs_with_the_last_heartbeats_carets() {
+        use crate::session::{TabSnapshot, WindowSnapshot};
+        use crate::tabs::{RegTab, WindowTabs};
+        let tabs = WindowTabs {
+            tabs: vec![
+                RegTab {
+                    id: "a".into(),
+                    path: Some("/n/a.md".into()),
+                },
+                RegTab {
+                    id: "u".into(),
+                    path: None,
+                },
+                RegTab {
+                    id: "b".into(),
+                    path: Some("/p/b.md".into()),
+                },
+            ],
+            ..Default::default()
+        };
+        let snapshot = WindowSnapshot {
+            number: Some(1),
+            project: None,
+            x: 0,
+            y: 0,
+            width: 900,
+            height: 700,
+            tabs: vec![TabSnapshot {
+                tab_id: "a".into(),
+                cursor: 12,
+                top_line: 4,
+                ..Default::default()
+            }],
+            active_tab: Some("a".into()),
+        };
+        assert_eq!(
+            left_with_window(&tabs, Some(&snapshot)),
+            vec![
+                ("/n/a.md".to_string(), 12, 4),
+                ("/p/b.md".to_string(), 0, 1)
+            ]
+        );
+        assert_eq!(
+            left_with_window(&tabs, None),
+            vec![("/n/a.md".to_string(), 0, 1), ("/p/b.md".to_string(), 0, 1)],
+            "a window that never heartbeat still takes its files"
+        );
+    }
+
+    fn quit_session() -> crate::session::Session {
+        use crate::session::{Session, TabSnapshot, WindowSnapshot, SESSION_VERSION};
+        let window = |tabs: Vec<TabSnapshot>| WindowSnapshot {
+            number: None,
+            project: None,
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+            active_tab: None,
+            tabs,
+        };
+        let file = |id: &str, path: &str, cursor| TabSnapshot {
+            tab_id: id.into(),
+            path: Some(path.into()),
+            cursor,
+            top_line: 1,
+            ..Default::default()
+        };
+        let draft = |id: &str| TabSnapshot {
+            tab_id: id.into(),
+            untitled: Some(format!("draft-{id}.md")),
+            ..Default::default()
+        };
+        Session {
+            version: SESSION_VERSION,
+            saved_at: 1,
+            windows: vec![
+                window(vec![file("a", "/n/a.md", 2)]),
+                window(vec![draft("u")]),
+                // Carried by `snapshot_to_write` from the previous run: not open.
+                window(vec![file("c", "/n/c.md", 7), draft("v")]),
+            ],
+        }
+    }
+
+    #[test]
+    fn a_quit_takes_every_file_tab_of_the_live_windows() {
+        assert_eq!(
+            left_at_quit(&quit_session(), 2),
+            vec![("/n/a.md".to_string(), 2, 1)]
+        );
+    }
+
+    #[test]
+    fn a_quit_never_takes_the_windows_nobody_restored() {
+        // Stamping them would raise their notes in «changed» on every quit.
+        assert_eq!(
+            left_at_quit(&quit_session(), 1),
+            vec![("/n/a.md".to_string(), 2, 1)]
+        );
+        assert_eq!(left_at_quit(&quit_session(), 0), Vec::new());
+        assert_eq!(
+            left_at_quit(&quit_session(), 3).len(),
+            2,
+            "counted, not guessed"
+        );
+    }
+
+    #[test]
+    fn with_nothing_in_flight_a_quit_does_not_wait() {
+        let flight = InFlight::new();
+        let started = std::time::Instant::now();
+        assert!(flight.wait_idle(std::time::Duration::from_secs(5)));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_quit_waits_for_a_window_still_being_put_away() {
+        let flight = InFlight::new();
+        let done = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let pending = flight.enter();
+            scope.spawn(|| {
+                let _pending = pending;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                done.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            assert!(flight.wait_idle(std::time::Duration::from_secs(5)));
+            assert!(
+                done.load(std::sync::atomic::Ordering::SeqCst),
+                "waited for it"
+            );
+        });
+    }
+
+    #[test]
+    fn a_quit_waits_a_bounded_time() {
+        let flight = InFlight::new();
+        let _stuck = flight.enter();
+        let started = std::time::Instant::now();
+        assert!(!flight.wait_idle(std::time::Duration::from_millis(50)));
+        assert!(started.elapsed() >= std::time::Duration::from_millis(50));
+    }
+
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn notes_folder(tag: &str) -> PathBuf {
+        let dir = crate::atomic_write::testkit::scratch(&format!("blank-{tag}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    const SECS: u64 = 1_790_378_160;
+
+    #[test]
+    fn a_blank_file_is_removed_through_an_aside_name() {
+        let dir = notes_folder("gone");
+        let path = dir.join("2026-09-26-0215-abcd.md");
+        std::fs::write(&path, " \n\t\n").unwrap();
+        assert_eq!(remove_if_blank(&path, SECS), Blank::Removed);
+        assert!(names_in(&dir).is_empty(), "no aside left behind");
+    }
+
+    #[test]
+    fn text_saved_between_the_check_and_the_aside_goes_back_to_its_name() {
+        // An atomic save (tmp + rename) landing after the blank check: the
+        // aside holds real text, which must come back — never be unlinked.
+        let dir = notes_folder("raced");
+        let path = dir.join("2026-09-26-0215-abcd.md");
+        std::fs::write(&path, "").unwrap();
+        let blank = remove_if_blank_with(&path, SECS, || {
+            let tmp = dir.join(".save.tmp");
+            std::fs::write(&tmp, "real text").unwrap();
+            std::fs::rename(&tmp, &path).unwrap();
+        });
+        assert_eq!(blank, Blank::Stays);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "real text");
+        assert_eq!(names_in(&dir), vec!["2026-09-26-0215-abcd.md".to_string()]);
+    }
+
+    #[test]
+    fn an_aside_with_text_never_overwrites_a_newer_save_and_both_stay() {
+        let dir = notes_folder("both");
+        let path = dir.join("2026-09-26-0215-abcd.md");
+        let aside = dir.join(".2026-09-26-0215-abcd.md.discard-1-0");
+        std::fs::write(&aside, "text set aside").unwrap();
+        std::fs::write(&path, "a newer save").unwrap();
+        let Blank::Recovered(kept) = settle_aside(&aside, &path, SECS) else {
+            panic!("the aside's text is kept under a visible name");
+        };
+        assert_eq!(
+            kept,
+            dir.join(format!("2026-09-26-0215-abcd.recovered-{SECS}.md"))
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a newer save");
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), "text set aside");
+        assert!(!aside.exists());
+    }
+
+    #[test]
+    fn a_recovered_name_already_taken_is_never_overwritten() {
+        let dir = notes_folder("taken");
+        let path = dir.join("2026-09-26-0215-abcd.md");
+        let aside = dir.join(".2026-09-26-0215-abcd.md.discard-1-0");
+        let first = dir.join(format!("2026-09-26-0215-abcd.recovered-{SECS}.md"));
+        std::fs::write(&first, "an earlier recovery").unwrap();
+        std::fs::write(&aside, "text set aside").unwrap();
+        std::fs::write(&path, "a newer save").unwrap();
+        let Blank::Recovered(kept) = settle_aside(&aside, &path, SECS) else {
+            panic!("kept");
+        };
+        assert_ne!(kept, first);
+        assert_eq!(
+            std::fs::read_to_string(&first).unwrap(),
+            "an earlier recovery"
+        );
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), "text set aside");
+    }
+
+    #[test]
+    fn a_blank_aside_with_a_newer_save_at_the_name_is_not_a_removal() {
+        let dir = notes_folder("blank-newer");
+        let path = dir.join("2026-09-26-0215-abcd.md");
+        let aside = dir.join(".2026-09-26-0215-abcd.md.discard-1-0");
+        std::fs::write(&aside, "\n").unwrap();
+        std::fs::write(&path, "a newer save").unwrap();
+        assert_eq!(settle_aside(&aside, &path, SECS), Blank::Stays);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a newer save");
+        assert!(!aside.exists());
+    }
+
+    #[test]
+    fn documents_left_names_every_entry_it_changed() {
+        let (state, root) = state_in("ids");
+        let kept = note(&state, "# kept");
+        let blank = note(&state, "y");
+        std::fs::write(&blank.path, "\n").unwrap();
+        let file = user_file(&root, "a.md", "a");
+        let ids = documents_left_in(
+            &state,
+            &[
+                (kept.path.clone(), 1, 1),
+                (blank.path.clone(), 0, 1),
+                (file.clone(), 0, 1),
+            ],
+            Leaving::Closed,
+            None,
+            NOW,
+        );
+        assert_eq!(ids.put_away, vec![kept.id.clone()]);
+        assert_eq!(ids.discarded, vec![blank.id.clone()]);
+        assert!(ids.failed.is_empty());
+        assert_eq!(state.with(|s| Ok(rows(s, "entries"))).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_window_stamps_its_live_notes_together_and_leaves_the_rest_alone() {
+        let (state, root) = state_in("stamp-all");
+        let a = note(&state, "# a");
+        let b = note(&state, "b");
+        std::fs::write(&b.path, "").unwrap();
+        let file = user_file(&root, "open.md", "f");
+        let trashed = note(&state, "t");
+        state
+            .with(|s| {
+                set_columns(s, &trashed.id, "deleted_at = 5, stashed_at = NULL");
+                Ok(())
+            })
+            .unwrap();
+        let report = documents_left_in(
+            &state,
+            &[
+                (a.path.clone(), 7, 3),
+                (file.clone(), 1, 1),
+                (trashed.path.clone(), 2, 2),
+                (b.path.clone(), 4, 2),
+            ],
+            Leaving::WithWindow,
+            None,
+            NOW,
+        );
+        assert_eq!(report.put_away, vec![a.id.clone(), b.id.clone()]);
+        assert!(report.discarded.is_empty() && report.failed.is_empty());
+        let a = state.with(|s| s.get(&a.id)).unwrap();
+        assert_eq!((a.stashed_at, a.caret, a.top_line), (Some(NOW), 7, 3));
+        let b = state.with(|s| s.get(&b.id)).unwrap();
+        assert_eq!((b.stashed_at, b.caret, b.top_line), (Some(NOW), 4, 2));
+        assert!(by_path(&state, &file).is_none());
+        let t = state.with(|s| s.get(&trashed.id)).unwrap();
+        assert_eq!((t.deleted_at, t.stashed_at, t.caret), (Some(5), None, 0));
+    }
+
+    #[test]
+    fn a_stamp_never_revives_a_note_trashed_after_the_lookup() {
+        let (state, _root) = state_in("stamp-trashed");
+        let n = note(&state, "x");
+        state
+            .with(|s| {
+                set_columns(s, &n.id, "deleted_at = 5, stashed_at = NULL");
+                Ok(())
+            })
+            .unwrap();
+        let stamped = state
+            .with(|s| s.settle_left(&[], &[(n.id.clone(), 9, 9)], NOW))
+            .unwrap();
+        assert!(stamped.is_empty());
+        let e = state.with(|s| s.get(&n.id)).unwrap();
+        assert_eq!((e.stashed_at, e.caret), (None, 0));
+    }
+
+    #[test]
+    fn a_quit_gives_up_on_a_stash_lock_held_elsewhere() {
+        let (state, _root) = state_in("quit-lock");
+        let n = note(&state, "x");
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::scope(|scope| {
+            let holder = state.clone();
+            scope.spawn(move || {
+                holder
+                    .with(|_| {
+                        held_tx.send(()).unwrap();
+                        let _ = release_rx.recv_timeout(Duration::from_secs(5));
+                        Ok(())
+                    })
+                    .unwrap();
+            });
+            held_rx.recv().unwrap();
+            let started = Instant::now();
+            let report = notes_left(
+                &state,
+                &[(n.path.clone(), 1, 1)],
+                Leaving::WithWindow,
+                NOW,
+                Some(started + Duration::from_millis(100)),
+            );
+            let waited = started.elapsed();
+            release_tx.send(()).unwrap();
+            assert_eq!(report.failed.len(), 1, "{report:?}");
+            assert!(report.put_away.is_empty());
+            assert!(waited < Duration::from_secs(1), "{waited:?}");
+        });
+        let e = state.with(|s| s.get(&n.id)).unwrap();
+        assert_eq!(e.stashed_at, None, "not stamped; the session names it");
+    }
+
+    #[test]
+    fn a_quit_gives_up_on_a_database_another_process_is_writing() {
+        let (state, root) = state_in("quit-busy");
+        let n = note(&state, "x");
+        let other = rusqlite::Connection::open(paths_in(&root).db_path).unwrap();
+        other.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        let started = Instant::now();
+        let report = notes_left(
+            &state,
+            &[(n.path.clone(), 1, 1)],
+            Leaving::WithWindow,
+            NOW,
+            Some(started + Duration::from_millis(200)),
+        );
+        let waited = started.elapsed();
+        other.execute_batch("ROLLBACK;").unwrap();
+        assert_eq!(report.failed.len(), 1, "{report:?}");
+        assert!(
+            waited < Duration::from_secs(2),
+            "not the 5 s busy timeout: {waited:?}"
+        );
+        let timeout: i64 = state
+            .with(|s| {
+                s.conn
+                    .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+                    .map_err(db::err)
+            })
+            .unwrap();
+        assert_eq!(timeout, 5000, "the usual busy timeout is back");
+    }
+
+    #[test]
+    fn a_discarded_note_is_not_offered_to_cmd_shift_t() {
+        // Its file is gone: ⌘⇧T would reopen nothing.
+        let (state, _root) = state_in("reopen");
+        let blank = note(&state, "x");
+        std::fs::write(&blank.path, "\n").unwrap();
+        let kept = note(&state, "# kept");
+        let unavailable = StashState::open(Err("no stash here".into()));
+
+        let r = documents_left_in(&state, &[(blank.path.clone(), 0, 1)], Leaving::Closed, None, NOW);
+        assert!(!r.reopenable(), "{r:?}");
+        let r = documents_left_in(&state, &[(kept.path.clone(), 0, 1)], Leaving::Closed, None, NOW);
+        assert!(r.reopenable(), "{r:?}");
+        let r = documents_left_in(
+            &unavailable,
+            &[(kept.path.clone(), 0, 1)],
+            Leaving::Closed,
+            None,
+            NOW,
+        );
+        assert!(r.reopenable(), "a stash failure discards nothing: {r:?}");
+    }
+
+    #[test]
+    fn discarded_entries_are_announced_as_deleted_and_the_rest_as_put_away() {
+        // A6: a drawer drops a `deleted` id and raises a `put-away` one.
+        let report = LeftReport {
+            put_away: vec!["a".into(), "b".into()],
+            discarded: vec!["c".into()],
+            failed: vec![("/x.md".into(), "no".into())],
+        };
+        assert_eq!(
+            changed_events(&report),
+            vec![
+                ("put-away", vec!["a".to_string(), "b".to_string()]),
+                ("deleted", vec!["c".to_string()]),
+            ]
+        );
+        let only_discarded = LeftReport {
+            discarded: vec!["c".into()],
+            ..LeftReport::default()
+        };
+        assert_eq!(
+            changed_events(&only_discarded),
+            vec![("deleted", vec!["c".to_string()])]
+        );
+        assert!(changed_events(&LeftReport::default()).is_empty());
+    }
+
+    #[test]
+    fn a_put_away_with_the_stash_unavailable_is_reported_to_the_close() {
+        let root = crate::atomic_write::testkit::scratch("lifecycle-unavailable");
+        let state = StashState::open(Err("no stash here".into()));
+        let file = user_file(&root, "plan.md", "# plan");
+        let report = documents_left_in(&state, &[(file.clone(), 0, 1)], Leaving::PutAway, None, NOW);
+        assert_eq!(report.failed.len(), 1, "{report:?}");
+        assert_eq!(report.failed[0].0, file);
+        let answer = report.failure(Leaving::PutAway).expect("⌃T says it failed");
+        assert!(answer.contains("stash unavailable"), "{answer}");
+    }
+
+    #[test]
+    fn a_plain_close_with_the_stash_unavailable_is_not_reported() {
+        // ⌘W is best effort: the close itself succeeded, the log has the rest.
+        let (state, _root) = state_in("unavailable-close");
+        let note = note(&state, "# kept");
+        let unavailable = StashState::open(Err("no stash here".into()));
+        let report = documents_left_in(
+            &unavailable,
+            &[(note.path.clone(), 0, 1)],
+            Leaving::Closed,
+            None,
+            NOW,
+        );
+        assert_eq!(report.failed.len(), 1, "{report:?}");
+        assert_eq!(report.failure(Leaving::Closed), None);
+    }
+
+    #[test]
+    fn a_trashed_note_put_away_is_reported_to_the_close() {
+        let (state, _root) = state_in("trashed-report");
+        let note = note(&state, "x");
+        state
+            .with(|s| {
+                set_columns(s, &note.id, "deleted_at = 5, stashed_at = NULL");
+                Ok(())
+            })
+            .unwrap();
+        let report = documents_left_in(&state, &[(note.path.clone(), 0, 1)], Leaving::PutAway, None, NOW);
+        let answer = report.failure(Leaving::PutAway).expect("reported");
+        assert!(answer.contains("in the trash"), "{answer}");
+        assert!(report.put_away.is_empty() && report.discarded.is_empty());
+    }
+
+    #[test]
+    fn a_put_away_that_worked_answers_nothing() {
+        let (state, root) = state_in("put-away-ok");
+        let file = user_file(&root, "plan.md", "# plan");
+        let blank = note(&state, "x");
+        std::fs::write(&blank.path, "").unwrap();
+        for doc in [(file, 0, 1), (blank.path.clone(), 0, 1)] {
+            let report = documents_left_in(&state, &[doc], Leaving::PutAway, None, NOW);
+            assert_eq!(report.failure(Leaving::PutAway), None, "{report:?}");
+        }
+    }
+}

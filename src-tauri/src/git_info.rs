@@ -16,6 +16,7 @@
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
 
 use serde::Serialize;
 
@@ -115,20 +116,52 @@ fn is_acceptable(file: &Path) -> bool {
     file.is_absolute() && !file.components().any(|c| c == Component::ParentDir)
 }
 
+/// The repository `file` is in: its toplevel directory and what it shows.
+fn find_repo(file: &Path) -> Option<(PathBuf, GitInfo)> {
+    if !is_acceptable(file) {
+        return None;
+    }
+    let (toplevel, dot_git) = find_dot_git(file)?;
+    let branch = resolve_git_dir(&toplevel, &dot_git)
+        .and_then(|dir| read_small(&dir.join("HEAD")))
+        .and_then(|head| branch_from_head(&head));
+    let info = GitInfo { project: dir_name(&toplevel), branch };
+    Some((toplevel, info))
+}
+
+/// The home folder in `path_norm`'s spelling — the one the stash's paths use.
+fn normalized_home() -> Option<&'static Path> {
+    static HOME: OnceLock<Option<PathBuf>> = OnceLock::new();
+    HOME.get_or_init(|| dirs::home_dir().map(|h| crate::path_norm::normalize_path(&h)))
+        .as_deref()
+}
+
+/// `git_info` only for a file inside a repository. The stash's repo tag for a
+/// file reference is "the git toplevel"; a loose file has none — unlike a
+/// drawer card, whose grey line falls back to the file's folder. A toplevel
+/// that is the home folder itself (a dotfiles repository) is no repo tag
+/// either: every loose file under `~` would carry the login name.
+pub fn repo_info(file: &Path) -> Option<GitInfo> {
+    repo_info_in(file, normalized_home())
+}
+
+/// `repo_info` with the home folder passed in, spelled the way `file` is
+/// (the stash passes normalized paths; `repo_info` a normalized home).
+fn repo_info_in(file: &Path, home: Option<&Path>) -> Option<GitInfo> {
+    let (toplevel, info) = find_repo(file)?;
+    (home != Some(toplevel.as_path())).then_some(info)
+}
+
+/// The drawer's grey line. Built on `find_repo`, not `repo_info`: a file
+/// under a dotfiles home still shows that repository, as it always has.
 pub fn git_info(file: &Path) -> Option<GitInfo> {
     if !is_acceptable(file) {
         return None;
     }
     let parent = file.parent().filter(|p| !p.as_os_str().is_empty())?;
-    match find_dot_git(file) {
-        Some((toplevel, dot_git)) => {
-            let branch = resolve_git_dir(&toplevel, &dot_git)
-                .and_then(|dir| read_small(&dir.join("HEAD")))
-                .and_then(|head| branch_from_head(&head));
-            Some(GitInfo { project: dir_name(&toplevel), branch })
-        }
-        None => Some(GitInfo { project: dir_name(parent), branch: None }),
-    }
+    find_repo(file)
+        .map(|(_, info)| info)
+        .or_else(|| Some(GitInfo { project: dir_name(parent), branch: None }))
 }
 
 /// The project `file` belongs to (spec §2): the directory holding the nearest
@@ -146,6 +179,30 @@ pub fn project_root(file: &Path) -> Option<PathBuf> {
             .map(|(toplevel, _)| toplevel)
             .unwrap_or_else(|| parent.to_path_buf()),
     )
+}
+
+/// The repository a *directory* belongs to: the nearest directory at or above
+/// `dir` holding `.git` (a worktree's `.git` file counts — it is its own
+/// repository). `None` outside git and for a path `git_info` would not look
+/// at. Unlike [`project_root`] there is no fallback to the directory itself:
+/// the stash scopes an agent by repository, and "the folder I happen to be
+/// in" is not one. A toplevel that is the home folder (a dotfiles
+/// repository) is none either, as in [`repo_info`]. `dir` must be in
+/// `path_norm`'s spelling, like the home it is compared with. Nothing is
+/// read, `.git` is only stat'ed.
+pub fn git_toplevel(dir: &Path) -> Option<PathBuf> {
+    git_toplevel_in(dir, normalized_home())
+}
+
+fn git_toplevel_in(dir: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    if !is_acceptable(dir) {
+        return None;
+    }
+    dir.ancestors()
+        .take(MAX_DEPTH)
+        .find(|d| fs::metadata(d.join(".git")).is_ok())
+        .filter(|top| home != Some(*top))
+        .map(Path::to_path_buf)
 }
 
 /// IPC: `git_info` for each path, in order. Never fails as a whole — a path
@@ -377,5 +434,105 @@ mod tests {
         assert_eq!(project_root(&dir.join("a.md")), Some(dir));
         assert_eq!(project_root(Path::new("relative.md")), None);
         assert_eq!(project_root(Path::new("/tmp/../etc/a.md")), None);
+    }
+
+    #[test]
+    fn repo_info_is_the_toplevel_inside_a_repository() {
+        let root = scratch("repo-info").join("couplet");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join(".git/HEAD"), "ref: refs/heads/feat/stash\n").unwrap();
+        assert_eq!(
+            repo_info(&root.join("docs/plan.md")),
+            Some(GitInfo { project: "couplet".into(), branch: Some("feat/stash".into()) })
+        );
+    }
+
+    #[test]
+    fn a_dotfiles_repository_in_home_is_not_a_repo_tag() {
+        // `~/.git` (a bare-dotfiles setup) would otherwise tag every loose
+        // file under the home folder with the user's login name.
+        let home = scratch("repo-info-home").join("u");
+        fs::create_dir_all(home.join(".git")).unwrap();
+        fs::write(home.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let loose = home.join("Downloads/a.md");
+        assert_eq!(repo_info_in(&loose, Some(&home)), None);
+        assert_eq!(repo_info_in(&home.join("a.md"), Some(&home)), None);
+        assert_eq!(
+            repo_info_in(&loose, None),
+            Some(GitInfo { project: "u".into(), branch: Some("main".into()) }),
+            "only the home folder itself is ignored"
+        );
+
+        let proj = home.join("src/proj");
+        fs::create_dir_all(proj.join(".git")).unwrap();
+        fs::write(proj.join(".git/HEAD"), "ref: refs/heads/dev\n").unwrap();
+        assert_eq!(
+            repo_info_in(&proj.join("a.md"), Some(&home)),
+            Some(GitInfo { project: "proj".into(), branch: Some("dev".into()) }),
+            "a real repository inside home still is one"
+        );
+
+        assert_eq!(
+            git_info(&loose),
+            Some(GitInfo { project: "u".into(), branch: Some("main".into()) }),
+            "the drawer's grey line is unchanged"
+        );
+    }
+
+    #[test]
+    fn repo_info_is_none_outside_a_repository_where_git_info_falls_back() {
+        let dir = scratch("repo-info-none").join("loose");
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(repo_info(&dir.join("a.md")), None, "no repo tag for a loose file");
+        assert_eq!(
+            git_info(&dir.join("a.md")),
+            Some(GitInfo { project: "loose".into(), branch: None }),
+            "the drawer's grey line is unchanged"
+        );
+    }
+
+    #[test]
+    fn the_git_toplevel_of_a_directory_is_found_from_itself_and_below() {
+        let root = scratch("toplevel").join("couplet");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::create_dir_all(root.join("src/deep")).unwrap();
+        assert_eq!(git_toplevel(&root), Some(root.clone()));
+        assert_eq!(git_toplevel(&root.join("src/deep")), Some(root));
+    }
+
+    #[test]
+    fn a_worktree_directory_is_its_own_toplevel() {
+        let wt = scratch("toplevel-wt").join("feature");
+        fs::create_dir_all(&wt).unwrap();
+        fs::write(wt.join(".git"), "gitdir: /nowhere/.git/worktrees/feature\n").unwrap();
+        assert_eq!(git_toplevel(&wt), Some(wt));
+    }
+
+    #[test]
+    fn outside_git_a_directory_has_no_toplevel() {
+        assert_eq!(git_toplevel(&scratch("toplevel-none")), None);
+        assert_eq!(git_toplevel(Path::new("relative/dir")), None);
+        assert_eq!(git_toplevel(Path::new("/tmp/../etc")), None);
+    }
+
+    #[test]
+    fn a_dotfiles_repository_in_home_is_no_toplevel() {
+        // Every agent working somewhere under `~` outside a project would
+        // otherwise be scoped to the login name — a repo no file reference
+        // stores (`repo_info_in`), so its search would find nothing.
+        let home = scratch("toplevel-home").join("u");
+        fs::create_dir_all(home.join(".git")).unwrap();
+        fs::create_dir_all(home.join("Downloads")).unwrap();
+        assert_eq!(git_toplevel_in(&home.join("Downloads"), Some(&home)), None);
+        assert_eq!(git_toplevel_in(&home, Some(&home)), None);
+        assert_eq!(git_toplevel_in(&home.join("Downloads"), None), Some(home.clone()));
+
+        let proj = home.join("src/proj");
+        fs::create_dir_all(proj.join(".git")).unwrap();
+        assert_eq!(
+            git_toplevel_in(&proj, Some(&home)),
+            Some(proj),
+            "a real repository inside home still is one"
+        );
     }
 }

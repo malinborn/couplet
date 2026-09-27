@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ToastEntry, ToastStore } from './toasts.svelte';
   import { t, plural } from './i18n';
+  import { stashToastText } from './stash/stash-toast';
 
   let {
     store,
@@ -14,13 +15,23 @@
      * which owns the editor handle — this component stays presentational.
      */
     onFormatJson,
-    /** «Перейти» on a `tabs-moved` toast: bring that window forward (`reveal_other_window`). */
+    /**
+     * «Перейти» on a `tabs-moved` toast and on a stash `pull-failed` or `kept` one: bring
+     * that window forward (`reveal_other_window`).
+     */
     onRevealWindow,
+    /**
+     * Stash stage 04 (D19): px from the window's right edge while the stash
+     * drawer is open — the stack sits bottom-right, exactly where that drawer
+     * is. Undefined leaves the stylesheet's 16px.
+     */
+    right,
   }: {
     store: ToastStore;
     onDismiss?: (entry: ToastEntry) => void;
     onFormatJson?: () => void;
     onRevealWindow?: (label: string) => void;
+    right?: number;
   } = $props();
 
   function dismiss(entry: ToastEntry): void {
@@ -65,7 +76,7 @@
 </script>
 
 {#if store.toasts.length > 0}
-  <div class="md-toast-stack">
+  <div class="md-toast-stack" style:right={right === undefined ? null : `${right}px`}>
     {#each store.toasts as toast (toast.id)}
       <div
         class="md-toast"
@@ -156,12 +167,35 @@
             <strong>{t('toast.save_as_blocked.headline', { fileName: toast.payload.fileName })}</strong>
           </span>
           <span class="md-toast-dim">{t(SAVE_AS_BLOCKED_KEYS[toast.payload.reason])}</span>
+        {:else if toast.payload.kind === 'stash-error' && toast.payload.notPutAway}
+          <span class="md-toast-text"><strong>{t('toast.stash_error.not_put_away_headline')}</strong></span>
+          <span class="md-toast-dim">{t('toast.stash_error.not_put_away_message')} · {toast.payload.message}</span>
+        {:else if toast.payload.kind === 'stash-error'}
+          <span class="md-toast-text"><strong>{t('toast.stash_error.headline')}</strong></span>
+          <span class="md-toast-dim">{t('toast.stash_error.message')} · {toast.payload.message}</span>
         {:else if toast.payload.kind === 'window-number'}
           <span class="md-toast-text"
             >{t(toast.payload.reason === 'taken' ? 'toast.window_number.taken' : 'toast.window_number.missing', {
               number: toast.payload.number,
             })}</span
           >
+        {:else if toast.payload.kind === 'stash' || toast.payload.kind === 'stash-standing'}
+          <!-- Plain text only: titles are user text (never `{@html}`). -->
+          {@const note = toast.payload.note}
+          {@const text = stashToastText(note)}
+          <span class="md-toast-text">{text.text}</span>
+          {#if text.dim}<span class="md-toast-dim">{text.dim}</span>{/if}
+          {#if note.what === 'pull-failed' || note.what === 'kept'}
+            <button
+              class="md-toast-cmd md-toast-action"
+              onclick={() => {
+                onRevealWindow?.(note.label);
+                dismiss(toast);
+              }}
+            >
+              {t('toast.stash.go')}
+            </button>
+          {/if}
         {:else if toast.payload.kind === 'reload-error'}
           <!-- Says what the app is doing about it, not only what failed:
                autosave is paused so the unread disk version cannot be

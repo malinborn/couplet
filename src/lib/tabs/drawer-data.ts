@@ -1,6 +1,7 @@
-import { indexText, type SearchIndex } from './drawer-filter';
+import { firstPlainLine, indexText, type SearchIndex } from './drawer-filter';
 import { previewLines, type PreviewLine } from './drawer-preview';
 import type { TabMeta } from './tab-model';
+import { afterFirstLine, isBlankText, noteTitle } from '../stash/note-title';
 
 /** Rust `git_info::GitInfo`. */
 export interface GitInfo {
@@ -18,6 +19,14 @@ export interface TabText {
   preview: PreviewLine[];
   /** The first non-empty line — the whole preview in Compact (spec §6). */
   first: string;
+  /** `noteTitle` of the text: a note's caption. */
+  title: string | null;
+  /** Nothing but whitespace: a blank new note. */
+  blank: boolean;
+  /** The preview under the first non-blank line — a note's body under its title (mockup). */
+  rest: PreviewLine[];
+  /** `first` of `rest`: a note's line in Compact. */
+  restFirst: string;
 }
 
 export interface DrawerDataDeps {
@@ -29,7 +38,16 @@ export interface DrawerDataDeps {
 
 function digest(text: string): TabText {
   const index = indexText(text);
-  return { index, preview: previewLines(text), first: index.lines[0] ?? '' };
+  const rest = afterFirstLine(text);
+  return {
+    index,
+    preview: previewLines(text),
+    first: index.lines[0] ?? '',
+    title: noteTitle(text),
+    blank: isBlankText(text),
+    rest: previewLines(rest),
+    restFirst: firstPlainLine(rest),
+  };
 }
 
 /**

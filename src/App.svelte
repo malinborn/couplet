@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import Editor from './lib/editor/Editor.svelte';
   import type { EditorHandle } from './lib/editor/Editor.svelte';
   import type { ViewUpdate } from '@codemirror/view';
@@ -24,6 +24,9 @@
     onLanguageChangeFailed,
     onAiCommand,
     onCommentsChanged,
+    onStashChanged,
+    onStashDropTab,
+    onTabPull,
     type AiCommandPayload,
     type UpdateInfo,
   } from './lib/tauri/events';
@@ -47,6 +50,43 @@
     type RevealResult,
   } from './lib/tabs/window-number';
   import { ctrlTabHandler } from './lib/tabs/tab-cycle-keys';
+  import {
+    listAllEntries,
+    listTrash,
+    requestTabMove,
+    stashCounts,
+    stashCreateNote,
+    stashDelete,
+    stashEntryForPath,
+    stashDropDone,
+    stashDropPending,
+    stashNoteSavedAs,
+    stashPurge,
+    stashRestore,
+    stashSearch,
+    stashTag,
+    stashTouchOpened,
+    tabHolders,
+    windowProject,
+  } from './lib/stash/ipc';
+  import { slashInProgress } from './lib/editor/slash-in-progress';
+  import { isBlankText, noteTitle } from './lib/stash/note-title';
+  import { tabCaption } from './lib/stash/tab-caption';
+  import { createStashStore } from './lib/stash/stash-store.svelte';
+  import { putAwayNote, putAwayTabs } from './lib/stash/put-away';
+  import { awaitPull, handOverPulled, openFromStash } from './lib/stash/open-from-stash';
+  import { restoreWindow, widenForStash } from './lib/stash/window-widen';
+  import { createWidenSession } from './lib/stash/widen-session';
+  import { onStashOpenEdge } from './lib/stash/stash-open-edge.svelte';
+  import { showStash } from './lib/stash/stash-state';
+  import { handleStashDropTab } from './lib/stash/stash-drop';
+  import { entryTitle } from './lib/stash/stash-view';
+  import { isStandingStashNote, trashFailureNote, type StashToastNote } from './lib/stash/stash-toast';
+  import type { StashEntry, TagChange } from './lib/stash/types';
+  import { moveIds } from './lib/tabs/drawer-geometry';
+  import { createStashMarks } from './lib/stash/stash-marks.svelte';
+  import { stashKeysHandler } from './lib/stash/stash-keys';
+  import type { StashControl } from './lib/editor/slash-stash';
   import { shouldShowHint, nextCheckDelay } from './lib/ai-hint';
   import { previewCompartment, lineGlowCompartment } from './lib/editor/setup';
   import { stashAndUnfoldAll, restoreStashedFolds } from './lib/editor/fold-memory';
@@ -79,10 +119,10 @@
   import { createTabController, type DiskOptions, type MoveDone, type OpenAnswer, type Stranded } from './lib/tabs/controller';
   import { AGENT_ERRORS, createAgentCommands, type AgentResponse, type AskResult } from './lib/tabs/agent-commands';
   import { createTypingTracker } from './lib/tabs/typing';
-  import { emptyTabList, type TabListState } from './lib/tabs/tab-model';
+  import { emptyTabList, type TabListState, type TabMeta } from './lib/tabs/tab-model';
   import type { CarouselWindow, MoveTarget } from './lib/tabs/carousel';
   import { stripLeavingState } from './lib/tabs/tab-cache';
-  import { decideSaveAs } from './lib/tabs/save-as';
+  import { decideSaveAs, savedAsReport, type SavedAsReport } from './lib/tabs/save-as';
   import { createCommentWriter, adoptStartedDraft } from './lib/comment-writer';
   import {
     addAiComment,
@@ -122,6 +162,7 @@
   import './styles/global.css';
   import './styles/editor.css';
   import './styles/tabs.css';
+  import './styles/stash.css';
 
   const theme = createThemeStore();
   const engine = createEngineStore();
@@ -338,13 +379,18 @@
     return was;
   }
 
-  function handleChange(_doc: string, update: ViewUpdate) {
+  function handleChange(doc: string, update: ViewUpdate) {
     fileState.isDirty = true;
     autoSave.schedule();
     // The drawer card's time: any change to the text counts, not only a human's.
     tabs.liveDocChanged();
     // Editing a quick look is working in it: «Оставить» (spec §7).
     if (isHumanEdit(update)) tabs.humanEdited();
+    // The window title of an untitled tab or a note follows its first line.
+    fileState.noteName = noteTitle(doc);
+    // Stash plan 03: the first non-blank character makes the tab a note — not
+    // a slash command's filter, which its apply removes again.
+    if (fileState.filePath === null && !slashInProgress(update.state)) tabs.noteTyped();
   }
 
   // --- Auto-save (300ms debounce). `performSave` is declared below, but
@@ -434,9 +480,13 @@
   }
 
   async function handleSaveAs(): Promise<void> {
-    const name = fileState.filePath
-      ? fileState.filePath.split('/').pop()
-      : t('ui.untitled_filename');
+    // A note's file name is a timestamp; its title is the better default.
+    const name =
+      fileState.stashMark === 'note'
+        ? `${(fileState.noteName ?? t('stash.untitled')).replace(/[/:]/g, '-')}.md`
+        : fileState.filePath
+          ? fileState.filePath.split('/').pop()
+          : t('ui.untitled_filename');
     // The dialog holds back the human, not an agent: a tab switch can land
     // while it is open, and the name picked belongs to the tab it was opened
     // for. The tab queue is not held meanwhile — agents keep working.
@@ -444,16 +494,21 @@
     const path = await showSaveDialog(name);
     if (!path) return;
     const fileName = path.split('/').pop() ?? path;
-    await tabs.runExclusive(async () => {
+    const report = await tabs.runExclusive(async (): Promise<SavedAsReport | null> => {
       if (tabId === null || !tabs.list.tabs.some((tab) => tab.id === tabId)) {
         toasts.push({ kind: 'save-as-blocked', fileName, reason: 'tab-gone' });
-        return;
+        return null;
       }
       if (tabs.list.activeId !== tabId) {
         // The human's choice wins over the agent's switch. A refusal has
         // already said why (unsaved-blocked, save-error, open-error).
-        if ((await tabs.activateNow(tabId)) !== 'ok') return;
+        if ((await tabs.activateNow(tabId)) !== 'ok') return null;
       }
+      // A14: a note leaves the stash only if the new file holds exactly what
+      // its old file holds — so the old file gets the last keystrokes first
+      // (under the autosave's own gate; a paused one leaves the note behind).
+      const oldPath = fileState.filePath;
+      await autoSave.flush();
       // Claimed before anything is written: the tab must own `path` first, or
       // a file another tab holds ends up in two autosaving editors.
       const claim = await invoke<TabClaim>('tab_claim', { tabId, path }).catch((err: unknown) => {
@@ -466,16 +521,26 @@
         if (step.focusOtherWindow) {
           await invoke('focus_if_open', { path }).catch(logTabIpc('focus_if_open'));
         }
-        return;
+        return null;
       }
       fileState.filePath = step.path;
       tabs.renameActive(step.path);
       await performSave();
+      // Read as the save left it: a failed write keeps the tab dirty.
+      const report = savedAsReport(oldPath, step.path, { path: fileState.filePath, dirty: fileState.isDirty });
       // The claim pointed the watcher at the path before the save created it,
       // and a file that does not exist yet is not watched.
       await invoke('tab_activate', { tabId }).catch(logTabIpc('tab_activate'));
       recentFiles.add(step.path);
+      return report;
     });
+    // After the tab queue is released: Rust reads both files, and a slow
+    // volume must not hold agents behind it. Rust decides whether it was a note.
+    if (report) {
+      void stashNoteSavedAs(report.oldPath, report.newPath).catch((err: unknown) =>
+        console.error('stash_note_saved_as failed:', err)
+      );
+    }
   }
 
   async function handleOpen(): Promise<void> {
@@ -619,6 +684,8 @@
     // The state's own path field: the `$effect` below only re-runs when
     // `fileState.filePath` changes, and two untitled tabs share `null`.
     editorHandle?.setDocumentPath(path);
+    // A swap runs no update listener: the new document's title line, now.
+    fileState.noteName = noteTitle(editorHandle?.view?.state.doc.toString() ?? '');
   }
 
   /**
@@ -664,6 +731,9 @@
   function logTabIpc(command: string): (err: unknown) => void {
     return (err) => console.error(`${command} failed:`, err);
   }
+
+  /** Which open documents are notes or stashed files — display only (stash plan 03, D13). */
+  const stashMarks = createStashMarks((path) => stashEntryForPath(path));
 
   /**
    * The one path that changes what this window shows — see
@@ -752,8 +822,14 @@
         }),
       release: (tabId) => invoke<void>('tab_release', { tabId }).catch(logTabIpc('tab_release')),
       activate: (tabId) => invoke<void>('tab_activate', { tabId }).catch(logTabIpc('tab_activate')),
-      close: (tabId, { cursor, topLine }) =>
-        invoke<void>('tab_close', { tabId, cursor, topLine }).catch(logTabIpc('tab_close')),
+      // `null`, or why an explicit put-away did not reach the stash (the tab is closed either way).
+      close: (tabId, { cursor, topLine }, discarded, putAway) =>
+        invoke<string | null>('tab_close', { tabId, cursor, topLine, content: discarded, putAway })
+          .then((refused) => refused ?? null)
+          .catch((err: unknown) => {
+            logTabIpc('tab_close')(err);
+            return null;
+          }),
       focusElsewhere: async (path) => {
         await invoke('focus_if_open', { path }).catch(logTabIpc('focus_if_open'));
       },
@@ -777,6 +853,28 @@
     settled: () => reportTabs(),
     now: () => Date.now(),
     windowFocused: () => document.hasFocus(),
+    // Without Rust behind the page (`npm run dev` in a browser) there is no
+    // stash: untitled tabs stay untitled instead of raising an error per key.
+    notes:
+      '__TAURI_INTERNALS__' in window
+        ? {
+            create: async (text) => {
+              // Roadmap A3: a note's `repo` is the window project's directory name.
+              const repo = (await windowProject().catch(() => null))?.repo ?? null;
+              const entry = await stashCreateNote(text, repo);
+              stashMarks.learn(entry);
+              toasts.dismissKind('stash-error');
+              return { path: entry.path };
+            },
+            claim: (tabId, path) =>
+              invoke<TabClaim>('tab_claim', { tabId, path }).catch((err: unknown) => {
+                logTabIpc('tab_claim')(err);
+                return null;
+              }),
+            failed: (message) => toasts.push({ kind: 'stash-error', message }),
+            notPutAway: (message) => toasts.push({ kind: 'stash-error', message, notPutAway: true }),
+          }
+        : undefined,
   });
 
   // Rust counts this window as mounted from `get_window_init` on and delivers
@@ -830,6 +928,194 @@
 
   /** The window carousel is up: the page behind it blurs (D9, D11). */
   let carouselOn = $state(false);
+
+  // --- Stash drawer (stash stage 04) ---
+
+  /** This window's stash drawer: entries, counts, holders, the drawer pair's state. */
+  const stashStore = createStashStore({
+    list: () => listAllEntries(),
+    counts: () => stashCounts(),
+    holders: (paths) => tabHolders(paths),
+    windowRepo: async () => (await windowProject()).repo,
+    search: (args) => stashSearch(args),
+    trash: {
+      list: () => listTrash(),
+      restore: (id) => stashRestore(id),
+      purge: (id) => stashPurge(id),
+      remove: (id) => stashDelete(id),
+    },
+  });
+
+  /** How long a put-away's toast waits for the new cards, to say how many the repo chip hides. */
+  const PUT_AWAY_HIDDEN_WAIT_MS = 1500;
+
+  function stashUntitled(): string {
+    return t('stash.untitled');
+  }
+
+  /**
+   * A stash notice. A report answers a gesture and goes by itself, like «Номер
+   * #N занят»; a failure or a refusal stands until closed, under its own kind
+   * so the next report cannot replace it (review M3).
+   */
+  function stashNotice(note: StashToastNote): void {
+    if (isStandingStashNote(note)) toasts.push({ kind: 'stash-standing', note });
+    else quietToast({ kind: 'stash', note });
+  }
+
+  /** A tab as its drawer card names it, read before a put-away closes it (the close makes every file a stashed one). */
+  function captionOfTab(tab: TabMeta): string {
+    const text = tabs.textOf(tab.id);
+    return tabCaption({
+      path: tab.path,
+      title: text === null ? undefined : noteTitle(text),
+      blank: text === null ? tab.path === null : isBlankText(text),
+      mark: stashMarks.get(tab.path),
+    }).name;
+  }
+
+  /**
+   * Tabs → stash (the drop zone, a drop on the stash drawer, «В тайник», ⌃T
+   * with the drawer open): each tab the way ⌃T goes (`controller.putAwayTabs`,
+   * stage 04 D8 as amended). The cards arrive through `stash-changed`; Rust's
+   * "not stashed" answers already have their `stash-error` from the controller.
+   */
+  async function putAway(tabIds: string[]): Promise<void> {
+    // Every put-away shows the stash, query cleared (mockup `stashTabs`, plan 06 D14).
+    stashStore.update(showStash);
+    await tabSourcesReady;
+    const outcome = await putAwayTabs(tabIds, {
+      tabs: () => tabList.tabs,
+      caption: captionOfTab,
+      mark: (path) => stashMarks.get(path)?.kind ?? null,
+      blank: (tab) => {
+        const text = tabs.textOf(tab.id);
+        return text === null || isBlankText(text);
+      },
+      close: async (ids) => {
+        // A throw mid-batch comes back in the answer (`error`), with only the
+        // closes that were ours in `closed` — never "whatever is missing now".
+        const answer = await tabs.putAwayTabs(ids);
+        if (!answer) throw new Error('the tabs could not be closed');
+        return answer;
+      },
+    });
+    const chip = stashStore.state.open ? stashStore.state.repoChip : null;
+    let hidden = 0;
+    if (outcome.kind === 'done' && chip !== null && outcome.stashedPaths.length > 0) {
+      // Known only once the reload `stash-changed` started has the new cards; a
+      // note born from an untitled tab has no path here and carries the window's
+      // repo — the chip's default — so it is never hidden.
+      const paths = outcome.stashedPaths;
+      const arrived = (): boolean => paths.every((p) => stashStore.entries.some((e) => e.path === p));
+      await awaitPull(arrived, PUT_AWAY_HIDDEN_WAIT_MS);
+      hidden = stashStore.entries.filter((e) => paths.includes(e.path) && e.repo !== chip).length;
+    }
+    const note = putAwayNote(outcome, hidden, chip);
+    if (note === null) return;
+    stashNotice(note);
+  }
+
+  /** Stash → tabs (D9): this window, a pull from its holder, or a fresh open here. */
+  async function openStashEntry(entry: StashEntry, before: string | null | undefined): Promise<void> {
+    await tabSourcesReady;
+    const title = entryTitle(entry, stashUntitled());
+    const isNote = entry.kind === 'note';
+    const has = (path: string): boolean => tabs.findByPath(path) !== undefined;
+    const opened = await openFromStash(entry, before, {
+      requestMove: (path) => requestTabMove(path),
+      activate: async (tabId) => {
+        await tabs.activate(tabId);
+      },
+      openPath: (path, position) => tabs.openPath(path, position),
+      has,
+      place: (path, at) => {
+        const tab = tabs.findByPath(path);
+        if (tab) void tabs.reorder(moveIds(tabList.tabs.map((x) => x.id), [tab.id], at));
+      },
+      touch: (path) => stashTouchOpened(path),
+    });
+    if (opened.kind === 'opened') {
+      stashNotice({ what: 'opened', title, isNote, from: null });
+    } else if (opened.kind === 'pulled') {
+      stashNotice({ what: 'opened', title, isNote, from: opened.number });
+    } else if (opened.kind === 'pull-failed') {
+      stashNotice({ what: 'pull-failed', number: opened.number, label: opened.label });
+    } else if (opened.kind === 'failed' && opened.error !== null) {
+      stashNotice({ what: 'error', message: opened.error });
+    }
+  }
+
+  /**
+   * «убрать из тайника» (a file reference; the file stays) and «удалить» (a
+   * note, to the trash — stage 06). Awaited here, outside the tab queue: Rust
+   * may first ask the window holding the note to drop its tab, and that drop
+   * runs in a tab queue — this window's own included.
+   */
+  async function removeStashEntry(entry: StashEntry): Promise<void> {
+    const outcome = await stashStore.removeEntry(entry);
+    const title = entryTitle(entry, stashUntitled());
+    if (outcome.kind === 'failed') {
+      stashNotice({ what: 'error', message: outcome.message });
+    } else if (outcome.kind === 'removed') {
+      stashNotice({ what: 'removed', title });
+    } else if (outcome.kind === 'trashed') {
+      stashNotice({ what: 'trashed', title });
+    } else if (outcome.kind === 'kept') {
+      // Stands: the human has to go to that window and deal with the tab.
+      const { reason, label, number } = outcome;
+      stashNotice({ what: 'kept', reason, title, label, number });
+    }
+  }
+
+  /** «вернуть» (stage 06): back on top of the stash with its tags. */
+  async function restoreStashEntry(entry: StashEntry): Promise<void> {
+    const title = entryTitle(entry, stashUntitled());
+    const outcome = await stashStore.restoreEntry(entry);
+    if (outcome.kind === 'restored') stashNotice({ what: 'restored', title, hiddenBy: outcome.hiddenBy });
+    else if (outcome.kind === 'failed') stashNotice(trashFailureNote('restore', title, outcome.message));
+  }
+
+  /** «удалить навсегда» (stage 06): no confirmation (plan D15). */
+  async function purgeStashEntry(entry: StashEntry): Promise<void> {
+    const title = entryTitle(entry, stashUntitled());
+    const outcome = await stashStore.purgeEntry(entry);
+    if (outcome.kind === 'purged') stashNotice({ what: 'purged', title });
+    else if (outcome.kind === 'failed') stashNotice(trashFailureNote('purge', title, outcome.message));
+  }
+
+  /** A tag chip added or removed on a card; the drawer pops its own additions (`markNewTags`). */
+  async function tagStashEntry(entry: StashEntry, change: TagChange): Promise<void> {
+    try {
+      stashStore.upsert([await stashTag(entry.id, change.add ?? [], change.remove ?? [])]);
+    } catch (err) {
+      stashNotice({ what: 'error', message: String(err) });
+    }
+  }
+
+  /**
+   * ⌃T (D18, roadmap A10). With the drawer open: the ⇧-selection, else the
+   * card under the keyboard ring, else the active tab — and nothing while the
+   * stash has the keys. With it closed: stage 03's put-away of the active
+   * document. `/stash` and File → «Отложить в тайник» stay on `putAwayActive`.
+   */
+  function putAwayByKey(): void {
+    const targets = drawerHandle?.putAwayTargets();
+    if (targets === null) return;
+    if (targets === undefined) {
+      putAwayActive();
+      return;
+    }
+    void putAway(targets);
+  }
+
+  /** The window widened for the stash (D15) — put back when it closes, if still as widened; one step at a time. */
+  const widenSession = createWidenSession({
+    widen: () => widenForStash(),
+    restore: restoreWindow,
+    announce: () => stashNotice({ what: 'widened' }),
+  });
+  onStashOpenEdge(() => stashStore.state.open, widenSession.edge);
 
   /** A move from the drawer's carousel (plan 05). A refusal already has its toast (`mayLeave`). */
   async function moveTabs(tabIds: string[], target: MoveTarget): Promise<void> {
@@ -1776,6 +2062,20 @@
    */
   const onWindowCtrlTab = ctrlTabHandler(cycleTab);
 
+  /** ⌃T, `/stash`, File → «Отложить в тайник» (stash spec). */
+  function putAwayActive(): void {
+    void tabSourcesReady.then(() => tabs.putAwayActive());
+  }
+
+  /** ⌃T and ⌃S (one listener): registered right after `onWindowCtrlTab`, before the drawer's listener. */
+  const onWindowStashKeys = stashKeysHandler({
+    putAway: putAwayByKey,
+    toggleStash: () => drawerHandle?.toggleStash(),
+  });
+
+  /** `/stash` in the slash menu. One object: the editor's completion sources are built once per state. */
+  const stashControl: StashControl = { putAway: putAwayActive };
+
   function liveAskShown(): boolean {
     const view = editorHandle?.view;
     return view ? activeAskIds(view.state).length > 0 : false;
@@ -2021,6 +2321,8 @@
 
   function handleWindowFocus(): void {
     void tabs.windowFocusChanged(true);
+    // A tab may have moved between windows meanwhile: «открыта в #N» (M9).
+    if (stashStore.state.open) void stashStore.refreshHolders();
   }
 
   onMount(() => {
@@ -2054,6 +2356,39 @@
     });
 
     const unlistenWindowNumber = onWindowNumber(setWindowNumber);
+    // Not a tab source: it stays out of the `Promise.all` before `get_window_init`.
+    const unlistenStash = onStashChanged((reason, ids) => {
+      void stashMarks.changed(reason, ids, tabList.tabs.flatMap((tab) => (tab.path === null ? [] : [tab.path])));
+      stashStore.changed(reason, ids);
+    });
+    // Stash stage 04 (D9): another window opens from its stash a tab this one
+    // holds. The plan-05 move, run here where its dirty checks live.
+    const unlistenTabPull = onTabPull(({ path, target }) => {
+      void tabSourcesReady
+        .then(() =>
+          handOverPulled(path, target, {
+            findByPath: (p) => tabs.findByPath(p),
+            moveTabs: (ids, to) => tabs.moveTabs(ids, to),
+            reportStranded,
+          })
+        )
+        .catch((err: unknown) => console.error('Failed to hand a tab to another window:', err));
+    });
+    // Stash stage 06: a note of ours is being deleted — let go of its tab, the
+    // controller's way, and always answer (Rust gives up after 10 s: `kept`).
+    // Not a tab source either; it waits for the tab list like the pull above.
+    const unlistenStashDropTab = onStashDropTab((request) => {
+      void tabSourcesReady.then(() =>
+        handleStashDropTab(
+          {
+            dropPath: (path, stillWanted) => tabs.dropPath(path, stillWanted),
+            pending: stashDropPending,
+            done: stashDropDone,
+          },
+          request
+        )
+      );
+    });
 
     // Pull what the backend stored for this window (its tabs, restored or
     // handed over before it mounted) — pulled, so it cannot race the listeners.
@@ -2131,6 +2466,9 @@
         case 'close':
           void tabSourcesReady.then(() => tabs.closeActive());
           break;
+        case 'stash_put_away':
+          putAwayActive();
+          break;
         case 'next_tab':
           cycleTab(1);
           break;
@@ -2139,6 +2477,9 @@
           break;
         case 'toggle_drawer':
           drawerHandle?.toggle();
+          break;
+        case 'toggle_stash':
+          drawerHandle?.toggleStash();
           break;
         case 'toggle_tabs_compact:on':
           tabsCompact.set(true);
@@ -2334,6 +2675,7 @@
     window.addEventListener('keydown', noteTyping, true);
     window.addEventListener('keydown', onWindowDigit, true);
     window.addEventListener('keydown', onWindowCtrlTab, true);
+    window.addEventListener('keydown', onWindowStashKeys, true);
     window.addEventListener('focus', handleWindowFocus);
 
     // Start recovery interval
@@ -2440,6 +2782,9 @@
       unlistenReopenTab.then((fn) => fn());
       unlistenTabsArrive.then((fn) => fn());
       unlistenWindowNumber.then((fn) => fn());
+      unlistenStash.then((fn) => fn());
+      unlistenTabPull.then((fn) => fn());
+      unlistenStashDropTab.then((fn) => fn());
       unlistenExternalChange.then((fn) => fn());
       unlistenAiCommand.then((fn) => fn());
       unlistenComments.then((fn) => fn());
@@ -2454,6 +2799,7 @@
       window.removeEventListener('keydown', noteTyping, true);
       window.removeEventListener('keydown', onWindowDigit, true);
       window.removeEventListener('keydown', onWindowCtrlTab, true);
+      window.removeEventListener('keydown', onWindowStashKeys, true);
       window.removeEventListener('focus', handleWindowFocus);
       autoSave.cancel();
       if (recoveryInterval !== null) clearInterval(recoveryInterval);
@@ -2512,6 +2858,28 @@
     import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
       getCurrentWindow().setTitle(title);
     });
+  });
+
+  // Stash marks (D13, display only): the title glyph follows the active tab's
+  // mark; every open path is asked once, and the active one again whenever the
+  // window turns to it — a mark that went stale while the tab sat in the
+  // background is corrected where it is seen.
+  $effect(() => {
+    fileState.stashMark = stashMarks.get(fileState.filePath)?.kind ?? null;
+  });
+  $effect(() => {
+    const paths = tabList.tabs.map((tab) => tab.path);
+    // Follows the tab list only: an answer landing must not re-run this, or
+    // a mark `learn`ed for a note whose tab has not claimed it yet would be
+    // evicted before the claim lands.
+    untrack(() => {
+      stashMarks.retain(paths);
+      stashMarks.ensure(paths);
+    });
+  });
+  $effect(() => {
+    const path = fileState.filePath;
+    if (path !== null) void stashMarks.refresh([path]);
   });
 
   /** Line glow lives in each state's own compartment: a swapped-in state needs it re-applied. */
@@ -2629,6 +2997,7 @@
     onJsonOffer={() => toasts.push({ kind: 'json-offer' })}
     onJsonOfferWithdrawn={() => toasts.dismissKind('json-offer')}
     {themeControl}
+    {stashControl}
   />
 </main>
 
@@ -2654,6 +3023,14 @@
   }}
   onrestorefocus={() => editorHandle?.view?.focus()}
   onrenumber={renumber}
+  marks={(path) => stashMarks.get(path)}
+  stash={stashStore}
+  onputaway={(ids) => void putAway(ids)}
+  onstashopen={(entry, before) => void openStashEntry(entry, before)}
+  onstashremove={(entry) => void removeStashEntry(entry)}
+  onstashrestore={(entry) => void restoreStashEntry(entry)}
+  onstashpurge={(entry) => void purgeStashEntry(entry)}
+  onstashtag={(entry, change) => void tagStashEntry(entry, change)}
 />
 
 <TransientBar
@@ -2676,6 +3053,7 @@
 
 <ToastStack
   store={toasts}
+  right={stashStore.state.open ? stashStore.width + 16 : undefined}
   onFormatJson={() => formatJson(true)}
   onRevealWindow={(label) => {
     invoke('reveal_other_window', { label }).catch(logTabIpc('reveal_other_window'));

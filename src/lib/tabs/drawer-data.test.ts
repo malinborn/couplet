@@ -61,8 +61,26 @@ describe('createDrawerData', () => {
   it('AnUntitledTabWithoutHeldTextIsEmpty', () => {
     const h = harness();
     h.data.refresh([meta('u', null)]);
-    expect(h.data.text('u')).toEqual({ index: { lines: [], lower: [] }, preview: [], first: '' });
+    expect(h.data.text('u')).toEqual({
+      index: { lines: [], lower: [] },
+      preview: [],
+      first: '',
+      title: null,
+      blank: true,
+      rest: [],
+      restFirst: '',
+    });
     expect(h.deps.read).not.toHaveBeenCalled();
+  });
+
+  it('DigestsANotesTitleAndItsBodyUnderIt', () => {
+    const h = harness({ n: '# Plan\n\nfirst body line\nsecond' });
+    h.data.refresh([meta('n', '/notes/n.md')]);
+    const text = h.data.text('n');
+    expect(text?.title).toBe('Plan');
+    expect(text?.blank).toBe(false);
+    expect(text?.restFirst).toBe('first body line');
+    expect(text?.rest.length).toBeGreaterThan(0);
   });
 
   it('DropsAReadFromAnEarlierOpening', async () => {
@@ -228,7 +246,7 @@ describe('createDrawerData', () => {
     h.data.release();
 
     expect(h.onChange).toHaveBeenCalled();
-    expect(h.data.text('a')).toEqual({ index: null, preview: before?.preview, first: 'Alpha' });
+    expect(h.data.text('a')).toEqual({ ...before, index: null });
     expect(h.data.text('b')?.index).toBeNull();
     expect(h.data.text('b')?.first).toBe('bravo needle');
 

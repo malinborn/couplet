@@ -3,6 +3,7 @@ import { EditorState, StateEffect } from '@codemirror/state';
 import {
   createTabController,
   FLUSH_ATTEMPTS,
+  NOTE_RETRY_MS,
   TRANSIENT_IGNORED_AFTER_MS,
   type BackgroundOpen,
   type DiskOptions,
@@ -16,6 +17,7 @@ import {
   type TabControllerDeps,
 } from './controller';
 import type { TabOwner } from '../switch-document';
+import type { TabClaim } from '../tauri/commands';
 import type { InboxItem } from './agent-inbox';
 import type { MoveTarget } from './carousel';
 import { applyLineEnding, fromDisk, type LineEnding } from '../line-endings';
@@ -37,13 +39,19 @@ const untitledTab = (tabId: string, content: string | null = null): InitTab => (
 
 const scrollMark = StateEffect.define<string>();
 
-function makeHarness(initialFiles: Record<string, string>) {
+function makeHarness(initialFiles: Record<string, string>, opts: { notes?: boolean } = {}) {
   const files = new Map(Object.entries(initialFiles));
   const unreadable = new Set<string>();
   const owners = new Map<string, TabOwner>();
   const calls: string[] = [];
   const swaps: { state: EditorState; opts: SwapOptions }[] = [];
-  const hooks = { duringRead: () => {}, duringCommitPauses: () => {}, afterFlush: () => {} };
+  const hooks = {
+    duringRead: () => {},
+    duringCommitPauses: () => {},
+    afterFlush: () => {},
+    duringCreate: () => {},
+    duringClaim: () => {},
+  };
   const doc = {
     path: null as string | null,
     dirty: false,
@@ -59,6 +67,24 @@ function makeHarness(initialFiles: Record<string, string>) {
   let nextId = 1;
   let snapshot = 0;
   const clock = { now: 1_000, focused: true };
+
+  let nextNote = 1;
+  const notes = {
+    create: vi.fn(async (text: string) => {
+      hooks.duringCreate();
+      const path = `/notes/n${nextNote++}.md`;
+      files.set(path, text);
+      calls.push(`create ${path}`);
+      return { path };
+    }),
+    claim: vi.fn(async (tabId: string, path: string): Promise<TabClaim | null> => {
+      hooks.duringClaim();
+      calls.push(`claim ${tabId} ${path}`);
+      return { kind: 'claimed', path };
+    }),
+    failed: vi.fn(),
+    notPutAway: vi.fn(),
+  };
 
   const deps: TabControllerDeps = {
     editor: {
@@ -166,8 +192,9 @@ function makeHarness(initialFiles: Record<string, string>) {
       activate: vi.fn(async (tabId: string) => {
         calls.push(`activate ${tabId}`);
       }),
-      close: vi.fn(async (tabId: string) => {
+      close: vi.fn(async (tabId: string): Promise<string | null> => {
         calls.push(`close ${tabId}`);
+        return null;
       }),
       focusElsewhere: vi.fn(async (path: string) => {
         calls.push(`focusElsewhere ${path}`);
@@ -185,6 +212,7 @@ function makeHarness(initialFiles: Record<string, string>) {
     settled: vi.fn(),
     now: () => clock.now,
     windowFocused: () => clock.focused,
+    ...(opts.notes ? { notes } : {}),
   };
 
   const controller = createTabController(deps);
@@ -199,7 +227,13 @@ function makeHarness(initialFiles: Record<string, string>) {
     hooks,
     clock,
     doc,
+    notes,
     live: () => live,
+    /** The whole live text replaced — a slash command applying itself. */
+    setText(text: string) {
+      live = live.update({ changes: { from: 0, to: live.doc.length, insert: text } }).state;
+      doc.dirty = true;
+    },
     /** A keystroke: the live state changes and the document becomes dirty. */
     type(text: string) {
       live = live.update({ changes: { from: live.doc.length, insert: text } }).state;
@@ -224,9 +258,10 @@ type Harness = ReturnType<typeof makeHarness>;
 async function started(
   files: Record<string, string>,
   init: InitTab[],
-  activeTabId: string | null = init[0]?.tabId ?? null
+  activeTabId: string | null = init[0]?.tabId ?? null,
+  opts: { notes?: boolean } = {}
 ): Promise<Harness> {
-  const h = makeHarness(files);
+  const h = makeHarness(files, opts);
   await h.controller.init(init, activeTabId);
   vi.clearAllMocks();
   h.calls.length = 0;
@@ -570,8 +605,39 @@ describe('close', () => {
     await h.controller.closeActive();
     expect(h.deps.reportUnsaved).not.toHaveBeenCalled();
     // A restored tab comes back at its saved caret (0 here), which is what gets recorded.
-    expect(h.deps.rust.close).toHaveBeenCalledWith('u', { cursor: 0, topLine: 1 });
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', { cursor: 0, topLine: 1 }, 'draft', false);
     expect(h.active()).toBe('a');
+  });
+
+  it('HandsTheDiscardedUntitledTextToRust_AsTheViewHoldsIt', async () => {
+    // The sidecar can be a heartbeat behind: Rust keeps this copy in the draft trash.
+    const h = await started({ '/a.md': 'AAAA' }, [untitledTab('u', 'draft'), fileTab('a', '/a.md')], 'u');
+    h.type(' and the rest');
+    await h.controller.closeActive();
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'draft and the rest', false);
+  });
+
+  it('HandsABackgroundUntitledTabsCachedTextToRust', async () => {
+    const h = await started({ '/a.md': 'AAAA' }, [untitledTab('u', 'one'), fileTab('a', '/a.md')], 'u');
+    h.type(' two');
+    await h.controller.activate('a');
+    await h.controller.closeTabs(['u']);
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'one two', false);
+  });
+
+  it('HandsARestoredNeverOpenedUntitledTabsTextToRust', async () => {
+    // Restored in the background and never shown: its cache has no editor
+    // state, only the text the session gave it.
+    const h = await started({ '/a.md': 'AAAA' }, [fileTab('a', '/a.md'), untitledTab('u', 'restored text')], 'a');
+    await h.controller.closeTabs(['u']);
+    expect(h.calls, 'never loaded into the editor').not.toContain('swap');
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'restored text', false);
+  });
+
+  it('HandsNoTextForAFileTab', async () => {
+    const h = await started({ '/a.md': 'AAAA', '/b.md': 'BBBB' }, [fileTab('a', '/a.md'), fileTab('b', '/b.md')]);
+    await h.controller.closeActive();
+    expect(h.deps.rust.close).toHaveBeenCalledWith('a', expect.anything(), null, false);
   });
 
   it('ClosesABackgroundTabWithItsCachedPosition', async () => {
@@ -581,7 +647,7 @@ describe('close', () => {
 
     await h.controller.closeTabs(['a']);
 
-    expect(h.deps.rust.close).toHaveBeenCalledWith('a', { cursor: 2, topLine: 1 });
+    expect(h.deps.rust.close).toHaveBeenCalledWith('a', { cursor: 2, topLine: 1 }, null, false);
     expect(h.active()).toBe('t1');
     expect(h.calls).not.toContain('swap');
   });
@@ -807,7 +873,7 @@ describe('close, continued', () => {
 
     await h.controller.closeTabs(['u']);
 
-    expect(h.deps.rust.close).toHaveBeenCalledWith('u', { cursor: 0, topLine: 1 });
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', { cursor: 0, topLine: 1 }, 'draft', false);
     const { tabs } = h.controller.report({ cursor: 0, topLine: 1, content: 'AAAA' });
     expect(tabs.map((t) => t.tabId)).toEqual(['a']);
   });
@@ -836,7 +902,7 @@ describe('close, continued', () => {
     const closing = h.controller.closeActive();
     await Promise.all([opening, closing]);
 
-    expect(h.deps.rust.close).toHaveBeenCalledWith('t1', expect.anything());
+    expect(h.deps.rust.close).toHaveBeenCalledWith('t1', expect.anything(), null, false);
     expect(h.ids()).toEqual(['a']);
     expect(h.active()).toBe('a');
   });
@@ -1057,7 +1123,7 @@ describe('drawer operations', () => {
     expect(h.ids()).toEqual(['a']);
     expect(h.active()).toBe('a');
     expect(h.deps.reportUnsaved).toHaveBeenCalledTimes(1);
-    expect(h.deps.rust.close).not.toHaveBeenCalledWith('a', expect.anything());
+    expect(vi.mocked(h.deps.rust.close).mock.calls.some(([id]) => id === 'a')).toBe(false);
     expect(h.deps.rust.closeWindow).not.toHaveBeenCalled();
     expect(h.live().doc.toString()).toBe('AAAAunsaved');
   });
@@ -1549,7 +1615,7 @@ describe('quick looks', () => {
     await h.controller.keepTransient('t1');
     expect(meta(h, 't1')).toMatchObject({ transient: false, transientSeenAt: 0 });
     await h.controller.closeTransient('t2');
-    expect(h.deps.rust.close).toHaveBeenCalledWith('t2', expect.anything());
+    expect(h.deps.rust.close).toHaveBeenCalledWith('t2', expect.anything(), null, false);
     expect(h.ids()).toEqual(['a', 't1']);
   });
 
@@ -1699,7 +1765,7 @@ describe('quick looks across a restart (tabs-questions Q8)', () => {
     h.clock.now = 5 * TRANSIENT_IGNORED_AFTER_MS;
     await h.controller.expireTransients('close');
     expect(h.ids(), 'c went; b is active; a was never seen').toEqual(['b', 'a']);
-    expect(h.deps.rust.close).toHaveBeenCalledWith('c', expect.anything());
+    expect(h.deps.rust.close).toHaveBeenCalledWith('c', expect.anything(), null, false);
   });
 
   it('ExpiredWhileTheAppWasDown_TheKeepPolicyMakesThemOrdinary', async () => {
@@ -2075,6 +2141,17 @@ describe('tabs arriving from another window (plan 05)', () => {
     expect(h.deps.rust.closeWindow).not.toHaveBeenCalled();
   });
 
+  it('ABlankTypedIntoWhileTheArrivalLoads_IsClosedWithItsText_NeverJustReleased', async () => {
+    // Review M4: the blank is picked before the arrival is read; text typed
+    // in between must reach Rust's rescue copy, not vanish with a release.
+    const h = await started(files, [untitledTab('u')]);
+    h.hooks.duringRead = () => h.type('typed meanwhile');
+    await h.controller.arrive([fileTab('x', '/x.md')]);
+    h.hooks.duringRead = () => {};
+    expect(h.deps.rust.release).not.toHaveBeenCalledWith('u');
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'typed meanwhile', false);
+  });
+
   it('AnUntitledTypedIntoDoesNotGiveWay', async () => {
     const h = await started(files, [untitledTab('u')]);
     h.type('mine');
@@ -2187,5 +2264,778 @@ describe('line endings', () => {
     await h.controller.activate('t1');
     expect(vi.mocked(h.deps.disk.read).mock.calls.length).toBeGreaterThan(0);
     for (const [, opts] of vi.mocked(h.deps.disk.read).mock.calls) expect(opts?.quiet).toBeFalsy();
+  });
+});
+
+describe('notes', () => {
+  const withNotes = { notes: true };
+
+  it('ATypedFirstCharacterMakesTheTabANote', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.type('H');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledWith('H');
+    expect(h.notes.claim).toHaveBeenCalledWith('u', '/notes/n1.md');
+    expect(h.controller.list.tabs[0].path).toBe('/notes/n1.md');
+    expect(h.doc.path).toBe('/notes/n1.md');
+    expect(h.doc.dirty).toBe(false);
+    expect(h.files.get('/notes/n1.md')).toBe('H');
+    expect(h.deps.rust.activate).toHaveBeenCalledWith('u');
+  });
+
+  it('TypingASlashCommandIntoANewTabMakesNoNote', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    for (const ch of '/theme') {
+      h.type(ch);
+      h.controller.noteTyped();
+    }
+    await h.controller.drain();
+    expect(h.notes.create).not.toHaveBeenCalled();
+    // Applying the command removes what was typed: a blank tab again.
+    h.setText('');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).not.toHaveBeenCalled();
+    expect(h.controller.list.tabs[0].path).toBeNull();
+  });
+
+  it('ASlashCommandTypedAfterLeadingBlankLinesMakesNoNoteEither', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.type('\n\n/tone');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).not.toHaveBeenCalled();
+  });
+
+  it('SlashTextFollowedByASpaceIsANote', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.type('/foo');
+    h.controller.noteTyped();
+    h.type(' bar');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledTimes(1);
+    expect(h.files.get('/notes/n1.md')).toBe('/foo bar');
+  });
+
+  it('SlashTextFollowedByEnterIsANote', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.type('/usr/local/bin');
+    h.controller.noteTyped();
+    h.type('\n');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.files.get('/notes/n1.md')).toBe('/usr/local/bin\n');
+  });
+
+  it('ClosingATabHoldingOnlySlashTextStillMakesItANote', async () => {
+    // Only typing waits for the command to finish; a close is the last chance.
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.type('/foo');
+    h.controller.noteTyped();
+    await h.controller.putAwayActive();
+    expect(h.files.get('/notes/n1.md')).toBe('/foo');
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), null, true);
+  });
+
+  it('WhitespaceIsStillABlankNewNote', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.type('  \n\t');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).not.toHaveBeenCalled();
+    expect(h.controller.list.tabs[0].path).toBeNull();
+  });
+
+  it('TextTypedWhileTheNoteIsCreatedEndsUpInIt', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.hooks.duringCreate = () => h.type('ello');
+    h.type('H');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledWith('H');
+    expect(h.files.get('/notes/n1.md')).toBe('Hello');
+    expect(h.live().doc.toString()).toBe('Hello');
+    expect(h.doc.dirty).toBe(false);
+  });
+
+  it('TextTypedWhileTheClaimIsInFlightEndsUpInItToo', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.hooks.duringClaim = () => h.type(' world');
+    h.type('hi');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.files.get('/notes/n1.md')).toBe('hi world');
+  });
+
+  it('TextTypedDuringBothAwaitsEndsUpInTheNote', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.hooks.duringCreate = () => h.type(' two');
+    h.hooks.duringClaim = () => h.type(' three');
+    h.type('one');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledWith('one');
+    expect(h.files.get('/notes/n1.md')).toBe('one two three');
+    expect(h.doc.baseline).toBe('one two three');
+    expect(h.doc.dirty).toBe(false);
+  });
+
+  it('AKeyLandingDuringTheFirstFlushIsWrittenByARetry', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.hooks.duringCreate = () => h.type('b');
+    let once = true;
+    h.hooks.afterFlush = () => {
+      if (once) {
+        once = false;
+        h.type('c');
+      }
+    };
+    h.type('a');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.files.get('/notes/n1.md')).toBe('abc');
+    expect(h.doc.dirty).toBe(false);
+  });
+
+  it('ABirthNeverSwapsTheEditorState', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.type('keep my undo');
+    const before = h.live();
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.swaps).toHaveLength(0);
+    expect(h.live()).toBe(before);
+  });
+
+  it('KeystrokesWhileABirthWaitsMakeOneNote', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.type('a');
+    h.controller.noteTyped();
+    h.type('b');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledTimes(1);
+    expect(h.files.get('/notes/n1.md')).toBe('ab');
+  });
+
+  it('AFailedCreateLeavesTheTabUntitledAndRetriesAfterABackOff', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.notes.create.mockRejectedValueOnce(new Error('EPERM'));
+    h.type('x');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.failed).toHaveBeenCalledWith('EPERM');
+    expect(h.controller.list.tabs[0].path).toBeNull();
+    expect(h.doc.dirty).toBe(true);
+
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledTimes(1);
+
+    h.clock.now += NOTE_RETRY_MS;
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledTimes(2);
+    expect(h.controller.list.tabs[0].path).toBe('/notes/n1.md');
+  });
+
+  it('ARefusedClaimLeavesTheTabUntitledAndTheNoteInTheStash', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.notes.claim.mockResolvedValueOnce({ kind: 'refused' });
+    h.type('x');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.failed).toHaveBeenCalled();
+    expect(h.controller.list.tabs[0].path).toBeNull();
+    expect(h.doc.path).toBeNull();
+    expect(h.files.get('/notes/n1.md')).toBe('x');
+  });
+
+  it('ARetryAfterARefusedClaimClaimsTheSameNote_NeverASecondCreate', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.notes.claim.mockResolvedValueOnce({ kind: 'refused' });
+    h.type('x');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.controller.list.tabs[0].path).toBeNull();
+
+    h.type('y');
+    h.clock.now += NOTE_RETRY_MS;
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledTimes(1);
+    expect(h.notes.claim).toHaveBeenCalledTimes(2);
+    expect(h.notes.claim).toHaveBeenLastCalledWith('u', '/notes/n1.md');
+    expect(h.controller.list.tabs[0].path).toBe('/notes/n1.md');
+    // What was typed since the note was created ends up in it.
+    expect(h.files.get('/notes/n1.md')).toBe('xy');
+    expect(h.files.has('/notes/n2.md')).toBe(false);
+    expect(h.doc.dirty).toBe(false);
+  });
+
+  it('ABackgroundRetryWritesTheTabsTextIntoTheRememberedNoteBeforeClaimingIt', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.notes.claim.mockResolvedValueOnce({ kind: 'refused' });
+    h.type('x');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    h.type('y');
+    h.clock.now += NOTE_RETRY_MS;
+    await h.controller.activate('a');
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledTimes(1);
+    const u = h.controller.list.tabs.find((t) => t.id === 'u');
+    expect(u?.path).toBe('/notes/n1.md');
+    expect(h.files.get('/notes/n1.md')).toBe('xy');
+    await h.controller.activate('u');
+    expect(h.live().doc.toString()).toBe('xy');
+    expect(h.doc.dirty).toBe(false);
+  });
+
+  it('ARememberedNoteThatCannotTakeTheNewTextIsAFailedBirth', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.notes.claim.mockResolvedValueOnce({ kind: 'refused' });
+    h.type('x');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    h.type('y');
+    h.setWriteFails(true);
+    h.clock.now += NOTE_RETRY_MS;
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledTimes(1);
+    expect(h.notes.claim).toHaveBeenCalledTimes(1);
+    expect(h.controller.list.tabs[0].path).toBeNull();
+    expect(h.notes.failed).toHaveBeenLastCalledWith('EACCES');
+    expect(h.live().doc.toString()).toBe('xy');
+  });
+
+  it('ClosingATabForgetsItsRememberedNote', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.notes.claim.mockResolvedValue({ kind: 'refused' });
+    h.type('x');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    await h.controller.closeActive();
+    expect(h.notes.create).toHaveBeenCalledTimes(1);
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'x', false);
+    // The same id back (a move returning it): a fresh birth, not the old note.
+    h.notes.claim.mockResolvedValue({ kind: 'claimed', path: '/notes/n2.md' });
+    await h.controller.arrive([untitledTab('u', 'again')]);
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledTimes(2);
+    expect(h.files.get('/notes/n1.md')).toBe('x');
+    expect(h.files.get('/notes/n2.md')).toBe('again');
+  });
+
+  it('ClosingATabWhoseBirthFailedStillKeepsTheRescueCopy', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.notes.create.mockRejectedValue(new Error('EPERM'));
+    h.type('draft');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    await h.controller.closeActive();
+    // The close tried once more (inside the back-off: it is the last chance).
+    expect(h.notes.create).toHaveBeenCalledTimes(2);
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'draft', false);
+  });
+
+  it('ClosingATabWhoseBirthFailedOnceMakesTheNoteAfterAll', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.notes.create.mockRejectedValueOnce(new Error('EPERM'));
+    h.type('draft');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    await h.controller.closeActive();
+    expect(h.files.get('/notes/n1.md')).toBe('draft');
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), null, false);
+  });
+
+  it('ABackgroundTabClosedBeforeItsQueuedBirthRanIsBornOnceByTheClose', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    // Typed with no `noteTyped` yet: the switch's settle queues a birth, which
+    // runs after the close and finds the tab gone.
+    h.type('draft');
+    void h.controller.activate('a');
+    void h.controller.closeTabs(['u']);
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledTimes(1);
+    expect(h.files.get('/notes/n1.md')).toBe('draft');
+    expect(h.calls.indexOf('claim u /notes/n1.md')).toBeLessThan(h.calls.indexOf('close u'));
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), null, false);
+  });
+
+  it('ABackgroundUntitledTabWithTextBecomesANoteAfterASettle', async () => {
+    const h = makeHarness({ '/a.md': 'A' }, withNotes);
+    await h.controller.init([untitledTab('u', 'restored draft'), fileTab('a', '/a.md')], 'a');
+    await h.controller.drain();
+    expect(h.controller.list.tabs.find((t) => t.id === 'u')?.path).toBe('/notes/n1.md');
+    expect(h.files.get('/notes/n1.md')).toBe('restored draft');
+    await h.controller.activate('u');
+    expect(h.live().doc.toString()).toBe('restored draft');
+    expect(h.doc.path).toBe('/notes/n1.md');
+    expect(h.doc.dirty).toBe(false);
+  });
+
+  it('AnUntitledTabLeftWithTextIsBornInTheBackgroundAndKeepsItsState', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.type('left behind');
+    const typed = h.live();
+    await h.controller.activate('a');
+    await h.controller.drain();
+    const u = h.controller.list.tabs.find((t) => t.id === 'u');
+    expect(u?.path).toBe('/notes/n1.md');
+    expect(u?.dirty).toBe(false);
+    expect(h.files.get('/notes/n1.md')).toBe('left behind');
+    await h.controller.activate('u');
+    // The cached state comes back — undo history and all.
+    expect(h.live()).toBe(typed);
+    expect(h.doc.path).toBe('/notes/n1.md');
+    expect(h.doc.baseline).toBe('left behind');
+    expect(h.doc.dirty).toBe(false);
+  });
+
+  it('AnUntitledTabArrivingWithTextIsBornEvenWhenItStaysInTheBackground', async () => {
+    const h = await started({ '/a.md': 'A' }, [fileTab('a', '/a.md')], 'a', withNotes);
+    vi.mocked(h.deps.ai.hasLiveAsk).mockReturnValue(true);
+    await h.controller.arrive([untitledTab('m', 'moved text')]);
+    await h.controller.drain();
+    expect(h.active()).toBe('a');
+    expect(h.controller.list.tabs.find((t) => t.id === 'm')?.path).toBe('/notes/n1.md');
+    expect(h.files.get('/notes/n1.md')).toBe('moved text');
+  });
+
+  it('PutAwayActiveClosesTheTabAndAsksRustToPutItAway', async () => {
+    const h = await started({ '/a.md': 'A', '/b.md': 'B' }, [fileTab('a', '/a.md'), fileTab('b', '/b.md')], 'a', withNotes);
+    expect(await h.controller.putAwayActive()).toBe(true);
+    expect(h.deps.rust.close).toHaveBeenCalledWith('a', expect.objectContaining({ topLine: 1 }), null, true);
+    expect(h.ids()).toEqual(['b']);
+  });
+
+  it('PutAwayOfAFileTabWhoseSaveDidNotLandKeepsTheTab', async () => {
+    const h = await started({ '/a.md': 'A', '/b.md': 'B' }, [fileTab('a', '/a.md'), fileTab('b', '/b.md')], 'a', withNotes);
+    h.setSaveSucceeds(false);
+    h.type('x');
+    expect(await h.controller.putAwayActive()).toBe(false);
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+    expect(h.ids()).toEqual(['a', 'b']);
+  });
+
+  it('PutAwayOfABlankNewTabClosesItWithoutATrace', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    await h.controller.putAwayActive();
+    expect(h.notes.create).not.toHaveBeenCalled();
+    // Blank: nothing for a rescue copy (Rust ignores blank text) and no path to stash.
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), '', true);
+    expect(h.ids()).toEqual(['a']);
+  });
+
+  it('PutAwayOfAnUntitledTabWithTextMakesTheNoteThenPutsItAway', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.type('idea');
+    expect(await h.controller.putAwayActive()).toBe(true);
+    expect(h.files.get('/notes/n1.md')).toBe('idea');
+    expect(h.calls.indexOf('claim u /notes/n1.md')).toBeLessThan(h.calls.indexOf('close u'));
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), null, true);
+  });
+
+  it('PutAwayWithNoActiveTabDoesNothing', async () => {
+    const h = makeHarness({}, withNotes);
+    expect(await h.controller.putAwayActive()).toBe(false);
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+  });
+
+  it('ClosingAnUntitledTabWithTextMakesItANoteFirst', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.type('keep me');
+    await h.controller.closeActive();
+    expect(h.files.get('/notes/n1.md')).toBe('keep me');
+    expect(h.calls.indexOf('claim u /notes/n1.md')).toBeLessThan(h.calls.indexOf('close u'));
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), null, false);
+    expect(h.ids()).toEqual(['a']);
+  });
+
+  it('ClosingTheLastUntitledTabWithTextMakesItANoteThenClosesTheWindow', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.type('last words');
+    await h.controller.closeActive();
+    expect(h.files.get('/notes/n1.md')).toBe('last words');
+    expect(h.calls.indexOf('close u')).toBeLessThan(h.calls.indexOf('closeWindow'));
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), null, false);
+  });
+
+  it('ClosingABackgroundUntitledTabWithTextMakesItANoteFirst', async () => {
+    const h = makeHarness({ '/a.md': 'A' });
+    // Notes off during init so no settle-time birth runs first.
+    await h.controller.init([fileTab('a', '/a.md'), untitledTab('u', 'draft')], 'a');
+    Object.assign(h.deps, { notes: h.notes });
+    await h.controller.closeTabs(['u']);
+    expect(h.files.get('/notes/n1.md')).toBe('draft');
+    expect(h.calls.indexOf('claim u /notes/n1.md')).toBeLessThan(h.calls.indexOf('close u'));
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), null, false);
+  });
+
+  it('AFailedBirthStillClosesTheUntitledTabAsBefore', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.notes.create.mockRejectedValue(new Error('EPERM'));
+    h.type('text');
+    await h.controller.closeActive();
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'text', false);
+    expect(h.ids()).toEqual(['a']);
+  });
+
+  it('CmdWAfterAFailedBirthClosesWithoutTheSafeInTheTabMessage', async () => {
+    // The tab is gone: "the text is safe in the tab" would be false. The
+    // rescue copy in the drafts trash holds it, as before the stash.
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.notes.create.mockRejectedValue(new Error('EPERM'));
+    h.type('text');
+    await h.controller.closeActive();
+    expect(h.notes.failed).not.toHaveBeenCalled();
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'text', false);
+  });
+
+  it('CmdWOfABackgroundTabAfterAFailedBirthClosesWithoutTheSafeInTheTabMessage', async () => {
+    const h = makeHarness({ '/a.md': 'A' });
+    await h.controller.init([fileTab('a', '/a.md'), untitledTab('u', 'draft')], 'a');
+    Object.assign(h.deps, { notes: h.notes });
+    h.notes.create.mockRejectedValue(new Error('EPERM'));
+    await h.controller.closeTabs(['u']);
+    expect(h.notes.failed).not.toHaveBeenCalled();
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'draft', false);
+  });
+
+  it('PutAwayOfAnUntitledTabWhoseBirthFailsKeepsTheTab', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.notes.create.mockRejectedValue(new Error('EPERM'));
+    h.type('idea');
+    expect(await h.controller.putAwayActive()).toBe(false);
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+    expect(h.ids()).toEqual(['u', 'a']);
+    expect(h.active()).toBe('u');
+    expect(h.live().doc.toString()).toBe('idea');
+    // The tab is still there, so "safe in the tab" is true this time.
+    expect(h.notes.failed).toHaveBeenCalledWith('EPERM');
+  });
+
+  it('PutAwayOfAnUntitledTabWhoseClaimIsRefusedKeepsTheTab', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.notes.claim.mockResolvedValue({ kind: 'refused' });
+    h.type('idea');
+    expect(await h.controller.putAwayActive()).toBe(false);
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+    expect(h.ids()).toEqual(['u', 'a']);
+    expect(h.doc.path).toBeNull();
+  });
+
+  it('PutAwayWhoseRustAnswerIsAFailureRaisesStashError', async () => {
+    const h = await started({ '/a.md': 'A', '/b.md': 'B' }, [fileTab('a', '/a.md'), fileTab('b', '/b.md')], 'a', withNotes);
+    vi.mocked(h.deps.rust.close).mockResolvedValueOnce('stash unavailable: locked');
+    // The tab is closed either way: Rust has already let it go.
+    expect(await h.controller.putAwayActive()).toBe(true);
+    expect(h.notes.notPutAway).toHaveBeenCalledWith('stash unavailable: locked');
+    expect(h.ids()).toEqual(['b']);
+  });
+
+  it('APutAwayThatLandedRaisesNothing', async () => {
+    const h = await started({ '/a.md': 'A', '/b.md': 'B' }, [fileTab('a', '/a.md'), fileTab('b', '/b.md')], 'a', withNotes);
+    await h.controller.putAwayActive();
+    expect(h.notes.notPutAway).not.toHaveBeenCalled();
+  });
+
+  it('ABlankGivingWayIsStillReleased', async () => {
+    const h = await started({ '/x.md': 'X' }, [untitledTab('u')], 'u', withNotes);
+    await h.controller.arrive([fileTab('x', '/x.md')]);
+    expect(h.notes.create).not.toHaveBeenCalled();
+    expect(h.calls).toContain('release u');
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+  });
+
+  it('ABlankTypedIntoWhileTheArrivalLoadsBecomesANoteAndIsClosed_NeverJustReleased', async () => {
+    // Stage 01's rule (text typed since the blank was picked goes through
+    // `close`) holds once that text is a note: Rust then puts it away.
+    const h = await started({ '/x.md': 'X' }, [untitledTab('u')], 'u', withNotes);
+    h.hooks.duringRead = () => h.type('typed meanwhile');
+    await h.controller.arrive([fileTab('x', '/x.md')]);
+    h.hooks.duringRead = () => {};
+    await h.controller.drain();
+    expect(h.files.get('/notes/n1.md')).toBe('typed meanwhile');
+    expect(h.deps.rust.release).not.toHaveBeenCalledWith('u');
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), null, false);
+  });
+
+  it('WithoutNoteDepsAnUntitledTabStaysUntitled', async () => {
+    const h = await started({}, [untitledTab('u')], 'u');
+    h.type('x');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.controller.list.tabs[0].path).toBeNull();
+  });
+});
+
+describe('putting a selection away (stash stage 04)', () => {
+  /** Notes wired after init, so no settle-time birth runs before the put-away. */
+  async function window5(): Promise<Harness> {
+    const h = makeHarness({ '/a.md': 'A', '/notes/old.md': 'old note', '/z.md': 'Z' });
+    await h.controller.init(
+      [
+        fileTab('a', '/a.md'),
+        fileTab('n', '/notes/old.md'),
+        untitledTab('u', 'draft'),
+        untitledTab('b'),
+        fileTab('z', '/z.md'),
+      ],
+      'a'
+    );
+    Object.assign(h.deps, { notes: h.notes });
+    vi.clearAllMocks();
+    h.calls.length = 0;
+    return h;
+  }
+  const putAwayFlags = (h: Harness): string[] =>
+    vi.mocked(h.deps.rust.close).mock.calls.map(([tabId, , , putAway]) => `${tabId}:${putAway}`);
+
+  it('EachTabGoesTheWayCtrlTGoes_BackgroundFirst', async () => {
+    const h = await window5();
+    const outcome = await h.controller.putAwayTabs(['a', 'n', 'u', 'b']);
+    expect(putAwayFlags(h)).toEqual(['n:true', 'u:true', 'b:true', 'a:true']);
+    expect(outcome).toEqual({ closed: ['n', 'u', 'b', 'a'], notStashed: [] });
+    expect(h.ids()).toEqual(['z']);
+    // The untitled tab with text became a note before its close put it away.
+    expect(h.files.get('/notes/n1.md')).toBe('draft');
+    expect(h.calls.indexOf('claim u /notes/n1.md')).toBeLessThan(h.calls.indexOf('close u'));
+    // The blank one had nothing to keep: no note.
+    expect(h.notes.create).toHaveBeenCalledTimes(1);
+    // The active tab leaves with its caret, as with ⌃T.
+    expect(h.deps.rust.close).toHaveBeenCalledWith('a', expect.objectContaining({ topLine: 1 }), null, true);
+    expect(h.notes.notPutAway).not.toHaveBeenCalled();
+  });
+
+  it('AnUntitledTabWhoseNoteCouldNotBeBornKeepsItsTab', async () => {
+    const h = await window5();
+    h.notes.create.mockRejectedValue(new Error('EPERM'));
+    const outcome = await h.controller.putAwayTabs(['a', 'u']);
+    expect(outcome).toEqual({ closed: ['a'], notStashed: [] });
+    expect(h.ids()).toEqual(['n', 'u', 'b', 'z']);
+    expect(putAwayFlags(h)).toEqual(['a:true']);
+    // Still there, so "safe in the tab" is true.
+    expect(h.notes.failed).toHaveBeenCalledWith('EPERM');
+  });
+
+  it('WhatRustCouldNotStashIsAnsweredAndSaidOnce', async () => {
+    const h = await window5();
+    vi.mocked(h.deps.rust.close)
+      .mockResolvedValueOnce('stash unavailable: locked')
+      .mockResolvedValueOnce('stash unavailable: locked');
+    const outcome = await h.controller.putAwayTabs(['n', 'z', 'a']);
+    // Closed either way: Rust has already let them go.
+    expect(outcome).toEqual({
+      closed: ['n', 'z', 'a'],
+      notStashed: [
+        { id: 'n', message: 'stash unavailable: locked' },
+        { id: 'z', message: 'stash unavailable: locked' },
+      ],
+    });
+    expect(h.notes.notPutAway).toHaveBeenCalledTimes(1);
+    expect(h.notes.notPutAway).toHaveBeenCalledWith('stash unavailable: locked');
+  });
+
+  it('DifferentReasonsAreJoinedIntoOneToast', async () => {
+    const h = await window5();
+    vi.mocked(h.deps.rust.close).mockResolvedValueOnce('locked').mockResolvedValueOnce('disk full');
+    await h.controller.putAwayTabs(['n', 'z']);
+    expect(h.notes.notPutAway).toHaveBeenCalledTimes(1);
+    expect(h.notes.notPutAway).toHaveBeenCalledWith('locked; disk full');
+  });
+
+  it('AThrowMidBatchAnswersWhatClosedSoFar_OnlyOurOwnCloses', async () => {
+    const h = await window5();
+    vi.mocked(h.deps.rust.close).mockResolvedValueOnce(null).mockRejectedValueOnce(new Error('ipc down'));
+    const outcome = await h.controller.putAwayTabs(['n', 'z', 'a']);
+    // z left the list before its IPC threw: our close, stash unknown — said as not stashed.
+    expect(outcome).toEqual({
+      closed: ['n', 'z'],
+      notStashed: [{ id: 'z', message: 'ipc down' }],
+      error: 'ipc down',
+    });
+    // The batch stopped there: the active tab was not touched.
+    expect(h.ids()).toEqual(['a', 'u', 'b']);
+    expect(h.notes.notPutAway).toHaveBeenCalledWith('ipc down');
+  });
+
+  it('AThrowBeforeTheTabLeftKeepsItAndCountsNothing', async () => {
+    const h = await window5();
+    vi.mocked(h.deps.comments.flush).mockRejectedValueOnce(new Error('sidecar locked'));
+    const outcome = await h.controller.putAwayTabs(['a']);
+    expect(outcome).toEqual({ closed: [], notStashed: [], error: 'sidecar locked' });
+    expect(h.ids()).toContain('a');
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+  });
+
+  it('IdsThatAreNotTabsHereAreSkipped', async () => {
+    const h = await window5();
+    expect(await h.controller.putAwayTabs(['ghost'])).toEqual({ closed: [], notStashed: [] });
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+  });
+
+  it('ASingleCtrlTStillToastsItsOwnRefusal', async () => {
+    // Only the batch collects: ⌃T on the active tab keeps its own toast.
+    const h = await window5();
+    vi.mocked(h.deps.rust.close).mockResolvedValueOnce('locked');
+    await h.controller.putAwayActive();
+    expect(h.notes.notPutAway).toHaveBeenCalledWith('locked');
+  });
+});
+
+describe('dropPath (stash stage 06: a note is being deleted)', () => {
+  const files = { '/n/a.md': 'AAAA', '/n/b.md': 'BBBB' };
+  const both = () => [fileTab('a', '/n/a.md'), fileTab('b', '/n/b.md')];
+
+  it('LeavesTheActiveNoteTabTheNormalWayThenReleasesItNeverClosesIt', async () => {
+    const h = await started(files, both(), 'a');
+    h.type(' edited');
+    expect(await h.controller.dropPath('/n/a.md')).toBe('dropped');
+    const flush = h.calls.indexOf('flush');
+    const activate = h.calls.indexOf('activate b');
+    const release = h.calls.indexOf('release a');
+    expect(flush).toBeGreaterThanOrEqual(0);
+    expect(flush).toBeLessThan(activate);
+    expect(activate).toBeLessThan(release);
+    expect(h.calls).not.toContain('close a');
+    // The last keystroke is on disk before the file can move.
+    expect(h.files.get('/n/a.md')).toBe('AAAA edited');
+    expect(h.ids()).toEqual(['b']);
+    expect(h.active()).toBe('b');
+    expect(h.live().doc.toString()).toBe('BBBB');
+  });
+
+  it('RefusesAndKeepsTheTabWhenItsSaveDidNotLand', async () => {
+    const h = await started(files, both(), 'a');
+    h.type('x');
+    h.setSaveSucceeds(false);
+    expect(await h.controller.dropPath('/n/a.md')).toBe('unsaved');
+    expect(h.calls.some((c) => c.startsWith('release '))).toBe(false);
+    expect(h.ids()).toEqual(['a', 'b']);
+    expect(h.active()).toBe('a');
+    expect(h.deps.reportUnsaved).toHaveBeenCalled();
+  });
+
+  it('GivesTheWindowAFreshEmptyTabWhenTheNoteWasItsOnlyTab', async () => {
+    const h = await started(files, [fileTab('a', '/n/a.md')]);
+    expect(await h.controller.dropPath('/n/a.md')).toBe('dropped');
+    const open = vi.mocked(h.deps.rust.open).mock.invocationCallOrder[0];
+    const release = vi.mocked(h.deps.rust.release).mock.invocationCallOrder[0];
+    expect(open).toBeLessThan(release);
+    expect(h.deps.rust.release).toHaveBeenCalledWith('a');
+    expect(h.calls).not.toContain('closeWindow');
+    expect(h.calls).not.toContain('close a');
+    expect(h.controller.list.tabs).toHaveLength(1);
+    expect(h.controller.list.tabs[0].path).toBeNull();
+    expect(h.active()).toBe(h.controller.list.tabs[0].id);
+    expect(h.doc.path).toBeNull();
+  });
+
+  it('KeepsTheOnlyTabWhenItsSaveDidNotLand', async () => {
+    const h = await started(files, [fileTab('a', '/n/a.md')]);
+    h.type('x');
+    h.setSaveSucceeds(false);
+    expect(await h.controller.dropPath('/n/a.md')).toBe('unsaved');
+    expect(h.deps.rust.release).not.toHaveBeenCalled();
+    expect(h.ids()).toEqual(['a']);
+  });
+
+  it('FallsBackToAnEmptyTabWhenTheNeighbourCannotBeRead', async () => {
+    const h = await started(files, both(), 'a');
+    h.unreadable.add('/n/b.md');
+    expect(await h.controller.dropPath('/n/a.md')).toBe('dropped');
+    expect(h.deps.rust.release).toHaveBeenCalledWith('a');
+    expect(h.ids()).not.toContain('a');
+    expect(h.doc.path).toBeNull();
+  });
+
+  it('ReleasesABackgroundNoteTabWithoutFlushingAnything', async () => {
+    const h = await started(files, both(), 'a');
+    expect(await h.controller.dropPath('/n/b.md')).toBe('dropped');
+    expect(h.calls).not.toContain('flush');
+    expect(h.calls).not.toContain('swap');
+    expect(h.calls).toContain('release b');
+    expect(h.calls).not.toContain('close b');
+    expect(h.ids()).toEqual(['a']);
+    expect(h.active()).toBe('a');
+    expect(h.deps.settled).toHaveBeenCalled();
+  });
+
+  it('IsANoOpForAPathThisWindowDoesNotHold', async () => {
+    const h = await started(files, [fileTab('a', '/n/a.md')]);
+    expect(await h.controller.dropPath('/n/zzz.md')).toBe('dropped');
+    expect(h.calls).toEqual([]);
+  });
+
+  it('ForgetsWhatAgentsParkedOnTheTab', async () => {
+    const h = await started(files, both(), 'a');
+    await h.controller.dropPath('/n/b.md');
+    expect(h.deps.ai.forget).toHaveBeenCalledWith('b');
+  });
+
+  it('NeverPutsTheNoteAwayNorRecordsItForReopen', async () => {
+    const h = await started(files, both(), 'a', { notes: true });
+    await h.controller.dropPath('/n/a.md');
+    await h.controller.dropPath('/n/b.md');
+    expect(h.deps.rust.close).not.toHaveBeenCalled();
+    expect(h.notes.create).not.toHaveBeenCalled();
+  });
+
+  it('KeepsTheTabWhenRustNoLongerWaitsForTheDrop', async () => {
+    const h = await started(files, both(), 'a');
+    h.type(' edited');
+    const stillWanted = vi.fn(async () => false);
+    expect(await h.controller.dropPath('/n/a.md', stillWanted)).toBe('unwanted');
+    expect(stillWanted).toHaveBeenCalledTimes(1);
+    expect(h.calls.some((c) => c.startsWith('release ') || c.startsWith('activate '))).toBe(false);
+    expect(h.ids()).toEqual(['a', 'b']);
+    expect(h.active()).toBe('a');
+    expect(h.deps.ai.forget).not.toHaveBeenCalled();
+  });
+
+  it('AsksWhetherTheDropIsStillWantedOnlyWhenItsQueueSlotComes', async () => {
+    const h = await started(files, both(), 'a');
+    let unblock!: () => void;
+    const blocker = h.controller.runExclusive(() => new Promise<void>((resolve) => (unblock = resolve)));
+    const stillWanted = vi.fn(async () => true);
+    const drop = h.controller.dropPath('/n/b.md', stillWanted);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(stillWanted).not.toHaveBeenCalled();
+    unblock();
+    await blocker;
+    expect(await drop).toBe('dropped');
+    expect(stillWanted).toHaveBeenCalledTimes(1);
+    expect(h.calls).toContain('release b');
+  });
+
+  it('DoesNotAskAboutAPathThisWindowDoesNotHold', async () => {
+    const h = await started(files, [fileTab('a', '/n/a.md')]);
+    const stillWanted = vi.fn(async () => false);
+    expect(await h.controller.dropPath('/n/zzz.md', stillWanted)).toBe('dropped');
+    expect(stillWanted).not.toHaveBeenCalled();
+  });
+
+  it('KeepsTheActiveTabWhileAnAgentsQuestionIsOnScreenAndSaysBusy', async () => {
+    const h = await started(files, both(), 'a');
+    vi.mocked(h.deps.ai.hasLiveAsk).mockReturnValue(true);
+    expect(await h.controller.dropPath('/n/a.md')).toBe('busy');
+    expect(h.calls.some((c) => c.startsWith('release ') || c.startsWith('activate '))).toBe(false);
+    expect(h.ids()).toEqual(['a', 'b']);
+    expect(h.active()).toBe('a');
+    expect(h.deps.reportUnsaved).not.toHaveBeenCalled();
+  });
+
+  it('StillDropsABackgroundTabWhileAQuestionIsOnScreenElsewhere', async () => {
+    const h = await started(files, both(), 'a');
+    vi.mocked(h.deps.ai.hasLiveAsk).mockReturnValue(true);
+    expect(await h.controller.dropPath('/n/b.md')).toBe('dropped');
+    expect(h.active()).toBe('a');
   });
 });

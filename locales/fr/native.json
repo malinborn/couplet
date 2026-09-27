@@ -11,6 +11,7 @@
   "menu.file.save": "Enregistrer",
   "menu.file.save_as": "Enregistrer sous...",
   "menu.file.close": "Fermer l'onglet",
+  "menu.file.stash_put_away": "Put Away in Stash",
   "menu.file.recent_files": "Fichiers récents...",
   "menu.file.transient_title": "Aperçus rapides sans réponse après une heure",
   "menu.file.transient_keep": "Garder",
@@ -75,5 +76,7 @@
   "doc.connect.skill_only_body": "Le même prompt, sauf qu'il ne touche pas à ta configuration principale. Le coût : ton agent ne comprendra pas seul quand recourir à couplet, donc tu devras appeler la skill à la main (`/couplet`, ou « utilise la skill couplet »). C'est pourquoi on recommande toujours le premier —",
   "doc.connect.back_to_it": "y revenir",
   "doc.connect.heading_config_location": "Où vit la configuration principale",
-  "doc.connect.config_location_body": "Le prompt ci-dessus connaît déjà ces emplacements ; la liste est ici au cas où ton agent demande."
+  "doc.connect.config_location_body": "Le prompt ci-dessus connaît déjà ces emplacements ; la liste est ici au cas où ton agent demande.",
+
+  "menu.view.toggle_stash": "Stash"
 }

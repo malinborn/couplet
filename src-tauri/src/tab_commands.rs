@@ -149,6 +149,50 @@ pub async fn tab_owner(
     Ok(owner_for(&reg, &path, window.label(), live_windows(&app)))
 }
 
+/// A window's project (spec §2): the absolute root the registry bound it to,
+/// and that root's directory name — a new note's `repo` (roadmap A3). Both
+/// `None` until the window has held a file outside the notes folder.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowProject {
+    pub root: Option<String>,
+    pub repo: Option<String>,
+}
+
+fn window_project_of(reg: &TabRegistry, label: &str) -> WindowProject {
+    let root = reg.window(label).and_then(|w| w.project.clone());
+    // `file_name` ignores a trailing `/`; the root `/` itself has no name.
+    let repo = root
+        .as_deref()
+        .and_then(|r| std::path::Path::new(r).file_name())
+        .map(|n| n.to_string_lossy().into_owned());
+    WindowProject { root, repo }
+}
+
+/// A window's project root, bound first if it was not yet — for a put-away
+/// of a file outside any git repository (roadmap A3). Binding walks the file
+/// system: call it off the async runtime. Only the registry lock, released
+/// before this returns (A11).
+pub(crate) fn project_root_of(app: &AppHandle, label: &str) -> Option<String> {
+    crate::routing::bind_missing_projects(app);
+    let open_files = app.state::<OpenFiles>();
+    let reg = open_files.0.lock().unwrap();
+    window_project_of(&reg, label).root
+}
+
+/// The calling window's project, read just before `stash_create_note` and on
+/// every stash open (the repo chip, stash stage 04).
+#[tauri::command]
+pub async fn window_project(app: AppHandle, window: tauri::WebviewWindow) -> Result<WindowProject, String> {
+    // Before the lock: binding walks the file system. Without it a window
+    // that holds a file but was never bound answers no repo on its first
+    // stash open or note birth.
+    crate::routing::bind_missing_projects(&app);
+    let open_files = app.state::<OpenFiles>();
+    let reg = open_files.0.lock().unwrap();
+    Ok(window_project_of(&reg, window.label()))
+}
+
 #[tauri::command]
 pub async fn tab_open(
     app: AppHandle,
@@ -239,9 +283,24 @@ pub async fn tab_activate(
     Ok(())
 }
 
+/// What ⌘W leaves for a rescue copy: an untitled tab's text, when it has any.
+/// A file tab's text is on disk already.
+pub(crate) fn rescue_text<'a>(path: Option<&str>, content: Option<&'a str>) -> Option<&'a str> {
+    match (path, content) {
+        (None, Some(text)) if !text.trim().is_empty() => Some(text),
+        _ => None,
+    }
+}
+
 /// ⌘W on a tab, after the frontend flushed and handed it over. Fails the
 /// agents still waiting on its document (pending and queued), commits its
 /// comment pauses, and records it for ⌘⇧T with the caret the frontend saw.
+/// `content` is an untitled tab's text as it was on screen: ⌘W discards it
+/// by design (tabs spec §8), but never without a copy in the draft trash.
+///
+/// Answers `null`, or — only for `putAway: true` — the reason the document
+/// did NOT go into the stash (stash unavailable, `in the trash: …`). The tab
+/// is closed either way; the answer is for a toast.
 #[tauri::command]
 pub async fn tab_close(
     app: AppHandle,
@@ -249,23 +308,39 @@ pub async fn tab_close(
     tab_id: String,
     cursor: usize,
     top_line: usize,
-) -> Result<(), String> {
+    content: Option<String>,
+    // ⌃T: the document goes into the stash — a file as a reference. A note is
+    // put away on every close anyway (stash plan 03, D5).
+    put_away: Option<bool>,
+) -> Result<Option<String>, String> {
     let label = window.label().to_string();
-    let (removed, number) = {
+    let (removed, number, project) = {
         let open_files = app.state::<OpenFiles>();
         let mut reg = open_files.0.lock().unwrap();
         let was_active =
             reg.window(&label).and_then(|w| w.active.as_deref()) == Some(tab_id.as_str());
         let number = reg.window(&label).and_then(|w| w.number);
+        // A put-away's repo for a file outside any git repository (A3). Not
+        // bound here if it was not yet: the heartbeat binds a window within
+        // seconds of its first file, and a close is no place for a disk walk.
+        let project = reg.window(&label).and_then(|w| w.project.clone());
         let removed = reg.remove_tab(&label, &tab_id);
         if removed.is_some() && was_active {
             window::set_watcher(&app, &label, None);
         }
-        (removed, number)
+        (removed, number, project)
     };
     let Some(tab) = removed else {
-        return Ok(());
+        return Ok(None);
     };
+
+    // After the registry guard (no disk under `OpenFiles`), before the
+    // session forgets the tab and the GC takes its sidecar.
+    if let Some(text) = rescue_text(tab.path.as_deref(), content.as_deref()) {
+        if let Err(e) = crate::session::rescue_untitled(&tab_id, text) {
+            eprintln!("tab_close: no rescue copy of {tab_id}: {e}");
+        }
+    }
 
     let session = app.state::<SessionState>();
     // At once, not at the next heartbeat: a quit in between would restore it.
@@ -274,15 +349,47 @@ pub async fn tab_close(
     if let Some(path) = tab.path {
         crate::ai_socket::cancel_for_tab(&app, &label, &path, "tab closed");
         crate::comment_pause::commit_document(std::path::Path::new(&path));
+        // The stash decides first, with the registry and session locks
+        // released and the closed stack not yet taken (A11). Awaited, so it
+        // has decided before the close answers and before ⌘⇧T hears of the
+        // tab; on the blocking pool, since SQLite may wait out its busy
+        // timeout. A stash that cannot be written never fails the close; an
+        // explicit put-away says so in the answer.
+        let leaving = if put_away.unwrap_or(false) {
+            crate::stash::lifecycle::Leaving::PutAway
+        } else {
+            crate::stash::lifecycle::Leaving::Closed
+        };
+        let (stash_app, doc) = (app.clone(), (path.clone(), cursor, top_line));
+        // Counted in flight, so a quit landing meanwhile waits for it.
+        let pending = crate::stash::lifecycle::pending();
+        let stashed = tauri::async_runtime::spawn_blocking(move || {
+            let _pending = pending;
+            crate::stash::lifecycle::documents_left(&stash_app, &[doc], leaving, project.as_deref())
+        })
+        .await;
+        let (failure, reopenable) = match stashed {
+            Ok(report) => (report.failure(leaving), report.reopenable()),
+            Err(e) => {
+                eprintln!("tab_close: stash task failed: {e}");
+                let failure = (leaving == crate::stash::lifecycle::Leaving::PutAway)
+                    .then(|| format!("stash task failed: {e}"));
+                (failure, true)
+            }
+        };
+        // A blank note the stash discarded has no file left to reopen.
         let stack = app.state::<crate::closed::ClosedStack>();
-        if crate::closed::record_tab_close(&session, &stack, &label, number, &path, cursor, top_line) {
+        if reopenable
+            && crate::closed::record_tab_close(&session, &stack, &label, number, &path, cursor, top_line)
+        {
             crate::closed::refresh_reopen_item(&app);
         }
         std::thread::spawn(move || {
             let _ = crate::recovery::delete_recovery_sync(&path);
         });
+        return Ok(failure);
     }
-    Ok(())
+    Ok(None)
 }
 
 /// One tab as its old window hands it over (plan 05) — `MovedTab` in
@@ -575,8 +682,21 @@ pub struct CarouselWindow {
     pub branch: Option<String>,
     pub tab_count: usize,
     pub active_path: Option<String>,
+    /// The active tab is a stash note (it lies in the notes folder): the
+    /// thumbnail captions it by its title, not its `YYYY-MM-DD-HHMM-xxxx.md` name.
+    pub active_is_note: bool,
     /// The start of the active document, whole lines, at most `HEAD_BYTES`.
     pub head: String,
+}
+
+/// Whether a thumbnail's active document is a note. The notes folder in the
+/// `path_norm` spelling (`stash::notes_dir_spelled`), or `None` when it cannot
+/// be named — then nothing is.
+fn active_is_note(notes_dir: Option<&std::path::Path>, active_path: Option<&str>) -> bool {
+    match (notes_dir, active_path) {
+        (Some(dir), Some(path)) => crate::stash::is_note_path(dir, path),
+        _ => false,
+    }
 }
 
 /// The first bytes of a file — a little more than `HEAD_BYTES`, for the cut.
@@ -600,6 +720,10 @@ fn read_start(path: &std::path::Path) -> String {
 pub async fn tab_carousel_windows(app: AppHandle, window: tauri::WebviewWindow) -> Result<Vec<CarouselWindow>, String> {
     // Before the registry lock: binding walks the file system.
     crate::routing::bind_missing_projects(&app);
+    // Also before the lock: spelling the notes folder asks the file system.
+    let notes_dir = crate::stash::StashPaths::resolve()
+        .ok()
+        .map(|p| crate::stash::notes_dir_spelled(&p));
     let order = app.state::<crate::menu_route::FocusTracker>().order();
     let rows = {
         let open_files = app.state::<OpenFiles>();
@@ -631,6 +755,7 @@ pub async fn tab_carousel_windows(app: AppHandle, window: tauri::WebviewWindow) 
                 project: row.project,
                 branch,
                 tab_count: row.tab_count,
+                active_is_note: active_is_note(notes_dir.as_deref(), row.active_path.as_deref()),
                 active_path: row.active_path,
                 head: crate::routing::cut_head(&text, HEAD_BYTES),
             }
@@ -638,10 +763,124 @@ pub async fn tab_carousel_windows(app: AppHandle, window: tauri::WebviewWindow) 
         .collect())
 }
 
+/// Who holds a stash entry's file, seen from another window (stash stage 04:
+/// «открыта в #N»). `number` is that window's `#N`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TabHolder {
+    pub label: String,
+    pub number: Option<u32>,
+}
+
+/// For each path: the live window other than `caller` holding it, else `None`
+/// (nobody, a window that is gone, or `caller` itself — the stash drawer hides
+/// those by its own tab list).
+pub fn holders_of(
+    reg: &TabRegistry,
+    paths: &[String],
+    caller: &str,
+    is_live: impl Fn(&str) -> bool,
+) -> Vec<Option<TabHolder>> {
+    paths
+        .iter()
+        .map(|path| match owner_for(reg, path, caller, &is_live) {
+            TabOwner::OtherWindow { label } => Some(TabHolder {
+                number: reg.window(&label).and_then(|w| w.number),
+                label,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// IPC (stash stage 04): the holders of many paths under one lock. The paths
+/// come from the stash database, which stores the registry's own spelling
+/// (`path_norm::normalize_str`), so they are not normalized again — that would
+/// touch the disk once per entry. Only the registry lock is taken, never the
+/// stash's (roadmap A11).
+#[tauri::command]
+pub async fn tab_holders(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    paths: Vec<String>,
+) -> Result<Vec<Option<TabHolder>>, String> {
+    let open_files = app.state::<OpenFiles>();
+    let reg = open_files.0.lock().unwrap();
+    Ok(holders_of(&reg, &paths, window.label(), live_windows(&app)))
+}
+
+/// What opening a stash entry here means (stash stage 04, spec «Перенос»).
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum PullAnswer {
+    /// Nobody holds it: open it here.
+    NotOpen,
+    /// This window already has it: show that tab.
+    ThisWindow {
+        #[serde(rename = "tabId")]
+        tab_id: String,
+    },
+    /// Another window holds it and was asked (`tab-pull`) to move it here.
+    Requested { label: String, number: Option<u32> },
+}
+
+/// `tab-pull`'s payload: move the tab holding `path` to window `target`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequest {
+    pub path: String,
+    pub target: String,
+}
+
+pub fn pull_answer(reg: &TabRegistry, path: &str, caller: &str, is_live: impl Fn(&str) -> bool) -> PullAnswer {
+    match owner_for(reg, path, caller, is_live) {
+        TabOwner::None => PullAnswer::NotOpen,
+        TabOwner::ThisWindow { tab_id } => PullAnswer::ThisWindow { tab_id },
+        TabOwner::OtherWindow { label } => PullAnswer::Requested {
+            number: reg.window(&label).and_then(|w| w.number),
+            label,
+        },
+    }
+}
+
+/// IPC (stash stage 04): «открыть его отсюда — перенести из того окна». A move
+/// is driven by the window that holds the tab (`tab_move`: its dirty checks,
+/// its caret, its agent inbox), so this only asks the holder, with `tab-pull`
+/// sent to that window alone, after the lock is dropped. The holder's frontend
+/// runs its own `tab_move` to the caller; the caller watches for the arrival
+/// (`PULL_WAIT_MS` in `open-from-stash.ts`).
+#[tauri::command]
+pub async fn tab_request_move(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    path: String,
+) -> Result<PullAnswer, String> {
+    // Before the lock: normalizing asks the file system.
+    let path = crate::path_norm::normalize_str(&path);
+    let answer = {
+        let open_files = app.state::<OpenFiles>();
+        let reg = open_files.0.lock().unwrap();
+        pull_answer(&reg, &path, window.label(), live_windows(&app))
+    };
+    if let PullAnswer::Requested { label, .. } = &answer {
+        let request = PullRequest { path, target: window.label().to_string() };
+        app.emit_to(label.as_str(), "tab-pull", request).map_err(|e| e.to_string())?;
+    }
+    Ok(answer)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ai_socket::{AiPending, AiResponse};
+
+    #[test]
+    fn only_an_untitled_tab_with_text_leaves_a_rescue_copy() {
+        assert_eq!(rescue_text(None, Some("- [ ] plan")), Some("- [ ] plan"));
+        assert_eq!(rescue_text(None, Some("  \n\t")), None, "blank is not a document");
+        assert_eq!(rescue_text(None, None), None);
+        assert_eq!(rescue_text(Some("/a.md"), Some("text")), None, "a file keeps its own copy on disk");
+    }
 
     #[test]
     fn a_thumbnail_reads_only_the_start_of_a_file_and_nothing_of_a_missing_one() {
@@ -652,12 +891,67 @@ mod tests {
         assert_eq!(read_start(&path), "");
     }
 
+    #[test]
+    fn a_thumbnail_knows_a_note_by_the_notes_folder() {
+        let notes = std::path::Path::new("/Users/x/couplet");
+        assert!(active_is_note(Some(notes), Some("/Users/x/couplet/2026-09-27-0215-a3f9.md")));
+        assert!(!active_is_note(Some(notes), Some("/Users/x/couplet-other/plan.md")), "component-wise");
+        assert!(!active_is_note(Some(notes), Some("/Users/x/dev/plan.md")));
+        assert!(!active_is_note(Some(notes), None), "an untitled tab is no note yet");
+        assert!(!active_is_note(None, Some("/Users/x/couplet/a.md")), "no notes folder: nothing is a note");
+    }
+
+    #[test]
+    fn a_carousel_window_says_whether_its_tab_is_a_note_in_camel_case() {
+        let json = serde_json::to_value(CarouselWindow {
+            label: "editor-2".into(),
+            number: Some(7),
+            project: None,
+            branch: None,
+            tab_count: 1,
+            active_path: Some("/Users/x/couplet/a.md".into()),
+            active_is_note: true,
+            head: String::new(),
+        })
+        .unwrap();
+        assert_eq!(json["activeIsNote"], serde_json::json!(true));
+    }
+
     fn reg_with(entries: &[(&str, &str, Option<&str>)]) -> TabRegistry {
         let mut reg = TabRegistry::new();
         for (label, id, path) in entries {
             assert!(reg.add_tab(label, id, path.map(str::to_string)));
         }
         reg
+    }
+
+    #[test]
+    fn a_windows_project_is_its_root_and_the_roots_name() {
+        let mut reg = reg_with(&[("main", "a", Some("/p/proj/a.md")), ("editor-2", "u", None)]);
+        reg.bind_project("main", "/p/proj".to_string());
+        assert_eq!(
+            window_project_of(&reg, "main"),
+            WindowProject { root: Some("/p/proj".to_string()), repo: Some("proj".to_string()) }
+        );
+        assert_eq!(
+            serde_json::to_value(window_project_of(&reg, "main")).unwrap(),
+            serde_json::json!({ "root": "/p/proj", "repo": "proj" })
+        );
+        reg.bind_project("editor-2", "/".to_string());
+        assert_eq!(
+            window_project_of(&reg, "editor-2"),
+            WindowProject { root: Some("/".to_string()), repo: None },
+            "the file-system root has no name to tag a note with"
+        );
+        let none = WindowProject { root: None, repo: None };
+        let reg = reg_with(&[("editor-2", "u", None)]);
+        assert_eq!(window_project_of(&reg, "editor-2"), none, "unbound: no project yet");
+        assert_eq!(window_project_of(&reg, "editor-9"), none, "an unknown window has none");
+        assert_eq!(
+            serde_json::to_value(&none).unwrap(),
+            serde_json::json!({ "root": null, "repo": null }),
+            "both keys are always present for the frontend"
+        );
     }
 
     #[test]
@@ -1041,5 +1335,55 @@ mod tests {
             .unwrap();
         assert_eq!(pending["transientSeenAt"], 3);
         assert!(pending.get("inbox").is_none(), "absent unless carried");
+    }
+
+    #[test]
+    fn holders_of_names_other_live_windows_with_their_number() {
+        let mut reg = reg_with(&[
+            ("main", "a", Some("/a.md")),
+            ("editor-2", "b", Some("/b.md")),
+            ("editor-3", "c", Some("/c.md")),
+        ]);
+        reg.set_number("editor-2", Some(7));
+        let paths: Vec<String> = ["/a.md", "/b.md", "/c.md", "/z.md"].iter().map(|p| p.to_string()).collect();
+        assert_eq!(
+            holders_of(&reg, &paths, "main", |label| label != "editor-3"),
+            vec![None, Some(TabHolder { label: "editor-2".into(), number: Some(7) }), None, None],
+            "own tabs, dead windows and free files are all None"
+        );
+    }
+
+    #[test]
+    fn pull_answer_says_here_elsewhere_or_free() {
+        let mut reg = reg_with(&[("main", "a", Some("/a.md")), ("editor-2", "b", Some("/b.md"))]);
+        reg.set_number("editor-2", Some(4));
+        assert_eq!(pull_answer(&reg, "/a.md", "main", |_| true), PullAnswer::ThisWindow { tab_id: "a".into() });
+        assert_eq!(
+            pull_answer(&reg, "/b.md", "main", |_| true),
+            PullAnswer::Requested { label: "editor-2".into(), number: Some(4) }
+        );
+        assert_eq!(pull_answer(&reg, "/b.md", "main", |_| false), PullAnswer::NotOpen);
+        assert_eq!(pull_answer(&reg, "/z.md", "main", |_| true), PullAnswer::NotOpen);
+    }
+
+    #[test]
+    fn pull_answers_and_holders_serialize_for_the_frontend() {
+        assert_eq!(serde_json::to_value(PullAnswer::NotOpen).unwrap(), serde_json::json!({ "kind": "not-open" }));
+        assert_eq!(
+            serde_json::to_value(PullAnswer::ThisWindow { tab_id: "a".into() }).unwrap(),
+            serde_json::json!({ "kind": "this-window", "tabId": "a" })
+        );
+        assert_eq!(
+            serde_json::to_value(PullAnswer::Requested { label: "editor-2".into(), number: None }).unwrap(),
+            serde_json::json!({ "kind": "requested", "label": "editor-2", "number": null })
+        );
+        assert_eq!(
+            serde_json::to_value(TabHolder { label: "x".into(), number: Some(3) }).unwrap(),
+            serde_json::json!({ "label": "x", "number": 3 })
+        );
+        assert_eq!(
+            serde_json::to_value(PullRequest { path: "/a.md".into(), target: "main".into() }).unwrap(),
+            serde_json::json!({ "path": "/a.md", "target": "main" })
+        );
     }
 }

@@ -17,7 +17,8 @@ Lets an AI agent (Claude Code and similar) drive a running couplet window direct
 | `couplet question [<file>]` | List the open comment threads the user has left in documents — id, status, anchor line, quoted fragment, and the whole thread. With a path, only that document; without one, everything under the current directory. **Local and offline** — reads the comment files directly, so it works with couplet closed. See "Comments: the reverse direction" below. |
 | `couplet answer <file> --id ID` | Append a reply to thread `ID` from stdin and mark it `answered`. Local and offline, same as `question`. Refuses empty stdin. |
 | `couplet watch [<dir>]` | Long-running: watch a directory tree (default: the current directory) for comment files and print **one line per newly-open thread**, each starting with `[couplet]`. Meant to be handed to a Claude Code Monitor, which turns each line into an interruption in the live session. Local and offline. |
-| `couplet mcp [--socket PATH]` | Run a stdio MCP server exposing `show`/`edit`/`ask`/`question`/`answer`/`close`/`windows` as MCP tools instead of CLI verbs — see "MCP server" below. |
+| `couplet stash search\|list\|get\|add\|tag …` | The user's stash — see **Stash: search first, get one, never dump** below. **Local and offline**: reads and writes `stash.db` directly, so it works with couplet closed; a running couplet is told about writes and refreshes. Never launches the app. |
+| `couplet mcp [--socket PATH] [--product NAME]` | Run a stdio MCP server exposing `show`/`edit`/`ask`/`question`/`answer`/`close`/`windows` and the five `stash_*` tools as MCP tools instead of CLI verbs — see "MCP server" below. |
 | `couplet help` | Print a complete reference of every `couplet` verb (opening files, `show`, `edit`, `ask`, `question`, `answer`, `watch`, `mcp`, `help`, `agent`) plus the JSON response contract and exit codes. Local and offline — no running app required. |
 | `couplet agent [--mcp]` | Print a ready-to-paste instruction block for an AI agent's instruction file (CLAUDE.md, AGENTS.md, etc.). Without `--mcp`: the CLI-syntax show/edit/ask reference — see below. With `--mcp`: a shorter behavioral snippet for agents already connected via `couplet mcp`, where the tools are self-describing and what's missing is usage culture — see "MCP server" below. Local and offline either way. |
 
@@ -111,7 +112,10 @@ Request shapes (`"v":1` is a protocol version, reserved for a future MCP wrapper
 {"v": 1, "cmd": "open", "path": "/abs/file.md", "window_binding": 7, "focus": true}
 {"v": 1, "cmd": "close", "path": "/abs/file.md"}
 {"v": 1, "cmd": "windows"}
+{"v": 1, "cmd": "stash-changed", "reason": "external", "ids": ["s1790378408605-3f9a"]}
 ```
+
+`stash-changed` is what the stash CLI/MCP sends after a write — answered by Rust itself, see **Stash: search first, get one, never dump**.
 
 `window_binding` (also on `edit` and `ask`), `focus` and `transient` are optional and omitted when unset — a request without them behaves exactly as before (`show` takes the view). `focus` defaults to `true` on `show` and to `false` on `open` (the CLI always sends it: an agent's open is background, a human's focused); `edit`, `ask` and `close` never switch tabs. Every answer that came from a window carries `window`, and `focused` says whether the tab is that window's active tab afterwards. `windows` is answered by Rust itself, without asking any window.
 
@@ -340,8 +344,8 @@ A registration made under the old name (`mdmini -- mdmini mcp`) keeps working th
 | `initialize` | Echoes the client's `protocolVersion` back (defaults to `2025-06-18` if absent). Result includes `capabilities: {"tools": {}}` and `serverInfo: {"name": "couplet", "version": "<crate version>"}`. |
 | `notifications/initialized` | Notification, no response. |
 | `ping` | `{}`. |
-| `tools/list` | Returns the `show`, `edit`, `ask`, `question`, `answer`, `close` and `windows` tools, each with a JSON Schema `inputSchema`. |
-| `tools/call` | Dispatches to the command socket — see below. |
+| `tools/list` | Returns the twelve tools — `show`, `edit`, `ask`, `question`, `answer`, `close`, `windows`, `stash_search`, `stash_list`, `stash_get`, `stash_add` and `stash_tag` — each with a JSON Schema `inputSchema`. |
+| `tools/call` | Dispatches to the command socket — see below. `question`/`answer` (the comment files) and the `stash_*` tools (`stash.db`) are answered locally, without the socket. |
 
 Any other method that carries an `id` gets a JSON-RPC `-32601` ("method not found") error. A message with no `id` at all is treated as a notification and never gets a response, regardless of method. Malformed JSON gets a `-32700` ("parse error") response with `id: null`.
 
@@ -354,6 +358,12 @@ Same shapes as the CLI verbs, as MCP tools:
 - **`ask`** — `path` (string, required), `question` (string, required), `options` (array of string, required, 2-6 entries), `line` (integer, 1-based) or `find` (string), mutually exclusive, `timeout_secs` (integer, default 300, clamped to 10-3600), `multi` (boolean, default `false`), `free_text` (boolean, default `false`), `window_binding` (integer). Blocks the `tools/call` response until the user answers. Single-choice (default): returns the chosen option's text as `answer`. `multi: true`: checkbox mode — the user may check any number of options (including none) and confirms; returns the checked options as `answers` (an array; `[]` is a valid explicit "confirmed none") instead of `answer`. `free_text: true`: also offers a free-text field — the user may type a custom answer instead of (single mode) or alongside (`multi`) picking options; a typed answer comes back as `custom`. Missing `path`/`question`/`options` is a JSON-RPC `-32602` ("invalid params") error, same as `show`'s missing `path` — the question/option-count and empty-string validation happens socket-side and comes back as a normal `isError: true` tool result instead. **Note:** a long `timeout_secs` may exceed the calling MCP client's own request timeout — pick a value the client can actually wait for.
 - **`close`** — `path` (string, required). The ⌘W path for that file's tab; same refusals as `couplet close`.
 - **`windows`** — no arguments. The listing `couplet ls --json` prints: `window`, `project`, `project_path`, `last_focused`, `tabs[{path, active}]`.
+- **`stash_search`** — `query` (string, required), `tag`, `kind` (`note`\|`file`), `repo` (a name or a path inside a repository) or `all` (boolean), `limit` (default 10, max 50), `cursor`. Hits with a ~200-character `snippet`, never full text. The description teaches "Search first, get one, never dump." and that paging may skip or repeat an entry changed between pages. Answered from `stash.db` directly — no socket, no launch.
+- **`stash_list`** — `tag`, `kind`, `repo` or `all`, `since` (`today`, `yesterday`, `12h`, `7d`, `YYYY-MM-DD`, unix ms — text or a number), `sort` (`changed`\|`opened`\|`kind`), `limit` (default 20, max 100), `cursor`. Metadata only.
+- **`stash_get`** — `id` (required), `lines` (`"A:B"`, `"A:"`, `":B"`). One note's text, at most 500 lines / 64 KiB without `lines`; a file entry's path.
+- **`stash_add`** — exactly one of `text` or `path` (relative to the server's working directory), plus `tags`. **`stash_tag`** — `id` (required), `add`, `remove`.
+
+An optional string argument sent as `""` counts as absent, and a lone string where an array is expected (`"tags": "infra"`) is a one-element array. Any other wrong type is a JSON-RPC `-32602`, never ignored: `all` that is not a boolean (`"true"`), a non-string item in `tags`/`add`/`remove`. The stash tools' answers are described in **Stash: search first, get one, never dump**.
 
 `tools/call` builds the matching command-socket request (`{"v":1,"cmd":...}`), sends it, and wraps the raw `AiResponse` JSON line as the tool result text:
 
@@ -372,6 +382,8 @@ Same default socket as the CLI (`ai_socket::socket_path("couplet")`, i.e. `/tmp/
 
 - **No `--socket` override** (the normal case): launch `open /Applications/couplet.app` and poll for the socket up to 5s, same as `scripts/couplet`'s launch-if-not-running step, then retry the connection once.
 - **`--socket` given explicitly** (dev/test socket): never attempt a launch — a dev socket being down just means the dev build isn't running, and launching the *release* app would be wrong. Fails straight to `{"ok":false,"error":"couplet is not running"}` as an `isError: true` text result.
+
+`--product NAME` selects both the socket (`/tmp/<name>_cmd.sock`, non-alphanumerics as `_`) and the stash of that build; a non-release product never launches anything (`--product couplet` is the release app and does). `--socket` still overrides the socket. With `--socket` but no `--product` the stash tools answer an error naming `--product`, while `show`/`edit`/… keep working against that socket. Any other argument is refused at startup (`couplet: <error>` on stderr, exit 2, nothing on stdout): an unknown or misspelt flag, the `--product=NAME` form, a flag without its value or given twice, an invalid product name — none of them falls back to the release app.
 
 The read timeout on the socket connection is `10s` for `show`/`edit`, matching the CLI, but the (clamped) `timeout_secs` plus `10s` for `ask` — otherwise the MCP transport would time out its own read before a slow-to-answer `ask` ever gets a chance to.
 
@@ -401,6 +413,14 @@ An agent connected over MCP already gets `show`/`edit`/`ask` as self-describing 
 - Use the `question` tool to read open threads and `answer` to reply. Also check `question` before asking them something in chat and before reporting that you are done: they may have already answered you in the document.
 - If a comment asks for a change rather than an answer, make it with `edit`, then close the thread with `answer`.
 - Add a `Stop` hook that runs `couplet question` and blocks the turn while anything is still open. This is the backstop that matters: a monitor emitting too much is stopped by the harness, and you will not necessarily notice — without the hook, comments pile up in silence.
+
+### The user's stash
+
+- The user keeps notes and file references in couplet's stash; `stash_search`, `stash_list` and `stash_get` read it even when couplet is not running.
+- Search first, get one, never dump. `stash_search` returns snippets, not text: read them, pick the entry you need and `stash_get` only that one. Do not page through the whole stash, and do not `stash_get` every hit to be sure.
+- `stash_list` is for "what did I put away yesterday" (`since: "yesterday"`) or "everything tagged infra" — metadata only.
+- Results are scoped to the git repository of your working directory; the answer's `scope` says so. When its `hint` says there is nothing here, retry with `all: true` before telling the user nothing exists.
+- `stash_add` and `stash_tag` change the user's stash: only when they ask you to keep or tag something. A note is an ordinary `.md` file — `show` and `edit` work on the `path` an answer returns.
 ```
 
 ## Using this from an AI agent's CLAUDE.md
@@ -436,9 +456,94 @@ A thread the user is still typing has `status=paused` and is deliberately invisi
 If your harness can react to a stream (Claude Code: `Monitor({command: "couplet watch", description: "new couplet comments", persistent: true})`), arm it once per session and you get woken in this same session, with your context intact, instead of polling. `persistent: true` matters: without it the monitor dies after five minutes and its silence looks exactly like "no comments". Also add a `Stop` hook running `couplet question` that blocks the turn while anything is open — a monitor that emits too much is stopped by the harness without telling you, and the hook is what stops comments piling up unseen.
 
 If your harness cannot do either, check `couplet question` at natural points: before asking the user something in chat, and before reporting that you are done. A comment line is an interruption, not a user message — finish the current step cleanly, then answer. If a comment asks for a change rather than an answer, make it with `edit`, then close the thread with `answer`.
+
+### The user's stash
+
+The user puts notes and file references away into couplet's stash («тайник») and expects you to find things there. These verbs read the stash directly — couplet does not need to be running:
+
+- `couplet stash search "HDMI переговорка" [--tag infra] [--kind note|file] [--all] [--limit 5] --json` — the best matches, each with a ~200-character snippet, never the full text.
+- `couplet stash get <id> [--lines 120:180] --json` — the text of one note (a long one stops at 500 lines; the answer says how to get the rest). A file entry gives its path: read the file itself.
+- `couplet stash list [--since yesterday] [--tag infra] --json` — metadata only: what was put away, when, with which tags.
+- `echo "text" | couplet stash add [--tag t]` or `couplet stash add --path <file> [--tag t]` — only when the user asks you to keep something; `couplet stash tag <id> --add t --remove u`.
+
+Search first, get one, never dump: do not page through the whole stash or `get` every hit — read the snippets and fetch only the entry you need. Results are scoped to the git repository of your current directory (the answer's `scope` says so); when its `hint` says there is nothing here, retry with `--all` before telling the user nothing exists. A note is an ordinary `.md` file: `couplet show`/`edit` work on the `path` it returns.
 ```
 
 Prefer MCP? `claude mcp add --scope user couplet -- couplet mcp` registers couplet's show/edit/ask tools directly — then no instruction-file snippet is needed; run `couplet agent --mcp` for a short usage-culture snippet worth pasting alongside it.
+
+## Stash: search first, get one, never dump
+
+The user's stash («тайник») holds the notes and file references they put away (`docs/superpowers/specs/2026-09-26-stash-design.md`). Agents reach it with `couplet stash …` or the MCP `stash_*` tools — one implementation, `src-tauri/src/stash/cli.rs`, with the CLI and `mcp_server.rs` as thin adapters. Both read and write `~/Library/Application Support/couplet/stash.db` directly (WAL, 5 s busy timeout), with notes as `.md` files in `~/couplet/`, so they work whether or not couplet is running. Nothing is launched: a write is followed by a best-effort `stash-changed` request on the command socket (below), and a running couplet reloads its drawers; with couplet closed there is nobody to tell and nothing is reported.
+
+**An agent never gets the whole stash.** `search` answers snippets, `list` answers metadata, and only `get` returns text — of one note, at most 500 lines / 64 KiB per answer, a `--lines` range included (a single longer line is cut at a character boundary, with `truncated: true` and a hint to read the file). `get` reads at most the first 4 MiB of a note file: past that, lines are out of its reach, `total_lines` is left out (unknown) and the hint says to read the file — the same 4 MiB the CLI accepts on stdin for `add`, so a note an agent added is always whole. Agent reads mark nothing as opened, so the human's «opened» sort is never reordered by an agent looking things up. The trash is never visible: search and list skip trashed entries, and `get`/`tag` of one is an error.
+
+### CLI
+
+`couplet stash` is an offline verb: `scripts/couplet` hands it straight to the binary (`couplet ai stash …`), which opens `stash.db` itself.
+
+| Command | Behavior |
+|---------|----------|
+| `couplet stash search <query> [--tag T] [--repo R \| --all] [--kind note\|file] [--limit N] [--cursor C] [--json]` | The best matches, each with a ~200-character `snippet` around the match, never full text. Several words are one query; pieces of words match any word form, `#tag` filters, `"quoted phrases"` match as written; under three characters only titles match. Limit default 10, max 50 (clamped). |
+| `couplet stash list [--since S] [--tag T] [--repo R \| --all] [--kind note\|file] [--sort changed\|opened\|kind] [--limit N] [--cursor C] [--json]` | Metadata only. `S`: `today`, `yesterday` (local midnight), `12h`, `7d`, `YYYY-MM-DD` (local midnight) or unix ms (13 digits; unix seconds are refused) — the time it was put away, or its last change if it never was. `changed` (default): most recently put away or changed first. Limit default 20, max 100. |
+| `couplet stash get <id> [--lines A:B] [--json]` | The text of one note. `A:B`, `A:` or `:B`, 1-based inclusive. A truncated answer says `truncated: true`, `total_lines` and a `hint` naming the next range; a line over 64 KiB comes back cut, and a note over 4 MiB has no `total_lines`. A file entry answers its path and no text (`--lines` on one is an error). |
+| `echo "text" \| couplet stash add [--tag T ...] [--json]` | A new note from stdin, put away at once, in the repository of the current directory. Empty stdin, or more than 4 MiB of it, is refused (exit 2). |
+| `couplet stash add --path <file> [--tag T ...] [--json]` | A reference to an existing regular file (relative to the current directory). The file is never copied or changed; adding it again keeps one entry (`created: false`). |
+| `couplet stash tag <id> [--add T ...] [--remove T ...] [--json]` | Tags are normalised: trimmed, a leading `#` dropped, lower-case, one word each. |
+
+Every verb also takes `--product NAME` and `--socket PATH` (see **Dev builds**). A flag that takes one value (`--tag` on search/list, `--limit`, `--since`, …) given twice is a usage error; only `add`'s `--tag` and `tag`'s `--add`/`--remove` repeat. Without `--json` a result is readable text on stdout and an error is one line on stderr, `couplet: <error>`. Exit codes: 0 ok, 1 rejected (`"ok":false`), 2 usage error / empty stdin / bad `--product`/`--socket`.
+
+### MCP tools
+
+`stash_search`, `stash_list`, `stash_get`, `stash_add`, `stash_tag` — the same operations with the same arguments as JSON (`repo`/`all`, `since` as text or a number, `tags`/`add`/`remove` as arrays); see **MCP server → Tools**. They are answered before any socket logic, from `stash.db`, so they work with couplet closed. A relative `path` in `stash_add` resolves against the MCP server's working directory. A missing `query`/`id`, `text` and `path` together (or neither), or an argument that does not parse is a JSON-RPC `-32602`; anything the operation refuses is an `isError: true` tool result carrying the answer below.
+
+### Scope
+
+By default the git repository of the caller's working directory (for MCP: the directory the server was started in, i.e. the agent's), by name — the same name a couplet window shows for its project and the stash stores for each entry. A repository at the home folder itself (dotfiles) does not count. Outside git: the whole stash. `--all` / `all: true` widens; `--repo NAME` (or a path inside a repository) names another; the two together are an error. Every search/list answer carries `scope`, and a repo-scoped call that found nothing carries `hint: "nothing in repo X; widen with --all (MCP: all: true)"` — retry with `all` before telling the user nothing exists.
+
+### Answers
+
+The CLI's `--json` line and the MCP tool result text are identical, snake_case, with absent fields skipped; times are local ISO-8601 with the offset:
+
+```jsonc
+// search
+{"ok":true,"scope":{"repo":"couplet"},"total":7,"hits":[{"id":"s1790378408605-3f9a","kind":"note","title":"HDMI в переговорке","path":"/Users/me/couplet/2026-09-27-0155-a3f9.md","repo":"couplet","tags":["infra"],"stashed_at":"2026-09-27T01:55:12+03:00","modified_at":"2026-09-27T01:50:00+03:00","snippet":"…HDMI через адаптер в третьей переговорке…"}],"next_cursor":"…"}
+// search, whole stash: "scope":{"all":true}
+// list: the same with "entries":[…] and no snippets
+// get
+{"ok":true,"entry":{…},"text":"# HDMI…","lines":[1,120],"total_lines":120,"truncated":false}
+// get of a file entry
+{"ok":true,"entry":{…},"hint":"a file reference: read /Users/me/docs/plan.md directly"}
+// add
+{"ok":true,"entry":{…},"created":true}
+// tag
+{"ok":true,"entry":{…}}
+// a stash that does not exist yet (couplet never used it): an empty page, nothing created
+{"ok":true,"scope":{"all":true},"total":0,"hits":[],"hint":"the stash is empty"}
+// error
+{"ok":false,"error":"no stash entry s0-none"}
+```
+
+An entry never carries text: `id`, `kind` (`note`\|`file`), `title`, `path`, `repo`, `tags`, `stashed_at`, `modified_at`. `title` (`null` when there is none) and `tags` (`[]` when none) are always present; `repo` and `stashed_at` are left out when absent. `total` is always present; **no `next_cursor` means the last page**. A list cursor is a keyset and stable under writes; a search cursor is an offset — the next page re-runs the search, so an entry changed between pages may be skipped or repeated.
+
+Errors an agent may see: `refusing to add an empty note`, `file does not exist: <path>`, `not a file: <path>`, `in the trash: <path>`, `stash entry <id> is in the trash`, `no stash entry <id>`, `tag needs something to add or remove`, `empty tag: "…"`, `line N is past the end of the note (M lines)`, and the two below.
+
+### Writes, and the rule that nothing creates the app's data directory
+
+`add` refuses empty text and a path that is not a regular file, and never changes a referenced file. **A write before couplet has ever been opened on this Mac is refused** — `couplet has not run on this Mac yet — open it once, then try again` — before anything is created: no note file, no notes folder, no `stash.db`. A single file in a freshly created (or empty) `~/Library/Application Support/couplet/` before the app's first launch would make the md-mini → couplet data migration (`migration.rs`) skip an installed md-mini's data for good. "Has run" means `stash.db` exists — the app creates it on every launch, so the CLI and MCP never create it; an existing but empty directory is not enough. The one cost: right after an upgrade from a build without the stash, writes wait until couplet has been opened once. Reads create nothing either: a missing `stash.db` is an empty page with `hint: "the stash is empty"`.
+
+### The `stash-changed` socket request
+
+After a successful write the CLI/MCP sends one line to the command socket, with 500 ms write and read timeouts, and ignores every failure (an app that is not running is not an error, and nothing is launched):
+
+```json
+{"v": 1, "cmd": "stash-changed", "reason": "external", "ids": ["s1790378408605-3f9a"]}
+```
+
+The app answers `{"ok":true}` at once, without asking any window, and emits `stash-changed` to its windows once, so every open drawer reloads. A card pulses only when an entry already shown in the drawer was put away again (its «отложено» time moved, e.g. `add --path` of a file already in the stash); a brand-new entry simply appears, without a pulse. The event's reason is always `external`, whatever `reason` the request carries: any local process can write the socket, and another reason (`deleted`, say) would change what the drawers do with the named entries; `ids` is optional, keeps only entry ids, at most 50. No first-use toast, no pending request.
+
+### Dev builds: `--product`, never `--socket` alone
+
+Pass `--product couplet-dev` (CLI and `couplet mcp`): it names the dev build's database (`~/Library/Application Support/couplet-dev/stash.db`), notes folder (`~/couplet-dev/`) and socket (`/tmp/couplet_dev_cmd.sock`) together. `--socket` without `--product` is refused for stash verbs (exit 2), and makes `couplet mcp`'s stash tools answer an error naming `--product`: the stash would otherwise silently be the release one while the socket names a dev build. A product name that is empty, has a slash or surrounding spaces, or is `.`/`..` is refused too — it would fall back to the release stash. A **debug** binary (`target/debug/md-mini`) refuses to run a stash verb without `--product` (`a debug build needs --product (e.g. --product couplet-dev)`, exit 2), and `couplet mcp` from a debug binary with neither `--product` nor `--socket` refuses to start: its defaults would be the release stash and socket. A release binary keeps the release defaults.
 
 ## Discoverability
 

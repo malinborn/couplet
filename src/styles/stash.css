@@ -1,0 +1,15 @@
+/*
+ * Stash stage 04: the stash drawer's own colour (spec «Дровер тайника»:
+ * «своего цвета — производного от цвета ссылок темы»). `--color-stash` is a
+ * theme token — every theme sets it to its `--color-link`, so one can be tuned
+ * later without touching components; the tints are mixed from it here, on
+ * plain :root like the `tabs-*` tokens. Values from the approved mockup
+ * (docs/investigations/2026-09-26-stash-mockup/stash-drawers.html, tag
+ * `stash-mockup-approved`). Custom properties resolve on :root, where the
+ * theme block sets `--color-stash`, and are inherited already mixed.
+ */
+:root {
+  --stash-tint: color-mix(in oklab, var(--color-stash) 6%, var(--bg-surface));
+  --stash-line: color-mix(in oklab, var(--color-stash) 30%, var(--border));
+  --stash-soft: color-mix(in oklab, var(--color-stash) 14%, transparent);
+}

@@ -10,6 +10,7 @@
   --color-bold: #d6438f;
   --color-italic: #8b6ce8;
   --color-link: #0d9488;
+  --color-stash: var(--color-link);
   --color-code-bg: #e9e8e3;
   --color-code-text: #262a45;
   --color-selection: #d9ddf8;

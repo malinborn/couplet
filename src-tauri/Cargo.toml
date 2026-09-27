@@ -59,6 +59,12 @@ libc = "0.2"
 # `core-foundation` is only for its safe, `Drop`-managed `CFString`.
 core-foundation-sys = "0.8.7"
 core-foundation = "0.10.1"
+# The stash database (`src/stash/`). `bundled` compiles SQLite from source so
+# FTS5 and its `trigram` tokenizer (search, stage 05) never depend on the macOS
+# system library; `backup` exposes the online backup API (`stash::backup`);
+# `functions` registers the Rust scalar SQL function `stash_fold()` (stage 05).
+# The one new dependency the stash is allowed (roadmap).
+rusqlite = { version = "0.37", features = ["bundled", "backup", "functions"] }
 # DEV-ONLY agent driving bridge. `optional = true` + the `mcp-bridge` feature
 # below means that with the feature off this crate is NOT COMPILED AT ALL — it is
 # absent from the binary, not merely disabled at runtime.

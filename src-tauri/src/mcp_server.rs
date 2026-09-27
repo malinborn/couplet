@@ -1,7 +1,10 @@
 //! `couplet mcp` — a stdio MCP (Model Context Protocol) server wrapping the
 //! existing command socket protocol (`ai_socket.rs`). One socket command maps
-//! to one MCP tool; this module adds no new capability, only a JSON-RPC 2.0
-//! transport in front of the same `show`/`edit` verbs. See
+//! to one MCP tool: a JSON-RPC 2.0 transport in front of the same
+//! `show`/`edit`/… verbs. Three kinds of tool never touch the socket: the
+//! comment tools (`question`/`answer`, the sidecar files) and the stash tools
+//! (`stash_*`, answered from `stash.db` by `stash::cli`, so they work with
+//! couplet closed; a running app is only told about writes). See
 //! `docs/ai-interface.md` ("MCP server") and
 //! `docs/superpowers/specs/2026-08-22-ai-interface-design.md`.
 //!
@@ -17,6 +20,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use crate::ai_socket::{self, AiRequest, AiResponse};
+use crate::stash::cli::{self as stash, StashAnswer, StashLocation};
 
 /// Protocol version advertised when the client's `initialize` params don't
 /// name one.
@@ -35,34 +39,85 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Resolved server configuration for one `couplet mcp` run.
 pub struct McpConfig {
     socket_path: PathBuf,
-    /// Whether a down socket should trigger an `open`-launch-and-wait. False
-    /// whenever `--socket` was passed explicitly — that always names a
-    /// dev/test socket, and launching the release app in that case would be
-    /// wrong.
+    /// Whether a down socket should trigger an `open`-launch-and-wait. Only
+    /// for the release app: an explicit `--socket`, or a non-release
+    /// `--product`, names a dev/test build, and launching the release app
+    /// then would be wrong.
     allow_launch: bool,
+    /// Where the `stash_*` tools read and write, or why they cannot (plan
+    /// D3, A12: `--socket` without `--product`, an invalid product) — the
+    /// tools then answer this error; the socket tools still work.
+    stash: Result<StashLocation, String>,
+    /// The server's working directory — the agent's, since the agent spawns
+    /// it: the default stash scope and the base of a relative `stash_add`
+    /// path.
+    cwd: PathBuf,
 }
 
 impl McpConfig {
-    /// Parse `couplet mcp [--socket PATH]` flags (`args` is the slice after
-    /// the `mcp` verb).
-    fn from_flags(args: &[String]) -> Self {
+    /// Parse `couplet mcp [--socket PATH] [--product NAME]` flags (`args` is
+    /// the slice after the `mcp` verb). `--product` names the build: its
+    /// socket (unless `--socket` overrides it) and its stash together. Path
+    /// arithmetic only — nothing is created or opened at startup.
+    ///
+    /// Anything else is refused, never skipped: an unknown or misspelt flag,
+    /// the `--flag=value` form, a flag without its value, a flag given twice,
+    /// an invalid product. Skipping one left the defaults — the release
+    /// socket and stash, launching allowed — under a dev registration.
+    fn from_flags(args: &[String]) -> Result<Self, String> {
+        Self::from_flags_for(args, cfg!(debug_assertions))
+    }
+
+    /// `from_flags` with the build kind as an argument. A debug build with
+    /// neither flag is refused at startup, socket tools included: its
+    /// defaults are the release app's socket and stash (the dev-CLI trap).
+    /// `--socket` alone still names its build for the socket tools, as in a
+    /// release build; the stash tools then answer the `--product` error.
+    fn from_flags_for(args: &[String], debug_build: bool) -> Result<Self, String> {
         let mut socket: Option<String> = None;
+        let mut product: Option<String> = None;
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {
-            if arg == "--socket" {
-                socket = iter.next().cloned();
+            let slot = match arg.as_str() {
+                "--socket" => &mut socket,
+                "--product" => &mut product,
+                other => {
+                    for (flag, value) in [("--socket", "PATH"), ("--product", "NAME")] {
+                        if other.starts_with(&format!("{flag}=")) {
+                            return Err(format!("write {flag} {value}, not {flag}={value}"));
+                        }
+                    }
+                    return Err(format!(
+                        "unknown argument for couplet mcp: {other} (usage: couplet mcp [--socket PATH] [--product NAME])"
+                    ));
+                }
+            };
+            let value = iter
+                .next()
+                .filter(|v| !v.starts_with("--"))
+                .ok_or_else(|| format!("{arg} requires a value"))?;
+            if slot.replace(value.clone()).is_some() {
+                return Err(format!("{arg} given twice"));
             }
         }
-        match socket {
-            Some(s) => McpConfig {
-                socket_path: PathBuf::from(s),
-                allow_launch: false,
-            },
-            None => McpConfig {
-                socket_path: ai_socket::socket_path(crate::paths::RELEASE_PRODUCT_NAME),
-                allow_launch: true,
-            },
+        match (product.as_deref(), socket.as_deref()) {
+            (Some(p), _) => crate::stash::cli::check_product(p)?,
+            (None, None) if debug_build => return Err(crate::stash::cli::DEBUG_NEEDS_PRODUCT.to_string()),
+            _ => {}
         }
+        let stash = crate::stash::cli::location_for_build(product.as_deref(), socket.as_deref(), debug_build);
+        let release = crate::paths::RELEASE_PRODUCT_NAME;
+        let (socket_path, allow_launch) = match (socket, product.as_deref()) {
+            (Some(s), _) => (PathBuf::from(s), false),
+            (None, Some(p)) => (ai_socket::socket_path(p), p == release),
+            (None, None) => (ai_socket::socket_path(release), true),
+        };
+        Ok(McpConfig {
+            socket_path,
+            allow_launch,
+            stash,
+            cwd: std::env::current_dir().unwrap_or_default(),
+        })
     }
 }
 
@@ -70,10 +125,18 @@ impl McpConfig {
 /// touched. `args` is the full `std::env::args()` vector (`args[0]` binary,
 /// `args[1]` `"mcp"`); everything from `args[2]` on is flags. Reads
 /// newline-delimited JSON-RPC requests from stdin until EOF, writing one
-/// response line per request to stdout. Always returns 0 — a malformed line
-/// is a protocol-level error response, not a process failure.
+/// response line per request to stdout. Returns 0 — a malformed line is a
+/// protocol-level error response, not a process failure — or 2 for bad flags,
+/// refused before stdin is read, with the error on stderr (stdout is the
+/// protocol channel).
 pub fn run(args: Vec<String>) -> i32 {
-    let config = McpConfig::from_flags(&args[2.min(args.len())..]);
+    let config = match McpConfig::from_flags(&args[2.min(args.len())..]) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("couplet: {e}");
+            return 2;
+        }
+    };
 
     let stdin = io::stdin();
     let stdout = io::stdout();
@@ -134,7 +197,8 @@ fn handle_message(line: &str, config: &McpConfig) -> Option<String> {
     }
 }
 
-/// The tools exposed over MCP — the command socket's verbs plus the local comment tools.
+/// The tools exposed over MCP — the command socket's verbs plus the local
+/// comment and stash tools.
 fn tools_list() -> Value {
     json!([
         {
@@ -297,6 +361,79 @@ fn tools_list() -> Value {
                 "properties": {},
                 "required": []
             }
+        },
+        {
+            "name": "stash_search",
+            "description": "Search the user's couplet stash — the notes and file references they put away — with the same search they have in the stash drawer: pieces of words match any word form, `#tag` filters, \"quoted phrases\" match as written. Returns the best hits (id, title, kind, tags, when put away, path) with a ~200-character snippet around the match, never full text. Search first, get one, never dump: read the snippets, pick the entry you need, then call stash_get for that one. Works whether or not couplet is running; the trash is never searched. Scope defaults to the git repository of your working directory; the answer's `scope` says which, and a `hint` says when `all: true` might find more. Next page: pass the answer's `next_cursor` as `cursor`; no `next_cursor` means the last page. Paging re-runs the search, so an entry changed between pages may be skipped or repeated.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Words, #tags and \"phrases\", freely combined. Under three characters it matches titles only."},
+                    "tag": {"type": "string", "description": "Only entries with this tag (without '#')."},
+                    "kind": {"type": "string", "enum": ["note", "file"], "description": "Only notes, or only file references."},
+                    "repo": {"type": "string", "description": "Scope to this repository instead of yours: its name, or a path inside it. Mutually exclusive with `all`."},
+                    "all": {"type": "boolean", "default": false, "description": "Search the whole stash, not just your repository."},
+                    "limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50, "description": "Hits per page."},
+                    "cursor": {"type": "string", "description": "The previous answer's `next_cursor`."}
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "stash_list",
+            "description": "List entries of the user's couplet stash — metadata only (id, kind, title, repo, tags, when put away and last changed, path), never text. For \"what did I put away yesterday\" (`since: \"yesterday\"`) or \"everything tagged infra\" (`tag`). Prefer stash_search when you know what the text is about. Same scope rule as stash_search; the trash is never listed. Next page: pass the answer's `next_cursor` as `cursor`; no `next_cursor` means the last page.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "tag": {"type": "string", "description": "Only entries with this tag (without '#')."},
+                    "kind": {"type": "string", "enum": ["note", "file"], "description": "Only notes, or only file references."},
+                    "repo": {"type": "string", "description": "Scope to this repository instead of yours: its name, or a path inside it. Mutually exclusive with `all`."},
+                    "all": {"type": "boolean", "default": false, "description": "The whole stash, not just your repository."},
+                    "since": {"type": "string", "description": "Only entries put away (or, if never put away, changed) since: today, yesterday, 12h, 7d, YYYY-MM-DD, or unix milliseconds (not seconds)."},
+                    "sort": {"type": "string", "enum": ["changed", "opened", "kind"], "default": "changed", "description": "changed: most recently put away or changed first."},
+                    "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100, "description": "Entries per page."},
+                    "cursor": {"type": "string", "description": "The previous answer's `next_cursor`."}
+                },
+                "required": []
+            }
+        },
+        {
+            "name": "stash_get",
+            "description": "The text of ONE stash note, by an id from stash_search or stash_list. A long note stops at 500 lines or 64 KiB with `truncated: true`, `total_lines` and a `hint` naming the next range: ask for it with `lines` only if you need it. A single line over 64 KiB comes back cut. A file entry returns its path and no text — read the file itself. Notes are ordinary .md files: `show` and `edit` work on the returned `path`. Reading marks nothing as opened.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "The entry id."},
+                    "lines": {"type": "string", "description": "A 1-based inclusive range: \"120:180\", \"501:\" or \":40\"."}
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "stash_add",
+            "description": "Put something into the user's couplet stash: `text` becomes a new note (tagged with your repository), or `path` adds a reference to an existing file (the file is not copied or changed; adding it again keeps one entry, `created: false`). Exactly one of text or path. Only when the user asks you to keep something — the stash is theirs. Refused until couplet has been opened once on this Mac.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "The note's markdown, at most 4 MiB. Mutually exclusive with `path`."},
+                    "path": {"type": "string", "description": "A file to reference, absolute or relative to your working directory. Mutually exclusive with `text`."},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags, one word each, without '#'."}
+                },
+                "required": []
+            }
+        },
+        {
+            "name": "stash_tag",
+            "description": "Add or remove tags on an entry of the user's couplet stash. Tags are lower-case single words without '#'. Only when the user asks you to.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "The entry id."},
+                    "add": {"type": "array", "items": {"type": "string"}, "description": "Tags to add."},
+                    "remove": {"type": "array", "items": {"type": "string"}, "description": "Tags to remove."}
+                },
+                "required": ["id"]
+            }
         }
     ])
 }
@@ -309,6 +446,12 @@ fn tools_list() -> Value {
 fn handle_tools_call(id: Value, params: &Value, config: &McpConfig) -> String {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
+
+    // The stash is a database this process opens itself (plan D14): no
+    // socket round-trip, no launch — a running app is only told, best effort.
+    if let Some(tool) = name.strip_prefix("stash_") {
+        return stash_tool_call(id, tool, &arguments, config);
+    }
 
     // `question` and `answer` work directly against the comment files: the
     // source of truth is the file beside the document, so neither the socket
@@ -367,6 +510,79 @@ fn handle_tools_call(id: Value, params: &Value, config: &McpConfig) -> String {
         }
         Err(msg) => tool_result_response(id, &AiResponse::error(msg), true),
     }
+}
+
+/// One `stash_*` tool. A malformed call — a missing `query`/`id`, `text`
+/// and `path` together or neither, an argument that does not parse — is
+/// JSON-RPC `-32602`, like the socket tools' missing arguments; anything the
+/// operation itself refuses (unknown id, the trash, empty text, no usable
+/// stash) is an `isError` tool result carrying the `StashAnswer` JSON.
+fn stash_tool_call(id: Value, tool: &str, arguments: &Value, config: &McpConfig) -> String {
+    let loc = match &config.stash {
+        Ok(loc) => loc,
+        Err(e) => return stash_result(id, &StashAnswer::error(e.clone())),
+    };
+    let ctx = stash::Ctx {
+        loc,
+        cwd: &config.cwd,
+        now_ms: stash::now_ms(),
+    };
+    let answer = match tool {
+        "search" => match stash::search_args_from_json(arguments) {
+            Ok(args) => stash::search(&ctx, &args),
+            Err(msg) => return error_response(id, -32602, msg),
+        },
+        "list" => match stash::list_args_from_json(arguments) {
+            Ok(args) => stash::list(&ctx, &args),
+            Err(msg) => return error_response(id, -32602, msg),
+        },
+        "get" => {
+            let Some(entry_id) = arguments.get("id").and_then(Value::as_str) else {
+                return error_response(id, -32602, "stash_get requires id");
+            };
+            let lines = arguments
+                .get("lines")
+                .and_then(Value::as_str)
+                .filter(|l| !l.trim().is_empty())
+                .map(stash::parse_lines)
+                .transpose();
+            match lines {
+                Ok(lines) => stash::get(&ctx, entry_id, lines),
+                Err(msg) => return error_response(id, -32602, msg),
+            }
+        }
+        "add" => {
+            let tags = match stash::string_array(arguments, "tags") {
+                Ok(t) => t,
+                Err(msg) => return error_response(id, -32602, msg),
+            };
+            let text = arguments.get("text").and_then(Value::as_str);
+            let path = arguments.get("path").and_then(Value::as_str);
+            match (text, path) {
+                (Some(text), None) => stash::add_note(&ctx, text, &tags),
+                (None, Some(path)) => stash::add_path(&ctx, path, &tags),
+                _ => return error_response(id, -32602, "stash_add takes exactly one of text or path"),
+            }
+        }
+        "tag" => {
+            let Some(entry_id) = arguments.get("id").and_then(Value::as_str) else {
+                return error_response(id, -32602, "stash_tag requires id");
+            };
+            let (add, remove) = match (stash::string_array(arguments, "add"), stash::string_array(arguments, "remove")) {
+                (Ok(a), Ok(r)) => (a, r),
+                (Err(msg), _) | (_, Err(msg)) => return error_response(id, -32602, msg),
+            };
+            stash::tag(&ctx, entry_id, &add, &remove)
+        }
+        other => return error_response(id, -32602, format!("unknown tool: stash_{other}")),
+    };
+    stash_result(id, &answer)
+}
+
+/// The answer as the tool's text — byte for byte the CLI's `--json` line.
+fn stash_result(id: Value, answer: &StashAnswer) -> String {
+    let text = serde_json::to_string(answer).unwrap_or_else(|_| "{}".to_string());
+    tool_result_text(id, text, !answer.ok)
 }
 
 fn window_binding(arguments: &Value) -> Option<u32> {
@@ -555,6 +771,10 @@ fn launch_and_wait(socket_path: &Path) -> Result<(), String> {
 
 fn tool_result_response(id: Value, response: &AiResponse, is_error: bool) -> String {
     let text = serde_json::to_string(response).unwrap_or_else(|_| "{}".to_string());
+    tool_result_text(id, text, is_error)
+}
+
+fn tool_result_text(id: Value, text: String, is_error: bool) -> String {
     success_response(
         id,
         json!({
@@ -585,11 +805,21 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc;
 
-    fn test_config() -> McpConfig {
-        McpConfig {
-            socket_path: PathBuf::from("/tmp/couplet_mcp_test_unused.sock"),
-            allow_launch: false,
+    impl McpConfig {
+        /// A socket-only config: the stash tools answer an error, as when
+        /// the flags named no usable stash.
+        fn for_test(socket_path: PathBuf) -> Self {
+            McpConfig {
+                socket_path,
+                allow_launch: false,
+                stash: Err("no stash in this test".to_string()),
+                cwd: std::env::temp_dir(),
+            }
         }
+    }
+
+    fn test_config() -> McpConfig {
+        McpConfig::for_test(PathBuf::from("/tmp/couplet_mcp_test_unused.sock"))
     }
 
     static SOCK_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -660,7 +890,7 @@ mod tests {
         let response = handle_message(request, &test_config()).unwrap();
         let v: Value = serde_json::from_str(&response).unwrap();
         let tools = v["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 7);
+        assert_eq!(tools.len(), 12);
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"show"));
         assert!(names.contains(&"edit"));
@@ -669,6 +899,9 @@ mod tests {
         assert!(names.contains(&"answer"));
         assert!(names.contains(&"close"));
         assert!(names.contains(&"windows"));
+        for n in ["stash_search", "stash_list", "stash_get", "stash_add", "stash_tag"] {
+            assert!(names.contains(&n), "{n}");
+        }
         for tool in tools {
             assert!(!tool["description"].as_str().unwrap().is_empty());
             assert_eq!(tool["inputSchema"]["type"], json!("object"));
@@ -728,10 +961,7 @@ mod tests {
         // tried to connect, it would fail with a connection error rather
         // than the refusal text, so the assertion below also proves the
         // refusal happens before any socket I/O.
-        let config = McpConfig {
-            socket_path: PathBuf::from("/tmp/couplet_mcp_test_should_not_be_dialed.sock"),
-            allow_launch: false,
-        };
+        let config = McpConfig::for_test(PathBuf::from("/tmp/couplet_mcp_test_should_not_be_dialed.sock"));
         let request = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"edit","arguments":{"path":"/tmp/a.md","content":""}}}"#;
         let response = handle_message(request, &config).unwrap();
         let v: Value = serde_json::from_str(&response).unwrap();
@@ -742,10 +972,7 @@ mod tests {
 
     #[test]
     fn tools_call_socket_down_without_launch_is_error() {
-        let config = McpConfig {
-            socket_path: PathBuf::from("/tmp/couplet_mcp_test_definitely_not_bound.sock"),
-            allow_launch: false,
-        };
+        let config = McpConfig::for_test(PathBuf::from("/tmp/couplet_mcp_test_definitely_not_bound.sock"));
         let request = r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"show","arguments":{"path":"/tmp/a.md"}}}"#;
         let response = handle_message(request, &config).unwrap();
         let v: Value = serde_json::from_str(&response).unwrap();
@@ -757,10 +984,7 @@ mod tests {
     #[test]
     fn tools_call_show_round_trips_request_shape_and_ok_response() {
         let (path, rx) = spawn_fake_socket(AiResponse::ok());
-        let config = McpConfig {
-            socket_path: path.clone(),
-            allow_launch: false,
-        };
+        let config = McpConfig::for_test(path.clone());
         let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"show","arguments":{"path":"/tmp/a.md","line":5}}}"#;
         let response = handle_message(request, &config).unwrap();
         let v: Value = serde_json::from_str(&response).unwrap();
@@ -782,10 +1006,7 @@ mod tests {
     #[test]
     fn tools_call_edit_maps_ok_false_response_to_is_error_true() {
         let (path, rx) = spawn_fake_socket(AiResponse::error("target not found"));
-        let config = McpConfig {
-            socket_path: path.clone(),
-            allow_launch: false,
-        };
+        let config = McpConfig::for_test(path.clone());
         let request = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"edit","arguments":{"path":"/tmp/a.md","content":"hello"}}}"#;
         let response = handle_message(request, &config).unwrap();
         let v: Value = serde_json::from_str(&response).unwrap();
@@ -809,10 +1030,7 @@ mod tests {
             ..Default::default()
         };
         let (path, rx) = spawn_fake_socket(canned);
-        let config = McpConfig {
-            socket_path: path.clone(),
-            allow_launch: false,
-        };
+        let config = McpConfig::for_test(path.clone());
         let request = r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"ask","arguments":{"path":"/tmp/a.md","question":"Ship it?","options":["Yes","No"],"timeout_secs":60}}}"#;
         let response = handle_message(request, &config).unwrap();
         let v: Value = serde_json::from_str(&response).unwrap();
@@ -840,10 +1058,7 @@ mod tests {
             ..Default::default()
         };
         let (path, rx) = spawn_fake_socket(canned);
-        let config = McpConfig {
-            socket_path: path.clone(),
-            allow_launch: false,
-        };
+        let config = McpConfig::for_test(path.clone());
         let request = r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"ask","arguments":{"path":"/tmp/a.md","question":"Which reviewers?","options":["A","B","C"],"multi":true}}}"#;
         let response = handle_message(request, &config).unwrap();
         let v: Value = serde_json::from_str(&response).unwrap();
@@ -867,10 +1082,7 @@ mod tests {
             ..Default::default()
         };
         let (path, rx) = spawn_fake_socket(canned);
-        let config = McpConfig {
-            socket_path: path.clone(),
-            allow_launch: false,
-        };
+        let config = McpConfig::for_test(path.clone());
         let request = r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"ask","arguments":{"path":"/tmp/a.md","question":"Ship it?","options":["Yes","No"],"free_text":true}}}"#;
         let response = handle_message(request, &config).unwrap();
         let v: Value = serde_json::from_str(&response).unwrap();
@@ -896,7 +1108,7 @@ mod tests {
 
     #[test]
     fn from_flags_defaults_to_release_socket_and_allows_launch() {
-        let config = McpConfig::from_flags(&[]);
+        let config = McpConfig::from_flags_for(&[], false).unwrap();
         // The literal, not RELEASE_PRODUCT_NAME: this is what the app binds
         // (`/tmp/<productName>_cmd.sock`), and `paths.rs` pins the constant
         // to `tauri.conf.json`.
@@ -906,7 +1118,7 @@ mod tests {
 
     #[test]
     fn from_flags_explicit_socket_disallows_launch() {
-        let config = McpConfig::from_flags(&["--socket".to_string(), "/tmp/x.sock".to_string()]);
+        let config = McpConfig::from_flags(&["--socket".to_string(), "/tmp/x.sock".to_string()]).unwrap();
         assert_eq!(config.socket_path, PathBuf::from("/tmp/x.sock"));
         assert!(!config.allow_launch);
     }
@@ -1035,7 +1247,7 @@ mod tests {
 
     fn fake(canned: AiResponse) -> (McpConfig, mpsc::Receiver<String>, PathBuf) {
         let (path, rx) = spawn_fake_socket(canned);
-        (McpConfig { socket_path: path.clone(), allow_launch: false }, rx, path)
+        (McpConfig::for_test(path.clone()), rx, path)
     }
 
     fn sent(rx: &mpsc::Receiver<String>) -> Value {
@@ -1133,5 +1345,265 @@ mod tests {
         assert!(text.starts_with(r#"{"ok":true,"windows":[{"window":3,"project":"couplet""#), "{text}");
         assert_eq!(sent(&rx)["cmd"], json!("windows"));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// A stash under a scratch root: the app has "run" (`stash.db` exists,
+    /// as the app creates it on every launch) unless `app_ran` is false; the
+    /// server's cwd is `root/alpha`, a git repository. The notify socket is
+    /// `notify`, or nobody.
+    fn stash_config_in(tag: &str, notify: Option<PathBuf>, app_ran: bool) -> (McpConfig, PathBuf) {
+        let root = crate::atomic_write::testkit::scratch(&format!("mcp-stash-{tag}"));
+        let repo = root.join("alpha");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let loc = crate::stash::cli::StashLocation {
+            paths: crate::stash::StashPaths::from_bases(&root.join("home"), &root.join("app"), "couplet-test"),
+            socket: notify,
+        };
+        if app_ran {
+            drop(crate::stash::Stash::open(loc.paths.clone()).unwrap());
+        }
+        let config = McpConfig {
+            // Stash tools must never dial this.
+            socket_path: PathBuf::from("/tmp/couplet_mcp_test_should_not_be_dialed.sock"),
+            allow_launch: false,
+            stash: Ok(loc),
+            cwd: repo,
+        };
+        (config, root)
+    }
+
+    fn stash_config(tag: &str) -> (McpConfig, PathBuf) {
+        stash_config_in(tag, None, true)
+    }
+
+    fn answer_of(v: &Value) -> crate::stash::cli::StashAnswer {
+        serde_json::from_str(v["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn stash_tools_declare_their_required_arguments_and_the_etiquette() {
+        let tools = tools_list();
+        let tool = |name: &str| tools.as_array().unwrap().iter().find(|t| t["name"] == json!(name)).unwrap().clone();
+        for (name, required) in [
+            ("stash_search", json!(["query"])),
+            ("stash_list", json!([])),
+            ("stash_get", json!(["id"])),
+            ("stash_add", json!([])),
+            ("stash_tag", json!(["id"])),
+        ] {
+            assert_eq!(tool(name)["inputSchema"]["required"], required, "{name}");
+            assert!(tool(name)["description"].as_str().unwrap().contains("stash"), "{name}");
+        }
+        let search = tool("stash_search");
+        let description = search["description"].as_str().unwrap();
+        for needle in [
+            "never full text",
+            "Search first, get one, never dump",
+            "skipped or repeated",
+            "trash",
+        ] {
+            assert!(description.contains(needle), "{needle}: {description}");
+        }
+        assert_eq!(search["inputSchema"]["properties"]["limit"]["default"], json!(10));
+        assert_eq!(tool("stash_list")["inputSchema"]["properties"]["limit"]["default"], json!(20));
+    }
+
+    #[test]
+    fn stash_add_then_search_then_get_without_any_app() {
+        let (config, _root) = stash_config("roundtrip");
+        let added = answer_of(&call("stash_add", json!({"text": "# HDMI\n\nчерез адаптер", "tags": ["infra"]}), &config));
+        assert!(added.ok, "{added:?}");
+        assert_eq!(added.created, Some(true));
+        let entry = added.entry.unwrap();
+        assert_eq!(entry.repo.as_deref(), Some("alpha"), "scoped to the server's cwd");
+        assert_eq!(entry.tags, vec!["infra".to_string()]);
+        let found = call("stash_search", json!({"query": "адаптер"}), &config);
+        assert_eq!(found["result"]["isError"], json!(false));
+        let found = answer_of(&found);
+        assert_eq!((found.total, found.scope.and_then(|s| s.repo)), (Some(1), Some("alpha".to_string())));
+        let hit = &found.hits.unwrap()[0];
+        assert!(hit.snippet.contains("адаптер"), "{hit:?}");
+        let listed = answer_of(&call("stash_list", json!({"all": true}), &config));
+        assert_eq!((listed.total, listed.entries.map(|e| e.len())), (Some(1), Some(1)));
+        let got = answer_of(&call("stash_get", json!({"id": entry.id}), &config));
+        assert_eq!(got.text.as_deref(), Some("# HDMI\n\nчерез адаптер"));
+        let tagged = answer_of(&call("stash_tag", json!({"id": entry.id, "add": ["later"], "remove": ["infra"]}), &config));
+        assert_eq!(tagged.entry.map(|e| e.tags), Some(vec!["later".to_string()]));
+    }
+
+    #[test]
+    fn stash_search_and_list_answer_no_text() {
+        let (config, _root) = stash_config("no-text");
+        call("stash_add", json!({"text": "# Секрет\n\nтело заметки целиком"}), &config);
+        for (name, arguments) in [("stash_search", json!({"query": "Секрет"})), ("stash_list", json!({}))] {
+            let v = call(name, arguments, &config);
+            let text = v["result"]["content"][0]["text"].as_str().unwrap();
+            let raw: Value = serde_json::from_str(text).unwrap();
+            assert!(raw.get("text").is_none(), "{name}: {text}");
+            assert!(!text.contains("preview"), "{name}: {text}");
+        }
+    }
+
+    #[test]
+    fn a_relative_stash_add_path_is_the_servers_cwd() {
+        let (config, root) = stash_config("relative");
+        std::fs::write(root.join("alpha/plan.md"), "# План\n").unwrap();
+        let added = answer_of(&call("stash_add", json!({"path": "plan.md"}), &config));
+        assert!(added.ok, "{added:?}");
+        let entry = added.entry.unwrap();
+        assert_eq!(entry.path, crate::resolve_path("plan.md", config.cwd.to_str()));
+        assert_eq!(entry.repo.as_deref(), Some("alpha"));
+        let again = answer_of(&call("stash_add", json!({"path": "plan.md"}), &config));
+        assert_eq!(again.created, Some(false), "one file, one entry");
+    }
+
+    #[test]
+    fn stash_argument_errors_are_invalid_params() {
+        let (config, _root) = stash_config("params");
+        for (name, arguments) in [
+            ("stash_search", json!({})),
+            ("stash_search", json!({"query": "x", "repo": "a", "all": true})),
+            ("stash_list", json!({"limit": 0})),
+            ("stash_get", json!({})),
+            ("stash_tag", json!({"add": ["x"]})),
+            ("stash_add", json!({"text": "a", "path": "/tmp/a.md"})),
+            ("stash_add", json!({})),
+            ("stash_get", json!({"id": "x", "lines": "9:1"})),
+            ("stash_nope", json!({})),
+            // Wrong types are refused, never ignored or dropped.
+            ("stash_search", json!({"query": "x", "all": "true"})),
+            ("stash_list", json!({"all": 1})),
+            ("stash_add", json!({"text": "a", "tags": ["a", 3]})),
+            ("stash_add", json!({"text": "a", "tags": 5})),
+            ("stash_tag", json!({"id": "s1-00ab", "add": [null]})),
+            ("stash_tag", json!({"id": "s1-00ab", "add": ["a"], "remove": [true]})),
+        ] {
+            assert_eq!(call(name, arguments.clone(), &config)["error"]["code"], json!(-32602), "{name} {arguments}");
+        }
+    }
+
+    #[test]
+    fn a_stash_tool_failure_is_a_tool_error() {
+        let (config, _root) = stash_config("tool-error");
+        let v = call("stash_get", json!({"id": "s0-none"}), &config);
+        assert_eq!(v["result"]["isError"], json!(true));
+        assert!(answer_of(&v).error.unwrap().contains("s0-none"));
+        let v = call("stash_add", json!({"text": "   "}), &config);
+        assert_eq!(v["result"]["isError"], json!(true));
+        let v = call("stash_tag", json!({"id": "s0-none"}), &config);
+        assert_eq!(v["result"]["isError"], json!(true));
+    }
+
+    #[test]
+    fn stash_tools_without_a_usable_stash_say_why() {
+        let v = call("stash_search", json!({"query": "x"}), &test_config());
+        assert_eq!(v["result"]["isError"], json!(true));
+        assert_eq!(answer_of(&v).error.as_deref(), Some("no stash in this test"));
+    }
+
+    #[test]
+    fn a_stash_write_before_the_app_ever_ran_creates_nothing() {
+        let (config, root) = stash_config_in("not-run", None, false);
+        let v = call("stash_add", json!({"text": "текст"}), &config);
+        assert_eq!(v["result"]["isError"], json!(true));
+        assert_eq!(answer_of(&v).error.as_deref(), Some(crate::stash::cli::NOT_RUN_YET));
+        let found = answer_of(&call("stash_search", json!({"query": "текст"}), &config));
+        assert_eq!((found.ok, found.total), (true, Some(0)));
+        assert!(!root.join("app").exists(), "the app data dir is never created");
+        assert!(!root.join("home").exists(), "nor the notes folder");
+    }
+
+    #[test]
+    fn a_stash_write_into_an_app_dir_without_a_database_creates_nothing() {
+        let (config, root) = stash_config_in("no-db", None, false);
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        let v = call("stash_add", json!({"text": "текст"}), &config);
+        assert_eq!(answer_of(&v).error.as_deref(), Some(crate::stash::cli::NOT_RUN_YET));
+        assert_eq!(std::fs::read_dir(root.join("app")).unwrap().count(), 0, "no stash.db either");
+        assert!(!root.join("home").exists());
+    }
+
+    #[test]
+    fn a_stash_write_over_mcp_tells_the_app() {
+        let (socket, rx) = spawn_fake_socket(AiResponse::ok());
+        let (config, _root) = stash_config_in("notify", Some(socket.clone()), true);
+        let added = answer_of(&call("stash_add", json!({"text": "текст"}), &config));
+        let told = sent(&rx);
+        assert_eq!((told["cmd"].clone(), told["reason"].clone()), (json!("stash-changed"), json!("external")));
+        assert_eq!(told["ids"], json!([added.entry.unwrap().id]));
+        let _ = std::fs::remove_file(&socket);
+    }
+
+    #[test]
+    fn product_names_the_socket_and_the_stash_together() {
+        let flags = |a: &[&str]| McpConfig::from_flags_for(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), false).unwrap();
+        let dev = flags(&["--product", "couplet-dev"]);
+        assert_eq!(dev.socket_path, PathBuf::from("/tmp/couplet_dev_cmd.sock"));
+        assert!(!dev.allow_launch, "never launch the release app for a dev product");
+        let loc = dev.stash.as_ref().unwrap();
+        assert!(loc.app_dir().ends_with("couplet-dev"));
+        assert_eq!(loc.socket.as_deref(), Some(Path::new("/tmp/couplet_dev_cmd.sock")));
+        let release = flags(&[]);
+        assert!(release.stash.as_ref().unwrap().app_dir().ends_with("couplet"));
+        assert!(release.allow_launch);
+        assert_eq!(release.socket_path, ai_socket::socket_path(crate::paths::RELEASE_PRODUCT_NAME));
+        assert!(flags(&["--product", "couplet"]).allow_launch, "the release product by name");
+        let socket_only = flags(&["--socket", "/tmp/x.sock"]);
+        assert_eq!(socket_only.socket_path, PathBuf::from("/tmp/x.sock"));
+        assert!(!socket_only.allow_launch);
+        assert!(socket_only.stash.unwrap_err().contains("--product"));
+        let both = flags(&["--socket", "/tmp/x.sock", "--product", "couplet-dev"]);
+        assert_eq!(both.socket_path, PathBuf::from("/tmp/x.sock"));
+        assert_eq!(both.stash.unwrap().socket.as_deref(), Some(Path::new("/tmp/x.sock")));
+    }
+
+    #[test]
+    fn malformed_flags_are_refused_at_startup() {
+        // Each of these used to fall back to the release socket and stash,
+        // with launching allowed: a dev registration writing the owner's stash.
+        let refused = |a: &[&str]| {
+            McpConfig::from_flags(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                .err()
+                .unwrap_or_else(|| panic!("{a:?} was accepted"))
+        };
+        assert!(refused(&["--product=couplet-dev"]).contains("--product NAME"));
+        assert!(refused(&["--socket=/tmp/x.sock"]).contains("--socket PATH"));
+        assert!(refused(&["--product"]).contains("--product requires a value"));
+        assert!(refused(&["--product", "--socket", "/tmp/x.sock"]).contains("--product requires a value"));
+        assert!(refused(&["--socket"]).contains("--socket requires a value"));
+        assert!(refused(&["--bogus", "x"]).contains("--bogus"));
+        assert!(refused(&["--prodcut", "couplet-dev"]).contains("--prodcut"));
+        assert!(refused(&["couplet-dev"]).contains("couplet-dev"));
+        assert!(refused(&["--product", "couplet-dev", "--product", "couplet"]).contains("twice"));
+        // An invalid product is refused here too, not per call: otherwise the
+        // socket tools would dial `socket_path(<invalid>)` and answer "couplet
+        // is not running".
+        assert!(refused(&["--product", "../x"]).contains("--product"));
+        assert!(refused(&["--product", ""]).contains("--product"));
+    }
+
+    #[test]
+    fn a_debug_build_without_a_product_is_refused_at_startup() {
+        // No flags would mean the release socket and stash, launch allowed.
+        let err = McpConfig::from_flags_for(&[], true).err().unwrap();
+        assert_eq!(err, crate::stash::cli::DEBUG_NEEDS_PRODUCT);
+        // Tests are a debug build: the real entry refuses the same way.
+        assert!(McpConfig::from_flags(&[]).is_err());
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // A product is enough…
+        let dev = McpConfig::from_flags_for(&argv(&["--product", "couplet-dev"]), true).unwrap();
+        assert!(dev.stash.is_ok());
+        // …and a socket alone names its build for the socket tools, while
+        // the stash tools answer the --product error, as in a release build.
+        let socket_only = McpConfig::from_flags_for(&argv(&["--socket", "/tmp/x.sock"]), true).unwrap();
+        assert_eq!(socket_only.socket_path, PathBuf::from("/tmp/x.sock"));
+        assert!(socket_only.stash.unwrap_err().contains("--product"));
+    }
+
+    #[test]
+    fn run_exits_2_on_bad_flags_before_reading_stdin() {
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(run(argv(&["couplet", "mcp", "--bogus"])), 2);
+        assert_eq!(run(argv(&["couplet", "mcp", "--product=couplet-dev"])), 2);
     }
 }

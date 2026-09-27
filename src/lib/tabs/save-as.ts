@@ -29,3 +29,27 @@ export function decideSaveAs(claim: TabClaim | null, requested: string): SaveAsS
       return { kind: 'blocked', reason: 'unavailable', focusOtherWindow: false };
   }
 }
+
+/** The two paths of a Save As that moved a saved file (`stash_note_saved_as`). */
+export interface SavedAsReport {
+  oldPath: string;
+  newPath: string;
+}
+
+/**
+ * Whether to tell Rust that a Save As moved `oldPath` to `newPath` — which
+ * takes a stash note out of the stash (roadmap A14). Only once the tab is on
+ * the new path with nothing unsaved: the new file must hold exactly what the
+ * note held, or Rust leaves the note where it is. Whether `oldPath` was a
+ * note at all is Rust's to decide, from the database: the window's stash
+ * marks are a display cache, and a mark not yet loaded would skip a real note.
+ */
+export function savedAsReport(
+  oldPath: string | null,
+  newPath: string,
+  now: { path: string | null; dirty: boolean }
+): SavedAsReport | null {
+  if (oldPath === null || oldPath === newPath) return null;
+  if (now.path !== newPath || now.dirty) return null;
+  return { oldPath, newPath };
+}
