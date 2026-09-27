@@ -280,6 +280,12 @@ impl LeftReport {
         !self.put_away.is_empty() || !self.discarded.is_empty()
     }
 
+    /// Whether ⌘⇧T may offer the closed document again: not when the stash
+    /// discarded it — its file is gone.
+    pub(crate) fn reopenable(&self) -> bool {
+        self.discarded.is_empty()
+    }
+
     /// What `tab_close` answers: an explicit put-away (⌃T, `/stash`, the menu
     /// item) that did not happen says why — the tab is closed either way.
     /// ⌘W and a window closing are best effort and answer nothing.
@@ -1001,6 +1007,28 @@ mod tests {
         assert_eq!(ids.discarded, vec![blank.id.clone()]);
         assert!(ids.failed.is_empty());
         assert_eq!(state.with(|s| Ok(rows(s, "entries"))).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_discarded_note_is_not_offered_to_cmd_shift_t() {
+        // Its file is gone: ⌘⇧T would reopen nothing.
+        let (state, _root) = state_in("reopen");
+        let blank = note(&state, "x");
+        std::fs::write(&blank.path, "\n").unwrap();
+        let kept = note(&state, "# kept");
+        let unavailable = StashState::open(Err("no stash here".into()));
+
+        let r = documents_left_in(&state, &[(blank.path.clone(), 0, 1)], Leaving::Closed, NOW);
+        assert!(!r.reopenable(), "{r:?}");
+        let r = documents_left_in(&state, &[(kept.path.clone(), 0, 1)], Leaving::Closed, NOW);
+        assert!(r.reopenable(), "{r:?}");
+        let r = documents_left_in(
+            &unavailable,
+            &[(kept.path.clone(), 0, 1)],
+            Leaving::Closed,
+            NOW,
+        );
+        assert!(r.reopenable(), "a stash failure discards nothing: {r:?}");
     }
 
     #[test]

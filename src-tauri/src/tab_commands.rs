@@ -329,15 +329,12 @@ pub async fn tab_close(
     if let Some(path) = tab.path {
         crate::ai_socket::cancel_for_tab(&app, &label, &path, "tab closed");
         crate::comment_pause::commit_document(std::path::Path::new(&path));
-        let stack = app.state::<crate::closed::ClosedStack>();
-        if crate::closed::record_tab_close(&session, &stack, &label, number, &path, cursor, top_line) {
-            crate::closed::refresh_reopen_item(&app);
-        }
-        // With the registry, session and closed-stack locks all released
-        // (A11). Awaited, so the stash has decided before the close answers;
-        // on the blocking pool, since SQLite may wait out its busy timeout.
-        // A stash that cannot be written never fails the close; an explicit
-        // put-away says so in the answer.
+        // The stash decides first, with the registry and session locks
+        // released and the closed stack not yet taken (A11). Awaited, so it
+        // has decided before the close answers and before ⌘⇧T hears of the
+        // tab; on the blocking pool, since SQLite may wait out its busy
+        // timeout. A stash that cannot be written never fails the close; an
+        // explicit put-away says so in the answer.
         let leaving = if put_away.unwrap_or(false) {
             crate::stash::lifecycle::Leaving::PutAway
         } else {
@@ -351,14 +348,22 @@ pub async fn tab_close(
             crate::stash::lifecycle::documents_left(&stash_app, &[doc], leaving)
         })
         .await;
-        let failure = match stashed {
-            Ok(report) => report.failure(leaving),
+        let (failure, reopenable) = match stashed {
+            Ok(report) => (report.failure(leaving), report.reopenable()),
             Err(e) => {
                 eprintln!("tab_close: stash task failed: {e}");
-                (leaving == crate::stash::lifecycle::Leaving::PutAway)
-                    .then(|| format!("stash task failed: {e}"))
+                let failure = (leaving == crate::stash::lifecycle::Leaving::PutAway)
+                    .then(|| format!("stash task failed: {e}"));
+                (failure, true)
             }
         };
+        // A blank note the stash discarded has no file left to reopen.
+        let stack = app.state::<crate::closed::ClosedStack>();
+        if reopenable
+            && crate::closed::record_tab_close(&session, &stack, &label, number, &path, cursor, top_line)
+        {
+            crate::closed::refresh_reopen_item(&app);
+        }
         std::thread::spawn(move || {
             let _ = crate::recovery::delete_recovery_sync(&path);
         });
