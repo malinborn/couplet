@@ -289,6 +289,9 @@ pub async fn tab_close(
     cursor: usize,
     top_line: usize,
     content: Option<String>,
+    // ⌃T: the document goes into the stash — a file as a reference. A note is
+    // put away on every close anyway (stash plan 03, D5).
+    put_away: Option<bool>,
 ) -> Result<(), String> {
     let label = window.label().to_string();
     let (removed, number) = {
@@ -325,6 +328,23 @@ pub async fn tab_close(
         let stack = app.state::<crate::closed::ClosedStack>();
         if crate::closed::record_tab_close(&session, &stack, &label, number, &path, cursor, top_line) {
             crate::closed::refresh_reopen_item(&app);
+        }
+        // With the registry, session and closed-stack locks all released
+        // (A11). Awaited, so the stash has decided before the close answers;
+        // on the blocking pool, since SQLite may wait out its busy timeout.
+        // A stash that cannot be written never fails the close.
+        let leaving = if put_away.unwrap_or(false) {
+            crate::stash::lifecycle::Leaving::PutAway
+        } else {
+            crate::stash::lifecycle::Leaving::Closed
+        };
+        let (stash_app, doc) = (app.clone(), (path.clone(), cursor, top_line));
+        let stashed = tauri::async_runtime::spawn_blocking(move || {
+            crate::stash::lifecycle::documents_left(&stash_app, &[doc], leaving);
+        })
+        .await;
+        if let Err(e) = stashed {
+            eprintln!("tab_close: stash task failed: {e}");
         }
         std::thread::spawn(move || {
             let _ = crate::recovery::delete_recovery_sync(&path);

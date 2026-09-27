@@ -151,7 +151,7 @@ fn file_repo(path: &str) -> Option<String> {
 /// notes: notes get trashed and purged, file references only unlinked, so a
 /// folder the human already kept at `~/couplet/` — a git clone, drafts, our
 /// own `.trash/` — must never turn into notes. Both paths are normalized.
-fn kind_of_new(path: &Path, notes_dir: &Path) -> StashKind {
+pub(super) fn kind_of_new(path: &Path, notes_dir: &Path) -> StashKind {
     let is_note = path.parent() == Some(notes_dir)
         && path
             .file_name()

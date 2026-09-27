@@ -12,6 +12,7 @@ pub(crate) mod commands;
 mod db;
 mod entries;
 mod ids;
+pub(crate) mod lifecycle;
 mod notes;
 mod paths;
 
