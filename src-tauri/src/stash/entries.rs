@@ -481,6 +481,22 @@ pub(crate) fn insert_note_row(
     Ok(id)
 }
 
+/// One entry with its tags, from the database alone (`Stash::get`, and each
+/// hit of a search page): see `Enrich` for the rest.
+pub(crate) fn load_entry(conn: &Connection, id: &str) -> Result<StashEntry, String> {
+    let row = conn
+        .query_row(
+            &format!("SELECT {ENTRY_COLUMNS} FROM entries WHERE id = ?1"),
+            [id],
+            db::entry_row,
+        )
+        .optional()
+        .map_err(db::err)?
+        .ok_or_else(|| format!("no stash entry {id}"))?;
+    let tags = tags_of(conn, &row.id)?;
+    Ok(entry_from(row, tags))
+}
+
 impl Stash {
     /// A new note: its file in the notes folder, then its entry. Not put away
     /// (`stashed_at` is NULL): the note is open in the tab that typed it.
@@ -524,18 +540,7 @@ impl Stash {
 
     /// One entry from the database alone: see `Enrich` for the rest.
     pub fn get(&self, id: &str) -> Result<StashEntry, String> {
-        let row = self
-            .conn
-            .query_row(
-                &format!("SELECT {ENTRY_COLUMNS} FROM entries WHERE id = ?1"),
-                [id],
-                db::entry_row,
-            )
-            .optional()
-            .map_err(db::err)?
-            .ok_or_else(|| format!("no stash entry {id}"))?;
-        let tags = tags_of(&self.conn, &row.id)?;
-        Ok(entry_from(row, tags))
+        load_entry(&self.conn, id)
     }
 
     /// The entry whose `path` is exactly `path` — the `path_norm` spelling

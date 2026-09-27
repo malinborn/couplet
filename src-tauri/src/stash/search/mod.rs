@@ -9,6 +9,7 @@
 // outside `search` needs one: an unused `pub use` is a warning of its own.
 mod index;
 mod query;
+mod run;
 mod snippet;
 #[cfg(test)]
 mod test_support;
