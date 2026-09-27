@@ -54,12 +54,22 @@ pub fn location_for_product(product: &str, data_base: &Path, home: &Path) -> Sta
     }
 }
 
+/// A `--product` name taken as given: one `paths::dir_name` would rewrite
+/// falls back to `couplet`, the release stash, for exactly the names a typo
+/// produces, and `.`/`..` would put `stash.db` beside the app data folders
+/// and the notes in `/Users`.
+pub fn check_product(product: &str) -> Result<(), String> {
+    if crate::paths::dir_name(product) != product || product == "." || product == ".." {
+        return Err(format!(
+            "invalid --product {product:?}: a product name such as couplet-dev, with no slashes or surrounding spaces"
+        ));
+    }
+    Ok(())
+}
+
 /// `--product` / `--socket` into a location (plan D3, A12). A socket alone is
 /// refused: it names a non-release build, and the stash would silently be
-/// the release one's. So is a product `paths::dir_name` would not take as
-/// given — it falls back to `couplet`, the release stash, for exactly the
-/// names a typo produces — and `.`/`..`, which would put `stash.db` beside
-/// the app data folders and the notes in `/Users`. Path arithmetic only:
+/// the release one's. So is a product `check_product` refuses. Path arithmetic only:
 /// nothing is created or even looked at.
 pub fn location_from_flags(
     product: Option<&str>,
@@ -69,11 +79,7 @@ pub fn location_from_flags(
         return Err("--socket names another couplet build: pass --product too (e.g. --product couplet-dev), so the stash is that build's and not the release one".to_string());
     }
     let product = product.unwrap_or(crate::paths::RELEASE_PRODUCT_NAME);
-    if crate::paths::dir_name(product) != product || product == "." || product == ".." {
-        return Err(format!(
-            "invalid --product {product:?}: a product name such as couplet-dev, with no slashes or surrounding spaces"
-        ));
-    }
+    check_product(product)?;
     let data = dirs::data_dir().ok_or("cannot determine the application data directory")?;
     let home = dirs::home_dir().ok_or("cannot determine the home folder")?;
     let mut loc = location_for_product(product, &data, &home);

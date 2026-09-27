@@ -59,16 +59,40 @@ impl McpConfig {
     /// the slice after the `mcp` verb). `--product` names the build: its
     /// socket (unless `--socket` overrides it) and its stash together. Path
     /// arithmetic only — nothing is created or opened at startup.
-    fn from_flags(args: &[String]) -> Self {
+    ///
+    /// Anything else is refused, never skipped: an unknown or misspelt flag,
+    /// the `--flag=value` form, a flag without its value, a flag given twice,
+    /// an invalid product. Skipping one left the defaults — the release
+    /// socket and stash, launching allowed — under a dev registration.
+    fn from_flags(args: &[String]) -> Result<Self, String> {
         let mut socket: Option<String> = None;
         let mut product: Option<String> = None;
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {
-            match arg.as_str() {
-                "--socket" => socket = iter.next().cloned(),
-                "--product" => product = iter.next().cloned(),
-                _ => {}
+            let slot = match arg.as_str() {
+                "--socket" => &mut socket,
+                "--product" => &mut product,
+                other => {
+                    for (flag, value) in [("--socket", "PATH"), ("--product", "NAME")] {
+                        if other.starts_with(&format!("{flag}=")) {
+                            return Err(format!("write {flag} {value}, not {flag}={value}"));
+                        }
+                    }
+                    return Err(format!(
+                        "unknown argument for couplet mcp: {other} (usage: couplet mcp [--socket PATH] [--product NAME])"
+                    ));
+                }
+            };
+            let value = iter
+                .next()
+                .filter(|v| !v.starts_with("--"))
+                .ok_or_else(|| format!("{arg} requires a value"))?;
+            if slot.replace(value.clone()).is_some() {
+                return Err(format!("{arg} given twice"));
             }
+        }
+        if let Some(p) = product.as_deref() {
+            crate::stash::cli::check_product(p)?;
         }
         let stash = crate::stash::cli::location_from_flags(product.as_deref(), socket.as_deref());
         let release = crate::paths::RELEASE_PRODUCT_NAME;
@@ -77,12 +101,12 @@ impl McpConfig {
             (None, Some(p)) => (ai_socket::socket_path(p), p == release),
             (None, None) => (ai_socket::socket_path(release), true),
         };
-        McpConfig {
+        Ok(McpConfig {
             socket_path,
             allow_launch,
             stash,
             cwd: std::env::current_dir().unwrap_or_default(),
-        }
+        })
     }
 }
 
@@ -90,10 +114,18 @@ impl McpConfig {
 /// touched. `args` is the full `std::env::args()` vector (`args[0]` binary,
 /// `args[1]` `"mcp"`); everything from `args[2]` on is flags. Reads
 /// newline-delimited JSON-RPC requests from stdin until EOF, writing one
-/// response line per request to stdout. Always returns 0 — a malformed line
-/// is a protocol-level error response, not a process failure.
+/// response line per request to stdout. Returns 0 — a malformed line is a
+/// protocol-level error response, not a process failure — or 2 for bad flags,
+/// refused before stdin is read, with the error on stderr (stdout is the
+/// protocol channel).
 pub fn run(args: Vec<String>) -> i32 {
-    let config = McpConfig::from_flags(&args[2.min(args.len())..]);
+    let config = match McpConfig::from_flags(&args[2.min(args.len())..]) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("couplet: {e}");
+            return 2;
+        }
+    };
 
     let stdin = io::stdin();
     let stdout = io::stdout();
@@ -1060,7 +1092,7 @@ mod tests {
 
     #[test]
     fn from_flags_defaults_to_release_socket_and_allows_launch() {
-        let config = McpConfig::from_flags(&[]);
+        let config = McpConfig::from_flags(&[]).unwrap();
         // The literal, not RELEASE_PRODUCT_NAME: this is what the app binds
         // (`/tmp/<productName>_cmd.sock`), and `paths.rs` pins the constant
         // to `tauri.conf.json`.
@@ -1070,7 +1102,7 @@ mod tests {
 
     #[test]
     fn from_flags_explicit_socket_disallows_launch() {
-        let config = McpConfig::from_flags(&["--socket".to_string(), "/tmp/x.sock".to_string()]);
+        let config = McpConfig::from_flags(&["--socket".to_string(), "/tmp/x.sock".to_string()]).unwrap();
         assert_eq!(config.socket_path, PathBuf::from("/tmp/x.sock"));
         assert!(!config.allow_launch);
     }
@@ -1470,7 +1502,7 @@ mod tests {
 
     #[test]
     fn product_names_the_socket_and_the_stash_together() {
-        let flags = |a: &[&str]| McpConfig::from_flags(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let flags = |a: &[&str]| McpConfig::from_flags(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap();
         let dev = flags(&["--product", "couplet-dev"]);
         assert_eq!(dev.socket_path, PathBuf::from("/tmp/couplet_dev_cmd.sock"));
         assert!(!dev.allow_launch, "never launch the release app for a dev product");
@@ -1489,8 +1521,37 @@ mod tests {
         let both = flags(&["--socket", "/tmp/x.sock", "--product", "couplet-dev"]);
         assert_eq!(both.socket_path, PathBuf::from("/tmp/x.sock"));
         assert_eq!(both.stash.unwrap().socket.as_deref(), Some(Path::new("/tmp/x.sock")));
-        let bad = flags(&["--product", "../x"]);
-        assert!(!bad.allow_launch);
-        assert!(bad.stash.unwrap_err().contains("--product"));
+    }
+
+    #[test]
+    fn malformed_flags_are_refused_at_startup() {
+        // Each of these used to fall back to the release socket and stash,
+        // with launching allowed: a dev registration writing the owner's stash.
+        let refused = |a: &[&str]| {
+            McpConfig::from_flags(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                .err()
+                .unwrap_or_else(|| panic!("{a:?} was accepted"))
+        };
+        assert!(refused(&["--product=couplet-dev"]).contains("--product NAME"));
+        assert!(refused(&["--socket=/tmp/x.sock"]).contains("--socket PATH"));
+        assert!(refused(&["--product"]).contains("--product requires a value"));
+        assert!(refused(&["--product", "--socket", "/tmp/x.sock"]).contains("--product requires a value"));
+        assert!(refused(&["--socket"]).contains("--socket requires a value"));
+        assert!(refused(&["--bogus", "x"]).contains("--bogus"));
+        assert!(refused(&["--prodcut", "couplet-dev"]).contains("--prodcut"));
+        assert!(refused(&["couplet-dev"]).contains("couplet-dev"));
+        assert!(refused(&["--product", "couplet-dev", "--product", "couplet"]).contains("twice"));
+        // An invalid product is refused here too, not per call: otherwise the
+        // socket tools would dial `socket_path(<invalid>)` and answer "couplet
+        // is not running".
+        assert!(refused(&["--product", "../x"]).contains("--product"));
+        assert!(refused(&["--product", ""]).contains("--product"));
+    }
+
+    #[test]
+    fn run_exits_2_on_bad_flags_before_reading_stdin() {
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(run(argv(&["couplet", "mcp", "--bogus"])), 2);
+        assert_eq!(run(argv(&["couplet", "mcp", "--product=couplet-dev"])), 2);
     }
 }
