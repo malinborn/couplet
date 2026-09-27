@@ -10,7 +10,7 @@ use rusqlite::{params_from_iter, Connection, OptionalExtension};
 use serde::Serialize;
 
 use super::query::{fts_match, parse_query, short_terms, Term};
-use super::snippet::make_snippet;
+use super::snippet::hit_snippet;
 use crate::stash::db::err;
 use crate::stash::entries::{load_entry, normalize_repo, normalize_tag};
 use crate::stash::{Enrich, StashEntry, StashKind};
@@ -98,6 +98,8 @@ pub fn clamp_limit(limit: Option<usize>) -> usize {
 struct Candidate {
     rowid: i64,
     id: String,
+    /// A note's snippet skips its title line (`hit_snippet`).
+    note: bool,
     score: f64,
 }
 
@@ -126,7 +128,7 @@ fn candidate_sql(
             wheres.push(format!("instr(stash_fold(e.title), {p}) > 0"));
         }
         (
-            "SELECT e.rowid, e.id, 0.0 FROM entries e".to_string(),
+            "SELECT e.rowid, e.id, e.kind, 0.0 FROM entries e".to_string(),
             "e.deleted_at DESC, e.rowid DESC".to_string(),
         )
     } else {
@@ -135,11 +137,11 @@ fn candidate_sql(
                 let p = bind(&mut values, expr);
                 wheres.push(format!("entries_fts MATCH {p}"));
                 format!(
-                    "SELECT e.rowid, e.id, {RANK_SQL} AS score \
+                    "SELECT e.rowid, e.id, e.kind, {RANK_SQL} AS score \
                      FROM entries_fts JOIN entries e ON e.rowid = entries_fts.rowid"
                 )
             }
-            None => "SELECT e.rowid, e.id, 0.0 AS score FROM entries e".to_string(),
+            None => "SELECT e.rowid, e.id, e.kind, 0.0 AS score FROM entries e".to_string(),
         };
         wheres.push("e.deleted_at IS NULL".into());
         for s in short_terms(terms) {
@@ -204,7 +206,8 @@ pub fn search(conn: &Connection, args: &SearchArgs) -> Result<SearchPage, String
                 Ok(Candidate {
                     rowid: r.get(0)?,
                     id: r.get(1)?,
-                    score: r.get(2)?,
+                    note: r.get::<_, String>(2)? == StashKind::Note.as_str(),
+                    score: r.get(3)?,
                 })
             })
             .map_err(err)?;
@@ -235,7 +238,7 @@ pub fn search(conn: &Connection, args: &SearchArgs) -> Result<SearchPage, String
                 .optional()
                 .map_err(err)?
                 .unwrap_or_default();
-            let s = make_snippet(&body, &needles);
+            let s = hit_snippet(&body, c.note, &needles);
             (s.text, s.ranges)
         };
         hits.push(StashHit {
@@ -741,20 +744,13 @@ mod tests {
     }
 
     #[test]
-    fn a_title_only_hit_has_an_unmarked_snippet() {
-        let d = db("title-only");
-        d.file("f1", "hdmi-schema.png", &[0x89, b'P', 0, 1], 1);
-        d.note("n1", "# ОК\nначало текста", 2);
-        let p = page(
-            &d,
-            SearchArgs {
-                query: "hdmi".into(),
-                ..Default::default()
-            },
-        );
-        assert_eq!(p.hits[0].entry.id, "f1");
-        assert_eq!(p.hits[0].snippet, "");
-        assert!(p.hits[0].ranges.is_empty());
+    fn a_title_only_hit_on_a_note_has_no_snippet() {
+        // A note's first line is its title, shown on the card already: cut
+        // from the rest, a hit only in the title leaves nothing to mark, and
+        // the card falls back to its normal preview.
+        let d = db("title-only-note");
+        d.note("n1", "# ОК\nначало текста", 1);
+        d.note("n2", "# Тайник\nпро другое", 2);
         let short = page(
             &d,
             SearchArgs {
@@ -762,11 +758,57 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(
-            short.hits[0].snippet, "ОК начало текста",
-            "the body's start, unmarked"
-        );
+        assert_eq!(page_ids(&short), vec!["n1"]);
+        assert_eq!(short.hits[0].snippet, "");
         assert!(short.hits[0].ranges.is_empty());
+        let long = page(
+            &d,
+            SearchArgs {
+                query: "тайник".into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(page_ids(&long), vec!["n2"]);
+        assert_eq!(long.hits[0].snippet, "", "the title is not repeated");
+        assert!(long.hits[0].ranges.is_empty());
+    }
+
+    #[test]
+    fn a_note_snippet_is_cut_from_the_text_below_its_title() {
+        let d = db("note-snippet");
+        d.note("n1", "# Тайник\nключ от тайника", 1);
+        let p = page(
+            &d,
+            SearchArgs {
+                query: "тайник".into(),
+                ..Default::default()
+            },
+        );
+        let hit = &p.hits[0];
+        assert_eq!(hit.snippet, "ключ от тайника");
+        assert_eq!(hit.ranges, vec![(8, 14)]);
+    }
+
+    #[test]
+    fn a_title_only_hit_on_a_file_keeps_the_file_semantics() {
+        // A file reference's title is its name, not its first line: its body
+        // is shown from the start, marked or not; a binary one has none.
+        let d = db("title-only-file");
+        d.file("f1", "hdmi-schema.png", &[0x89, b'P', 0, 1], 1);
+        d.file("f2", "hdmi-notes.txt", b"about cables", 2);
+        let p = page(
+            &d,
+            SearchArgs {
+                query: "hdmi".into(),
+                ..Default::default()
+            },
+        );
+        let hit = |id: &str| p.hits.iter().find(|h| h.entry.id == id).unwrap();
+        assert_eq!(p.total, 2);
+        assert_eq!(hit("f2").snippet, "about cables", "the body's start, unmarked");
+        assert!(hit("f2").ranges.is_empty());
+        assert_eq!(hit("f1").snippet, "");
+        assert!(hit("f1").ranges.is_empty());
     }
 
     #[test]
@@ -869,7 +911,7 @@ mod tests {
     #[test]
     fn a_page_serializes_to_the_ipc_shape() {
         let d = db("serde");
-        d.note("n1", "тайник", 1);
+        d.note("n1", "# Заметка\nтайник рядом", 1);
         let v = serde_json::to_value(page(
             &d,
             SearchArgs {

@@ -21,6 +21,28 @@ pub struct Snippet {
     pub ranges: Vec<(u32, u32)>,
 }
 
+/// The snippet a hit is shown with. A note's first line is its title — on the
+/// card already, so the snippet is cut from the lines below it (the webview's
+/// `dropFirstLine` for the preview), and a note hit only in its title gets
+/// none: the card then shows its normal preview. A file reference's title is
+/// its name, so its body is cut whole, marked or not.
+pub fn hit_snippet(body: &str, note: bool, needles: &[String]) -> Snippet {
+    if !note {
+        return make_snippet(body, needles);
+    }
+    // The stored body is plain: non-empty lines only, so its first line is
+    // the note's first non-blank one.
+    let rest = body.split_once('\n').map_or("", |(_, rest)| rest);
+    let s = make_snippet(rest, needles);
+    if s.ranges.is_empty() {
+        return Snippet {
+            text: String::new(),
+            ranges: Vec::new(),
+        };
+    }
+    s
+}
+
 /// `needles` are lower-cased already (`Term::folded`). `ё` stays `ё` (D13).
 pub fn make_snippet(body: &str, needles: &[String]) -> Snippet {
     // One-for-one, so every char index stays valid: a snippet is one run of text.
@@ -242,6 +264,23 @@ mod tests {
         assert_eq!(slice16(&s.text, a, b), "тайник");
         let before: String = s.text.chars().take_while(|&c| c != 'т').collect();
         assert_eq!(a as usize, before.encode_utf16().count());
+    }
+
+    #[test]
+    fn a_note_snippet_skips_the_title_line() {
+        let s = hit_snippet("Тайник\nключ от тайника", true, &needles(&["тайник"]));
+        assert_eq!(s.text, "ключ от тайника");
+        assert_eq!(s.ranges, vec![(8, 14)]);
+        let empty = Snippet { text: String::new(), ranges: vec![] };
+        assert_eq!(hit_snippet("Тайник\nпро другое", true, &needles(&["тайник"])), empty);
+        assert_eq!(hit_snippet("Тайник", true, &needles(&["тайник"])), empty);
+    }
+
+    #[test]
+    fn a_file_snippet_keeps_its_first_line() {
+        let s = hit_snippet("hdmi\nкабель", false, &needles(&["hdmi"]));
+        assert_eq!(s.text, "hdmi кабель");
+        assert_eq!(hit_snippet("кабель", false, &needles(&["hdmi"])).text, "кабель");
     }
 
     #[test]
