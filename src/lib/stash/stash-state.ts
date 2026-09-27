@@ -4,7 +4,8 @@
  * what a key does while the stash has the keys. Pure — the runes store wraps
  * it (`stash-store.svelte.ts`), `TabDrawer` routes keys through it.
  */
-import type { KeyLike } from '../tabs/drawer-state';
+import { backspaceUnit, type KeyLike } from '../tabs/drawer-state';
+import { deleteBackward, type BackspaceUnit } from '../tabs/query-edit';
 import type { StashSort } from './stash-view';
 import type { StashEntry, StashMode } from './types';
 
@@ -86,11 +87,12 @@ export function escapeStash(s: StashState): StashState {
 }
 
 /**
- * ⌫ edits the query; on an empty one it drops the repo chip (mockup); then
- * nothing. The trash has no chip (D13), so there it only edits.
+ * ⌫ edits the query — a character, ⌥⌫ a word, ⌘⌫ all of it (`unit`); on an
+ * empty one any of them drops the repo chip (mockup); then nothing. The trash
+ * has no chip (D13), so there it only edits.
  */
-export function backspaceStash(s: StashState): StashState {
-  if (s.query) return setStashQuery(s, s.query.slice(0, -1));
+export function backspaceStash(s: StashState, unit: BackspaceUnit = 'char'): StashState {
+  if (s.query) return setStashQuery(s, deleteBackward(s.query, unit));
   if (s.mode === 'stash' && s.repoChip !== null) return setRepoChip(s, null);
   return s;
 }
@@ -132,7 +134,7 @@ export type StashKeyAction =
   | { kind: 'escape' }
   | { kind: 'sort'; sort: StashSort }
   | { kind: 'type'; char: string }
-  | { kind: 'backspace' }
+  | { kind: 'backspace'; unit: BackspaceUnit }
   | { kind: 'move'; delta: 1 | -1 }
   | { kind: 'enter' }
   | { kind: 'none' };
@@ -142,6 +144,8 @@ export function stashKeyAction(e: KeyLike, query: string, mac: boolean): StashKe
   if (e.isComposing || e.keyCode === 229) return { kind: 'none' };
   const modified = e.metaKey || e.ctrlKey || e.altKey || e.shiftKey;
   if (e.key === 'Escape') return modified ? { kind: 'none' } : { kind: 'escape' };
+  // Before the command branch, or ⌘⌫ would fall through it as `none`.
+  if (e.key === 'Backspace') return { kind: 'backspace', unit: backspaceUnit(e, mac) };
   const command = mac ? e.metaKey : e.ctrlKey;
   if (command && !e.shiftKey && !e.altKey) {
     const sort = STASH_SORT_KEYS.find((k) => k.code === e.code)?.sort;
@@ -151,7 +155,6 @@ export function stashKeyAction(e: KeyLike, query: string, mac: boolean): StashKe
     if (e.key === ' ' && !query) return { kind: 'none' };
     return { kind: 'type', char: e.key };
   }
-  if (e.key === 'Backspace') return { kind: 'backspace' };
   if (e.key === 'ArrowDown') return { kind: 'move', delta: 1 };
   if (e.key === 'ArrowUp') return { kind: 'move', delta: -1 };
   if (e.key === 'Enter') return { kind: 'enter' };

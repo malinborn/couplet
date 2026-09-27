@@ -151,6 +151,29 @@ describe('Esc and Backspace', () => {
     expect(s.repoChip).toBe('infra');
   });
 
+  it('⌥⌫ deletes a word and ⌘⌫ the whole query; on an empty one both drop the chip, as ⌫ does', () => {
+    let s = setStashQuery(openStash(STASH_CLOSED, 'infra'), 'привет мир  ');
+    s = backspaceStash(s, 'word');
+    expect(s.query).toBe('привет ');
+    s = backspaceStash(s, 'word');
+    expect(s).toMatchObject({ query: '', repoChip: 'infra' });
+    expect(backspaceStash(s, 'word').repoChip).toBeNull();
+    const full = setStashQuery(openStash(STASH_CLOSED, 'infra'), '#vpn конфиг');
+    const cleared = backspaceStash(full, 'all');
+    expect(cleared).toMatchObject({ query: '', repoChip: 'infra' });
+    expect(backspaceStash(cleared, 'all').repoChip).toBeNull();
+  });
+
+  it('in the trash: ⌥⌫ and ⌘⌫ edit the query and do nothing on an empty one', () => {
+    let s = setStashQuery(showTrash(openStash(STASH_CLOSED, 'infra')), 'openvpn conf');
+    s = backspaceStash(s, 'word');
+    expect(s.query).toBe('openvpn ');
+    s = backspaceStash(s, 'all');
+    expect(s).toMatchObject({ mode: 'trash', query: '', repoChip: 'infra' });
+    expect(backspaceStash(s, 'word')).toBe(s);
+    expect(backspaceStash(s, 'all')).toBe(s);
+  });
+
   it('the chip can be put back', () => {
     expect(setRepoChip(openStash(STASH_CLOSED, null), 'infra').repoChip).toBe('infra');
   });
@@ -180,7 +203,7 @@ describe('stashKeyAction', () => {
     expect(stashKeyAction(key('r', { metaKey: true }), '', true)).toEqual({ kind: 'sort', sort: 'opened' });
     expect(stashKeyAction(key('u', { metaKey: true }), '', true)).toEqual({ kind: 'sort', sort: 'kind' });
     expect(stashKeyAction(key('#', { code: 'Digit3', shiftKey: true }), '', true)).toEqual({ kind: 'type', char: '#' });
-    expect(stashKeyAction(key('Backspace'), '', true)).toEqual({ kind: 'backspace' });
+    expect(stashKeyAction(key('Backspace'), '', true)).toEqual({ kind: 'backspace', unit: 'char' });
     expect(stashKeyAction(key('ArrowDown'), '', true)).toEqual({ kind: 'move', delta: 1 });
     expect(stashKeyAction(key('ArrowUp'), '', true)).toEqual({ kind: 'move', delta: -1 });
     expect(stashKeyAction(key('Enter'), '', true)).toEqual({ kind: 'enter' });
@@ -193,6 +216,17 @@ describe('stashKeyAction', () => {
     expect(stashKeyAction(key('Escape', { shiftKey: true }), '', true)).toEqual({ kind: 'none' });
     expect(stashKeyAction(key('a', { isComposing: true }), '', true)).toEqual({ kind: 'none' });
     expect(stashKeyAction(key('Tab'), '', true)).toEqual({ kind: 'none' });
+  });
+
+  it('⌥⌫ deletes a word, ⌘⌫ clears — Ctrl for ⌘ off a Mac; composition ignored', () => {
+    expect(stashKeyAction(key('Backspace', { altKey: true }), 'ab cd', true)).toEqual({ kind: 'backspace', unit: 'word' });
+    expect(stashKeyAction(key('Backspace', { metaKey: true }), 'ab cd', true)).toEqual({ kind: 'backspace', unit: 'all' });
+    expect(stashKeyAction(key('Backspace', { ctrlKey: true }), 'ab cd', false)).toEqual({ kind: 'backspace', unit: 'all' });
+    expect(stashKeyAction(key('Backspace', { altKey: true }), 'ab cd', false)).toEqual({ kind: 'backspace', unit: 'word' });
+    expect(stashKeyAction(key('Backspace', { ctrlKey: true }), 'ab cd', true)).toEqual({ kind: 'backspace', unit: 'char' });
+    // On an empty query too: the reducer decides (drop the chip, as ⌫ does).
+    expect(stashKeyAction(key('Backspace', { metaKey: true }), '', true)).toEqual({ kind: 'backspace', unit: 'all' });
+    expect(stashKeyAction(key('Backspace', { altKey: true, isComposing: true }), 'ab', true)).toEqual({ kind: 'none' });
   });
 
   it('the command key is Ctrl off a Mac', () => {

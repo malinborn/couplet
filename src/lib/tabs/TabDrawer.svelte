@@ -49,6 +49,7 @@
     type DrawerState,
   } from './drawer-state';
   import { filterEntries, type Match } from './drawer-filter';
+  import { deleteBackward } from './query-edit';
   import { sortedOrder, type SortKind } from './drawer-sort';
   import { DRAWER_MOVE_KEY, DRAWER_SORT_KEYS } from './drawer-keys';
   import { createDrawerData, type DrawerDataDeps, type GitInfo, type TabText } from './drawer-data';
@@ -933,7 +934,7 @@
         setQuery(ds.query + action.char);
         break;
       case 'backspace':
-        setQuery(ds.query.slice(0, -1));
+        setQuery(deleteBackward(ds.query, action.unit));
         break;
       case 'move': {
         ds = moveKb(ds, action.delta, visible, list.activeId);

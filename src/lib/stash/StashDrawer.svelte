@@ -367,7 +367,7 @@
         setQuery(stash.state.query + action.char);
         return true;
       case 'backspace':
-        stash.update(backspaceStash);
+        stash.update((s) => backspaceStash(s, action.unit));
         return true;
       case 'move': {
         stash.update((s) => moveStashKb(s, action.delta, visible));
@@ -406,7 +406,7 @@
         setQuery(stash.state.query + action.char);
         return true;
       case 'backspace':
-        stash.update(backspaceStash);
+        stash.update((s) => backspaceStash(s, action.unit));
         return true;
     }
   }

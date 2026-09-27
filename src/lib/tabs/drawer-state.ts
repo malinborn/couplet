@@ -1,5 +1,6 @@
 import { DRAWER_MOVE_KEY, sortKindForCode } from './drawer-keys';
 import type { SortKind } from './drawer-sort';
+import type { BackspaceUnit } from './query-edit';
 
 /** Spec §6: the drawer opens ~200 ms after the pointer rests on the notch. */
 export const HOVER_OPEN_MS = 200;
@@ -159,13 +160,24 @@ export type DrawerKeyAction =
   | { kind: 'escape' }
   | { kind: 'sort'; sort: SortKind }
   | { kind: 'type'; char: string }
-  | { kind: 'backspace' }
+  | { kind: 'backspace'; unit: BackspaceUnit }
   | { kind: 'move'; delta: 1 | -1 }
   | { kind: 'enter' }
   | { kind: 'carousel' }
   /** ⌦ or ⌫ with a ⇧-selection: «Закрыть выбранные». */
   | { kind: 'close-selected' }
   | { kind: 'none' };
+
+/**
+ * How much a ⌫ takes from a query, as in a macOS text field: ⌘⌫ everything,
+ * ⌥⌫ a word, else a character. The command key is Ctrl off a Mac; ⌃⌫ on a
+ * Mac (and the Windows key elsewhere) is a plain ⌫. ⇧ changes nothing.
+ */
+export function backspaceUnit(e: KeyLike, mac: boolean): BackspaceUnit {
+  if (mac ? e.metaKey : e.ctrlKey) return 'all';
+  if (e.altKey) return 'word';
+  return 'char';
+}
 
 /**
  * What a key does while the drawer is open (spec §6). `none` lets the event
@@ -181,9 +193,12 @@ export type DrawerKeyAction =
  * `canCloseSelection`: a ⇧-selection exists and nothing else owns the keys
  * (no drag, no carousel). Then ⌦ closes it, and so does ⌫ while the query is
  * empty — with text, ⌫ edits the query. Matched on the code, any modifiers:
- * ⇧ is often still held from selecting, and ⌘⌫ means nothing in the drawer.
+ * ⇧ is often still held from selecting, and on an empty query ⌥⌫/⌘⌫ are ⌫.
  * Never on auto-repeat: a ⌫ held to clear the query would go on, once it is
  * empty, to close the selection — tabs the filter hides included.
+ *
+ * ⌫ is matched before the command branch, so ⌘⌫ clears the query (and is the
+ * drawer's, stopped before CodeMirror) instead of falling through as `none`.
  */
 export function drawerKeyAction(e: KeyLike, query: string, mac: boolean, canCloseSelection = false): DrawerKeyAction {
   if (e.isComposing || e.keyCode === 229) return { kind: 'none' };
@@ -192,6 +207,7 @@ export function drawerKeyAction(e: KeyLike, query: string, mac: boolean, canClos
   }
   const modified = e.metaKey || e.ctrlKey || e.altKey || e.shiftKey;
   if (e.key === 'Escape') return modified ? { kind: 'none' } : { kind: 'escape' };
+  if (e.key === 'Backspace') return query ? { kind: 'backspace', unit: backspaceUnit(e, mac) } : { kind: 'none' };
   const command = mac ? e.metaKey : e.ctrlKey;
   if (command && !e.shiftKey && !e.altKey) {
     if (e.code === DRAWER_MOVE_KEY.code) return { kind: 'carousel' };
@@ -202,7 +218,6 @@ export function drawerKeyAction(e: KeyLike, query: string, mac: boolean, canClos
     if (e.key === ' ' && !query) return { kind: 'none' };
     return { kind: 'type', char: e.key };
   }
-  if (e.key === 'Backspace') return query ? { kind: 'backspace' } : { kind: 'none' };
   if (e.key === 'ArrowDown') return { kind: 'move', delta: 1 };
   if (e.key === 'ArrowUp') return { kind: 'move', delta: -1 };
   if (e.key === 'Enter') return { kind: 'enter' };

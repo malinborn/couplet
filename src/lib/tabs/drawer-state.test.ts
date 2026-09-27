@@ -177,7 +177,7 @@ describe('drawerKeyAction', () => {
     expect(drawerKeyAction(del, '', true, true)).toEqual({ kind: 'close-selected' });
     expect(drawerKeyAction(del, 'rea', true, true)).toEqual({ kind: 'close-selected' });
     expect(drawerKeyAction(bs, '', true, true)).toEqual({ kind: 'close-selected' });
-    expect(drawerKeyAction(bs, 'rea', true, true), 'the query still loses a character').toEqual({ kind: 'backspace' });
+    expect(drawerKeyAction(bs, 'rea', true, true), 'the query still loses a character').toEqual({ kind: 'backspace', unit: 'char' });
     // Any modifiers: ⇧ is often still held from selecting; ⌘⌫ means nothing here.
     expect(drawerKeyAction(key({ key: 'Delete', code: 'Delete', shiftKey: true }), '', true, true)).toEqual({ kind: 'close-selected' });
     expect(drawerKeyAction(key({ key: 'Backspace', code: 'Backspace', metaKey: true }), '', true, true)).toEqual({
@@ -190,6 +190,7 @@ describe('drawerKeyAction', () => {
     expect(drawerKeyAction(key({ key: 'Backspace', code: 'Backspace', repeat: true }), '', true, true)).toEqual({ kind: 'none' });
     expect(drawerKeyAction(key({ key: 'Backspace', code: 'Backspace', repeat: true }), 'ab', true, true)).toEqual({
       kind: 'backspace',
+      unit: 'char',
     });
     expect(drawerKeyAction(key({ key: 'Delete', code: 'Delete', repeat: true }), '', true, true)).toEqual({ kind: 'none' });
   });
@@ -199,7 +200,7 @@ describe('drawerKeyAction', () => {
     const bs = key({ key: 'Backspace', code: 'Backspace' });
     expect(drawerKeyAction(del, '', true)).toEqual({ kind: 'none' });
     expect(drawerKeyAction(bs, '', true)).toEqual({ kind: 'none' });
-    expect(drawerKeyAction(bs, 'rea', true)).toEqual({ kind: 'backspace' });
+    expect(drawerKeyAction(bs, 'rea', true)).toEqual({ kind: 'backspace', unit: 'char' });
     expect(drawerKeyAction(del, '', true, false)).toEqual({ kind: 'none' });
   });
 
@@ -252,8 +253,49 @@ describe('drawerKeyAction', () => {
   });
 
   it('BackspaceEditsTheQueryOnly', () => {
-    expect(drawerKeyAction(key({ key: 'Backspace', code: 'Backspace' }), 'ab', true)).toEqual({ kind: 'backspace' });
+    expect(drawerKeyAction(key({ key: 'Backspace', code: 'Backspace' }), 'ab', true)).toEqual({ kind: 'backspace', unit: 'char' });
     expect(drawerKeyAction(key({ key: 'Backspace', code: 'Backspace' }), '', true)).toEqual({ kind: 'none' });
+  });
+
+  it('OptionBackspaceDeletesAWord_CommandBackspaceClearsTheQuery', () => {
+    const bs = (over: Partial<KeyLike>) => key({ key: 'Backspace', code: 'Backspace', ...over });
+    expect(drawerKeyAction(bs({ altKey: true }), 'привет мир', true)).toEqual({ kind: 'backspace', unit: 'word' });
+    expect(drawerKeyAction(bs({ metaKey: true }), 'привет мир', true)).toEqual({ kind: 'backspace', unit: 'all' });
+    // ⇧ still held changes nothing; ⌘ wins over ⌥.
+    expect(drawerKeyAction(bs({ altKey: true, shiftKey: true }), 'ab', true)).toEqual({ kind: 'backspace', unit: 'word' });
+    expect(drawerKeyAction(bs({ metaKey: true, shiftKey: true }), 'ab', true)).toEqual({ kind: 'backspace', unit: 'all' });
+    expect(drawerKeyAction(bs({ metaKey: true, altKey: true }), 'ab', true)).toEqual({ kind: 'backspace', unit: 'all' });
+    // A held ⌥⌫ goes on deleting words.
+    expect(drawerKeyAction(bs({ altKey: true, repeat: true }), 'ab cd', true)).toEqual({ kind: 'backspace', unit: 'word' });
+  });
+
+  it('TheCommandKeyIsCtrlOffAMac_ForBackspaceToo', () => {
+    const bs = (over: Partial<KeyLike>) => key({ key: 'Backspace', code: 'Backspace', ...over });
+    expect(drawerKeyAction(bs({ ctrlKey: true }), 'ab', false)).toEqual({ kind: 'backspace', unit: 'all' });
+    expect(drawerKeyAction(bs({ altKey: true }), 'ab', false)).toEqual({ kind: 'backspace', unit: 'word' });
+    // On a Mac ⌃⌫ is a plain ⌫; off it the Windows/Super key is.
+    expect(drawerKeyAction(bs({ ctrlKey: true }), 'ab', true)).toEqual({ kind: 'backspace', unit: 'char' });
+    expect(drawerKeyAction(bs({ metaKey: true }), 'ab', false)).toEqual({ kind: 'backspace', unit: 'char' });
+  });
+
+  it('OnAnEmptyQueryWordAndClearAreWhatBackspaceIs', () => {
+    const bs = (over: Partial<KeyLike>) => key({ key: 'Backspace', code: 'Backspace', ...over });
+    expect(drawerKeyAction(bs({ altKey: true }), '', true)).toEqual({ kind: 'none' });
+    expect(drawerKeyAction(bs({ metaKey: true }), '', true)).toEqual({ kind: 'none' });
+    expect(drawerKeyAction(bs({ ctrlKey: true }), '', false)).toEqual({ kind: 'none' });
+    // With a ⇧-selection they close it, as ⌫ does — never on repeat.
+    expect(drawerKeyAction(bs({ altKey: true }), '', true, true)).toEqual({ kind: 'close-selected' });
+    expect(drawerKeyAction(bs({ metaKey: true }), '', true, true)).toEqual({ kind: 'close-selected' });
+    expect(drawerKeyAction(bs({ altKey: true, repeat: true }), '', true, true)).toEqual({ kind: 'none' });
+    // With text they edit the query, selection or not.
+    expect(drawerKeyAction(bs({ altKey: true }), 'ab', true, true)).toEqual({ kind: 'backspace', unit: 'word' });
+    expect(drawerKeyAction(bs({ metaKey: true }), 'ab', true, true)).toEqual({ kind: 'backspace', unit: 'all' });
+  });
+
+  it('WordAndClearAreIgnoredDuringImeComposition', () => {
+    const bs = (over: Partial<KeyLike>) => key({ key: 'Backspace', code: 'Backspace', ...over });
+    expect(drawerKeyAction(bs({ altKey: true, isComposing: true }), 'ab', true)).toEqual({ kind: 'none' });
+    expect(drawerKeyAction(bs({ metaKey: true, keyCode: 229 }), 'ab', true)).toEqual({ kind: 'none' });
   });
 
   it('ArrowsAndEnter', () => {

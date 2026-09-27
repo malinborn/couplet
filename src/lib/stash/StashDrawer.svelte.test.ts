@@ -224,6 +224,22 @@ describe('StashDrawer', () => {
     expect(h.store.state.repoChip).toBeNull();
   });
 
+  it('⌥⌫ deletes a word, ⌘⌫ clears the query, then drops the chip as ⌫ does', async () => {
+    h = await setup({ repo: 'shelf' });
+    h.store.update((s) => setStashQuery(s, 'привет мир  '));
+    await settle();
+    expect(key('Backspace', { altKey: true })).toBe(true);
+    await settle();
+    expect(h.store.state.query).toBe('привет ');
+    // ⌘ and Ctrl together: jsdom's empty `navigator.platform` makes `isMacPlatform()` false.
+    expect(key('Backspace', { metaKey: true, ctrlKey: true })).toBe(true);
+    await settle();
+    expect(h.store.state).toMatchObject({ query: '', repoChip: 'shelf' });
+    expect(key('Backspace', { metaKey: true, ctrlKey: true })).toBe(true);
+    await settle();
+    expect(h.store.state.repoChip).toBeNull();
+  });
+
   it('Enter opens the top result', async () => {
     h = await setup();
     key('T');
@@ -721,6 +737,19 @@ describe('StashDrawer — the trash (stage 06)', () => {
       expect(trashIds()).toEqual(['t1']);
       expect(key('Backspace')).toBe(true);
       expect(key('Backspace')).toBe(true);
+      await settle();
+      expect(h.store.state).toMatchObject({ mode: 'trash', query: '', repoChip: 'shelf' });
+    });
+
+    it('⌥⌫ deletes a word and ⌘⌫ clears the query; on an empty one both are used and do nothing', async () => {
+      await inTrash({ repo: 'shelf' });
+      h.store.update((s) => setStashQuery(s, 'openvpn conf'));
+      await settle();
+      expect(key('Backspace', { altKey: true })).toBe(true);
+      await settle();
+      expect(h.store.state.query).toBe('openvpn ');
+      expect(key('Backspace', { metaKey: true, ctrlKey: true })).toBe(true);
+      expect(key('Backspace', { altKey: true })).toBe(true);
       await settle();
       expect(h.store.state).toMatchObject({ mode: 'trash', query: '', repoChip: 'shelf' });
     });

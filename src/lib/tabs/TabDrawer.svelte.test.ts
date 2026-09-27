@@ -261,6 +261,27 @@ describe('TabDrawer — the keyboard follows the drawer (I4a)', () => {
     expect(h.editorKeys).toEqual([]);
   });
 
+  it('⌥⌫ deletes a word and ⌘⌫ clears the search; neither reaches the editor', async () => {
+    h.editor.focus();
+    h.handle().toggle();
+    await settle();
+    for (const ch of 'при мир') press(ch, { code: ch === ' ' ? 'Space' : 'KeyA' });
+    await settle();
+    expect(query()).toBe('при мир');
+    const word = press('Backspace', { altKey: true });
+    await settle();
+    expect(query()).toBe('при ');
+    expect(word.defaultPrevented).toBe(true);
+    press('м', { code: 'KeyV' });
+    await settle();
+    // ⌘ and Ctrl together: jsdom's empty `navigator.platform` makes `isMacPlatform()` false.
+    const all = press('Backspace', { metaKey: true, ctrlKey: true });
+    await settle();
+    expect(query()).toBe('');
+    expect(all.defaultPrevented).toBe(true);
+    expect(h.editorKeys).toEqual([]);
+  });
+
   it('focus pulled back to the editor while the drawer has the keyboard returns to the drawer', async () => {
     h.handle().toggle();
     await settle();
