@@ -1,11 +1,12 @@
 <script lang="ts">
   /**
-   * The stash glyph — the mockup's tray (`ICONS.tray` in
-   * docs/investigations/2026-09-26-stash-mockup/stash-drawers.html). It draws
-   * in `currentColor`: the caller sets `var(--color-stash)`, the theme token
-   * that plays the mockup's `--stash`.
+   * The stash glyph — the mockup's tray (`STASH_ICONS.tray`, `icons.ts`, the
+   * one copy of the path). It draws in `currentColor`: the caller sets
+   * `var(--color-stash)`, the theme token that plays the mockup's `--stash`.
    * `label`: announced; otherwise decorative.
    */
+  import { STASH_ICONS } from './icons';
+
   let { size = 13, label = null }: { size?: number; label?: string | null } = $props();
 </script>
 
@@ -23,8 +24,7 @@
   aria-label={label ?? undefined}
   aria-hidden={label ? undefined : 'true'}
 >
-  <path d="M2.5 9.5 4.2 3.5h7.6l1.7 6" />
-  <path d="M2.5 9.5v3.2c0 .4.3.8.8.8h9.4c.5 0 .8-.4.8-.8V9.5h-3.3l-.9 1.6H6.7l-.9-1.6z" />
+  {#each STASH_ICONS.tray as d (d)}<path {d} />{/each}
 </svg>
 
 <style>
