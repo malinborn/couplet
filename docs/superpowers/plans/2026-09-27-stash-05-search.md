@@ -3357,14 +3357,26 @@ Push `feat/stash`, and update the night report with: the stage 05 test counts, t
 
 ## Recorded facts
 
-Filled in by Task 8 (release build, `--nocapture`):
+Filled in by Task 8 (release build). The test is `#[ignore]`d (3.1 s in debug) so the suite stays fast; rerun with
+`cargo test --release --lib stash::search::run::tests::thousand_notes_search_sanity -- --ignored --nocapture`.
+Corpus: 1000 generated notes, 300 words each from a 16-word Russian vocabulary, 3.8 MiB of text; every 10th note tagged
+`infra`. Query latency = median of 21 runs of `search()` with `limit: 50` (first run and max in brackets).
 
 | Measurement | Value |
 |---|---|
-| Machine / date | — |
-| Index 1000 notes (incl. file writes) | — |
-| `"тайник"` | — |
-| `"мент"` | — |
-| `"\"сервер бэкап\""` | — |
-| `"пл"` (short, title fallback) | — |
-| `"ключ доступ пароль"` | — |
+| Machine / date | Apple M4 Pro, 48 GB, macOS 26.4, rustc 1.94.0 / 2026-09-27 |
+| Index 1000 notes one by one (incl. file writes, one autocommit per note) | 266 ms |
+| `rebuild_index` of 1000 notes from an empty FTS table (startup rebuild path, reads every file back) | 115 ms |
+| `stash.db` size after checkpoint | 8.8 MiB with the index (8.0 MiB when built incrementally), 3.2 MiB without it (FTS emptied + VACUUM) |
+| long term `"тайник"` → 50 of 1000 | 2.44 ms (first 2.80, max 2.80) |
+| trigram piece `"мент"` → 50 of 1000 | 2.13 ms (2.27, 2.27) |
+| phrase `"\"сервер бэкап\""` → 50 of 682 | 2.42 ms (2.70, 3.73) |
+| short `"пл"` (title fallback) → 50 of 67 | 1.29 ms (1.96, 4.56) |
+| three terms `"ключ доступ пароль"` → 50 of 1000 | 4.16 ms (4.68, 4.68) |
+| tag + text `"#infra сервер"` → 50 of 100 | 2.01 ms (2.27, 2.27) |
+| no hits `"жираф"` → 0 | 0.01 ms (0.02, 0.02) |
+| `reindex_path` of a 1.00 MiB note (the save hook's worst case: `plain_text` + FTS5 DELETE+INSERT) | 23.2 ms median, 33.9 ms max (5 runs) |
+
+Every query is far under the 50 ms target. The 1 MiB reindex is below 50 ms too, so the per-path trailing coalesce the
+reconciliation (section 2) kept in reserve is not needed now; the stamp guard alone drops superseded autosaves. Debug
+build for comparison: queries 8–19 ms, rebuild 331 ms, 1 MiB reindex 85 ms.

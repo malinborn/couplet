@@ -884,4 +884,157 @@ mod tests {
         assert_eq!(v["hits"][0]["ranges"][0], serde_json::json!([0, 6]));
         assert!(v["hits"][0]["score"].as_f64().unwrap() > 0.0);
     }
+
+    /// Not a benchmark, and deliberately no time assertion (machines vary):
+    /// it proves 1000 notes search correctly and prints how long it took.
+    /// Ignored so the suite stays fast; run it in release and copy the
+    /// `stash search perf:` lines into the plan's "Recorded facts":
+    /// `cargo test --release … thousand_notes_search_sanity -- --ignored --nocapture`
+    #[test]
+    #[ignore = "perf sanity: run with --release --ignored --nocapture"]
+    fn thousand_notes_search_sanity() {
+        const WORDS: [&str; 16] = [
+            "тайник",
+            "документ",
+            "переговорка",
+            "ключ",
+            "сервер",
+            "бэкап",
+            "отчёт",
+            "задача",
+            "кабель",
+            "проект",
+            "встреча",
+            "план",
+            "доступ",
+            "пароль",
+            "сеть",
+            "заметка",
+        ];
+        const RUNS: usize = 21;
+        let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+        let file_size = |p: &std::path::Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+        let checkpoint = |d: &Db| {
+            d.conn
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+                .unwrap();
+        };
+
+        let d = db("perf");
+        let db_path = d.dir.join("stash.db");
+        let mut seed: u64 = 42;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) as usize
+        };
+        let started = std::time::Instant::now();
+        let mut text_bytes = 0;
+        for i in 0..1000 {
+            let title = WORDS[next() % WORDS.len()];
+            let body: Vec<&str> = (0..300).map(|_| WORDS[next() % WORDS.len()]).collect();
+            let text = format!("# {title} {i}\n{}", body.join(" "));
+            text_bytes += text.len();
+            d.note(&format!("n{i:04}"), &text, i as i64);
+            if i % 10 == 0 {
+                d.tag(&format!("n{i:04}"), "infra");
+            }
+        }
+        eprintln!(
+            "stash search perf: indexed 1000 notes one by one ({:.1} MiB of text, incl. file writes) in {:.0} ms",
+            text_bytes as f64 / 1048576.0,
+            ms(started.elapsed())
+        );
+        checkpoint(&d);
+        let with_index = file_size(&db_path);
+
+        // The startup rebuild (missing/corrupt/outdated index): from an empty
+        // FTS table, reading every file back.
+        d.conn.execute("DELETE FROM entries_fts", []).unwrap();
+        d.conn.execute_batch("VACUUM").unwrap();
+        checkpoint(&d);
+        let without_index = file_size(&db_path);
+        let started = std::time::Instant::now();
+        assert_eq!(rebuild_index(&d.conn).unwrap(), 1000);
+        eprintln!(
+            "stash search perf: rebuild_index of 1000 notes from an empty index in {:.0} ms",
+            ms(started.elapsed())
+        );
+        checkpoint(&d);
+        eprintln!(
+            "stash search perf: stash.db {:.1} MiB with the index ({:.1} MiB incrementally built), {:.1} MiB without it",
+            file_size(&db_path) as f64 / 1048576.0,
+            with_index as f64 / 1048576.0,
+            without_index as f64 / 1048576.0
+        );
+
+        let queries: [(&str, &str, bool); 7] = [
+            ("long term", "тайник", true),
+            ("trigram piece", "мент", true),
+            ("phrase", "\"сервер бэкап\"", true),
+            ("short, title fallback", "пл", true),
+            ("three terms", "ключ доступ пароль", true),
+            ("tag + text", "#infra сервер", true),
+            ("no hits", "жираф", false),
+        ];
+        for (label, q, hits_expected) in queries {
+            let args = SearchArgs {
+                query: q.into(),
+                limit: Some(50),
+                ..Default::default()
+            };
+            let mut times = Vec::with_capacity(RUNS);
+            let mut last = None;
+            for _ in 0..RUNS {
+                let started = std::time::Instant::now();
+                let p = search(&d.conn, &args).unwrap();
+                times.push(started.elapsed());
+                last = Some(p);
+            }
+            let p = last.unwrap();
+            let first = times[0];
+            times.sort();
+            eprintln!(
+                "stash search perf: {label} {q:?} → {} of {} hits: median {:.2} ms, first {:.2} ms, max {:.2} ms",
+                p.hits.len(),
+                p.total,
+                ms(times[RUNS / 2]),
+                ms(first),
+                ms(times[RUNS - 1])
+            );
+            if hits_expected {
+                assert!(p.total > 0, "{q:?} found nothing in 1000 generated notes");
+            } else {
+                assert_eq!(p.total, 0, "{q:?} must find nothing");
+            }
+        }
+
+        // The save hook's cost for a note at the body cap: one reindex of
+        // ~1 MiB of markdown (plain_text + FTS5 DELETE and INSERT), kept just
+        // under the cap so the edit at its end is indexed.
+        let line: Vec<&str> = (0..12).map(|_| WORDS[next() % WORDS.len()]).collect();
+        let line = format!("- {}\n", line.join(" "));
+        let big = format!(
+            "# Большая заметка\n{}",
+            line.repeat((1024 * 1024 - 4096) / line.len())
+        );
+        d.note("big", &big, 2000);
+        let path = d.path_of("big");
+        let mut times = Vec::new();
+        for n in 0..5 {
+            let edited = format!("{big}правка {n}\n");
+            let started = std::time::Instant::now();
+            assert!(reindex_path(&d.conn, &path, &edited).unwrap());
+            times.push(started.elapsed());
+        }
+        times.sort();
+        eprintln!(
+            "stash search perf: reindex_path of a {:.2} MiB note: median {:.1} ms, max {:.1} ms (5 runs)",
+            big.len() as f64 / 1048576.0,
+            ms(times[2]),
+            ms(times[4])
+        );
+        assert_eq!(ids(&d, "\"правка 4\""), vec!["big"]);
+    }
 }
