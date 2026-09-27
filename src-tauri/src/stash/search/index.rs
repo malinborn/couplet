@@ -18,7 +18,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use std::path::Path;
 
 use super::query::fold;
-use super::text::{cap, is_markdown_path, plain_text, read_capped, Loaded};
+use super::text::{cap, is_binary, is_markdown_path, plain_text, read_capped, Loaded};
 use crate::stash::db::err;
 use crate::stash::StashKind;
 
@@ -160,13 +160,23 @@ pub fn write_body(conn: &Connection, id: &str, body: &str) -> Result<bool, Strin
     }
 }
 
+/// The index body of `row` from `text` held in memory: what `read_body`
+/// makes of the same bytes on disk — capped, binary → `""`, then plain.
+fn body_of_text(row: &LiveRow, text: &str) -> String {
+    let text = cap(text);
+    if is_binary(text.as_bytes()) {
+        return String::new();
+    }
+    plain_text(text, is_markdown(row.kind, &row.path))
+}
+
 /// Index entry `id` from `text`, its file's content held in memory (a note
 /// just created or imported): no disk read. `Ok(false)` as `write_body`.
 pub fn index_text(conn: &Connection, id: &str, text: &str) -> Result<bool, String> {
     let Some(row) = find(conn, "id", id)? else {
         return Ok(false);
     };
-    let body = plain_text(cap(text), is_markdown(row.kind, &row.path));
+    let body = body_of_text(&row, text);
     write_row(conn, &row, &body)
 }
 
@@ -187,7 +197,7 @@ pub fn reindex_path(conn: &Connection, path: &str, text: &str) -> Result<bool, S
     let Some(row) = find(conn, "path", path)? else {
         return Ok(false);
     };
-    let body = plain_text(cap(text), is_markdown(row.kind, &row.path));
+    let body = body_of_text(&row, text);
     write_row(conn, &row, &body)
 }
 
@@ -659,6 +669,27 @@ mod tests {
         let fts = d.fts_rows();
         assert_eq!(fts.len(), 1);
         assert_eq!(fts[0].2, "ключ");
+    }
+
+    #[test]
+    fn a_note_with_a_nul_indexes_alike_from_memory_and_from_disk() {
+        // Created or imported notes index their in-memory text; a rebuild
+        // reads the file. A NUL in the first 8 KiB is binary on both paths.
+        let d = db("nul");
+        for (id, text) in [
+            ("early", "# Заметка\nтекст\0хвост".to_string()),
+            ("late", format!("# Длинная\n{}\0хвост", "а".repeat(5000))),
+        ] {
+            d.note(id, &text, 10);
+            let from_disk = d.fts_rows();
+            index_text(&d.conn, id, &text).unwrap();
+            assert_eq!(d.fts_rows(), from_disk, "{id}");
+            rebuild_index(&d.conn).unwrap();
+            assert_eq!(d.fts_rows(), from_disk, "{id}");
+        }
+        let rows = d.fts_rows();
+        assert_eq!(rows[0].2, "", "a NUL early: title only");
+        assert!(rows[1].2.ends_with("\0хвост"), "a NUL past 8 KiB: text");
     }
 
     #[test]

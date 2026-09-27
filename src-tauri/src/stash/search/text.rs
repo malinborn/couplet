@@ -36,12 +36,19 @@ pub fn read_capped(path: &Path) -> Loaded {
     if let Err(e) = file.take(BODY_CAP_BYTES as u64).read_to_end(&mut buf) {
         return Loaded::Unreadable(e.to_string());
     }
-    if buf[..buf.len().min(BINARY_SNIFF_BYTES)].contains(&0) {
+    if is_binary(&buf) {
         return Loaded::Binary;
     }
     // Lossy, unlike a preview: a char cut by the cap, or a non-UTF-8 file,
     // still indexes.
     Loaded::Text(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// The binary rule, one for a file read from disk (`read_capped`) and for
+/// text held in memory (`index::index_text`): the two must index alike, or a
+/// rebuild changes what a created note is found by.
+pub fn is_binary(bytes: &[u8]) -> bool {
+    bytes[..bytes.len().min(BINARY_SNIFF_BYTES)].contains(&0)
 }
 
 /// `text` cut to `BODY_CAP_BYTES` on a char boundary — the in-memory twin of
