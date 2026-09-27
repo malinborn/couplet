@@ -7,6 +7,7 @@
 //! `docs/superpowers/plans/2026-09-27-stash-00-roadmap.md`.
 
 mod backup;
+pub(crate) mod cli;
 mod clock;
 pub(crate) mod commands;
 mod db;
