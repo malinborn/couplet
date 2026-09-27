@@ -13,6 +13,7 @@
  * tab vanish for a delete that never happened.
  */
 import type { DropResult } from '../tabs/controller';
+import type { DropRefusal } from './types';
 
 export interface StashDropDeps {
   /**
@@ -24,7 +25,8 @@ export interface StashDropDeps {
   dropPath(path: string, stillWanted: () => Promise<boolean>): Promise<DropResult | undefined>;
   /** `stash_drop_pending`: whether Rust still waits for this request. */
   pending(requestId: number): Promise<boolean>;
-  done(requestId: number, dropped: boolean): Promise<void>;
+  /** `reason`: why the tab stayed; omitted when dropped or when the drop itself failed. */
+  done(requestId: number, dropped: boolean, reason?: DropRefusal): Promise<void>;
 }
 
 export interface StashDropRequest {
@@ -56,7 +58,8 @@ export async function handleStashDropTab(deps: StashDropDeps, request: StashDrop
   }
   if (result === 'unwanted' && asked === 'gone') return;
   try {
-    await deps.done(request.requestId, result === 'dropped');
+    if (result === 'unsaved' || result === 'busy') await deps.done(request.requestId, false, result);
+    else await deps.done(request.requestId, result === 'dropped');
   } catch (err) {
     // Rust times out on its own and reports `kept`; nothing to undo here.
     console.error('stash-drop-tab: the answer failed', err);

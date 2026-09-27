@@ -374,5 +374,6 @@
   "toast.stash.purged": "Заметка {title} удалена навсегда",
   "toast.stash.kept_unsaved": "Заметка {title} открыта в #{number} и ещё не сохранена — не удалена",
   "toast.stash.kept_timeout": "Окно #{number} не ответило — заметка {title} не удалена",
-  "toast.stash.kept_open": "Заметку {title} снова открыли в #{number} — не удалена"
+  "toast.stash.kept_open": "Заметку {title} снова открыли в #{number} — не удалена",
+  "toast.stash.kept_busy": "Заметка {title} в #{number} ждёт вашего ответа агенту — не удалена"
 }

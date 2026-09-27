@@ -144,6 +144,8 @@ describe('stash ipc for the trash (stage 06)', () => {
     expect(call()).toEqual(['stash_purge', { id: 's2' }]);
     await stashDropDone(7, true);
     expect(call()).toEqual(['stash_drop_done', { requestId: 7, dropped: true }]);
+    await stashDropDone(8, false, 'busy');
+    expect(call()).toEqual(['stash_drop_done', { requestId: 8, dropped: false, reason: 'busy' }]);
   });
 
   it('asks whether a drop is still wanted, camelCased (review M1)', async () => {

@@ -2915,7 +2915,7 @@ describe('dropPath (stash stage 06: a note is being deleted)', () => {
     const h = await started(files, both(), 'a');
     h.type('x');
     h.setSaveSucceeds(false);
-    expect(await h.controller.dropPath('/n/a.md')).toBe('kept');
+    expect(await h.controller.dropPath('/n/a.md')).toBe('unsaved');
     expect(h.calls.some((c) => c.startsWith('release '))).toBe(false);
     expect(h.ids()).toEqual(['a', 'b']);
     expect(h.active()).toBe('a');
@@ -2941,7 +2941,7 @@ describe('dropPath (stash stage 06: a note is being deleted)', () => {
     const h = await started(files, [fileTab('a', '/n/a.md')]);
     h.type('x');
     h.setSaveSucceeds(false);
-    expect(await h.controller.dropPath('/n/a.md')).toBe('kept');
+    expect(await h.controller.dropPath('/n/a.md')).toBe('unsaved');
     expect(h.deps.rust.release).not.toHaveBeenCalled();
     expect(h.ids()).toEqual(['a']);
   });
@@ -3020,5 +3020,22 @@ describe('dropPath (stash stage 06: a note is being deleted)', () => {
     const stillWanted = vi.fn(async () => false);
     expect(await h.controller.dropPath('/n/zzz.md', stillWanted)).toBe('dropped');
     expect(stillWanted).not.toHaveBeenCalled();
+  });
+
+  it('KeepsTheActiveTabWhileAnAgentsQuestionIsOnScreenAndSaysBusy', async () => {
+    const h = await started(files, both(), 'a');
+    vi.mocked(h.deps.ai.hasLiveAsk).mockReturnValue(true);
+    expect(await h.controller.dropPath('/n/a.md')).toBe('busy');
+    expect(h.calls.some((c) => c.startsWith('release ') || c.startsWith('activate '))).toBe(false);
+    expect(h.ids()).toEqual(['a', 'b']);
+    expect(h.active()).toBe('a');
+    expect(h.deps.reportUnsaved).not.toHaveBeenCalled();
+  });
+
+  it('StillDropsABackgroundTabWhileAQuestionIsOnScreenElsewhere', async () => {
+    const h = await started(files, both(), 'a');
+    vi.mocked(h.deps.ai.hasLiveAsk).mockReturnValue(true);
+    expect(await h.controller.dropPath('/n/b.md')).toBe('dropped');
+    expect(h.active()).toBe('a');
   });
 });

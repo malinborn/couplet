@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { installCatalog } from '../i18n';
 import { stashToastText, type StashToastNote } from './stash-toast';
+import type { KeptReason } from './types';
 
 beforeEach(() => installCatalog('ru'));
 afterEach(() => installCatalog('en'));
@@ -107,11 +108,12 @@ describe('stashToastText', () => {
     });
 
     it('a note stayed, and why; an unknown window number reads «?»', () => {
-      const kept = (reason: 'unsaved' | 'timeout' | 'open', number: number | null) =>
+      const kept = (reason: KeptReason, number: number | null) =>
         stashToastText({ what: 'kept', reason, title: 'Планы', label: 'editor-2', number }).text;
       expect(kept('unsaved', 2)).toBe('Заметка Планы открыта в #2 и ещё не сохранена — не удалена');
       expect(kept('timeout', 2)).toBe('Окно #2 не ответило — заметка Планы не удалена');
       expect(kept('open', null)).toBe('Заметку Планы снова открыли в #? — не удалена');
+      expect(kept('busy', 2)).toBe('Заметка Планы в #2 ждёт вашего ответа агенту — не удалена');
     });
   });
 });

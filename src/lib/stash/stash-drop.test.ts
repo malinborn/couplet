@@ -12,7 +12,7 @@ function deps(over: Partial<StashDropDeps> = {}) {
       return 'dropped' as const;
     }),
     pending: vi.fn(async () => true),
-    done: vi.fn(async (requestId: number, dropped: boolean) => {
+    done: vi.fn(async (requestId: number, dropped: boolean, _reason?: 'unsaved' | 'busy') => {
       order.push(`done ${requestId} ${dropped}`);
     }),
     ...over,
@@ -40,10 +40,16 @@ describe('handleStashDropTab', () => {
     expect(order).toEqual(['drop /n/a.md', 'done 7 true']);
   });
 
-  it('a tab that stayed answers dropped: false', async () => {
-    const { d } = deps({ dropPath: vi.fn(async () => 'kept' as const) });
+  it('a tab that stayed unsaved answers dropped: false, reason unsaved', async () => {
+    const { d } = deps({ dropPath: vi.fn(async () => 'unsaved' as const) });
     await handleStashDropTab(d, { requestId: 3, path: '/n/b.md' });
-    expect(d.done).toHaveBeenCalledWith(3, false);
+    expect(d.done).toHaveBeenCalledWith(3, false, 'unsaved');
+  });
+
+  it('a tab kept for an agent question on screen answers reason busy (review M2)', async () => {
+    const { d } = deps({ dropPath: vi.fn(async () => 'busy' as const) });
+    await handleStashDropTab(d, { requestId: 11, path: '/n/b.md' });
+    expect(d.done).toHaveBeenCalledWith(11, false, 'busy');
   });
 
   it('a drop the tab queue swallowed (undefined) answers dropped: false', async () => {

@@ -70,7 +70,10 @@ export type PullAnswer =
  * Why a note stayed in the stash (stage 06): its tab's save had not landed,
  * the window holding it did not answer in time, or it was opened again.
  */
-export type KeptReason = 'unsaved' | 'timeout' | 'open';
+export type KeptReason = 'unsaved' | 'timeout' | 'open' | 'busy';
+
+/** `stash_drop_done`'s `reason`: why the window kept the tab (review M2). */
+export type DropRefusal = 'unsaved' | 'busy';
 
 /**
  * `stash_delete`'s answer (roadmap A7): a note went to the trash (`entry` is

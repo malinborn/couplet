@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   DeleteOutcome,
+  DropRefusal,
   PullAnswer,
   PutAwayResult,
   StashEntry,
@@ -136,9 +137,15 @@ export function stashPurge(id: string): Promise<void> {
   return invoke<void>('stash_purge', { id });
 }
 
-/** The answer to `stash-drop-tab`; Rust hears it only from the window it asked. */
-export function stashDropDone(requestId: number, dropped: boolean): Promise<void> {
-  return invoke<void>('stash_drop_done', { requestId, dropped });
+/**
+ * The answer to `stash-drop-tab`; Rust hears it only from the window it asked.
+ * `reason` says why a tab was kept (review M2); without it Rust reads `unsaved`.
+ */
+export function stashDropDone(requestId: number, dropped: boolean, reason?: DropRefusal): Promise<void> {
+  return invoke<void>(
+    'stash_drop_done',
+    reason === undefined ? { requestId, dropped } : { requestId, dropped, reason }
+  );
 }
 
 /**

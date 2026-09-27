@@ -192,10 +192,12 @@ export type ActivateResult = 'ok' | 'noop' | 'refused' | 'busy' | 'failed';
 
 /**
  * `dropPath` (stash stage 06). `dropped`: no tab here holds the path any more;
- * `kept`: the tab stays (its save did not land); `unwanted`: the drop's own
- * `stillWanted` check said no, in its queue slot — nothing was touched.
+ * `unsaved`: the tab stays, its save did not land; `busy`: the tab stays, an
+ * agent's live question is on screen in it (review M2); `unwanted`: the
+ * drop's own `stillWanted` check said no, in its queue slot — nothing was
+ * touched.
  */
-export type DropResult = 'dropped' | 'kept' | 'unwanted';
+export type DropResult = 'dropped' | 'unsaved' | 'busy' | 'unwanted';
 
 /** What `EditorHandle.swapState` takes, always spelled out by the controller. */
 export interface SwapOptions {
@@ -1225,7 +1227,8 @@ export function createTabController(deps: TabControllerDeps) {
    * window for good — a release (Rust `tab_release`), never a close: no ⌘⇧T
    * entry (it would reopen an empty document at a path that no longer holds
    * the note), no put-away, and agents waiting on the tab are answered `tab
-   * released`. An active tab is first left the normal way (`activateNow`, or
+   * released`. An active tab with an agent's live question on screen stays
+   * (`busy`). Any other active tab is first left the normal way (`activateNow`, or
    * `newTabNow` when it is the only one — the window stays, D4): flushed, and
    * refused if the save did not land, so the file holds the last keystroke
    * when it moves and no autosave is bound to its path afterwards.
@@ -1237,11 +1240,14 @@ export function createTabController(deps: TabControllerDeps) {
     if (!tab) return 'dropped';
     if (stillWanted && !(await stillWanted())) return 'unwanted';
     if (tab.id === list.activeId) {
+      // A delete never swaps an agent's question out from under the human who
+      // has to answer it; the note stays, and the delete says why.
+      if (deps.ai.hasLiveAsk()) return 'busy';
       const next = removeTab(list, tab.id).nextActiveId;
       const result = next === null ? 'failed' : await activateNow(next);
       // No neighbour, or one that cannot be read: a fresh empty tab instead.
       if (result === 'failed') await newTabNow();
-      if (list.activeId === tab.id) return 'kept';
+      if (list.activeId === tab.id) return 'unsaved';
     }
     // In the background now, and clean by construction: it was left the
     // normal way (or never shown since it was last left).
@@ -1781,8 +1787,8 @@ export function createTabController(deps: TabControllerDeps) {
       }),
     /**
      * `stash-drop-tab` (stash stage 06): a stash note is being deleted — drop
-     * its tab from this window (`dropNow`). `kept`: its save did not land,
-     * the tab stays and the note is kept. `stillWanted` is asked once the
+     * its tab from this window (`dropNow`). `unsaved` / `busy`: the tab
+     * stays and the note is kept. `stillWanted` is asked once the
      * queue slot comes, before anything is left. Never call it from inside
      * `runExclusive` or a queued method: it waits for the tab queue.
      */
