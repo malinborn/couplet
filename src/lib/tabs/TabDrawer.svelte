@@ -749,7 +749,7 @@
       },
       (ev) => {
         gesture = null;
-        if (dragging) finishDrag(ev !== null);
+        if (dragging) finishDrag(ev);
         else if (ev) openStashEntry(entry, undefined, true);
       }
     );
@@ -1242,7 +1242,7 @@
       },
       (ev) => {
         gesture = null;
-        if (dragging) finishDrag(ev !== null);
+        if (dragging) finishDrag(ev);
         else if (ev) activate(id);
       }
     );
@@ -1298,13 +1298,12 @@
     );
   }
 
-  function dragMove(ev: PointerEvent): void {
-    const d = drag;
-    if (!d) return;
+  /** The drag with the pointer at `ev`: where it is, and what a drop there would do. */
+  function dragAt(d: DragState, ev: PointerEvent): DragState {
     const target = dropTargetAt(d.src, ev.clientX, ev.clientY);
     // A filtered view has no manual order to drop into (mockup).
     const inList = !ds.query && overList(ev.clientX, ev.clientY) && (target === 'list' || target === 'tabs-drawer');
-    drag = {
+    return {
       ...d,
       x: ev.clientX,
       y: ev.clientY,
@@ -1312,15 +1311,31 @@
       inList,
       before: inList ? dropBefore(cardBoxes(), ev.clientY, new Set(d.src === 'tabs' ? d.ids : [])) : null,
     };
-    if (inList) autoScroll(ev.clientY);
-    if (d.src === 'tabs') followCarousel(ev.clientX, ev.clientY, target === 'page');
   }
 
-  function finishDrag(dropped: boolean): void {
+  function dragMove(ev: PointerEvent): void {
     const d = drag;
+    if (!d) return;
+    const next = dragAt(d, ev);
+    drag = next;
+    if (next.inList) autoScroll(ev.clientY);
+    if (d.src === 'tabs') followCarousel(ev.clientX, ev.clientY, next.target === 'page');
+  }
+
+  /** `ev`: the pointerup — the drop is decided where it happened, not at the last pointermove. `null`: cancelled. */
+  function finishDrag(ev: PointerEvent | null): void {
+    const dropped = ev !== null;
+    const d = drag && ev ? dragAt(drag, ev) : drag;
     drag = null;
     windowsFetch = null;
-    const c = car;
+    let c = car;
+    if (ev && c?.mode === 'drag' && c.got === null) {
+      const hot = d?.target === 'page' ? (carHandle?.itemAt(ev.clientX, ev.clientY) ?? null) : null;
+      if (hot !== c.hot) {
+        c = { ...c, hot };
+        car = c;
+      }
+    }
     if (d?.src === 'stash') {
       // Onto the tabs drawer: open here, at the drop position of an unfiltered list; both drawers stay (D9).
       if (dropped && d.entry && d.target === 'tabs-drawer') {

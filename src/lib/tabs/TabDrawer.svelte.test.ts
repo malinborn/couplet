@@ -1884,6 +1884,25 @@ describe('TabDrawer — cards cross between the drawers (stash stage 04)', () =>
     expect(h.onreorder).not.toHaveBeenCalled();
   });
 
+  it('the drop lands where the pointer is let go, not where it last moved (M11)', async () => {
+    el('.stash-bar').getBoundingClientRect = () => new DOMRect(0, 700, 400, 58);
+    el('.tab-list').getBoundingClientRect = () => new DOMRect(0, 0, 400, 600);
+    drag(card('b'), { x: 50, y: 720 });
+    expect(el('.stash-bar').classList.contains('hot')).toBe(true);
+    // Released over the list with no pointermove in between: a reorder, not a put-away.
+    pointer(window, 'pointerup', { clientX: 100, clientY: 300 });
+    await settle();
+    expect(onputaway).not.toHaveBeenCalled();
+    expect(h.onreorder).toHaveBeenCalled();
+
+    h.onreorder.mockClear();
+    drag(card('c'), { x: 100, y: 300 });
+    pointer(window, 'pointerup', { clientX: 60, clientY: 720 });
+    await settle();
+    expect(onputaway).toHaveBeenCalledWith(['c']);
+    expect(h.onreorder).not.toHaveBeenCalled();
+  });
+
   it('dropped on the open stash drawer, it is put away too', async () => {
     h.handle().toggleStash();
     await settleLong();
