@@ -415,7 +415,7 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "description": "The note's markdown. Mutually exclusive with `path`."},
+                    "text": {"type": "string", "description": "The note's markdown, at most 4 MiB. Mutually exclusive with `path`."},
                     "path": {"type": "string", "description": "A file to reference, absolute or relative to your working directory. Mutually exclusive with `text`."},
                     "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags, one word each, without '#'."}
                 },

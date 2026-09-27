@@ -219,11 +219,13 @@ pub const GET_MAX_LINES: usize = 500;
 /// …and at most this many bytes: a single longer line is cut at a char
 /// boundary (`Sliced::cut`).
 pub const GET_MAX_BYTES: usize = 64 * 1024;
+/// The largest note `add` takes (stdin or MCP `text`): an accidental large
+/// pipe must not become a huge note.
+pub const ADD_MAX_BYTES: usize = 4 * 1024 * 1024;
 /// `get` reads at most this much of a note file: a bigger one is readable
 /// through `get` only up to here, and its line count is then unknown. The
-/// same as the CLI's stdin cap for `add`, so a note an agent added is always
-/// whole.
-pub const GET_READ_MAX_BYTES: usize = 4 * 1024 * 1024;
+/// same as `ADD_MAX_BYTES`, so a note an agent added is always whole.
+pub const GET_READ_MAX_BYTES: usize = ADD_MAX_BYTES;
 
 const DAY_MS: i64 = 86_400_000;
 const HOUR_MS: i64 = 3_600_000;
@@ -883,6 +885,9 @@ pub fn add_note(ctx: &Ctx, text: &str, tags: &[String]) -> StashAnswer {
     if text.trim().is_empty() {
         return StashAnswer::error("refusing to add an empty note");
     }
+    if text.len() > ADD_MAX_BYTES {
+        return StashAnswer::error(too_big_note());
+    }
     let tags = match agent_tags(tags) {
         Ok(t) => t,
         Err(e) => return StashAnswer::error(e),
@@ -921,6 +926,32 @@ pub fn add_note(ctx: &Ctx, text: &str, tags: &[String]) -> StashAnswer {
             note.id, note.path
         )),
     }
+}
+
+fn too_big_note() -> String {
+    format!(
+        "refusing a note over {} MiB (add a large file with --path instead)",
+        ADD_MAX_BYTES >> 20
+    )
+}
+
+/// The note text piped to `couplet stash add`: at most `ADD_MAX_BYTES`
+/// (read one byte past it to tell), UTF-8, not blank.
+fn read_stdin_note(input: impl Read) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    input
+        .take(ADD_MAX_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("failed to read stdin: {e}"))?;
+    if bytes.len() > ADD_MAX_BYTES {
+        return Err(too_big_note());
+    }
+    let text = String::from_utf8(bytes)
+        .map_err(|_| "failed to read stdin (the note must be UTF-8 text)".to_string())?;
+    if text.trim().is_empty() {
+        return Err("refusing to add an empty note (pipe its text on stdin)".to_string());
+    }
+    Ok(text)
 }
 
 /// A reference to an existing regular file; the file itself is never
@@ -1323,14 +1354,10 @@ pub fn run(args: &[String]) -> i32 {
         if std::io::stdin().is_terminal() {
             return fail("pipe the note's text on stdin (or add a file with --path)");
         }
-        let mut buf = String::new();
-        if std::io::stdin().read_to_string(&mut buf).is_err() {
-            return fail("failed to read stdin (the note must be UTF-8 text)");
+        match read_stdin_note(std::io::stdin().lock()) {
+            Ok(text) => Some(text),
+            Err(e) => return fail(&e),
         }
-        if buf.trim().is_empty() {
-            return fail("refusing to add an empty note (pipe its text on stdin)");
-        }
-        Some(buf)
     } else {
         None
     };
@@ -3378,6 +3405,29 @@ mod tests {
         assert_eq!(run(&argv(&["dump"])), 2);
         assert_eq!(run(&argv(&["list", "--socket", "/tmp/nobody.sock"])), 2);
         assert_eq!(run(&argv(&["list", "--product", "../x", "--json"])), 2);
+        // A debug build (tests are one) without --product: exit 2 too.
+        assert_eq!(run(&argv(&["list", "--json"])), 2);
+    }
+
+    #[test]
+    fn a_note_on_stdin_is_capped_utf8_and_not_blank() {
+        let read = |bytes: Vec<u8>| read_stdin_note(std::io::Cursor::new(bytes));
+        assert_eq!(read(b"# text\n".to_vec()).unwrap(), "# text\n");
+        assert_eq!(read(vec![b'a'; ADD_MAX_BYTES]).unwrap().len(), ADD_MAX_BYTES);
+        let over = read(vec![b'a'; ADD_MAX_BYTES + 1]).unwrap_err();
+        assert!(over.contains("4 MiB"), "{over}");
+        assert!(read(vec![0xff, 0xfe]).unwrap_err().contains("UTF-8"));
+        assert!(read(b" \n\t".to_vec()).unwrap_err().contains("empty"));
+    }
+
+    #[test]
+    fn a_note_over_the_cap_is_refused_before_anything_is_created() {
+        // The MCP `text` has no stdin to cap: `add_note` refuses it itself.
+        let loc = temp_location("add-huge", true);
+        let cwd = outside_git();
+        let answer = add_note(&ctx(&loc, &cwd), &"a".repeat(ADD_MAX_BYTES + 1), &[]);
+        assert!(answer.error.as_deref().unwrap().contains("4 MiB"), "{answer:?}");
+        assert!(!loc.paths.notes_dir.exists());
     }
 
     #[test]
