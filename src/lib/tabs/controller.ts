@@ -24,12 +24,32 @@ import {
 import type { InboxItem } from './agent-inbox';
 import type { MoveTarget } from './carousel';
 import type { DiskDocument, LineEnding } from '../line-endings';
+import { isBlankText } from '../stash/note-title';
+import { decideSaveAs } from './save-as';
+import type { TabClaim } from '../tauri/commands';
 
 /** Flush attempts before a still-dirty file tab refuses to be left. */
 export const FLUSH_ATTEMPTS = 3;
 
 /** Spec §7: a quick look seen and unanswered this long is "ignored". */
 export const TRANSIENT_IGNORED_AFTER_MS = 60 * 60 * 1000;
+
+/** A note birth that failed is not tried again sooner than this (unless the tab closes). */
+export const NOTE_RETRY_MS = 10_000;
+
+/**
+ * How an untitled tab becomes a stash note (stash plan 03). `create`: Rust
+ * writes a new note holding `text` and answers its normalized path.
+ * `claim`: `tab_claim` — `null` when Rust could not be asked. `failed`: say
+ * so (the `stash-error` toast); the text stays in the tab and its draft.
+ */
+export interface NoteDeps {
+  create(text: string): Promise<{ path: string }>;
+  claim(tabId: string, path: string): Promise<TabClaim | null>;
+  failed(message: string): void;
+}
+
+export type NoteBirth = { kind: 'born'; path: string } | { kind: 'skipped' } | { kind: 'failed'; error: string };
 
 /** File → «Короткие показы без ответа через час». */
 export type TransientPolicy = 'keep' | 'close';
@@ -250,6 +270,8 @@ export interface TabControllerDeps {
    * activation a *view* (spec §2) — an agent activates tabs too.
    */
   windowFocused(): boolean;
+  /** Absent: untitled tabs stay untitled (a browser without Tauri, older tests). */
+  notes?: NoteDeps;
 }
 
 export interface DiskOptions {
@@ -355,6 +377,11 @@ export function createTabController(deps: TabControllerDeps) {
    */
   let exclusive = false;
 
+  /** Tabs with a birth queued or running — one at a time per tab. */
+  const birthing = new Set<string>();
+  /** Tab id → when its last birth failed (`NOTE_RETRY_MS`). */
+  const birthFailedAt = new Map<string, number>();
+
   /**
    * The last change to the live document since its tab was shown — typing,
    * an agent's live edit, a reload from disk. Kept here rather than published
@@ -437,6 +464,105 @@ export function createTabController(deps: TabControllerDeps) {
 
   function isEmptyUntitled(): boolean {
     return deps.doc.path() === null && (deps.editor.current()?.doc.length ?? 0) === 0;
+  }
+
+  /** A tab's text without I/O: live for the active tab, cached (or restored untitled text) otherwise. */
+  function heldText(tabId: string): string | null {
+    if (tabId === list.activeId) return deps.editor.current()?.doc.toString() ?? null;
+    const c = cache.get(tabId);
+    return c?.state?.doc.toString() ?? c?.content ?? null;
+  }
+
+  function wantsNote(tabId: string): boolean {
+    const tab = findById(list, tabId);
+    if (!deps.notes || !tab || tab.path !== null || birthing.has(tabId)) return false;
+    const failedAt = birthFailedAt.get(tabId);
+    if (failedAt !== undefined && deps.now() - failedAt < NOTE_RETRY_MS) return false;
+    const text = heldText(tabId);
+    return text !== null && !isBlankText(text);
+  }
+
+  /**
+   * Queue a birth for each of `ids` that wants one. Never awaited: this is
+   * called from inside queued operations, and the birth waits for that slot.
+   */
+  function scheduleBirths(ids: readonly string[]): void {
+    for (const id of ids) {
+      if (!wantsNote(id)) continue;
+      birthing.add(id);
+      void queue.run(() => becomeNoteNow(id)).catch((err: unknown) => {
+        birthing.delete(id);
+        console.error('Failed to make a note of the tab:', err);
+      });
+    }
+  }
+
+  function failBirth(tabId: string, error: string): NoteBirth {
+    birthFailedAt.set(tabId, deps.now());
+    deps.notes?.failed(error);
+    return { kind: 'failed', error };
+  }
+
+  /**
+   * Stash plan 03, D1–D3: untitled `tabId` with text becomes a note. Runs in
+   * the queue, so the active tab cannot change underneath it. The editor
+   * state is never replaced: Rust writes the text as it was, the tab claims
+   * the note (the Save As flow — a refusal writes nothing to the tab), and a
+   * live document that moved on during the awaits is dirty against it and
+   * written by the ordinary flush. Until the claim lands the tab is untitled,
+   * so the heartbeat keeps its draft sidecar current; a failure at either
+   * step leaves the text in the tab and its draft (and, after a create, in
+   * the note too) — duplicated at worst, never lost.
+   */
+  async function becomeNoteNow(tabId: string): Promise<NoteBirth> {
+    const notes = deps.notes;
+    birthing.add(tabId);
+    try {
+      const tab = findById(list, tabId);
+      if (!notes || !tab || tab.path !== null) return { kind: 'skipped' };
+      const text = heldText(tabId);
+      if (text === null || isBlankText(text)) return { kind: 'skipped' };
+      let created: string;
+      try {
+        created = (await notes.create(text)).path;
+      } catch (err) {
+        return failBirth(tabId, message(err));
+      }
+      // The note holds `text` from here on, whatever happens to the tab.
+      const step = decideSaveAs(await notes.claim(tabId, created), created);
+      if (step.kind === 'blocked') return failBirth(tabId, `the tab could not take ${created}`);
+      birthFailedAt.delete(tabId);
+      if (!findById(list, tabId)) return { kind: 'skipped' };
+      if (tabId === list.activeId) {
+        // Read and flagged with no await in between, then flushed: what was
+        // typed during the two awaits is written by the ordinary save path.
+        const live = deps.editor.current()?.doc.toString() ?? text;
+        const dirty = live !== text;
+        deps.doc.setActive(step.path, dirty, text, 'lf');
+        publish(updateTab(list, tabId, { path: step.path, dirty }));
+        await flushWithRetries();
+        // As Save As: Rust marks the tab active on its new file (and the watcher follows).
+        await deps.rust.activate(tabId);
+      } else {
+        const cached = cache.get(tabId);
+        cache.set(tabId, {
+          state: cached?.state ?? null,
+          content: null,
+          cursor: cached?.cursor ?? 0,
+          topLine: cached?.topLine ?? 1,
+          scroll: cached?.scroll ?? null,
+          // What Rust wrote: returning to the tab reuses its cached state.
+          baseline: text,
+          enterAt: cached?.enterAt ?? null,
+          lineEnding: 'lf',
+        });
+        publish(updateTab(list, tabId, { path: step.path, dirty: false }));
+      }
+      deps.settled();
+      return { kind: 'born', path: step.path };
+    } finally {
+      birthing.delete(tabId);
+    }
   }
 
   /**
@@ -653,6 +779,8 @@ export function createTabController(deps: TabControllerDeps) {
     void deps.comments.reload();
     deps.entered(tab.path, opened);
     deps.settled();
+    // Stash plan 03, D4: a restored, moved or left-behind untitled tab with text.
+    scheduleBirths(list.tabs.map((t) => t.id));
   }
 
   async function enter(
@@ -711,6 +839,7 @@ export function createTabController(deps: TabControllerDeps) {
     });
     publish(next);
     adoptInboxes(fresh);
+    scheduleBirths(fresh.map((t) => t.tabId));
     // An agent's question on screen here is not swapped away from under it.
     if (deps.ai.hasLiveAsk()) {
       deps.settled();
@@ -1350,6 +1479,15 @@ export function createTabController(deps: TabControllerDeps) {
       return closeNow(tabId, 'close', onLastTab, true);
     },
     findByPath: (path: string) => findByPath(list, path),
+    /**
+     * The live document changed while the active tab is untitled: its first
+     * non-blank character makes it a note. Synchronous; the birth is queued.
+     */
+    noteTyped(): void {
+      if (list.activeId !== null) scheduleBirths([list.activeId]);
+    },
+    /** Resolves once everything queued before it — births included — has run. */
+    drain: () => queue.run(async () => {}),
     /** The active tab is an untitled one with no text — the tab an open replaces. */
     activeIsEmptyUntitled: isEmptyUntitled,
     /** Save As gave the active tab a new path. */
@@ -1484,11 +1622,7 @@ export function createTabController(deps: TabControllerDeps) {
      * state (or restored untitled text) for a background one, `null` for a
      * tab never shown since launch — the drawer reads that one from disk.
      */
-    textOf(tabId: string): string | null {
-      if (tabId === list.activeId) return deps.editor.current()?.doc.toString() ?? null;
-      const c = cache.get(tabId);
-      return c?.state?.doc.toString() ?? c?.content ?? null;
-    },
+    textOf: heldText,
     report,
   };
 }

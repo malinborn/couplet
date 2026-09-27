@@ -3,6 +3,7 @@ import { EditorState, StateEffect } from '@codemirror/state';
 import {
   createTabController,
   FLUSH_ATTEMPTS,
+  NOTE_RETRY_MS,
   TRANSIENT_IGNORED_AFTER_MS,
   type BackgroundOpen,
   type DiskOptions,
@@ -16,6 +17,7 @@ import {
   type TabControllerDeps,
 } from './controller';
 import type { TabOwner } from '../switch-document';
+import type { TabClaim } from '../tauri/commands';
 import type { InboxItem } from './agent-inbox';
 import type { MoveTarget } from './carousel';
 import { applyLineEnding, fromDisk, type LineEnding } from '../line-endings';
@@ -37,13 +39,19 @@ const untitledTab = (tabId: string, content: string | null = null): InitTab => (
 
 const scrollMark = StateEffect.define<string>();
 
-function makeHarness(initialFiles: Record<string, string>) {
+function makeHarness(initialFiles: Record<string, string>, opts: { notes?: boolean } = {}) {
   const files = new Map(Object.entries(initialFiles));
   const unreadable = new Set<string>();
   const owners = new Map<string, TabOwner>();
   const calls: string[] = [];
   const swaps: { state: EditorState; opts: SwapOptions }[] = [];
-  const hooks = { duringRead: () => {}, duringCommitPauses: () => {}, afterFlush: () => {} };
+  const hooks = {
+    duringRead: () => {},
+    duringCommitPauses: () => {},
+    afterFlush: () => {},
+    duringCreate: () => {},
+    duringClaim: () => {},
+  };
   const doc = {
     path: null as string | null,
     dirty: false,
@@ -59,6 +67,23 @@ function makeHarness(initialFiles: Record<string, string>) {
   let nextId = 1;
   let snapshot = 0;
   const clock = { now: 1_000, focused: true };
+
+  let nextNote = 1;
+  const notes = {
+    create: vi.fn(async (text: string) => {
+      hooks.duringCreate();
+      const path = `/notes/n${nextNote++}.md`;
+      files.set(path, text);
+      calls.push(`create ${path}`);
+      return { path };
+    }),
+    claim: vi.fn(async (tabId: string, path: string): Promise<TabClaim | null> => {
+      hooks.duringClaim();
+      calls.push(`claim ${tabId} ${path}`);
+      return { kind: 'claimed', path };
+    }),
+    failed: vi.fn(),
+  };
 
   const deps: TabControllerDeps = {
     editor: {
@@ -185,6 +210,7 @@ function makeHarness(initialFiles: Record<string, string>) {
     settled: vi.fn(),
     now: () => clock.now,
     windowFocused: () => clock.focused,
+    ...(opts.notes ? { notes } : {}),
   };
 
   const controller = createTabController(deps);
@@ -199,6 +225,7 @@ function makeHarness(initialFiles: Record<string, string>) {
     hooks,
     clock,
     doc,
+    notes,
     live: () => live,
     /** A keystroke: the live state changes and the document becomes dirty. */
     type(text: string) {
@@ -224,9 +251,10 @@ type Harness = ReturnType<typeof makeHarness>;
 async function started(
   files: Record<string, string>,
   init: InitTab[],
-  activeTabId: string | null = init[0]?.tabId ?? null
+  activeTabId: string | null = init[0]?.tabId ?? null,
+  opts: { notes?: boolean } = {}
 ): Promise<Harness> {
-  const h = makeHarness(files);
+  const h = makeHarness(files, opts);
   await h.controller.init(init, activeTabId);
   vi.clearAllMocks();
   h.calls.length = 0;
@@ -2229,5 +2257,206 @@ describe('line endings', () => {
     await h.controller.activate('t1');
     expect(vi.mocked(h.deps.disk.read).mock.calls.length).toBeGreaterThan(0);
     for (const [, opts] of vi.mocked(h.deps.disk.read).mock.calls) expect(opts?.quiet).toBeFalsy();
+  });
+});
+
+describe('notes', () => {
+  const withNotes = { notes: true };
+
+  it('ATypedFirstCharacterMakesTheTabANote', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.type('H');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledWith('H');
+    expect(h.notes.claim).toHaveBeenCalledWith('u', '/notes/n1.md');
+    expect(h.controller.list.tabs[0].path).toBe('/notes/n1.md');
+    expect(h.doc.path).toBe('/notes/n1.md');
+    expect(h.doc.dirty).toBe(false);
+    expect(h.files.get('/notes/n1.md')).toBe('H');
+    expect(h.deps.rust.activate).toHaveBeenCalledWith('u');
+  });
+
+  it('WhitespaceIsStillABlankNewNote', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.type('  \n\t');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).not.toHaveBeenCalled();
+    expect(h.controller.list.tabs[0].path).toBeNull();
+  });
+
+  it('TextTypedWhileTheNoteIsCreatedEndsUpInIt', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.hooks.duringCreate = () => h.type('ello');
+    h.type('H');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledWith('H');
+    expect(h.files.get('/notes/n1.md')).toBe('Hello');
+    expect(h.live().doc.toString()).toBe('Hello');
+    expect(h.doc.dirty).toBe(false);
+  });
+
+  it('TextTypedWhileTheClaimIsInFlightEndsUpInItToo', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.hooks.duringClaim = () => h.type(' world');
+    h.type('hi');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.files.get('/notes/n1.md')).toBe('hi world');
+  });
+
+  it('TextTypedDuringBothAwaitsEndsUpInTheNote', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.hooks.duringCreate = () => h.type(' two');
+    h.hooks.duringClaim = () => h.type(' three');
+    h.type('one');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledWith('one');
+    expect(h.files.get('/notes/n1.md')).toBe('one two three');
+    expect(h.doc.baseline).toBe('one two three');
+    expect(h.doc.dirty).toBe(false);
+  });
+
+  it('AKeyLandingDuringTheFirstFlushIsWrittenByARetry', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.hooks.duringCreate = () => h.type('b');
+    let once = true;
+    h.hooks.afterFlush = () => {
+      if (once) {
+        once = false;
+        h.type('c');
+      }
+    };
+    h.type('a');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.files.get('/notes/n1.md')).toBe('abc');
+    expect(h.doc.dirty).toBe(false);
+  });
+
+  it('ABirthNeverSwapsTheEditorState', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.type('keep my undo');
+    const before = h.live();
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.swaps).toHaveLength(0);
+    expect(h.live()).toBe(before);
+  });
+
+  it('KeystrokesWhileABirthWaitsMakeOneNote', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.type('a');
+    h.controller.noteTyped();
+    h.type('b');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledTimes(1);
+    expect(h.files.get('/notes/n1.md')).toBe('ab');
+  });
+
+  it('AFailedCreateLeavesTheTabUntitledAndRetriesAfterABackOff', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.notes.create.mockRejectedValueOnce(new Error('EPERM'));
+    h.type('x');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.failed).toHaveBeenCalledWith('EPERM');
+    expect(h.controller.list.tabs[0].path).toBeNull();
+    expect(h.doc.dirty).toBe(true);
+
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledTimes(1);
+
+    h.clock.now += NOTE_RETRY_MS;
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.create).toHaveBeenCalledTimes(2);
+    expect(h.controller.list.tabs[0].path).toBe('/notes/n1.md');
+  });
+
+  it('ARefusedClaimLeavesTheTabUntitledAndTheNoteInTheStash', async () => {
+    const h = await started({}, [untitledTab('u')], 'u', withNotes);
+    h.notes.claim.mockResolvedValueOnce({ kind: 'refused' });
+    h.type('x');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.notes.failed).toHaveBeenCalled();
+    expect(h.controller.list.tabs[0].path).toBeNull();
+    expect(h.doc.path).toBeNull();
+    expect(h.files.get('/notes/n1.md')).toBe('x');
+  });
+
+  it('ClosingATabWhoseBirthFailedStillKeepsTheRescueCopy', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.notes.create.mockRejectedValueOnce(new Error('EPERM'));
+    h.type('draft');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    await h.controller.closeActive();
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'draft');
+  });
+
+  it('ABackgroundTabClosedBeforeItsBirthRanIsClosedWithItsRescueCopyAndNeverBorn', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    // Typed with no `noteTyped` yet: the switch's settle is what queues the birth.
+    h.type('draft');
+    void h.controller.activate('a');
+    void h.controller.closeTabs(['u']);
+    await h.controller.drain();
+    expect(h.notes.create).not.toHaveBeenCalled();
+    expect(h.deps.rust.close).toHaveBeenCalledWith('u', expect.anything(), 'draft');
+  });
+
+  it('ABackgroundUntitledTabWithTextBecomesANoteAfterASettle', async () => {
+    const h = makeHarness({ '/a.md': 'A' }, withNotes);
+    await h.controller.init([untitledTab('u', 'restored draft'), fileTab('a', '/a.md')], 'a');
+    await h.controller.drain();
+    expect(h.controller.list.tabs.find((t) => t.id === 'u')?.path).toBe('/notes/n1.md');
+    expect(h.files.get('/notes/n1.md')).toBe('restored draft');
+    await h.controller.activate('u');
+    expect(h.live().doc.toString()).toBe('restored draft');
+    expect(h.doc.path).toBe('/notes/n1.md');
+    expect(h.doc.dirty).toBe(false);
+  });
+
+  it('AnUntitledTabLeftWithTextIsBornInTheBackgroundAndKeepsItsState', async () => {
+    const h = await started({ '/a.md': 'A' }, [untitledTab('u'), fileTab('a', '/a.md')], 'u', withNotes);
+    h.type('left behind');
+    const typed = h.live();
+    await h.controller.activate('a');
+    await h.controller.drain();
+    const u = h.controller.list.tabs.find((t) => t.id === 'u');
+    expect(u?.path).toBe('/notes/n1.md');
+    expect(u?.dirty).toBe(false);
+    expect(h.files.get('/notes/n1.md')).toBe('left behind');
+    await h.controller.activate('u');
+    // The cached state comes back — undo history and all.
+    expect(h.live()).toBe(typed);
+    expect(h.doc.path).toBe('/notes/n1.md');
+    expect(h.doc.baseline).toBe('left behind');
+    expect(h.doc.dirty).toBe(false);
+  });
+
+  it('AnUntitledTabArrivingWithTextIsBornEvenWhenItStaysInTheBackground', async () => {
+    const h = await started({ '/a.md': 'A' }, [fileTab('a', '/a.md')], 'a', withNotes);
+    vi.mocked(h.deps.ai.hasLiveAsk).mockReturnValue(true);
+    await h.controller.arrive([untitledTab('m', 'moved text')]);
+    await h.controller.drain();
+    expect(h.active()).toBe('a');
+    expect(h.controller.list.tabs.find((t) => t.id === 'm')?.path).toBe('/notes/n1.md');
+    expect(h.files.get('/notes/n1.md')).toBe('moved text');
+  });
+
+  it('WithoutNoteDepsAnUntitledTabStaysUntitled', async () => {
+    const h = await started({}, [untitledTab('u')], 'u');
+    h.type('x');
+    h.controller.noteTyped();
+    await h.controller.drain();
+    expect(h.controller.list.tabs[0].path).toBeNull();
   });
 });
