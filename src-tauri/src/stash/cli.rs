@@ -10,7 +10,95 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::entries;
+use super::{entries, Stash, StashPaths};
+
+/// Answer to a write when the app data directory does not exist yet (A12).
+pub const NOT_RUN_YET: &str = "couplet has not run on this Mac yet — open it once, then try again";
+
+/// Where one couplet build keeps its stash, resolved without a Tauri context.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StashLocation {
+    /// The product's stash paths: `stash.db` in
+    /// `~/Library/Application Support/<product>/`, notes in `~/<product>/`.
+    pub paths: StashPaths,
+    /// The app's command socket, told about writes. `None`: nobody is told.
+    pub socket: Option<PathBuf>,
+}
+
+impl StashLocation {
+    /// `~/Library/Application Support/<product>/`: the directory whose
+    /// existence says the app has run on this Mac (plan D4).
+    pub fn app_dir(&self) -> &Path {
+        self.paths.db_path.parent().unwrap_or(Path::new("/"))
+    }
+}
+
+/// The location of `product`'s stash under the given bases — pure, so tests
+/// can name any base; `location_from_flags` passes the real ones.
+pub fn location_for_product(product: &str, data_base: &Path, home: &Path) -> StashLocation {
+    let name = crate::paths::dir_name(product);
+    StashLocation {
+        paths: StashPaths::from_bases(home, &data_base.join(&name), &name),
+        socket: Some(crate::ai_socket::socket_path(product)),
+    }
+}
+
+/// `--product` / `--socket` into a location (plan D3, A12). A socket alone is
+/// refused: it names a non-release build, and the stash would silently be
+/// the release one's. So is a product `paths::dir_name` would not take as
+/// given — it falls back to `couplet`, the release stash, for exactly the
+/// names a typo produces — and `.`/`..`, which would put `stash.db` beside
+/// the app data folders and the notes in `/Users`. Path arithmetic only:
+/// nothing is created or even looked at.
+pub fn location_from_flags(
+    product: Option<&str>,
+    socket: Option<&str>,
+) -> Result<StashLocation, String> {
+    if socket.is_some() && product.is_none() {
+        return Err("--socket names another couplet build: pass --product too (e.g. --product couplet-dev), so the stash is that build's and not the release one".to_string());
+    }
+    let product = product.unwrap_or(crate::paths::RELEASE_PRODUCT_NAME);
+    if crate::paths::dir_name(product) != product || product == "." || product == ".." {
+        return Err(format!(
+            "invalid --product {product:?}: a product name such as couplet-dev, with no slashes or surrounding spaces"
+        ));
+    }
+    let data = dirs::data_dir().ok_or("cannot determine the application data directory")?;
+    let home = dirs::home_dir().ok_or("cannot determine the home folder")?;
+    let mut loc = location_for_product(product, &data, &home);
+    if let Some(s) = socket {
+        loc.socket = Some(PathBuf::from(s));
+    }
+    Ok(loc)
+}
+
+/// The stash for reading, or `None` when it does not exist yet — a read
+/// never creates it (A12). `db::open` always creates its file and folder, and
+/// opening any other way would skip its pragmas, migration and `stash_fold`,
+/// so the file is checked first; once it exists, `db::open`'s creates are
+/// no-ops (SQLite may add `-wal`/`-shm` beside it, and a v1 file is
+/// migrated). A file removed between the check and the open is recreated
+/// empty inside the existing app dir — what a write may do anyway.
+fn open_for_read(loc: &StashLocation) -> Result<Option<Stash>, String> {
+    if !loc.paths.db_path.is_file() {
+        return Ok(None);
+    }
+    Stash::open(loc.paths.clone())
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
+/// The stash for writing. Refused while the app data directory does not
+/// exist: one file in a freshly created `couplet/` before the app's first
+/// launch makes `migration.rs` skip an installed md-mini's data for good
+/// (plan D4). Checked before anything else touches the disk — no note file,
+/// no notes folder. `stash.db` itself may be created inside the existing dir.
+fn open_for_write(loc: &StashLocation) -> Result<Stash, String> {
+    if !loc.app_dir().is_dir() {
+        return Err(NOT_RUN_YET.to_string());
+    }
+    Stash::open(loc.paths.clone()).map_err(|e| e.to_string())
+}
 
 /// What the caller asked the scope to be.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -287,5 +375,123 @@ mod tests {
             .unwrap(),
             r#"{"all":true}"#
         );
+    }
+
+    /// A location under a scratch dir, laid out like `testkit::paths_in`.
+    /// `app_ran`: the app data dir exists, as it does once couplet has run.
+    fn temp_location(tag: &str, app_ran: bool) -> StashLocation {
+        let root = scratch(&format!("stash-cli-{tag}"));
+        let loc = StashLocation {
+            paths: crate::stash::testkit::paths_in(&root),
+            socket: None,
+        };
+        if app_ran {
+            fs::create_dir_all(loc.app_dir()).unwrap();
+        }
+        loc
+    }
+
+    #[test]
+    fn a_product_names_the_app_dir_the_notes_dir_and_the_socket() {
+        let loc = location_for_product("couplet-dev", Path::new("/D"), Path::new("/H"));
+        assert_eq!(loc.paths.db_path, PathBuf::from("/D/couplet-dev/stash.db"));
+        assert_eq!(loc.app_dir(), Path::new("/D/couplet-dev"));
+        assert_eq!(loc.paths.notes_dir, PathBuf::from("/H/couplet-dev"));
+        assert_eq!(loc.paths.trash_dir, PathBuf::from("/H/couplet-dev/.trash"));
+        assert_eq!(loc.socket, Some(PathBuf::from("/tmp/couplet_dev_cmd.sock")));
+        let release = location_for_product(
+            crate::paths::RELEASE_PRODUCT_NAME,
+            Path::new("/D"),
+            Path::new("/H"),
+        );
+        assert_eq!(release.paths.db_path, PathBuf::from("/D/couplet/stash.db"));
+        assert_eq!(release.socket, Some(PathBuf::from("/tmp/couplet_cmd.sock")));
+    }
+
+    #[test]
+    fn a_socket_without_a_product_is_refused() {
+        let err = location_from_flags(None, Some("/tmp/couplet_dev_cmd.sock")).unwrap_err();
+        assert!(err.contains("--product"), "{err}");
+    }
+
+    #[test]
+    fn a_product_the_directory_rule_would_rewrite_is_refused() {
+        // `paths::dir_name` maps each of these to `couplet` — the release stash.
+        for bad in [
+            "",
+            " ",
+            "../x",
+            "a/b",
+            "a\\b",
+            " couplet-dev",
+            "couplet-dev ",
+            ".",
+            "..",
+        ] {
+            let err = location_from_flags(Some(bad), None).unwrap_err();
+            assert!(err.contains("--product"), "{bad:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_socket_with_a_product_overrides_only_the_socket() {
+        // Pure path arithmetic over dirs::data_dir() / home_dir(): nothing is created.
+        let loc = location_from_flags(Some("couplet-dev"), Some("/tmp/x.sock")).unwrap();
+        assert_eq!(loc.socket, Some(PathBuf::from("/tmp/x.sock")));
+        assert!(
+            loc.app_dir().ends_with("couplet-dev"),
+            "{:?}",
+            loc.app_dir()
+        );
+        assert!(
+            loc.paths.notes_dir.ends_with("couplet-dev"),
+            "{:?}",
+            loc.paths.notes_dir
+        );
+        assert_eq!(
+            loc.paths.notes_dir.parent(),
+            dirs::home_dir().as_deref(),
+            "notes live in the home folder (roadmap A1)"
+        );
+        let release = location_from_flags(None, None).unwrap();
+        assert!(release
+            .app_dir()
+            .ends_with(crate::paths::RELEASE_PRODUCT_NAME));
+    }
+
+    #[test]
+    fn reading_a_stash_that_does_not_exist_creates_nothing() {
+        let loc = temp_location("read-missing", false);
+        assert!(open_for_read(&loc).unwrap().is_none());
+        assert!(!loc.app_dir().exists());
+        assert!(!loc.paths.notes_dir.exists());
+    }
+
+    #[test]
+    fn reading_before_the_first_write_does_not_create_the_database() {
+        let loc = temp_location("read-no-db", true);
+        assert!(open_for_read(&loc).unwrap().is_none());
+        assert!(!loc.paths.db_path.exists());
+        assert!(!loc.paths.notes_dir.exists());
+    }
+
+    #[test]
+    fn writing_before_the_app_ever_ran_is_refused_and_creates_nothing() {
+        let loc = temp_location("write-early", false);
+        assert_eq!(open_for_write(&loc).err().as_deref(), Some(NOT_RUN_YET));
+        assert!(!loc.app_dir().exists());
+        assert!(!loc.paths.notes_dir.exists());
+    }
+
+    #[test]
+    fn writing_after_the_app_ran_opens_the_database() {
+        let loc = temp_location("write", true);
+        drop(open_for_write(&loc).unwrap());
+        assert!(loc.paths.db_path.is_file());
+        assert!(
+            !loc.paths.notes_dir.exists(),
+            "opening touches the app dir only"
+        );
+        assert!(open_for_read(&loc).unwrap().is_some());
     }
 }
