@@ -875,6 +875,181 @@ pub fn tag(ctx: &Ctx, id: &str, add: &[String], remove: &[String]) -> StashAnswe
     }
 }
 
+pub const STASH_USAGE: &str = "usage: couplet stash search <query> [--tag T] [--repo R | --all] [--kind note|file] [--limit N] [--cursor C] [--json]
+       couplet stash list [--tag T] [--repo R | --all] [--kind note|file] [--since S] [--sort changed|opened|kind] [--limit N] [--cursor C] [--json]
+       couplet stash get <id> [--lines A:B] [--json]
+       couplet stash add [--tag T ...] [--json] < text
+       couplet stash add --path <file> [--tag T ...] [--json]
+       couplet stash tag <id> [--add T ...] [--remove T ...] [--json]
+  every verb: [--product NAME] [--socket PATH]   (a dev build: --product couplet-dev; --socket needs --product)";
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum StashVerb {
+    Search(AgentSearchArgs),
+    List(ListArgs),
+    Get {
+        id: String,
+        lines: Option<LineRange>,
+    },
+    /// `path: None` — the note's text comes from stdin.
+    Add {
+        tags: Vec<String>,
+        path: Option<String>,
+    },
+    Tag {
+        id: String,
+        add: Vec<String>,
+        remove: Vec<String>,
+    },
+}
+
+/// `couplet stash …` parsed.
+#[derive(Debug, PartialEq, Eq)]
+pub struct StashCli {
+    pub verb: StashVerb,
+    pub json: bool,
+    pub product: Option<String>,
+    pub socket: Option<String>,
+}
+
+pub(crate) fn parse_kind(s: &str) -> Result<StashKind, String> {
+    StashKind::parse(s).ok_or_else(|| format!("invalid kind: {s} (note or file)"))
+}
+
+pub(crate) fn parse_sort(s: &str) -> Result<ListSort, String> {
+    match s {
+        "changed" => Ok(ListSort::Changed),
+        "opened" => Ok(ListSort::Opened),
+        "kind" => Ok(ListSort::Kind),
+        other => Err(format!("invalid sort: {other} (changed, opened or kind)")),
+    }
+}
+
+/// A positive number, digits only (`+3` parses as a `usize` but is no count
+/// anyone meant). Clamped later by the operation, never refused for size.
+fn parse_limit(s: &str) -> Result<usize, String> {
+    match s.parse::<usize>() {
+        Ok(n) if n >= 1 && s.bytes().all(|b| b.is_ascii_digit()) => Ok(n),
+        _ => Err(format!("invalid limit: {s} (a positive number)")),
+    }
+}
+
+/// The value after `flag`.
+fn value(iter: &mut std::slice::Iter<'_, String>, flag: &str) -> Result<String, String> {
+    iter.next()
+        .cloned()
+        .ok_or_else(|| format!("{flag} requires a value"))
+}
+
+/// Everything after `couplet stash` (i.e. after `ai stash` in the binary).
+/// A flag belongs to the verbs it makes sense for; anywhere else it is an
+/// error, never silently ignored.
+pub fn parse_stash_args(args: &[String]) -> Result<StashCli, String> {
+    let mut iter = args.iter();
+    let verb = iter.next().ok_or_else(|| STASH_USAGE.to_string())?.clone();
+    let v = verb.as_str();
+    let filtered = matches!(v, "search" | "list");
+
+    let (mut json, mut product, mut socket) = (false, None, None);
+    let mut positional: Vec<String> = Vec::new();
+    let mut filter = Filter::default();
+    let (mut limit, mut cursor, mut since, mut sort, mut lines, mut path) =
+        (None, None, None, None, None, None);
+    let (mut tags, mut add, mut remove) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut repo_given, mut all_given) = (false, false);
+
+    while let Some(arg) = iter.next() {
+        let flag = arg.as_str();
+        match flag {
+            "--json" => json = true,
+            "--product" => product = Some(value(&mut iter, flag)?),
+            "--socket" => socket = Some(value(&mut iter, flag)?),
+            "--tag" if v == "add" => tags.push(value(&mut iter, flag)?),
+            "--tag" if filtered => filter.tag = Some(value(&mut iter, flag)?),
+            "--repo" if filtered => {
+                filter.scope = ScopeArg::Repo(value(&mut iter, flag)?);
+                repo_given = true;
+            }
+            "--all" if filtered => {
+                filter.scope = ScopeArg::All;
+                all_given = true;
+            }
+            "--kind" if filtered => filter.kind = Some(parse_kind(&value(&mut iter, flag)?)?),
+            "--limit" if filtered => limit = Some(parse_limit(&value(&mut iter, flag)?)?),
+            "--cursor" if filtered => cursor = Some(value(&mut iter, flag)?),
+            "--since" if v == "list" => since = Some(value(&mut iter, flag)?),
+            "--sort" if v == "list" => sort = Some(parse_sort(&value(&mut iter, flag)?)?),
+            "--lines" if v == "get" => lines = Some(parse_lines(&value(&mut iter, flag)?)?),
+            "--path" if v == "add" => path = Some(value(&mut iter, flag)?),
+            "--add" if v == "tag" => add.push(value(&mut iter, flag)?),
+            "--remove" if v == "tag" => remove.push(value(&mut iter, flag)?),
+            other if other.starts_with("--") => {
+                return Err(format!("unknown flag for stash {verb}: {other}"))
+            }
+            _ => positional.push(arg.clone()),
+        }
+    }
+    if repo_given && all_given {
+        return Err("--repo and --all are mutually exclusive".to_string());
+    }
+    let no_positional = |p: &[String]| match p.first() {
+        Some(extra) => Err(format!(
+            "stash {verb} takes no argument: unexpected {extra}"
+        )),
+        None => Ok(()),
+    };
+    let one_id = |p: Vec<String>| match p.as_slice() {
+        [id] => Ok(id.clone()),
+        [] => Err(format!("stash {verb} needs an entry id")),
+        _ => Err(format!("stash {verb} takes one entry id")),
+    };
+    let verb = match v {
+        "search" => {
+            if positional.is_empty() {
+                return Err("stash search needs a query".to_string());
+            }
+            StashVerb::Search(AgentSearchArgs {
+                query: positional.join(" "),
+                filter,
+                limit,
+                cursor,
+            })
+        }
+        "list" => {
+            no_positional(&positional)?;
+            StashVerb::List(ListArgs {
+                filter,
+                since,
+                sort,
+                limit,
+                cursor,
+            })
+        }
+        "get" => StashVerb::Get {
+            id: one_id(positional)?,
+            lines,
+        },
+        "add" => {
+            no_positional(&positional)?;
+            StashVerb::Add { tags, path }
+        }
+        "tag" => {
+            let id = one_id(positional)?;
+            if add.is_empty() && remove.is_empty() {
+                return Err("stash tag needs --add or --remove".to_string());
+            }
+            StashVerb::Tag { id, add, remove }
+        }
+        other => return Err(format!("unknown stash command: {other}\n{STASH_USAGE}")),
+    };
+    Ok(StashCli {
+        verb,
+        json,
+        product,
+        socket,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2222,5 +2397,211 @@ mod tests {
         get(&ctx(&loc, &cwd), &id, None);
         assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
         let _ = fs::remove_file(&socket);
+    }
+
+    fn argv(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn search_joins_its_words_and_reads_its_filters() {
+        let cli = parse_stash_args(&argv(&[
+            "search",
+            "HDMI",
+            "переговорка",
+            "--tag",
+            "infra",
+            "--kind",
+            "note",
+            "--limit",
+            "5",
+            "--cursor",
+            "c1",
+            "--json",
+        ]))
+        .unwrap();
+        assert!(cli.json);
+        assert_eq!(
+            cli.verb,
+            StashVerb::Search(AgentSearchArgs {
+                query: "HDMI переговорка".to_string(),
+                filter: Filter {
+                    tag: Some("infra".to_string()),
+                    kind: Some(StashKind::Note),
+                    scope: ScopeArg::Default
+                },
+                limit: Some(5),
+                cursor: Some("c1".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn search_needs_a_query_and_repo_excludes_all() {
+        assert!(parse_stash_args(&argv(&["search"]))
+            .unwrap_err()
+            .contains("query"));
+        assert!(
+            parse_stash_args(&argv(&["search", "x", "--repo", "a", "--all"]))
+                .unwrap_err()
+                .contains("mutually exclusive")
+        );
+        let all = parse_stash_args(&argv(&["search", "x", "--all"])).unwrap();
+        assert!(matches!(
+            all.verb,
+            StashVerb::Search(AgentSearchArgs {
+                filter: Filter {
+                    scope: ScopeArg::All,
+                    ..
+                },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn list_reads_since_sort_and_repo() {
+        let cli = parse_stash_args(&argv(&[
+            "list",
+            "--since",
+            "yesterday",
+            "--sort",
+            "opened",
+            "--repo",
+            "couplet",
+        ]))
+        .unwrap();
+        assert_eq!(
+            cli.verb,
+            StashVerb::List(ListArgs {
+                filter: Filter {
+                    scope: ScopeArg::Repo("couplet".to_string()),
+                    ..Default::default()
+                },
+                since: Some("yesterday".to_string()),
+                sort: Some(ListSort::Opened),
+                ..Default::default()
+            })
+        );
+        assert!(parse_stash_args(&argv(&["list", "extra"])).is_err());
+        assert!(parse_stash_args(&argv(&["list", "--sort", "size"])).is_err());
+        assert!(parse_stash_args(&argv(&["list", "--kind", "folder"])).is_err());
+        for bad in ["0", "-1", "+3", "x", ""] {
+            assert!(
+                parse_stash_args(&argv(&["list", "--limit", bad])).is_err(),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn get_takes_one_id_and_a_line_range() {
+        let cli = parse_stash_args(&argv(&["get", "s1-a", "--lines", "10:20"])).unwrap();
+        assert_eq!(
+            cli.verb,
+            StashVerb::Get {
+                id: "s1-a".to_string(),
+                lines: Some(LineRange {
+                    from: 10,
+                    to: Some(20)
+                })
+            }
+        );
+        assert!(parse_stash_args(&argv(&["get"])).is_err());
+        assert!(parse_stash_args(&argv(&["get", "a", "b"])).is_err());
+        assert!(parse_stash_args(&argv(&["get", "a", "--lines", "5"])).is_err());
+    }
+
+    #[test]
+    fn add_takes_repeated_tags_and_an_optional_path() {
+        let cli = parse_stash_args(&argv(&["add", "--tag", "a", "--tag", "b"])).unwrap();
+        assert_eq!(
+            cli.verb,
+            StashVerb::Add {
+                tags: vec!["a".to_string(), "b".to_string()],
+                path: None
+            }
+        );
+        let path = parse_stash_args(&argv(&["add", "--path", "x.md"])).unwrap();
+        assert_eq!(
+            path.verb,
+            StashVerb::Add {
+                tags: vec![],
+                path: Some("x.md".to_string())
+            }
+        );
+        assert!(parse_stash_args(&argv(&["add", "loose"])).is_err());
+    }
+
+    #[test]
+    fn tag_needs_an_id_and_something_to_change() {
+        let cli = parse_stash_args(&argv(&[
+            "tag", "s1-a", "--add", "x", "--remove", "y", "--add", "z",
+        ]))
+        .unwrap();
+        assert_eq!(
+            cli.verb,
+            StashVerb::Tag {
+                id: "s1-a".to_string(),
+                add: vec!["x".to_string(), "z".to_string()],
+                remove: vec!["y".to_string()]
+            }
+        );
+        assert!(parse_stash_args(&argv(&["tag", "s1-a"])).is_err());
+        assert!(parse_stash_args(&argv(&["tag", "--add", "x"])).is_err());
+    }
+
+    #[test]
+    fn a_flag_of_another_verb_is_unknown_here() {
+        let err = parse_stash_args(&argv(&["get", "s1-a", "--since", "1d"])).unwrap_err();
+        assert!(err.contains("unknown flag for stash get: --since"), "{err}");
+        assert!(parse_stash_args(&argv(&["search", "x", "--path", "p"])).is_err());
+        assert!(parse_stash_args(&argv(&["search", "x", "--since", "1d"])).is_err());
+        assert!(parse_stash_args(&argv(&["add", "--all"])).is_err());
+    }
+
+    #[test]
+    fn every_verb_takes_product_and_socket() {
+        let cli = parse_stash_args(&argv(&[
+            "list",
+            "--product",
+            "couplet-dev",
+            "--socket",
+            "/tmp/s.sock",
+        ]))
+        .unwrap();
+        assert_eq!(
+            (cli.product.as_deref(), cli.socket.as_deref()),
+            (Some("couplet-dev"), Some("/tmp/s.sock"))
+        );
+        for verb in [
+            &["search", "x"][..],
+            &["get", "s1-a"],
+            &["add"],
+            &["tag", "s1-a", "--add", "x"],
+        ] {
+            let mut args = argv(verb);
+            args.extend(argv(&["--product", "couplet-dev"]));
+            assert_eq!(
+                parse_stash_args(&args).unwrap().product.as_deref(),
+                Some("couplet-dev"),
+                "{verb:?}"
+            );
+        }
+        assert!(parse_stash_args(&argv(&["list", "--product"]))
+            .unwrap_err()
+            .contains("requires a value"));
+    }
+
+    #[test]
+    fn an_unknown_verb_prints_the_usage() {
+        let err = parse_stash_args(&argv(&["dump"])).unwrap_err();
+        assert!(
+            err.contains("unknown stash command: dump") && err.contains("couplet stash search"),
+            "{err}"
+        );
+        assert!(parse_stash_args(&[])
+            .unwrap_err()
+            .contains("couplet stash search"));
     }
 }
