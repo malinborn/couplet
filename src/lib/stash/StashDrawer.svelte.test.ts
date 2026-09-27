@@ -483,6 +483,45 @@ describe('StashDrawer', () => {
       expect(ids()).toEqual(['a']);
     });
 
+    it('open here: hidden and counted alike with and without the search (M11)', async () => {
+      // «itle» matches the notes a, c, d locally (b is «b.md»); the search
+      // answers the same set, in its own order.
+      const notes = async () => [
+        h.root.querySelector('.s-n')?.textContent ?? '',
+        h.root.querySelector('.f-note')?.textContent ?? '',
+      ];
+      h = await setup({ openHere: ['/n/a.md'] });
+      await setQuery('itle');
+      const local = { ids: ids(), notes: await notes() };
+      h.destroy();
+      const search = vi.fn(async (_args: StashSearchArgs) => ({
+        hits: ['c', 'a', 'd'].map((id) => hitOf(byId(id))),
+        total: 3,
+        nextCursor: null,
+      }));
+      h = await setup({ openHere: ['/n/a.md'], search });
+      await setQuery('itle');
+      await searched();
+      expect(ids()).toEqual(['c', 'd']);
+      expect(local.ids).toEqual(['d', 'c']);
+      expect(await notes()).toEqual(local.notes);
+      expect(local.notes[0]).toContain('2 из 4');
+      expect(local.notes[1]).toBe('весь тайник · 2 из 4 · 1 во вкладках');
+    });
+
+    it('open here: an entry the search did not find is not counted as open here (M11)', async () => {
+      const search = vi.fn(async (_args: StashSearchArgs) => ({
+        hits: [hitOf(byId('c'))],
+        total: 1,
+        nextCursor: null,
+      }));
+      h = await setup({ openHere: ['/n/a.md'], search });
+      await setQuery('itle');
+      await searched();
+      expect(ids()).toEqual(['c']);
+      expect(h.root.querySelector('.f-note')?.textContent).toBe('весь тайник · 1 из 4');
+    });
+
     it('a failed search leaves the local filter working', async () => {
       const error = vi.spyOn(console, 'error').mockImplementation(() => {});
       h = await setup({ search: async () => Promise.reject(new Error('no IPC')) });
