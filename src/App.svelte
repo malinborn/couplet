@@ -67,7 +67,8 @@
   import { createStashStore } from './lib/stash/stash-store.svelte';
   import { putAwayNote, putAwayTabs } from './lib/stash/put-away';
   import { awaitPull, handOverPulled, openFromStash } from './lib/stash/open-from-stash';
-  import { restoreWindow, widenForStash, type WidenMemo } from './lib/stash/window-widen';
+  import { restoreWindow, widenForStash } from './lib/stash/window-widen';
+  import { createWidenSession } from './lib/stash/widen-session';
   import { onStashOpenEdge } from './lib/stash/stash-open-edge.svelte';
   import { entryTitle } from './lib/stash/stash-view';
   import type { StashToastNote } from './lib/stash/stash-toast';
@@ -1046,29 +1047,13 @@
     void putAway(targets);
   }
 
-  /** The window widened for the stash (D15) — put back when it closes, if still as widened. */
-  let widened: WidenMemo | null = null;
-  onStashOpenEdge(
-    () => stashStore.state.open,
-    (open) => {
-      if (open) {
-        void widenForStash().then((memo) => {
-          if (!memo) return;
-          // Closed again before the widen landed: put it straight back.
-          if (!stashStore.state.open) {
-            void restoreWindow(memo);
-            return;
-          }
-          widened = memo;
-          quietStashToast({ what: 'widened' });
-        });
-      } else if (widened) {
-        const memo = widened;
-        widened = null;
-        void restoreWindow(memo);
-      }
-    }
-  );
+  /** The window widened for the stash (D15) — put back when it closes, if still as widened; one step at a time. */
+  const widenSession = createWidenSession({
+    widen: () => widenForStash(),
+    restore: restoreWindow,
+    announce: () => quietStashToast({ what: 'widened' }),
+  });
+  onStashOpenEdge(() => stashStore.state.open, widenSession.edge);
 
   /** A move from the drawer's carousel (plan 05). A refusal already has its toast (`mayLeave`). */
   async function moveTabs(tabIds: string[], target: MoveTarget): Promise<void> {
