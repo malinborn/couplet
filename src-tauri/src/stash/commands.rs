@@ -60,7 +60,10 @@ pub async fn stash_put_away(
     let results = run(&state, move |s| {
         let now = clock::now_ms();
         let results = s.put_away(&req, now)?;
-        s.after_write(now, offset_at(now));
+        // No paths, nothing written.
+        if !results.is_empty() {
+            s.after_write(now, offset_at(now));
+        }
         Ok(results)
     })
     .await?;
@@ -111,15 +114,21 @@ pub async fn stash_tag(
     add: Option<Vec<String>>,
     remove: Option<Vec<String>>,
 ) -> Result<StashEntry, String> {
-    let entry = run(&state, move |s| {
+    let tagged = run(&state, move |s| {
         let now = clock::now_ms();
-        let entry = s.tag(&id, &add.unwrap_or_default(), &remove.unwrap_or_default())?;
-        s.after_write(now, offset_at(now));
-        Ok(entry)
+        let tagged = s.tag(&id, &add.unwrap_or_default(), &remove.unwrap_or_default())?;
+        // A no-op (nothing given, tags already so) rewrites no export and
+        // emits nothing: every window would reload the drawer for it.
+        if tagged.changed {
+            s.after_write(now, offset_at(now));
+        }
+        Ok(tagged)
     })
     .await?;
-    emit_changed(&app, "tagged", Some(vec![entry.id.clone()]));
-    Ok(entry)
+    if tagged.changed {
+        emit_changed(&app, "tagged", Some(vec![tagged.entry.id.clone()]));
+    }
+    Ok(tagged.entry)
 }
 
 /// Emits `opened` — not in roadmap A6's reason list, which names no reason for

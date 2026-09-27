@@ -13,7 +13,7 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use super::db::{self, EntryRow, ENTRY_COLUMNS};
 use super::{
     ids, notes, ListQuery, ListResult, ListSort, PutAway, PutAwayResult, Stash, StashCounts,
-    StashEntry, StashKind,
+    StashEntry, StashKind, Tagged,
 };
 
 /// Preview length in characters (roadmap: "first ~400 chars").
@@ -380,7 +380,7 @@ impl Stash {
             .optional()
             .map_err(db::err)?
             .ok_or_else(|| format!("no stash entry {id}"))?;
-        let tags = self.tags_of(&row.id)?;
+        let tags = tags_of(&self.conn, &row.id)?;
         let (repo, branch) = derived_repo(&row);
         let preview = read_preview(Path::new(&row.path));
         Ok(entry_from(row, tags, repo, branch, preview))
@@ -465,13 +465,10 @@ impl Stash {
     }
 
     /// Adds then removes tags (plan D8), so a tag in both lists ends up absent.
-    /// A trashed entry refuses (roadmap A8).
-    pub fn tag(
-        &mut self,
-        id: &str,
-        add: &[String],
-        remove: &[String],
-    ) -> Result<StashEntry, String> {
+    /// A trashed entry refuses (roadmap A8). `changed` compares the tag set
+    /// before and after, so a call that ends where it started — nothing given,
+    /// tags already there, a tag added and removed at once — reports `false`.
+    pub fn tag(&mut self, id: &str, add: &[String], remove: &[String]) -> Result<Tagged, String> {
         let add = normalize_tags(add)?;
         let remove = normalize_tags(remove)?;
         let tx = self
@@ -488,6 +485,7 @@ impl Stash {
         if deleted_at.is_some() {
             return Err(format!("in the trash: {id}"));
         }
+        let before = tags_of(&tx, id)?;
         for tag in &add {
             tx.execute(
                 "INSERT OR IGNORE INTO tags (entry_id, tag) VALUES (?1, ?2)",
@@ -502,8 +500,12 @@ impl Stash {
             )
             .map_err(db::err)?;
         }
+        let changed = tags_of(&tx, id)? != before;
         tx.commit().map_err(db::err)?;
-        self.get(id)
+        Ok(Tagged {
+            entry: self.get(id)?,
+            changed,
+        })
     }
 
     /// Records that a document was opened from the stash. `false` when the
@@ -691,19 +693,19 @@ impl Stash {
             deleted,
         })
     }
+}
 
-    fn tags_of(&self, id: &str) -> Result<Vec<String>, String> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT tag FROM tags WHERE entry_id = ?1 ORDER BY tag")
-            .map_err(db::err)?;
-        let tags = stmt
-            .query_map([id], |r| r.get(0))
-            .map_err(db::err)?
-            .collect::<Result<Vec<String>, _>>()
-            .map_err(db::err)?;
-        Ok(tags)
-    }
+/// One entry's tags, alphabetical.
+fn tags_of(conn: &Connection, id: &str) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare("SELECT tag FROM tags WHERE entry_id = ?1 ORDER BY tag")
+        .map_err(db::err)?;
+    let tags = stmt
+        .query_map([id], |r| r.get(0))
+        .map_err(db::err)?
+        .collect::<Result<Vec<String>, _>>()
+        .map_err(db::err)?;
+    Ok(tags)
 }
 
 #[cfg(test)]
@@ -1260,11 +1262,13 @@ mod tests {
         let note = stash.create_note("x", None, T0, MSK).unwrap();
         let e = stash
             .tag(&note.id, &["#Infra".into(), "ИДЕИ".into()], &[])
-            .unwrap();
+            .unwrap()
+            .entry;
         assert_eq!(e.tags, vec!["infra", "идеи"]);
         let e = stash
             .tag(&note.id, &["later".into()], &["#INFRA".into()])
-            .unwrap();
+            .unwrap()
+            .entry;
         assert_eq!(e.tags, vec!["later", "идеи"]);
         assert!(stash.tag(&note.id, &["two words".into()], &[]).is_err());
         assert_eq!(
@@ -1279,8 +1283,38 @@ mod tests {
         // Plan D8: `add` runs before `remove`.
         let (mut stash, _root) = stash_in("tag-both");
         let note = stash.create_note("x", None, T0, MSK).unwrap();
-        let e = stash.tag(&note.id, &["x".into()], &["x".into()]).unwrap();
+        let e = stash
+            .tag(&note.id, &["x".into()], &["x".into()])
+            .unwrap()
+            .entry;
         assert!(e.tags.is_empty());
+    }
+
+    #[test]
+    fn a_tag_call_that_changes_nothing_says_so() {
+        // Nothing to export and nothing to announce for these.
+        let (mut stash, _root) = stash_in("tag-noop");
+        let note = stash.create_note("x", None, T0, MSK).unwrap();
+        assert!(stash.tag(&note.id, &["a".into()], &[]).unwrap().changed);
+        assert!(!stash.tag(&note.id, &[], &[]).unwrap().changed, "empty");
+        assert!(
+            !stash.tag(&note.id, &["#A".into()], &[]).unwrap().changed,
+            "already there"
+        );
+        assert!(
+            !stash.tag(&note.id, &[], &["b".into()]).unwrap().changed,
+            "not there"
+        );
+        assert!(
+            !stash
+                .tag(&note.id, &["c".into()], &["c".into()])
+                .unwrap()
+                .changed,
+            "added and removed in one call"
+        );
+        let t = stash.tag(&note.id, &[], &["a".into()]).unwrap();
+        assert!(t.changed);
+        assert!(t.entry.tags.is_empty());
     }
 
     #[test]

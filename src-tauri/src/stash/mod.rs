@@ -97,6 +97,14 @@ pub struct PutAwayResult {
     pub created: bool,
 }
 
+/// `tag`'s outcome. `changed == false`: the tag set ended where it started —
+/// nothing to export, nothing to announce.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tagged {
+    pub entry: StashEntry,
+    pub changed: bool,
+}
+
 /// `stash_list`'s sort (spec: «изменение ⌘L · открытие ⌘R · тип ⌘U»).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
