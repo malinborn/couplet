@@ -467,6 +467,158 @@ impl Stash {
             .map_err(db::err)?;
         Ok(ids)
     }
+
+    /// Every note's `(id, path, deleted_at)`: `reconcile`'s snapshot.
+    fn note_rows(&self) -> Result<Vec<(String, String, Option<i64>)>, String> {
+        let mut st = self
+            .conn
+            .prepare("SELECT id, path, deleted_at FROM entries WHERE kind = 'note' ORDER BY rowid")
+            .map_err(db::err)?;
+        let rows = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(db::err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db::err)?;
+        Ok(rows)
+    }
+
+    /// One `reconcile` fix, SQL only: `Some(modified_at)` when the row moved
+    /// to `fix.there` — only while it still names `fix.here` in the state it
+    /// was seen in, and no other row names `fix.there`. A note marked
+    /// deleted leaves the index in the same transaction.
+    fn apply_fix(&mut self, fix: &Fix, now: i64) -> Result<Option<i64>, String> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db::err)?;
+        if path_taken(&tx, Path::new(&fix.there)) {
+            return Ok(None);
+        }
+        let sql = if fix.restoring {
+            "UPDATE entries SET path = ?2, deleted_at = NULL, stashed_at = ?3 \
+             WHERE id = ?1 AND path = ?4 AND kind = 'note' AND deleted_at IS NOT NULL \
+             RETURNING modified_at"
+        } else {
+            "UPDATE entries SET path = ?2, deleted_at = ?3 \
+             WHERE id = ?1 AND path = ?4 AND kind = 'note' AND deleted_at IS NULL \
+             RETURNING modified_at"
+        };
+        let stamp: Option<i64> = tx
+            .query_row(sql, params![fix.id, fix.there, now, fix.here], |r| r.get(0))
+            .optional()
+            .map_err(db::err)?;
+        if stamp.is_some() && !fix.restoring {
+            search::unindex_entry(&tx, &fix.id)?;
+        }
+        tx.commit().map_err(db::err)?;
+        Ok(stamp)
+    }
+}
+
+const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// Housekeeping runs when a day of wall clock has passed since the last run,
+/// or when the clock went backwards (a manual change must not stall it).
+pub(crate) fn due(last: Option<i64>, now: i64) -> bool {
+    match last {
+        None => true,
+        Some(l) => now < l || now - l >= DAY_MS,
+    }
+}
+
+/// What `reconcile` changed, by the event each needs.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct Reconciled {
+    /// Live notes whose file was already in the trash: now trashed.
+    pub(crate) deleted: Vec<String>,
+    /// Trashed notes whose file was already back in the notes folder: now live.
+    pub(crate) restored: Vec<String>,
+}
+
+/// One interrupted move to finish: the row names `here`, the file is at
+/// `there` (both `path_norm` spellings).
+struct Fix {
+    id: String,
+    here: String,
+    there: String,
+    restoring: bool,
+}
+
+/// Finish a move a crash cut between the rename and the transaction (D11):
+/// a live note whose file is gone while `.trash/<name>` holds a regular file
+/// is marked deleted; a trashed note whose file is gone while
+/// `<notes>/<name>` holds one — and no other row names it — is marked
+/// restored. Only the exact name is looked for; anything else is left
+/// alone, and nothing on disk is moved or removed.
+///
+/// Phased like `ensure_index`: the rows are read under the lock, the disk is
+/// looked at with no lock held, and each fix is one guarded transaction. A
+/// restored note is re-indexed as `restore` does, off the lock.
+pub(crate) fn reconcile(state: &StashState, now: i64) -> Reconciled {
+    let mut done = Reconciled::default();
+    let snapshot = state.with(|s| {
+        Ok((
+            s.note_rows()?,
+            s.paths.notes_dir.clone(),
+            s.paths.trash_dir.clone(),
+        ))
+    });
+    let (rows, notes_dir, trash_dir) = match snapshot {
+        Ok(snapshot) => snapshot,
+        Err(e) => {
+            eprintln!("[stash::trash] reconcile: {e}");
+            return done;
+        }
+    };
+    // A symlinked `.trash` is not the trash: nothing is marked deleted into it.
+    let trash_ok = crate::session::require_real_trash_dir(&trash_dir).is_ok();
+    let notes_dir = crate::path_norm::normalize_path(&notes_dir);
+    let trash_dir = crate::path_norm::normalize_path(&trash_dir);
+
+    let fixes: Vec<Fix> = rows
+        .into_iter()
+        .filter_map(|(id, path, deleted_at)| {
+            let here = Path::new(&path);
+            if occupied(here) {
+                return None;
+            }
+            let restoring = deleted_at.is_some();
+            if !restoring && !trash_ok {
+                return None;
+            }
+            let name = here.file_name()?;
+            let there = if restoring { &notes_dir } else { &trash_dir }.join(name);
+            let is_file = fs::symlink_metadata(&there).is_ok_and(|m| m.file_type().is_file());
+            is_file.then(|| Fix {
+                id,
+                here: path.clone(),
+                there: there.to_string_lossy().into_owned(),
+                restoring,
+            })
+        })
+        .collect();
+
+    for fix in fixes {
+        let stamp = match state.with(|s| s.apply_fix(&fix, now)) {
+            Ok(Some(stamp)) => stamp,
+            Ok(None) => continue,
+            Err(e) => {
+                eprintln!("[stash::trash] reconcile of {} failed: {e}", fix.id);
+                continue;
+            }
+        };
+        if fix.restoring {
+            if let Some(text) = search::read_saved(&fix.there) {
+                if let Err(e) = state.with(|s| s.reindex_written(&fix.there, &text, stamp)) {
+                    eprintln!("[stash::trash] reconciled {} but could not index it: {e}", fix.id);
+                }
+            }
+            done.restored.push(fix.id);
+        } else {
+            done.deleted.push(fix.id);
+        }
+    }
+    done
 }
 
 /// How long a trashed note stays restorable. Mirrored as `TRASH_DAYS` in
@@ -1499,5 +1651,200 @@ mod tests {
         assert_eq!(report.skipped[0].0, bad.id);
         assert_eq!(fs::read_to_string(&precious).unwrap(), "keep me");
         assert!(state.with(|s| Ok(row(s, &bad.id))).unwrap().is_some());
+    }
+
+    // ---- reconcile, due, and what the rest of the stash sees ----
+
+    fn row_in(state: &StashState, id: &str) -> Option<(String, Option<i64>, Option<i64>)> {
+        state.with(|s| Ok(row(s, id))).unwrap()
+    }
+
+    fn indexed_in(state: &StashState, id: &str) -> bool {
+        state.with(|s| Ok(indexed(s, id))).unwrap()
+    }
+
+    #[test]
+    fn reconcile_completes_a_delete_cut_after_the_rename() {
+        let (state, _root) = state_in("trash-reconcile-del");
+        let e = state.with(|s| s.create_note("# слово\n", None, T0, MSK)).unwrap();
+        let trash = state.with(|s| Ok(s.paths.trash_dir.clone())).unwrap();
+        fs::create_dir_all(&trash).unwrap();
+        let name = PathBuf::from(&e.path).file_name().unwrap().to_owned();
+        fs::rename(&e.path, trash.join(&name)).unwrap();
+
+        let got = reconcile(&state, T0 + 9);
+
+        assert_eq!(got.deleted, vec![e.id.clone()]);
+        assert!(got.restored.is_empty());
+        let (path, deleted_at, _) = row_in(&state, &e.id).unwrap();
+        assert_eq!(
+            PathBuf::from(&path),
+            fs::canonicalize(&trash).unwrap().join(&name)
+        );
+        assert_eq!(deleted_at, Some(T0 + 9));
+        assert!(!indexed_in(&state, &e.id));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "# слово\n");
+    }
+
+    #[test]
+    fn reconcile_completes_a_restore_cut_after_the_rename() {
+        let (state, _root) = state_in("trash-reconcile-restore");
+        let e = state
+            .with(|s| s.create_note("# вернулась\nслово\n", None, T0, MSK))
+            .unwrap();
+        state.with(|s| s.delete_entry(&e.id, T0)).unwrap();
+        let (trashed, _, _) = row_in(&state, &e.id).unwrap();
+        fs::rename(&trashed, &e.path).unwrap();
+
+        let got = reconcile(&state, T0 + 9);
+
+        assert_eq!(got.restored, vec![e.id.clone()]);
+        assert!(got.deleted.is_empty());
+        let (path, deleted_at, stashed_at) = row_in(&state, &e.id).unwrap();
+        assert_eq!(path, e.path);
+        assert_eq!(deleted_at, None);
+        assert_eq!(stashed_at, Some(T0 + 9));
+        assert!(indexed_in(&state, &e.id), "re-indexed off the lock");
+    }
+
+    #[test]
+    fn reconcile_leaves_a_note_deleted_outside_couplet_alone() {
+        let (state, _root) = state_in("trash-reconcile-gone");
+        let e = state.with(|s| s.create_note("x", None, T0, MSK)).unwrap();
+        fs::remove_file(&e.path).unwrap();
+        assert_eq!(reconcile(&state, T0), Reconciled::default());
+        assert_eq!(row_in(&state, &e.id).unwrap().1, None);
+    }
+
+    #[test]
+    fn reconcile_leaves_a_name_another_row_holds_alone() {
+        let (state, _root) = state_in("trash-reconcile-held");
+        let a = state.with(|s| s.create_note("a", None, T0, MSK)).unwrap();
+        let b = state.with(|s| s.create_note("b", None, T0, MSK)).unwrap();
+        state.with(|s| s.delete_entry(&a.id, T0)).unwrap();
+        let (trashed, _, _) = row_in(&state, &a.id).unwrap();
+        // `a`'s trashed file is gone, and its old name in the notes folder is
+        // `b`'s now — not `a`'s file coming back.
+        fs::remove_file(&trashed).unwrap();
+        fs::rename(&b.path, &a.path).unwrap();
+        state
+            .with(|s| {
+                repoint(s, &b.id, Path::new(&a.path));
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(reconcile(&state, T0 + 1), Reconciled::default());
+
+        assert_eq!(row_in(&state, &a.id).unwrap(), (trashed, Some(T0), None));
+        assert_eq!(row_in(&state, &b.id).unwrap().0, a.path);
+        assert_eq!(fs::read_to_string(&a.path).unwrap(), "b");
+    }
+
+    #[test]
+    fn reconcile_never_marks_a_note_trashed_into_a_symlinked_trash_folder() {
+        let (state, root) = state_in("trash-reconcile-symlinked");
+        let e = state.with(|s| s.create_note("x", None, T0, MSK)).unwrap();
+        let trash = state.with(|s| Ok(s.paths.trash_dir.clone())).unwrap();
+        let elsewhere = root.join("documents");
+        fs::create_dir_all(&elsewhere).unwrap();
+        symlink(&elsewhere, &trash).unwrap();
+        let name = PathBuf::from(&e.path).file_name().unwrap().to_owned();
+        fs::rename(&e.path, elsewhere.join(&name)).unwrap();
+
+        assert_eq!(reconcile(&state, T0 + 1), Reconciled::default());
+        assert_eq!(row_in(&state, &e.id).unwrap(), (e.path.clone(), None, None));
+    }
+
+    #[test]
+    fn reconcile_leaves_a_directory_on_the_other_side_alone() {
+        let (state, _root) = state_in("trash-reconcile-dir");
+        let e = state.with(|s| s.create_note("x", None, T0, MSK)).unwrap();
+        let trash = state.with(|s| Ok(s.paths.trash_dir.clone())).unwrap();
+        let name = PathBuf::from(&e.path).file_name().unwrap().to_owned();
+        fs::create_dir_all(trash.join(&name)).unwrap();
+        fs::remove_file(&e.path).unwrap();
+
+        assert_eq!(reconcile(&state, T0 + 1), Reconciled::default());
+        assert_eq!(row_in(&state, &e.id).unwrap().1, None);
+    }
+
+    #[test]
+    fn due_runs_first_then_after_a_day_or_a_clock_jump_back() {
+        assert!(due(None, T0));
+        assert!(!due(Some(T0), T0));
+        assert!(!due(Some(T0), T0 + DAY - 1));
+        assert!(due(Some(T0), T0 + DAY));
+        assert!(due(Some(T0), T0 - 1));
+    }
+
+    #[test]
+    fn a_trashed_note_cannot_be_tagged_or_put_away() {
+        let (mut stash, _root) = stash_in("trash-guards");
+        let e = note(&mut stash, "x");
+        stash.delete_entry(&e.id, T0).unwrap();
+        let (trashed, _, _) = row(&stash, &e.id).unwrap();
+        assert!(stash.tag(&e.id, &["t".into()], &[]).is_err());
+        let req = PutAway {
+            paths: vec![trashed.clone()],
+            ..Default::default()
+        };
+        assert!(stash.put_away(&req, T0 + 1).is_err());
+        assert_eq!(row(&stash, &e.id).unwrap(), (trashed, Some(T0), None));
+        assert!(tags(&stash, &e.id).is_empty());
+    }
+
+    #[test]
+    fn a_write_to_a_trashed_file_does_not_touch_its_row() {
+        let (mut stash, _root) = stash_in("trash-guard-hook");
+        let e = note(&mut stash, "x");
+        stash.delete_entry(&e.id, T0).unwrap();
+        let (trashed, _, _) = row(&stash, &e.id).unwrap();
+        let before = stash.get(&e.id).unwrap();
+
+        let written = stash.file_written(&trashed, Some("new"), T0 + DAY).unwrap();
+
+        assert_eq!(written, crate::stash::entries::Written::default());
+        assert_eq!(stash.get(&e.id).unwrap(), before);
+        assert!(!stash.reindex_written(&trashed, "# new\n", before.modified_at).unwrap());
+        assert!(!indexed(&stash, &e.id));
+    }
+
+    #[test]
+    fn list_counts_and_search_see_the_trash_the_way_the_ui_needs() {
+        let (mut stash, _root) = stash_in("trash-contract");
+        let a = note(&mut stash, "# альфа тайник\n");
+        let b = note(&mut stash, "# бета тайник\n");
+        let c = note(&mut stash, "# гамма\n");
+        stash.delete_entry(&a.id, T0 + 1).unwrap();
+        stash.delete_entry(&b.id, T0 + 2).unwrap();
+
+        let ids = |r: crate::stash::ListResult| {
+            r.entries.into_iter().map(|e| e.id).collect::<Vec<_>>()
+        };
+        let live = stash.list(&crate::stash::ListQuery::default()).unwrap();
+        assert_eq!(ids(live), vec![c.id.clone()]);
+
+        // Newest deletion first, whatever `sort` says. (The UI never passes `repo` here.)
+        let trash = stash
+            .list(&crate::stash::ListQuery {
+                deleted: true,
+                sort: crate::stash::ListSort::Kind,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(ids(trash), vec![b.id.clone(), a.id.clone()]);
+
+        assert_eq!(stash.counts(Some("any-repo"), 0).unwrap().deleted, 2);
+
+        for q in ["та", "тайник", "альфа"] {
+            let hits = crate::stash::search::found(&stash.conn, q);
+            assert!(hits.is_empty(), "{q}: trashed notes must not be found: {hits:?}");
+        }
+        assert_eq!(crate::stash::search::found(&stash.conn, "гамма"), vec![c.id.clone()]);
+
+        // And back: restored, it is found again.
+        stash.restore_entry(&a.id, T0 + 3).unwrap();
+        assert_eq!(crate::stash::search::found(&stash.conn, "та"), vec![a.id.clone()]);
     }
 }
