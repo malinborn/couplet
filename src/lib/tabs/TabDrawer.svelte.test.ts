@@ -8,6 +8,7 @@ import { HOVER_CLOSE_MS, HOVER_OPEN_MS } from './drawer-state';
 import type { TabListState, TabMeta } from './tab-model';
 import { GOT_MS, type CarouselWindow } from './carousel';
 import { DOUBLE_CLICK_MS, ctrlDigitHandler, type RenumberResult, type RevealResult } from './window-number';
+import type { StashMark } from '../stash/marks';
 
 /*
  * The drawer's keyboard and pointer contract against a stand-in for the
@@ -72,7 +73,13 @@ beforeAll(() => {
   CSS.escape ??= (s: string) => s;
 });
 
-function setup(list: TabListState = initialList()): Harness {
+interface SetupOptions {
+  /** Text the controller holds per tab id; a tab missing here is read from disk (''). Default: '' for all. */
+  held?: Record<string, string>;
+  marks?: (path: string | null) => StashMark | null;
+}
+
+function setup(list: TabListState = initialList(), options: SetupOptions = {}): Harness {
   const editor = document.createElement('div');
   editor.setAttribute('contenteditable', 'true');
   editor.tabIndex = 0;
@@ -105,7 +112,7 @@ function setup(list: TabListState = initialList()): Harness {
         return props.showTime;
       },
       source: {
-        held: () => '',
+        held: (id: string) => (options.held ? (options.held[id] ?? null) : ''),
         read: () => Promise.resolve(''),
         gitInfo: (paths: string[]) => Promise.resolve(paths.map(() => null)),
       },
@@ -118,6 +125,7 @@ function setup(list: TabListState = initialList()): Harness {
       oncarousel,
       onrestorefocus,
       onrenumber,
+      marks: options.marks,
       get handle() {
         return props.handle;
       },
@@ -1410,5 +1418,41 @@ describe('TabDrawer — when each tab was last touched', () => {
     const head = timeOf('c', '.card-head');
     expect(head?.textContent).toBe('2 hours ago');
     expect(head?.nextElementSibling?.classList.contains('card-kbd')).toBe(true);
+  });
+});
+
+describe('TabDrawer — notes and the stash mark (stash spec «Отметка тайника»)', () => {
+  it('ShowsANoteByItsTitleWithTheStashGlyphAndABlankTabAsANewNote', async () => {
+    h.destroy();
+    const list: TabListState = {
+      tabs: [
+        { id: 'n', path: '/notes/2026-09-27-0215-a3f9.md', dirty: false, openedAt: 1, viewedAt: 0, unviewed: false },
+        { id: 'u', path: null, dirty: false, openedAt: 2, viewedAt: 0, unviewed: false },
+        { id: 'f', path: '/p/a.md', dirty: false, openedAt: 3, viewedAt: 0, unviewed: false },
+      ],
+      activeId: 'n',
+    };
+    const held: Record<string, string> = { n: '# План\nтело', u: '' };
+    const marks = (p: string | null): StashMark | null =>
+      p === '/notes/2026-09-27-0215-a3f9.md'
+        ? { kind: 'note', title: 'План', repo: 'couplet' }
+        : p === '/p/a.md'
+          ? { kind: 'file', title: 'a.md', repo: null }
+          : null;
+    h = setup(list, { held, marks });
+    h.handle().toggle();
+    await settle();
+    const cards = [...h.root().querySelectorAll('.card')];
+    expect(cards[0].querySelector('.card-name')?.textContent).toContain('План');
+    expect(cards[0].querySelector('.card-name .sg svg')).not.toBeNull();
+    expect(cards[0].querySelector('.card-meta')?.textContent).toContain('couplet');
+    // A note's preview is its body: the title line is already the card's name.
+    expect(cards[0].querySelector('.card-preview')?.textContent).toContain('тело');
+    expect(cards[0].querySelector('.card-preview')?.textContent).not.toContain('План');
+    expect(cards[1].querySelector('.card-name')?.textContent).toContain('New note');
+    expect(cards[1].querySelector('.card-meta')?.textContent).toContain('empty — vanishes when closed');
+    expect(cards[2].querySelector('.in-stash svg')).not.toBeNull();
+    expect(cards[2].querySelector('.card-name .sg')).toBeNull();
+    expect(h.root().textContent).not.toMatch(/в тайнике|in the stash/i);
   });
 });

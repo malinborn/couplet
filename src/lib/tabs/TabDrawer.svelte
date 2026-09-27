@@ -53,7 +53,8 @@
   import { DRAWER_MOVE_KEY, DRAWER_SORT_KEYS } from './drawer-keys';
   import { createDrawerData, type DrawerDataDeps, type GitInfo, type TabText } from './drawer-data';
   import { dropBefore, moveIds, pastThreshold, sweptIds, type Box } from './drawer-geometry';
-  import { tabName } from './tab-name';
+  import { tabCaption, type Caption } from '../stash/tab-caption';
+  import type { StashMark } from '../stash/marks';
   import type { RenumberResult } from './window-number';
   import WindowCarousel, { type CarouselHandle } from './WindowCarousel.svelte';
   import {
@@ -96,6 +97,7 @@
     oncarousel,
     onrestorefocus,
     onrenumber,
+    marks = () => null,
     handle = $bindable(),
   }: {
     list: TabListState;
@@ -122,6 +124,8 @@
     onrestorefocus?: () => void;
     /** The notch's edit of `#N` (spec §3): `window_set_number`. */
     onrenumber?: (n: number) => Promise<RenumberResult>;
+    /** What the stash says about a tab's document (display only, D13). */
+    marks?: (path: string | null) => StashMark | null;
     handle?: TabDrawerHandle;
   } = $props();
 
@@ -233,6 +237,20 @@
     void dataVersion;
     return new Map<string, TabText | null>(list.tabs.map((tab) => [tab.id, data.text(tab.id)]));
   });
+  function captionOf(tab: TabMeta): Caption {
+    const text = texts.get(tab.id) ?? null;
+    return tabCaption({
+      path: tab.path,
+      title: text ? text.title : undefined,
+      blank: text ? text.blank : tab.path === null,
+      mark: marks(tab.path),
+    });
+  }
+
+  function nameOf(tab: TabMeta | undefined): string {
+    return tab ? captionOf(tab).name : t('stash.new_note');
+  }
+
   const gitOf = $derived.by(() => {
     void dataVersion;
     return new Map<string, GitInfo | null | undefined>(
@@ -244,7 +262,7 @@
       ? filterEntries(
           list.tabs.map((tab) => ({
             id: tab.id,
-            name: tabName(tab.path),
+            name: captionOf(tab).name,
             index: texts.get(tab.id)?.index ?? null,
           })),
           ds.query
@@ -315,7 +333,7 @@
     if (present.length === c.ids.length) return;
     untrack(() => {
       if (present.length === 0) cancelKeysCarousel();
-      else car = { ...c, ids: present, lead: tabName(byId.get(present[0])?.path ?? null) };
+      else car = { ...c, ids: present, lead: nameOf(byId.get(present[0])) };
     });
   });
 
@@ -741,7 +759,7 @@
     car = {
       mode,
       ids,
-      lead: tabName(byId.get(ids[0])?.path ?? null),
+      lead: nameOf(byId.get(ids[0])),
       items: null,
       kb: 0,
       hot: null,
@@ -1112,10 +1130,12 @@
         oncontextmenu={(e) => e.preventDefault()}
       >
         {#each visibleTabs as tab, i (tab.id)}
+          {@const caption = captionOf(tab)}
           <div class="card-slot" animate:flip={{ duration: motion(300), easing: cubicOut }} in:arrive out:collapse>
             <TabCard
               {tab}
-              name={tabName(tab.path)}
+              name={caption.name}
+              stash={caption.stash}
               active={tab.id === list.activeId}
               selected={selected.has(tab.id)}
               kb={tab.id === kbId}
@@ -1217,7 +1237,7 @@
         >
       </div>
       <div class="ghost-body">
-        <div class="ghost-name">{tabName(drag.lead.path)}</div>
+        <div class="ghost-name">{nameOf(drag.lead)}</div>
         <div class="ghost-meta">{metaText(drag.lead)}</div>
       </div>
       {#if drag.ids.length > 1}<div class="ghost-count">{drag.ids.length}</div>{/if}

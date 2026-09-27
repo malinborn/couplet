@@ -156,6 +156,9 @@
             <strong>{t('toast.save_as_blocked.headline', { fileName: toast.payload.fileName })}</strong>
           </span>
           <span class="md-toast-dim">{t(SAVE_AS_BLOCKED_KEYS[toast.payload.reason])}</span>
+        {:else if toast.payload.kind === 'stash-error'}
+          <span class="md-toast-text"><strong>{t('toast.stash_error.headline')}</strong></span>
+          <span class="md-toast-dim">{t('toast.stash_error.message')} · {toast.payload.message}</span>
         {:else if toast.payload.kind === 'window-number'}
           <span class="md-toast-text"
             >{t(toast.payload.reason === 'taken' ? 'toast.window_number.taken' : 'toast.window_number.missing', {

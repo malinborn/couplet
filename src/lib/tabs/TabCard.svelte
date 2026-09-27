@@ -15,6 +15,8 @@
   import type { GitInfo, TabText } from './drawer-data';
   import { lastTouched, type TabMeta } from './tab-model';
   import { formatExact, formatTouched } from './relative-time';
+  import StashGlyph from '../stash/StashGlyph.svelte';
+  import { repoLabel, type CardStash } from '../stash/tab-caption';
 
   let {
     tab,
@@ -32,6 +34,7 @@
     text,
     git,
     shortcut,
+    stash = null,
     onclose,
     onhoverstart,
     onhoverend,
@@ -56,6 +59,8 @@
     git: GitInfo | null | undefined;
     /** `⌘1`…`⌘9` for the first nine visible cards. */
     shortcut: string | null;
+    /** The stash's say about this tab (mockup `cardHTML`): a note, a blank new note, a file in the stash. */
+    stash?: CardStash | null;
     onclose: () => void;
     onhoverstart: () => void;
     onhoverend: () => void;
@@ -63,7 +68,25 @@
 
   const nameSegments = $derived(highlight(name, match && match.rank < 2 ? query : ''));
   const hit = $derived(match?.rank === 2 ? highlight(hitSnippet(match.line, query), query) : null);
-  const meta = $derived(tab.path === null ? { project: t('tabs.card.unsaved'), branch: null } : (git ?? null));
+  const meta = $derived(
+    stash?.kind === 'note'
+      ? { project: repoLabel(stash.repo), branch: null }
+      : stash?.kind === 'blank'
+        ? { project: t('stash.card.blank'), branch: null }
+        : tab.path === null
+          ? { project: t('tabs.card.unsaved'), branch: null }
+          : (git ?? null)
+  );
+  /** A note's preview is its body: the title is already the card's name (mockup). */
+  const lines = $derived(stash?.kind === 'note' ? (text?.rest ?? []) : (text?.preview ?? []));
+  const compactLine = $derived(stash?.kind === 'note' ? (text?.restFirst ?? '') : (text?.first ?? ''));
+  const closeTitle = $derived(
+    stash?.kind === 'note'
+      ? t('stash.card.close_note')
+      : stash?.kind === 'blank'
+        ? t('stash.card.close_blank')
+        : t('tabs.card.close_title')
+  );
   // `active` is the window's active tab: it is being looked at, so it reads «just now».
   const touched = $derived(lastTouched(tab, active ? tab.id : null, now));
   const touchedLabel = $derived(showTime ? formatTouched(touched, now) : '');
@@ -106,8 +129,13 @@
   <div class="card-head">
     <span class="sel-dot" aria-hidden="true">✓</span>
     <span class="card-name"
-      >{#each nameSegments as s, i (i)}{#if s.hit}<mark>{s.text}</mark>{:else}{s.text}{/if}{/each}</span
+      >{#if stash?.kind === 'note'}<span class="sg"><StashGlyph size={13} /></span>{/if}{#each nameSegments as s, i (i)}{#if s.hit}<mark
+            >{s.text}</mark
+          >{:else}{s.text}{/if}{/each}</span
     >
+    {#if stash?.kind === 'in-stash'}<span class="in-stash" title={t('stash.card.in_stash')}
+        ><StashGlyph size={13} label={t('stash.card.in_stash')} /></span
+      >{/if}
     <span class="card-imeta">{@render metaLine(true)}</span>
     {#if tab.unviewed}<span class="ai-chip">{t('tabs.card.ai_chip')}</span>{/if}
     {@render time('head')}
@@ -117,7 +145,7 @@
       type="button"
       tabindex="-1"
       aria-label={t('tabs.card.close', { name })}
-      title={t('tabs.card.close_title')}
+      title={closeTitle}
       onclick={(e) => {
         e.stopPropagation();
         onclose();
@@ -131,10 +159,10 @@
       <div class="hit">{#each hit as s, i (i)}{#if s.hit}<mark>{s.text}</mark>{:else}{s.text}{/if}{/each}</div>
     </div>
   {:else if compact}
-    {#if text?.first}<div class="card-preview"><div>{text.first}</div></div>{/if}
-  {:else if text && text.preview.length > 0}
+    {#if compactLine}<div class="card-preview"><div>{compactLine}</div></div>{/if}
+  {:else if lines.length > 0}
     <div class="card-preview">
-      {#each text.preview as line, i (i)}
+      {#each lines as line, i (i)}
         <div>
           {#if line.kind === 'heading'}<b>{#each line.segs as s, j (j)}{s.text}{/each}</b>
           {:else if line.kind === 'quote'}<em>{@render segments(line.segs)}</em>
@@ -237,6 +265,24 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  /* The stash glyph before a note's name; the mockup's `--stash` is the theme's link colour. */
+  .card-name .sg {
+    display: inline-flex;
+    vertical-align: -2px;
+    margin-right: 5px;
+    color: var(--color-link);
+  }
+
+  /* A file that is also in the stash: a small tray after its name, no text (spec «Отметка тайника»). */
+  .in-stash {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    width: 14px;
+    height: 14px;
+    color: color-mix(in oklab, var(--color-link) 70%, var(--text-muted));
   }
 
   .card.untitled .card-name {
