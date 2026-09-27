@@ -276,6 +276,7 @@
   "stash.drawer.empty_open_here": "Everything with this tag is already open as tabs",
   "stash.drawer.empty_repo": "Nothing tagged #{repo} in the stash",
   "stash.drawer.empty_all": "The stash is empty",
+  "stash.drawer.more": "{n} more",
   "stash.filter.chip_title": "Window #{n} is bound to the {repo} repo — the stash opens with this filter",
   "stash.filter.remove": "Remove the repo filter",
   "stash.filter.remove_title": "Show the whole stash (⌫ with an empty search)",

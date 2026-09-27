@@ -43,7 +43,7 @@
     stashKbTarget,
     stashKeyAction,
   } from './stash-state';
-  import { entryTitle, stashView, type StashSort } from './stash-view';
+  import { STASH_RENDER_CAP, entryTitle, stashView, type StashSort } from './stash-view';
   import type { StashEntry, TagChange } from './types';
 
   let {
@@ -97,6 +97,8 @@
   let now = $state(Date.now());
   let expandTimer: ReturnType<typeof setTimeout> | undefined;
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The cards are in the DOM: while open, and through the slide-out (`.stash-wrap`'s .34 s). */
+  let listOn = $state(false);
 
   const open = $derived(stash.state.open);
   const focused = $derived(open && stash.state.focus === 'stash');
@@ -111,12 +113,15 @@
       untitled,
     })
   );
-  const visible = $derived(view.rows.map((r) => r.entry.id));
+  /** The rows rendered as cards (I2); the keyboard ring moves over these only. */
+  const rows = $derived(view.rows.slice(0, STASH_RENDER_CAP));
+  const more = $derived(view.rows.length - rows.length);
+  const visible = $derived(rows.map((r) => r.entry.id));
   const kbId = $derived(focused ? stashKbTarget(stash.state, visible) : null);
   const searchNote = $derived(
     stash.state.query
       ? [
-          visible.length > 0 ? t('tabs.drawer.search_count', { shown: visible.length, total: view.total }) : '',
+          view.rows.length > 0 ? t('tabs.drawer.search_count', { shown: view.rows.length, total: view.total }) : '',
           t('tabs.drawer.search_reset'),
         ]
           .filter(Boolean)
@@ -142,8 +147,23 @@
   });
 
   // What is on screen: only a card the human can see pulses after a reload.
+  // Closed, nothing is rendered and nothing reloads; the first load after a
+  // reopen marks nothing (M8), and from then on this is current again.
   $effect(() => {
-    stash.setShown(visible);
+    if (open) stash.setShown(visible);
+  });
+
+  // A closed stash keeps no cards in the DOM (I2) — after the slide-out, so
+  // they leave with the drawer instead of vanishing from it.
+  $effect(() => {
+    if (open) {
+      listOn = true;
+      return;
+    }
+    const timer = setTimeout(() => {
+      listOn = false;
+    }, motion(360));
+    return () => clearTimeout(timer);
   });
 
   $effect(() => {
@@ -420,32 +440,35 @@
       onpointerdown={onListPointerDown}
       oncontextmenu={(e) => e.preventDefault()}
     >
-      {#each view.rows as row (row.entry.id)}
-        <div class="card-slot" animate:flip={{ duration: motion(300), easing: cubicOut }} in:arriveR out:collapseR>
-          <StashCard
-            entry={row.entry}
-            title={entryTitle(row.entry, untitled)}
-            match={row.match}
-            query={view.text}
-            holder={stash.holders.get(row.entry.path) ?? null}
-            kb={row.entry.id === kbId}
-            expanded={row.entry.id === expandedId}
-            dragging={row.entry.id === draggingId}
-            {compact}
-            pulse={stash.pulse.has(row.entry.id)}
-            pulseKey={stash.pulseKey(row.entry.id)}
-            newTags={stash.newTags.get(row.entry.id) ?? []}
-            {now}
-            onremove={() => onremove(row.entry)}
-            onfilter={filterByTag}
-            onsettag={(change) => setTag(row.entry, change)}
-            ondone={focusList}
-            onhoverstart={() => cardEnter(row.entry.id)}
-            onhoverend={() => cardLeave(row.entry.id)}
-          />
-        </div>
-      {/each}
-      {#if emptyText}<div class="empty">{emptyText}</div>{/if}
+      {#if listOn}
+        {#each rows as row (row.entry.id)}
+          <div class="card-slot" animate:flip={{ duration: motion(300), easing: cubicOut }} in:arriveR out:collapseR>
+            <StashCard
+              entry={row.entry}
+              title={entryTitle(row.entry, untitled)}
+              match={row.match}
+              query={view.text}
+              holder={stash.holders.get(row.entry.path) ?? null}
+              kb={row.entry.id === kbId}
+              expanded={row.entry.id === expandedId}
+              dragging={row.entry.id === draggingId}
+              {compact}
+              pulse={stash.pulse.has(row.entry.id)}
+              pulseKey={stash.pulseKey(row.entry.id)}
+              newTags={stash.newTags.get(row.entry.id) ?? []}
+              {now}
+              onremove={() => onremove(row.entry)}
+              onfilter={filterByTag}
+              onsettag={(change) => setTag(row.entry, change)}
+              ondone={focusList}
+              onhoverstart={() => cardEnter(row.entry.id)}
+              onhoverend={() => cardLeave(row.entry.id)}
+            />
+          </div>
+        {/each}
+        {#if more > 0}<div class="more">{t('stash.drawer.more', { n: more })}</div>{/if}
+        {#if emptyText}<div class="empty">{emptyText}</div>{/if}
+      {/if}
     </div>
 
     <div class="st-foot">
@@ -836,6 +859,13 @@
     font-size: 12.5px;
     color: var(--text-muted);
     animation: arrive 0.3s var(--tabs-ease);
+  }
+
+  .more {
+    padding: 6px 10px 12px;
+    text-align: center;
+    font-size: 11.5px;
+    color: var(--text-muted);
   }
 
   .st-foot {

@@ -3,7 +3,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { installCatalog } from '../i18n';
 import StashDrawer, { type StashDrawerHandle } from './StashDrawer.svelte';
-import { createStashStore, type StashStore } from './stash-store.svelte';
+import { RELOAD_COALESCE_MS, createStashStore, type StashStore } from './stash-store.svelte';
+import { STASH_RENDER_CAP } from './stash-view';
 import type { StashEntry, TabHolder } from './types';
 
 const NOW = Date.now();
@@ -88,11 +89,13 @@ interface SetupOpts {
   dropHot?: boolean;
   /** Leave the stash closed. */
   closed?: boolean;
+  /** The stash's entries (default `ENTRIES`); read on every load. */
+  list?: () => StashEntry[];
 }
 
 async function setup(opts: SetupOpts = {}): Promise<H> {
   const store = createStashStore({
-    list: async () => ENTRIES,
+    list: async () => (opts.list ? opts.list() : ENTRIES),
     counts: async () => ({ total: ENTRIES.length, stashedToday: 0, deleted: 0 }),
     holders: async (paths) => opts.holders ?? paths.map(() => null),
     windowRepo: async () => opts.repo ?? null,
@@ -264,6 +267,58 @@ describe('StashDrawer', () => {
     h.store.update((s) => ({ ...s, focus: 'tabs' }));
     await settle();
     expect(drawer.classList.contains('focused')).toBe(false);
+  });
+
+  describe('the DOM holds only what can be seen (I2)', () => {
+    /** Past the slide-out: reduced motion in these tests makes it a zero-delay timer. */
+    const afterSlide = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    it('closed, no cards are rendered at all; opened, they are', async () => {
+      h = await setup({ closed: true });
+      expect(ids()).toEqual([]);
+      h.store.open();
+      await settle();
+      expect(ids()).toEqual(['d', 'a', 'b', 'c']);
+      h.store.close();
+      await settle();
+      await afterSlide();
+      await settle();
+      expect(ids()).toEqual([]);
+      expect(h.root.querySelector('.stash-drawer'), 'the shell stays for the slide').not.toBeNull();
+    });
+
+    it(`renders the first ${STASH_RENDER_CAP} rows and says how many more there are`, async () => {
+      const many = Array.from({ length: STASH_RENDER_CAP + 50 }, (_, i) =>
+        entry(`m${String(i).padStart(3, '0')}`, { modifiedAt: NOW - i * MIN })
+      );
+      h = await setup({ list: () => many });
+      expect(ids()).toHaveLength(STASH_RENDER_CAP);
+      expect(h.root.querySelector('.more')?.textContent).toBe('ещё 50');
+      expect(h.root.querySelector('.f-note')?.textContent, 'the counts still cover everything').toBe(
+        `весь тайник · ${STASH_RENDER_CAP + 50} из ${STASH_RENDER_CAP + 50}`
+      );
+      // A query narrows below the cap: no «more» row.
+      key('m');
+      key('0');
+      key('0');
+      await settle();
+      expect(h.root.querySelector('.more')).toBeNull();
+    });
+
+    it('after a reopen a card on screen still pulses when it is put away again', async () => {
+      let stashed = 10;
+      h = await setup({ list: () => ENTRIES.map((e) => ({ ...e, stashedAt: e.id === 'c' ? stashed : null })) });
+      h.store.close();
+      await settle();
+      await afterSlide();
+      h.store.open();
+      await settle();
+      stashed = 20;
+      h.store.changed('put-away', ['c']);
+      await new Promise((resolve) => setTimeout(resolve, RELOAD_COALESCE_MS + 20));
+      await settle();
+      expect(h.root.querySelector('[data-stash-id="c"]')?.classList.contains('pulse')).toBe(true);
+    });
   });
 
   it('closed: off screen, inert, and no drop target', async () => {

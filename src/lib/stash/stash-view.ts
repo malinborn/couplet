@@ -12,6 +12,13 @@ import { matchStash, parseStashQuery } from './stash-query';
 
 export type StashSort = 'changed' | 'opened' | 'kind';
 
+/**
+ * The most cards the drawer renders; the rest are counted in a «ещё N» row. A
+ * stash is years of notes, and a card is a heavy node — typing narrows the
+ * list long before anyone scrolls past this many.
+ */
+export const STASH_RENDER_CAP = 200;
+
 /** Rust's `changed_at` (`stash/entries.rs`): one meaning for the drawer and the agent. */
 export function changedAt(e: StashEntry): number {
   return Math.max(e.modifiedAt, e.stashedAt ?? 0);

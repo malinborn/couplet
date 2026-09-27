@@ -276,6 +276,7 @@
   "stash.drawer.empty_open_here": "Всё с этим тегом уже открыто вкладками",
   "stash.drawer.empty_repo": "С тегом #{repo} в тайнике пусто",
   "stash.drawer.empty_all": "В тайнике пусто",
+  "stash.drawer.more": "ещё {n}",
   "stash.filter.chip_title": "Окно #{n} привязано к репо {repo} — тайник открыт с этим фильтром",
   "stash.filter.remove": "Снять фильтр по репо",
   "stash.filter.remove_title": "Показать весь тайник (⌫ в пустом поиске)",
