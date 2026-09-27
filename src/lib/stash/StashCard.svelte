@@ -99,6 +99,8 @@
   function onTagKey(e: KeyboardEvent): void {
     // Its keys are its own: not the drawer's search, not the editor's.
     e.stopPropagation();
+    // The IME owns the key: its Enter commits a candidate, its Esc drops one.
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter') {
       e.preventDefault();
       finish(true);

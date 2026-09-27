@@ -166,6 +166,34 @@ describe('StashCard', () => {
     expect(q(card, '.tag-edit')).toBeNull();
   });
 
+  it('Enter or Esc that an IME is composing with leave the tag input alone (M6)', async () => {
+    const card = render(entry());
+    q(card, '.tag-add')!.click();
+    await tick();
+    const input = q(card, '.tag-edit') as HTMLInputElement;
+    input.value = 'деплой';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const composing = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      code: 'Enter',
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    input.dispatchEvent(composing);
+    // WebKit marks some IME keys by keyCode 229 before `isComposing` is set.
+    const consumed = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true });
+    Object.defineProperty(consumed, 'keyCode', { value: 229 });
+    input.dispatchEvent(consumed);
+    flushSync();
+    expect(composing.defaultPrevented).toBe(false);
+    expect(spies.onsettag).not.toHaveBeenCalled();
+    expect(q(card, '.tag-edit')).not.toBeNull();
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
+    flushSync();
+    expect(spies.onsettag).toHaveBeenCalledWith({ add: ['деплой'] });
+  });
+
   it('a tag the entry already has is not sent again', async () => {
     const card = render(entry());
     q(card, '.tag-add')!.click();
