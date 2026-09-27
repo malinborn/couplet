@@ -246,7 +246,13 @@ pub fn iso_local(ms: i64) -> String {
 
 /// `--since` / `since`: `today`, `yesterday` (local midnight — the drawer's
 /// «сегодня», `clock::local_day_start_ms`), `12h`, `7d`, `YYYY-MM-DD` (local
-/// midnight of that date), or unix ms.
+/// midnight of that date), or unix ms (≥ 10^11: fewer digits are seconds).
+///
+/// `today`/`yesterday` take one UTC offset per day start, as the drawer's
+/// «сегодня» does (D14), so an agent's "today" and the human's agree. On the
+/// day of a DST change (and "yesterday" the day after) the offset at `now`
+/// can differ from the one at midnight, and the start is off by that hour.
+/// `YYYY-MM-DD` is exact (`clock::local_midnight`).
 pub fn parse_since(s: &str, now_ms: i64) -> Result<i64, String> {
     let bad = || {
         format!("invalid since: {s:?} (expected today, yesterday, 12h, 7d, YYYY-MM-DD or unix ms)")
@@ -286,10 +292,19 @@ pub fn parse_since(s: &str, now_ms: i64) -> Result<i64, String> {
         return clock::local_midnight(num(0..4)?, num(5..7)?, num(8..10)?).ok_or_else(bad);
     }
     if digits(t) {
-        return t.parse().map_err(|_| bad());
+        let ms: i64 = t.parse().map_err(|_| bad())?;
+        // Unix seconds (10 digits today) read as ms land in January 1970 and
+        // filter nothing out; 10^11 ms is March 1973, before any stash.
+        if ms < UNIX_MS_MIN {
+            return Err("since: unix milliseconds expected (got what looks like seconds)".to_string());
+        }
+        return Ok(ms);
     }
     Err(bad())
 }
+
+/// The smallest `since` taken as unix ms (see `parse_since`).
+const UNIX_MS_MIN: i64 = 100_000_000_000;
 
 /// A 1-based inclusive line range; `to: None` runs to the last line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1854,6 +1869,19 @@ mod tests {
         ] {
             assert!(parse_since(bad, 0).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn unix_seconds_are_refused_not_read_as_january_1970() {
+        let now = 1_790_378_408_605;
+        for secs in ["1790378408", "0", "99999999999"] {
+            let err = parse_since(secs, now).unwrap_err();
+            assert_eq!(
+                err, "since: unix milliseconds expected (got what looks like seconds)",
+                "{secs}"
+            );
+        }
+        assert_eq!(parse_since("100000000000", now).unwrap(), 100_000_000_000);
     }
 
     #[test]

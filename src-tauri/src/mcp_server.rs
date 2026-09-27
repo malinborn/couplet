@@ -389,7 +389,7 @@ fn tools_list() -> Value {
                     "kind": {"type": "string", "enum": ["note", "file"], "description": "Only notes, or only file references."},
                     "repo": {"type": "string", "description": "Scope to this repository instead of yours: its name, or a path inside it. Mutually exclusive with `all`."},
                     "all": {"type": "boolean", "default": false, "description": "The whole stash, not just your repository."},
-                    "since": {"type": "string", "description": "Only entries put away (or, if never put away, changed) since: today, yesterday, 12h, 7d, YYYY-MM-DD, or unix ms."},
+                    "since": {"type": "string", "description": "Only entries put away (or, if never put away, changed) since: today, yesterday, 12h, 7d, YYYY-MM-DD, or unix milliseconds (not seconds)."},
                     "sort": {"type": "string", "enum": ["changed", "opened", "kind"], "default": "changed", "description": "changed: most recently put away or changed first."},
                     "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100, "description": "Entries per page."},
                     "cursor": {"type": "string", "description": "The previous answer's `next_cursor`."}
