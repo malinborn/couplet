@@ -65,6 +65,15 @@ impl McpConfig {
     /// an invalid product. Skipping one left the defaults — the release
     /// socket and stash, launching allowed — under a dev registration.
     fn from_flags(args: &[String]) -> Result<Self, String> {
+        Self::from_flags_for(args, cfg!(debug_assertions))
+    }
+
+    /// `from_flags` with the build kind as an argument. A debug build with
+    /// neither flag is refused at startup, socket tools included: its
+    /// defaults are the release app's socket and stash (the dev-CLI trap).
+    /// `--socket` alone still names its build for the socket tools, as in a
+    /// release build; the stash tools then answer the `--product` error.
+    fn from_flags_for(args: &[String], debug_build: bool) -> Result<Self, String> {
         let mut socket: Option<String> = None;
         let mut product: Option<String> = None;
         let mut iter = args.iter();
@@ -91,10 +100,12 @@ impl McpConfig {
                 return Err(format!("{arg} given twice"));
             }
         }
-        if let Some(p) = product.as_deref() {
-            crate::stash::cli::check_product(p)?;
+        match (product.as_deref(), socket.as_deref()) {
+            (Some(p), _) => crate::stash::cli::check_product(p)?,
+            (None, None) if debug_build => return Err(crate::stash::cli::DEBUG_NEEDS_PRODUCT.to_string()),
+            _ => {}
         }
-        let stash = crate::stash::cli::location_from_flags(product.as_deref(), socket.as_deref());
+        let stash = crate::stash::cli::location_for_build(product.as_deref(), socket.as_deref(), debug_build);
         let release = crate::paths::RELEASE_PRODUCT_NAME;
         let (socket_path, allow_launch) = match (socket, product.as_deref()) {
             (Some(s), _) => (PathBuf::from(s), false),
@@ -1092,7 +1103,7 @@ mod tests {
 
     #[test]
     fn from_flags_defaults_to_release_socket_and_allows_launch() {
-        let config = McpConfig::from_flags(&[]).unwrap();
+        let config = McpConfig::from_flags_for(&[], false).unwrap();
         // The literal, not RELEASE_PRODUCT_NAME: this is what the app binds
         // (`/tmp/<productName>_cmd.sock`), and `paths.rs` pins the constant
         // to `tauri.conf.json`.
@@ -1502,7 +1513,7 @@ mod tests {
 
     #[test]
     fn product_names_the_socket_and_the_stash_together() {
-        let flags = |a: &[&str]| McpConfig::from_flags(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap();
+        let flags = |a: &[&str]| McpConfig::from_flags_for(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), false).unwrap();
         let dev = flags(&["--product", "couplet-dev"]);
         assert_eq!(dev.socket_path, PathBuf::from("/tmp/couplet_dev_cmd.sock"));
         assert!(!dev.allow_launch, "never launch the release app for a dev product");
@@ -1546,6 +1557,24 @@ mod tests {
         // is not running".
         assert!(refused(&["--product", "../x"]).contains("--product"));
         assert!(refused(&["--product", ""]).contains("--product"));
+    }
+
+    #[test]
+    fn a_debug_build_without_a_product_is_refused_at_startup() {
+        // No flags would mean the release socket and stash, launch allowed.
+        let err = McpConfig::from_flags_for(&[], true).err().unwrap();
+        assert_eq!(err, crate::stash::cli::DEBUG_NEEDS_PRODUCT);
+        // Tests are a debug build: the real entry refuses the same way.
+        assert!(McpConfig::from_flags(&[]).is_err());
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // A product is enough…
+        let dev = McpConfig::from_flags_for(&argv(&["--product", "couplet-dev"]), true).unwrap();
+        assert!(dev.stash.is_ok());
+        // …and a socket alone names its build for the socket tools, while
+        // the stash tools answer the --product error, as in a release build.
+        let socket_only = McpConfig::from_flags_for(&argv(&["--socket", "/tmp/x.sock"]), true).unwrap();
+        assert_eq!(socket_only.socket_path, PathBuf::from("/tmp/x.sock"));
+        assert!(socket_only.stash.unwrap_err().contains("--product"));
     }
 
     #[test]

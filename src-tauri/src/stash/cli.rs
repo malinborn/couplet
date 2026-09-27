@@ -67,16 +67,35 @@ pub fn check_product(product: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `--product` / `--socket` into a location (plan D3, A12). A socket alone is
-/// refused: it names a non-release build, and the stash would silently be
-/// the release one's. So is a product `check_product` refuses. Path arithmetic only:
-/// nothing is created or even looked at.
+/// Why a debug binary without `--product` is refused: its default would be
+/// the release stash and socket — the owner's real notes, and their running
+/// app told about a test write.
+pub const DEBUG_NEEDS_PRODUCT: &str = "a debug build needs --product (e.g. --product couplet-dev)";
+
+/// `--product` / `--socket` into a location (plan D3, A12), for the build
+/// this binary is.
 pub fn location_from_flags(
     product: Option<&str>,
     socket: Option<&str>,
 ) -> Result<StashLocation, String> {
+    location_for_build(product, socket, cfg!(debug_assertions))
+}
+
+/// `location_from_flags` with the build kind as an argument, so both kinds
+/// are testable. A socket alone is refused: it names a non-release build,
+/// and the stash would silently be the release one's. So is no product at
+/// all in a debug build, and a product `check_product` refuses. Path
+/// arithmetic only: nothing is created or even looked at.
+pub(crate) fn location_for_build(
+    product: Option<&str>,
+    socket: Option<&str>,
+    debug_build: bool,
+) -> Result<StashLocation, String> {
     if socket.is_some() && product.is_none() {
         return Err("--socket names another couplet build: pass --product too (e.g. --product couplet-dev), so the stash is that build's and not the release one".to_string());
+    }
+    if product.is_none() && debug_build {
+        return Err(DEBUG_NEEDS_PRODUCT.to_string());
     }
     let product = product.unwrap_or(crate::paths::RELEASE_PRODUCT_NAME);
     check_product(product)?;
@@ -1614,10 +1633,26 @@ mod tests {
             dirs::home_dir().as_deref(),
             "notes live in the home folder (roadmap A1)"
         );
-        let release = location_from_flags(None, None).unwrap();
+        let release = location_for_build(None, None, false).unwrap();
         assert!(release
             .app_dir()
             .ends_with(crate::paths::RELEASE_PRODUCT_NAME));
+    }
+
+    #[test]
+    fn a_debug_build_needs_a_product() {
+        // A debug binary run without --product wrote the release stash.
+        let err = location_for_build(None, None, true).unwrap_err();
+        assert_eq!(err, DEBUG_NEEDS_PRODUCT);
+        // Tests are a debug build: the real entry refuses the same way.
+        assert_eq!(location_from_flags(None, None).unwrap_err(), DEBUG_NEEDS_PRODUCT);
+        // A socket alone keeps its own, more specific refusal.
+        assert!(location_for_build(None, Some("/tmp/x.sock"), true)
+            .unwrap_err()
+            .contains("--socket names another couplet build"));
+        // Naming a product — the release one included — is enough.
+        assert!(location_for_build(Some("couplet-dev"), None, true).is_ok());
+        assert!(location_for_build(Some(crate::paths::RELEASE_PRODUCT_NAME), None, true).is_ok());
     }
 
     #[test]

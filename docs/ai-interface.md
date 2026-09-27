@@ -542,7 +542,7 @@ The app answers `{"ok":true}` at once, without asking any window, and emits `sta
 
 ### Dev builds: `--product`, never `--socket` alone
 
-Pass `--product couplet-dev` (CLI and `couplet mcp`): it names the dev build's database (`~/Library/Application Support/couplet-dev/stash.db`), notes folder (`~/couplet-dev/`) and socket (`/tmp/couplet_dev_cmd.sock`) together. `--socket` without `--product` is refused for stash verbs (exit 2), and makes `couplet mcp`'s stash tools answer an error naming `--product`: the stash would otherwise silently be the release one while the socket names a dev build. A product name that is empty, has a slash or surrounding spaces, or is `.`/`..` is refused too — it would fall back to the release stash.
+Pass `--product couplet-dev` (CLI and `couplet mcp`): it names the dev build's database (`~/Library/Application Support/couplet-dev/stash.db`), notes folder (`~/couplet-dev/`) and socket (`/tmp/couplet_dev_cmd.sock`) together. `--socket` without `--product` is refused for stash verbs (exit 2), and makes `couplet mcp`'s stash tools answer an error naming `--product`: the stash would otherwise silently be the release one while the socket names a dev build. A product name that is empty, has a slash or surrounding spaces, or is `.`/`..` is refused too — it would fall back to the release stash. A **debug** binary (`target/debug/md-mini`) refuses to run a stash verb without `--product` (`a debug build needs --product (e.g. --product couplet-dev)`, exit 2), and `couplet mcp` from a debug binary with neither `--product` nor `--socket` refuses to start: its defaults would be the release stash and socket. A release binary keeps the release defaults.
 
 ## Discoverability
 
