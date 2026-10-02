@@ -27,6 +27,8 @@ A theme is a set of CSS custom properties on `:root[data-theme='<id>']`. Compone
 
 **`stash-*` tokens** (`--stash-tint`, `--stash-line`, `--stash-soft`) are not theme tokens either: they live on plain `:root` in `src/styles/stash.css`, mixed from `--color-stash`. `src/lib/stash/stash-tokens.test.ts` pins both halves.
 
+**`search-*` tokens** (`--search-match-*`, `--search-current-*`, `--search-veil`, …) are not theme tokens either: they live on plain `:root` in `src/styles/search.css`, mixed from `--color-glow` / `--bg-base` / `--text-primary`, with per-theme overrides beside them where an accent cannot carry text. `src/lib/editor/search/search-contrast.test.ts` evaluates them for every registered theme and fails below WCAG 4.5:1 — a new family is covered automatically, and fixed there, not by eye.
+
 ## Allowlist in the guard
 
 - **Set at runtime** (`RUNTIME_SET`): `--notch-depth` (`TabNotch.svelte`, `setProperty`), `--tw` and `--ts` (`WindowCarousel.svelte`, `style:`). The test also checks each one is really set from code, so a stale entry fails.

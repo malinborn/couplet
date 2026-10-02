@@ -377,5 +377,20 @@
   "toast.stash.kept_open": "{title} was opened again in #{number} — not deleted",
   "toast.stash.kept_busy": "{title} in #{number} is waiting for your answer to an agent — not deleted",
   "toast.stash.held_restore": "{title} is open in a tab — close it to restore",
-  "toast.stash.held_purge": "{title} is open in a tab — close it to delete forever"
+  "toast.stash.held_purge": "{title} is open in a tab — close it to delete forever",
+
+  "search.find_placeholder": "Rechercher",
+  "search.replace_placeholder": "Remplacer par",
+  "search.previous": "Occurrence précédente (⇧↩)",
+  "search.next": "Occurrence suivante (↩)",
+  "search.match_case": "Respecter la casse",
+  "search.regexp": "Expression régulière",
+  "search.whole_word": "Mot entier",
+  "search.toggle_replace": "Rechercher et remplacer",
+  "search.close": "Fermer (Échap)",
+  "search.replace_one": "Remplacer",
+  "search.replace_all": "Tout remplacer",
+  "search.no_matches": "aucune occurrence",
+  "search.invalid": "motif invalide",
+  "search.count": "occurrence {index} sur {total}"
 }

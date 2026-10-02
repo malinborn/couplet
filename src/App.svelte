@@ -115,6 +115,7 @@
   import type { TabOwner } from './lib/switch-document';
   import { activeCellEditSession } from './lib/editor/cell-edit-session';
   import { closeSearchPanel } from '@codemirror/search';
+  import { openFind } from './lib/editor/search/panel';
   import { hideHoverMenu } from './lib/editor/hover-menu';
   import { createTabController, type DiskOptions, type MoveDone, type OpenAnswer, type Stranded } from './lib/tabs/controller';
   import { AGENT_ERRORS, createAgentCommands, type AgentResponse, type AskResult } from './lib/tabs/agent-commands';
@@ -163,6 +164,7 @@
   import './styles/editor.css';
   import './styles/tabs.css';
   import './styles/stash.css';
+  import './styles/search.css';
 
   const theme = createThemeStore();
   const engine = createEngineStore();
@@ -572,9 +574,9 @@
   function handleFind(): void {
     const view = editorHandle?.view;
     if (!view) return;
-    import('@codemirror/search').then(({ openSearchPanel }) => {
-      openSearchPanel(view);
-    });
+    // Not CodeMirror's openSearchPanel: with the query field already focused
+    // that does nothing, while ⌘F there should select the query (search/panel.ts).
+    openFind(view);
   }
 
   /**
