@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { EditorState } from '@codemirror/state';
 import { SearchQuery } from '@codemirror/search';
-import { MATCH_CAP, NO_MATCHES, collectMatches, formatCounter, matchIndexAt } from './match-count';
+import {
+  MATCH_CAP,
+  NO_MATCHES,
+  collectMatches,
+  formatCounter,
+  mapMatches,
+  matchIndexAt,
+  sameMatchSpec,
+} from './match-count';
 
 const LABELS = { none: 'no matches', invalid: 'invalid pattern' };
 
@@ -121,5 +129,84 @@ describe('formatCounter', () => {
     const capped = collectMatches(state('x'.repeat(20)), q('x'), 10);
     expect(formatCounter(q('x'), capped, { from: 0, to: 1 }, LABELS).text).toBe('1 / 10+');
     expect(formatCounter(q('x'), capped, { from: 15, to: 16 }, LABELS).text).toBe('– / 10+');
+  });
+});
+
+describe('mapMatches — a local rescan agrees with a full one', () => {
+  const DOC = 'поиск один\nещё поиск и поиски\n\nконец: поиск';
+
+  /** Apply `change` and compare the mapped list with a scan of the result. */
+  function check(doc: string, query: SearchQuery, change: { from: number; to?: number; insert?: string }): void {
+    const before = state(doc);
+    const tr = before.update({ changes: change });
+    const mapped = mapMatches(collectMatches(before, query), query, tr.changes, tr.state);
+    expect(mapped, JSON.stringify(change)).not.toBeNull();
+    const full = collectMatches(tr.state, query);
+    expect({ from: mapped?.from, to: mapped?.to }, JSON.stringify(change)).toEqual({ from: full.from, to: full.to });
+  }
+
+  it.each([
+    ['insert before a match', { from: 0, insert: 'ну ' }],
+    ['insert after the last match', { from: DOC.length, insert: ' и ещё' }],
+    ['insert inside a match', { from: 2, insert: 'xx' }],
+    ['delete inside a match', { from: 1, to: 3 }],
+    ['delete across a match', { from: 8, to: 20 }],
+    ['delete across lines', { from: 5, to: 30 }],
+    ['create a match by typing', { from: 21, insert: ' поиск' }],
+    ['create a match across a deletion', { from: 3, to: 4, insert: 'и' }],
+    ['replace a whole line', { from: 11, to: 29, insert: 'пусто' }],
+    ['delete everything', { from: 0, to: DOC.length }],
+  ])('string query: %s', (_name, change) => {
+    check(DOC, q('поиск'), change);
+  });
+
+  it('a whole-word match unmade by a letter typed right after it', () => {
+    check('cat cat', q('cat', { wholeWord: true }), { from: 3, insert: 's' });
+    check('cats cat', q('cat', { wholeWord: true }), { from: 3, to: 4 });
+  });
+
+  it('a query with a line break finds a match the edit makes across lines', () => {
+    check('ab\ncd\nab\nxd', q('b\\ncd'), { from: 10, to: 11, insert: 'c' });
+  });
+
+  it('a line-local regexp', () => {
+    check('a1 b22\nc333', q('\\d+', { regexp: true }), { from: 4, insert: '9' });
+    check('a1 b22\nc333', q('^\\w', { regexp: true }), { from: 6, to: 7 });
+  });
+
+  it('gives up (null) where a local rescan cannot be exact', () => {
+    const s = state('a\nb');
+    const tr = s.update({ changes: { from: 0, insert: 'x' } });
+    const multiline = q('a\\nb', { regexp: true });
+    expect(mapMatches(collectMatches(s, multiline), multiline, tr.changes, tr.state)).toBeNull();
+    const capped = collectMatches(state('xxxx'), q('x'), 2);
+    expect(mapMatches(capped, q('x'), tr.changes, tr.state)).toBeNull();
+  });
+
+  it('random edits never drift from a full scan', () => {
+    let seed = 7;
+    const rnd = (n: number): number => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed % n;
+    };
+    const pieces = ['поиск', ' ', '\n', 'по', 'иск', 'x'];
+    let doc = DOC;
+    for (let i = 0; i < 300; i++) {
+      const from = rnd(doc.length + 1);
+      const to = Math.min(doc.length, from + rnd(6));
+      const insert = rnd(2) ? pieces[rnd(pieces.length)] : '';
+      check(doc, q('поиск'), { from, to, insert });
+      doc = doc.slice(0, from) + insert + doc.slice(to);
+    }
+  });
+});
+
+describe('sameMatchSpec', () => {
+  it('ignores the replacement, compares everything that changes the matches', () => {
+    expect(sameMatchSpec(q('a', { replace: 'x' }), q('a', { replace: 'y' }))).toBe(true);
+    expect(sameMatchSpec(q('a'), q('b'))).toBe(false);
+    expect(sameMatchSpec(q('a'), q('a', { caseSensitive: true }))).toBe(false);
+    expect(sameMatchSpec(q('a'), q('a', { wholeWord: true }))).toBe(false);
+    expect(sameMatchSpec(q('a'), q('a', { regexp: true }))).toBe(false);
   });
 });

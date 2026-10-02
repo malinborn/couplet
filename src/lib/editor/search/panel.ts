@@ -1,5 +1,5 @@
 import { Prec, type Extension } from '@codemirror/state';
-import { EditorView, keymap, runScopeHandlers, type Command, type Panel, type ViewUpdate } from '@codemirror/view';
+import { keymap, runScopeHandlers, type Command, type EditorView, type Panel, type ViewUpdate } from '@codemirror/view';
 import {
   SearchQuery,
   closeSearchPanel,
@@ -14,10 +14,11 @@ import {
   setSearchQuery,
 } from '@codemirror/search';
 import { t } from '../../i18n';
-import { formatCounter, matchIndexAt, searchMatches, searchMatchesField, type Counter } from './match-count';
+import { formatCounter, searchMatches, searchMatchesExtension, type Counter } from './match-count';
 import { searchFocusField, setSearchFocus } from './panel-focus';
 import { widgetMatchHighlights } from './widget-matches';
 import { nativeAccelerator } from '../native-menu-accelerators';
+import { activeCellEditSession } from '../cell-edit-session';
 import { acceleratorAriaKeyShortcuts, acceleratorLabel } from '../hotkey-label';
 
 /**
@@ -93,6 +94,9 @@ function stepButton(view: EditorView, direction: 'previous' | 'next'): HTMLButto
   return b;
 }
 
+/** Makes the replace row's id unique per panel, for `aria-controls`. */
+let panelSeq = 0;
+
 class FindPanel implements Panel {
   readonly dom: HTMLElement;
   readonly top = false;
@@ -101,6 +105,8 @@ class FindPanel implements Panel {
   private readonly replaceInput: HTMLInputElement;
   private readonly searchField: HTMLElement;
   private readonly counter: HTMLElement;
+  /** Screen-reader text for the counter, e.g. «совпадение 3 из 17». */
+  private readonly status: HTMLElement;
   private readonly caseBtn: HTMLButtonElement;
   private readonly regexpBtn: HTMLButtonElement;
   private readonly wordBtn: HTMLButtonElement;
@@ -124,9 +130,12 @@ class FindPanel implements Panel {
     this.searchInput.value = this.query.search;
     this.searchInput.addEventListener('input', () => this.commit());
 
-    this.counter = el('span', 'cm-md-search-count', { 'aria-live': 'polite' });
+    // "3 / 17" is for the eye; a status region carries the sentence a screen
+    // reader should say, politely, when it changes.
+    this.counter = el('span', 'cm-md-search-count', { 'aria-hidden': 'true' });
+    this.status = el('span', 'cm-md-search-status', { role: 'status', 'aria-live': 'polite' });
     this.searchField = el('div', 'cm-md-search-field');
-    this.searchField.append(this.searchInput, this.counter);
+    this.searchField.append(this.searchInput, this.counter, this.status);
 
     this.replaceInput = el('input', 'cm-md-search-input', {
       name: 'replace',
@@ -170,7 +179,8 @@ class FindPanel implements Panel {
 
     const replaceField = el('div', 'cm-md-search-field');
     replaceField.append(this.replaceInput);
-    this.replaceRow = el('div', 'cm-md-search-row cm-md-search-replace');
+    this.replaceRow = el('div', 'cm-md-search-row cm-md-search-replace', { id: `cm-md-search-replace-${++panelSeq}` });
+    this.replaceToggle.setAttribute('aria-controls', this.replaceRow.id);
     this.replaceRow.append(
       replaceField,
       button('cm-md-search-text', t('search.replace_one'), () => replaceNext(this.view), { text: t('search.replace_one') }),
@@ -239,7 +249,6 @@ class FindPanel implements Panel {
 
   private setReplaceOpen(open: boolean, focus: boolean): void {
     this.replaceRow.hidden = !open;
-    this.replaceToggle.setAttribute('aria-pressed', String(open));
     this.replaceToggle.setAttribute('aria-expanded', String(open));
     if (focus) (open ? this.replaceInput : this.searchInput).focus();
   }
@@ -255,11 +264,8 @@ class FindPanel implements Panel {
     this.shown = next;
     this.counter.textContent = next.text;
     this.searchField.dataset.state = next.state;
-    if (next.state === 'on' && next.index !== null) {
-      this.counter.setAttribute('aria-label', t('search.count', { index: next.index, total: next.total }));
-    } else {
-      this.counter.removeAttribute('aria-label');
-    }
+    this.status.textContent =
+      next.state === 'on' && next.index !== null ? t('search.count', { index: next.index, total: next.total }) : next.text;
   }
 
   private keydown(e: KeyboardEvent): void {
@@ -319,26 +325,31 @@ export const openFind: Command = (view) => {
 };
 
 /**
- * `cm-md-search-on-match` on the editor while the selection is exactly a
- * match — which is what findNext leaves behind. The selection layer is hidden
- * then (search.css): the current match's solid fill already marks it, and the
- * taller selection rectangle peeking out around it read as a second frame.
+ * Whether ⌘G / ⇧⌘G from the native menu may act on this editor. The menu's
+ * accelerator fires wherever focus is, and with no query yet `findNext` opens
+ * the panel and takes the focus — out of a table cell's edit overlay, a modal,
+ * the live-render inspector — and moves the selection under it. So: not while
+ * a cell is being edited, and not while the keyboard is in a field or a dialog
+ * that is not this editor (the Find panel is inside `view.dom`, so it counts
+ * as the editor).
  */
-const NO_ATTRS: Record<string, string> = {};
-const ON_MATCH: Record<string, string> = { class: 'cm-md-search-on-match' };
-const onMatchClass = EditorView.editorAttributes.compute([searchMatchesField, 'selection'], (state) => {
-  const { from, to } = state.selection.main;
-  const on = from !== to && searchPanelOpen(state) && matchIndexAt(searchMatches(state), from, to) >= 0;
-  return on ? ON_MATCH : NO_ATTRS;
-});
+export function findStepAllowed(view: EditorView, active: Element | null = view.root.activeElement): boolean {
+  if (activeCellEditSession()) return false;
+  if (!active || view.dom.contains(active)) return true;
+  const editable =
+    active instanceof HTMLInputElement ||
+    active instanceof HTMLTextAreaElement ||
+    active instanceof HTMLSelectElement ||
+    active.closest('[contenteditable]:not([contenteditable="false"])') !== null;
+  return !editable && active.closest('[role="dialog"], [aria-modal="true"]') === null;
+}
 
 /** The search state with this panel, and ⌘F that knows about it. */
 export function findPanel(): Extension {
   return [
     search({ createPanel: (view) => new FindPanel(view) }),
-    searchMatchesField,
+    searchMatchesExtension,
     searchFocusField,
-    onMatchClass,
     widgetMatchHighlights,
     // Above `searchKeymap`'s Mod-f, in both scopes: the editor's and the
     // panel's own (`runScopeHandlers` in `keydown`).

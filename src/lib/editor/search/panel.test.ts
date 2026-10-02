@@ -3,8 +3,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { EditorSelection, EditorState, type Extension } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
 import { closeSearchPanel, getSearchQuery, openSearchPanel, searchKeymap, searchPanelOpen } from '@codemirror/search';
-import { findPanel, openFind } from './panel';
-import { searchMatches, searchMatchesField } from './match-count';
+import { findPanel, findStepAllowed, openFind } from './panel';
+import { MATCH_CAP, searchMatches, searchMatchesField } from './match-count';
+import { setCellEditSession, type CellEditSession } from '../cell-edit-session';
+import { markdownExtension } from '../markdown-language';
+import { tableSelectionSnapOut } from '../preview/table-selection';
 import { searchFocusField } from './panel-focus';
 import { searchSpotlight, spotlightOn } from './spotlight';
 
@@ -270,5 +273,105 @@ describe('the step buttons', () => {
     expect(counter(v)).toBe('3 / 3');
     press(v.contentDOM, true);
     expect(counter(v)).toBe('2 / 3');
+  });
+});
+
+describe('review fixes', () => {
+  it('typing a replacement does not rescan: the match list keeps its identity', () => {
+    const v = make();
+    openSearchPanel(v);
+    type(input(v), 'поиск');
+    const before = v.state.field(searchMatchesField);
+    panel(v).querySelector<HTMLButtonElement>('.cm-md-search-toggle[aria-expanded]')?.click();
+    type(input(v, 'replace'), 'X');
+    type(input(v, 'replace'), 'XY');
+    expect(getSearchQuery(v.state).replace).toBe('XY');
+    expect(v.state.field(searchMatchesField)).toBe(before);
+  });
+
+  it('an edit under a regexp that may span lines is rescanned once typing pauses', async () => {
+    const v = make('a\nb a\nb');
+    openSearchPanel(v);
+    panel(v).querySelectorAll<HTMLButtonElement>('.cm-md-search-toggle')[1].click();
+    type(input(v), 'a\\nb');
+    expect(counter(v)).toBe('– / 2');
+    v.dispatch({ changes: { from: v.state.doc.length, insert: ' a\nb' } });
+    expect(v.state.field(searchMatchesField).stale).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 260));
+    expect(v.state.field(searchMatchesField).stale).toBe(false);
+    expect(counter(v)).toBe('– / 3');
+  });
+
+  it('a capped list never dims: hits past the cap would get no hole', async () => {
+    const v = make('x'.repeat(MATCH_CAP + 1));
+    openSearchPanel(v);
+    type(input(v), 'x');
+    await settle();
+    expect(searchMatches(v.state).capped).toBe(true);
+    expect(spotlightOn(v.state)).toBe(false);
+  });
+
+  it('the counter has a status line for screen readers; the replace toggle controls its row', () => {
+    const v = make();
+    openSearchPanel(v);
+    type(input(v), 'поиск');
+    key(input(v), { key: 'Enter' });
+    const status = panel(v).querySelector('[role="status"]');
+    expect(status?.textContent).toBe('match 1 of 3');
+    expect(panel(v).querySelector('.cm-md-search-count')?.getAttribute('aria-hidden')).toBe('true');
+    const toggle = panel(v).querySelector<HTMLButtonElement>('.cm-md-search-toggle[aria-expanded]');
+    expect(toggle?.hasAttribute('aria-pressed')).toBe(false);
+    const row = document.getElementById(toggle?.getAttribute('aria-controls') ?? '');
+    expect(row?.classList.contains('cm-md-search-replace')).toBe(true);
+  });
+});
+
+describe('findStepAllowed (⌘G from the native menu)', () => {
+  it('acts from the editor, the Find field, or plain page chrome', () => {
+    const v = make();
+    openSearchPanel(v);
+    expect(findStepAllowed(v, v.contentDOM)).toBe(true);
+    expect(findStepAllowed(v, input(v))).toBe(true);
+    expect(findStepAllowed(v, null)).toBe(true);
+    expect(findStepAllowed(v, document.body)).toBe(true);
+  });
+
+  it('does nothing from another field, a modal, or a table cell being edited', () => {
+    const v = make();
+    const field = document.createElement('input');
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    const button = document.createElement('button');
+    dialog.append(button);
+    document.body.append(field, dialog);
+    try {
+      expect(findStepAllowed(v, field)).toBe(false);
+      expect(findStepAllowed(v, button)).toBe(false);
+      const textarea = document.createElement('textarea');
+      setCellEditSession({ textarea } as unknown as CellEditSession);
+      expect(findStepAllowed(v, v.contentDOM)).toBe(false);
+    } finally {
+      setCellEditSession(null);
+      field.remove();
+      dialog.remove();
+    }
+  });
+});
+
+describe('stepping into a table', () => {
+  const TABLE = 'до поиск\n\n| a | b |\n|---|---|\n| поиск | x |\n| y | поиск |\n\nпосле поиск';
+
+  it('the selection stays on a match in a body row while the panel is open', async () => {
+    const v = make(TABLE, [markdownExtension(), tableSelectionSnapOut]);
+    openSearchPanel(v);
+    type(input(v), 'поиск');
+    const seen: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      key(input(v), { key: 'Enter' });
+      await settle();
+      seen.push(counter(v));
+    }
+    // No snap-out: both body-row matches are visited, in order.
+    expect(seen).toEqual(['1 / 4', '2 / 4', '3 / 4', '4 / 4']);
   });
 });

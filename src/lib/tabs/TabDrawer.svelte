@@ -103,8 +103,8 @@
      * ⌘G / ⇧⌘G, which reach the page as Edit → Find Next / Find Previous now
      * that they are native items (the accelerator is resolved before this
      * drawer's keydown would see them). While the drawer is open ⌘G is still
-     * «В окно…» (D10) and ⇧⌘G is nothing; `true` means the drawer took the key.
-     * `false` while it is closed: the editor's find step runs as before.
+     * «В окно…» (D10); `true` means the drawer took the key. `false` — drawer
+     * closed, or ⇧⌘G — the editor's find step runs as before.
      */
     findStepKey(next: boolean): boolean;
   }
@@ -388,9 +388,17 @@
       },
       close: () => closeDrawer(),
       shortcutTarget: (n) => (ds.open ? (visible[n - 1] ?? null) : undefined),
+      // The same guards `onKeyDown` applies to a keydown ⌘G, which the native
+      // menu now takes before that handler can see it.
       findStepKey: (next) => {
-        if (!ds.open) return false;
-        if (next && !gesture) openMoveKeys();
+        // ⇧⌘G is not the drawer's: Find Previous, as with the drawer closed.
+        if (!ds.open || !next) return false;
+        // The notch's number and a stash card's tag take their keys themselves.
+        if (document.activeElement?.closest('.notch-edit, .tag-edit')) return true;
+        // The carousel already has the keys: a second ⌘G is not a re-open
+        // (that would reset the arrows' choice). The «got» pulse after a pick
+        // counts as no carousel.
+        if ((car === null || car.got !== null) && !gesture) openMoveKeys();
         return true;
       },
       toggleStash: () => toggleStash(),

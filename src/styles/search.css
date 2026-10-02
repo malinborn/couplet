@@ -116,13 +116,25 @@
   text-underline-offset: 3px;
 }
 
-/* The selection is the current match (findNext put it there): its solid fill
- * says so already, and the selection's full-line-height rectangle around it
- * only added a second, offset frame. See `onMatchClass` in search/panel.ts.
- * The caret at the selection's head likewise, while the keyboard is in the
- * panel and the caret is not where typing goes. */
-.cm-editor.cm-md-search-on-match .cm-selectionLayer,
-.cm-editor.cm-md-search-on-match:not(.cm-focused) .cm-cursorLayer {
+/* The current match in a cell: the solid fill of `.cm-searchMatch-selected`.
+ * (No ring — `::highlight` takes no box-shadow; under the veil the halo marks it.) */
+::highlight(cm-md-search-widget-current) {
+  background-color: var(--search-current-bg);
+  color: var(--search-current-text);
+}
+
+/* The selection is the current match (findNext put it there) and that match
+ * is on screen as a mark: its solid fill says so already, and the selection's
+ * full-line-height rectangle around it only added a second, offset frame. The
+ * caret at the selection's head likewise, while the keyboard is in the panel.
+ *
+ * Keyed on the rendered mark (`@codemirror/search` adds `-selected` exactly
+ * when the selection is the match), not on "the selection is a match": a match
+ * inside hidden live-render markup or a table cell has no mark, and hiding the
+ * selection there would leave the current match drawn nowhere. Without `:has`
+ * (WebKit < 15.4) the selection simply stays visible. */
+.cm-editor:has(.cm-searchMatch-selected) .cm-selectionLayer,
+.cm-editor:not(.cm-focused):has(.cm-searchMatch-selected) .cm-cursorLayer {
   visibility: hidden;
 }
 
@@ -245,6 +257,16 @@
   opacity: 1;
 }
 
+/* Read by screen readers, not shown. */
+.cm-md-search-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .cm-md-search-count {
   flex: none;
   padding-left: 8px;
@@ -292,7 +314,8 @@
   outline-offset: -1px;
 }
 
-.cm-panels .cm-panel.cm-md-search .cm-md-search-btn[aria-pressed='true'] {
+.cm-panels .cm-panel.cm-md-search .cm-md-search-btn[aria-pressed='true'],
+.cm-panels .cm-panel.cm-md-search .cm-md-search-btn[aria-expanded='true'] {
   background: rgba(var(--color-glow), 0.16);
   box-shadow: inset 0 0 0 1px rgba(var(--color-glow), 0.5);
   color: var(--text-primary);

@@ -3,7 +3,7 @@ import { EditorView, RectangleMarker, ViewPlugin, layer, type LayerMarker, type 
 import { syntaxTree } from '@codemirror/language';
 import type { SyntaxNode } from '@lezer/common';
 import { getSearchQuery } from '@codemirror/search';
-import { matchIndexAt, searchMatches, searchMatchesField, type MatchList } from './match-count';
+import { matchIndexAt, searchMatches, searchMatchesExtension, searchMatchesField, type MatchList } from './match-count';
 import { searchFocusField } from './panel-focus';
 
 /**
@@ -27,8 +27,18 @@ import { searchFocusField } from './panel-focus';
 export function spotlightOn(state: EditorState): boolean {
   if (!state.field(searchFocusField, false)) return false;
   if (!getSearchQuery(state).valid) return false;
-  return searchMatches(state).from.length > 0;
+  const matches = searchMatches(state);
+  // Past the cap the matches beyond it are not listed, so they would get no
+  // hole and sit dimmed like everything else — the veil would hide hits.
+  return matches.from.length > 0 && !matches.capped;
 }
+
+/**
+ * More visible matches than this and the veil is not drawn: with hits on every
+ * line there is nothing to dim, and each one costs a measured rectangle and a
+ * mask shape per redraw (a one-letter query in a long document).
+ */
+export const MAX_VEIL_HOLES = 300;
 
 /** Asks the veil to measure again though nothing in the state changed. */
 const remeasureVeil = StateEffect.define<null>();
@@ -180,11 +190,28 @@ class VeilMarker implements LayerMarker {
 
 const round = (n: number): number => Math.round(n * 2) / 2;
 
-/** Rectangles of `[from, to)` in layer coordinates, dropping degenerate ones. */
-function rangeRects(view: EditorView, from: number, to: number): RectangleMarker[] {
-  return RectangleMarker.forRange(view, '', EditorSelection.range(from, to)).filter(
-    (r) => r.width !== null && r.width > 0.5 && r.height > 0.5
-  );
+/**
+ * Boxes of `[from, to)` in layer coordinates, dropping degenerate ones.
+ *
+ * The common case — a match on one visual line — is two `coordsAtPos` calls.
+ * `RectangleMarker.forRange` handles wrapping and bidi, but measures the line
+ * box and walks the line's bidi spans for every match, so it is kept for the
+ * matches that need it.
+ */
+function rangeBoxes(view: EditorView, from: number, to: number, base: { left: number; top: number }): Hole[] {
+  const doc = view.state.doc;
+  if (doc.lineAt(from).number === doc.lineAt(to).number) {
+    const a = view.coordsAtPos(from, 1);
+    const b = view.coordsAtPos(to, -1);
+    if (a && b && Math.abs(a.top - b.top) < 1 && b.right - a.left > 0.5) {
+      const top = Math.min(a.top, b.top);
+      const bottom = Math.max(a.bottom, b.bottom);
+      if (bottom - top > 0.5) return [{ x: a.left - base.left, y: top - base.top, w: b.right - a.left, h: bottom - top }];
+    }
+  }
+  return RectangleMarker.forRange(view, '', EditorSelection.range(from, to))
+    .filter((r) => r.width !== null && r.width > 0.5 && r.height > 0.5)
+    .map((r) => ({ x: r.left, y: r.top, w: r.width ?? 0, h: r.height }));
 }
 
 /**
@@ -253,16 +280,24 @@ function veilMarkers(view: EditorView): readonly LayerMarker[] {
   // The sheet: the viewport's blocks, stretched to the very top and bottom of
   // the scroll area when the viewport reaches the document's ends (the
   // content's own padding lives there).
+  //
+  // Sized only from things the veil itself cannot stretch: the content box
+  // and the scroller's client box. Not `scrollWidth`/`scrollHeight` — the
+  // layer's `contain` does not clip, so those include the veil's own previous
+  // size, and after the scroller shrinks (a narrower window, the replace row
+  // opening under a short document) the veil would keep its old size and pin
+  // a scrollbar in place.
   const scroller = view.scrollDOM;
+  const content = view.contentDOM.getBoundingClientRect();
   const docTop = view.documentTop - base.top;
   const viewport = view.viewport;
   const top = viewport.from === 0 ? 0 : docTop + view.lineBlockAt(viewport.from).top * view.scaleY;
   const bottom =
     viewport.to === state.doc.length
-      ? Math.max(scroller.scrollHeight * view.scaleY, docTop + view.contentHeight * view.scaleY)
+      ? Math.max(scroller.clientHeight * view.scaleY, content.bottom - base.top)
       : docTop + view.lineBlockAt(viewport.to).bottom * view.scaleY;
   const left = 0;
-  const width = Math.max(scroller.scrollWidth, scroller.clientWidth) * view.scaleX;
+  const width = Math.max(scroller.clientWidth * view.scaleX, content.right - base.left);
   const height = Math.max(0, bottom - top);
 
   const holes: Hole[] = [];
@@ -281,12 +316,11 @@ function veilMarkers(view: EditorView): readonly LayerMarker[] {
     holes.push(hole);
   };
 
-  for (const match of visibleMatches(view, matches)) {
+  const visible = visibleMatches(view, matches);
+  if (visible.length > MAX_VEIL_HOLES) return [];
+  for (const match of visible) {
     const isCurrent = match.index === current;
-    let boxes: Hole[] =
-      match.to > match.from
-        ? rangeRects(view, match.from, match.to).map((r) => ({ x: r.left, y: r.top, w: r.width ?? 0, h: r.height }))
-        : [];
+    let boxes: Hole[] = match.to > match.from ? rangeBoxes(view, match.from, match.to, base) : [];
     // No text on screen for it: the match is inside a table or a diagram (or
     // it is an empty regexp match).
     if (boxes.length === 0) boxes = widgetRects(view, match.from, match.to, base);
@@ -334,5 +368,5 @@ const fontWatch = ViewPlugin.fromClass(
 
 /** The veil, with the state it reads. */
 export function searchSpotlight(): Extension {
-  return [searchFocusField, searchMatchesField, veilLayer, fontWatch];
+  return [searchFocusField, searchMatchesExtension, veilLayer, fontWatch];
 }

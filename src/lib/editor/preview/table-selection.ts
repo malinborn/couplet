@@ -1,5 +1,6 @@
 import { EditorView, type ViewUpdate } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
+import { searchPanelOpen } from '@codemirror/search';
 import type { EditorState, Line } from '@codemirror/state';
 import { insideBlockquote } from './lists';
 
@@ -86,6 +87,16 @@ export const tableSelectionSnapOut = EditorView.updateListener.of(
         (tr) => tr.isUserEvent('select.snapout') || tr.isUserEvent('select.cell')
       )
     ) {
+      return;
+    }
+    // Find Next / Previous landing on a match in a body row (`select.search`)
+    // while the Find panel is open: the selection stays on the match. Snapped
+    // out, the counter would read "– / N", the cell would lose its current-match
+    // highlight, and the next step would continue from below the table — every
+    // other match in its body skipped. The DOM caret the user sees is in the
+    // Find field meanwhile; when focus comes back to the text, `refocusRedirect`
+    // above snaps the then-invisible caret out exactly as it does for a cell.
+    if (searchPanelOpen(update.state) && update.transactions.some((tr) => tr.isUserEvent('select.search'))) {
       return;
     }
 

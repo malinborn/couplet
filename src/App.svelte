@@ -115,7 +115,7 @@
   import type { TabOwner } from './lib/switch-document';
   import { activeCellEditSession } from './lib/editor/cell-edit-session';
   import { closeSearchPanel, findNext, findPrevious } from '@codemirror/search';
-  import { openFind } from './lib/editor/search/panel';
+  import { findStepAllowed, openFind } from './lib/editor/search/panel';
   import { hideHoverMenu } from './lib/editor/hover-menu';
   import { createTabController, type DiskOptions, type MoveDone, type OpenAnswer, type Stranded } from './lib/tabs/controller';
   import { AGENT_ERRORS, createAgentCommands, type AgentResponse, type AskResult } from './lib/tabs/agent-commands';
@@ -583,11 +583,12 @@
    * ⌘G / ⇧⌘G from the native menu, which takes the key before CodeMirror's
    * own Mod-g ever sees it. CodeMirror's commands already do the right thing
    * everywhere: step from the selection, or open the panel when there is no
-   * usable query yet. Focus stays where it was — in the Find field or the text.
+   * usable query yet. Focus stays where it was — in the Find field or the text;
+   * from a cell's edit overlay, a modal or another field it does nothing.
    */
   function handleFindStep(next: boolean): void {
     const view = editorHandle?.view;
-    if (!view) return;
+    if (!view || !findStepAllowed(view)) return;
     (next ? findNext : findPrevious)(view);
   }
 

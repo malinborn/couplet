@@ -1,23 +1,31 @@
 import { ViewPlugin, type EditorView, type ViewUpdate } from '@codemirror/view';
-import { searchMatches, searchMatchesField } from './match-count';
+import { matchIndexAt, searchMatches, searchMatchesField } from './match-count';
 
 /**
  * Highlights for matches inside table cells.
  *
  * A table is one widget that renders its cells itself, so `@codemirror/search`'s
- * mark decorations never reach the text there: a hit in a table was counted,
- * stepped through, and shown nowhere. Each cell says which source range it
- * renders (`data-source-from`/`-to`, `widget-text-selection.ts`) and renders it
- * verbatim, so a DOM `Range` over the cell's text node can stand in for the
- * mark — painted with the CSS Custom Highlight API (`::highlight()`), which
- * styles text without touching the widget's DOM.
+ * mark decorations never reach the text there: a hit in a table used to be
+ * counted, stepped through, and shown nowhere. Each cell says which source
+ * range it renders (`data-source-from`/`-to`, `widget-text-selection.ts`) and
+ * renders it verbatim, so a DOM `Range` over the cell's text node can stand in
+ * for the mark — painted with the CSS Custom Highlight API (`::highlight()`),
+ * which styles text without touching the widget's DOM.
  *
- * Feature-detected: without `CSS.highlights` (WebKit before 17.2) the cell
- * simply stays unhighlighted, as it always was. Cells with inline formatting
- * render something other than their source and are skipped.
+ * Two highlights, like the marks: every match, and the current one — the match
+ * the selection is exactly on. Stepping onto a match in a body row keeps the
+ * selection there while the Find panel is open (`preview/table-selection.ts`
+ * exempts `select.search` from its snap-out), so the current match can be in a
+ * cell; the veil's hole and halo then come from the same cell text
+ * (`spotlight.ts`, `widgetRects`).
+ *
+ * Feature-detected: without `CSS.highlights` (WebKit before 17.2) the cells
+ * stay unhighlighted. Cells with inline formatting render something other than
+ * their source and are skipped.
  */
 
 const HIGHLIGHT = 'cm-md-search-widget-match';
+const CURRENT = 'cm-md-search-widget-current';
 
 interface HighlightRegistry {
   set(name: string, highlight: object): void;
@@ -32,11 +40,13 @@ function registry(): { highlights: HighlightRegistry; Highlight: HighlightCtor }
   return css?.highlights && ctor ? { highlights: css.highlights, Highlight: ctor } : null;
 }
 
-/** DOM ranges over the cell text of every match that lies inside a rendered cell. */
-function cellRanges(view: EditorView): Range[] {
+/** DOM ranges over the cell text of every match inside a rendered cell, and the current one's. */
+function cellRanges(view: EditorView): { all: Range[]; current: Range[] } {
   const matches = searchMatches(view.state);
-  if (matches.from.length === 0) return [];
-  const ranges: Range[] = [];
+  const out = { all: [] as Range[], current: [] as Range[] };
+  if (matches.from.length === 0) return out;
+  const main = view.state.selection.main;
+  const current = matchIndexAt(matches, main.from, main.to);
   for (const cell of view.contentDOM.querySelectorAll<HTMLElement>('.cm-md-table [data-source-from][data-source-to]')) {
     const srcFrom = Number(cell.dataset.sourceFrom);
     const srcTo = Number(cell.dataset.sourceTo);
@@ -58,15 +68,17 @@ function cellRanges(view: EditorView): Range[] {
       const range = document.createRange();
       range.setStart(text, from - srcFrom);
       range.setEnd(text, to - srcFrom);
-      ranges.push(range);
+      (i === current ? out.current : out.all).push(range);
     }
   }
-  return ranges;
+  return out;
 }
 
 export const widgetMatchHighlights = ViewPlugin.fromClass(
   class {
     private readonly api = registry();
+    /** Whether this view has highlights registered — nothing to clear otherwise. */
+    private painted = false;
 
     constructor(private readonly view: EditorView) {
       this.schedule();
@@ -76,26 +88,52 @@ export const widgetMatchHighlights = ViewPlugin.fromClass(
       if (
         update.docChanged ||
         update.viewportChanged ||
+        update.selectionSet ||
         update.startState.field(searchMatchesField, false) !== update.state.field(searchMatchesField, false)
       ) {
         this.schedule();
       }
     }
 
+    /**
+     * The table widget's DOM can be rebuilt for reasons none of the above
+     * notice — an engine switch, a compartment reconfigure, the table's wrap
+     * toggle — and a highlight over removed text nodes paints nothing.
+     */
+    docViewUpdate(): void {
+      if (searchMatches(this.view.state).from.length > 0) this.schedule();
+    }
+
     destroy(): void {
+      if (this.painted) this.clear();
+    }
+
+    private clear(): void {
       this.api?.highlights.delete(HIGHLIGHT);
+      this.api?.highlights.delete(CURRENT);
+      this.painted = false;
     }
 
     /** After the update's DOM is in place: a table re-rendered by this update has new text nodes. */
     private schedule(): void {
       if (!this.api) return;
+      // Panel closed or no hits: no DOM walk, and nothing to delete twice.
+      if (searchMatches(this.view.state).from.length === 0) {
+        if (this.painted) this.clear();
+        return;
+      }
       this.view.requestMeasure({
         key: this,
         read: (view) => cellRanges(view),
-        write: (ranges) => {
+        write: ({ all, current }) => {
           if (!this.api) return;
-          if (ranges.length === 0) this.api.highlights.delete(HIGHLIGHT);
-          else this.api.highlights.set(HIGHLIGHT, new this.api.Highlight(...ranges));
+          if (all.length === 0 && current.length === 0) {
+            if (this.painted) this.clear();
+            return;
+          }
+          this.api.highlights.set(HIGHLIGHT, new this.api.Highlight(...all));
+          this.api.highlights.set(CURRENT, new this.api.Highlight(...current));
+          this.painted = true;
         },
       });
     }
