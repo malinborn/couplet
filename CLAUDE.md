@@ -105,9 +105,9 @@ src/                    # Frontend (Svelte + TypeScript)
       selection-toolbar.ts   # Floating inline-format toolbar (floating-ui)
       inspector.ts / inspector-model.ts # Link URL + fenced-code language
     ai-highlight.ts     # AI-edit/pulse highlight StateField (couplet show/edit), Esc to clear
-    search/             # ⌘F: compact Find panel + counter (panel.ts), match list (match-count.ts),
-                        # spotlight dimming (spotlight.ts), table-cell highlights (widget-matches.ts);
-                        # stand-switcher.ts is DEV-only and goes once a dimming variant is picked
+    search/             # ⌘F: compact Find panel + counter + ⌘G/⇧⌘G captions (panel.ts), match list
+                        # (match-count.ts), the veil that dims all but the matches while typing in the
+                        # panel (spotlight.ts), table-cell highlights (widget-matches.ts)
     ai-mark-nav.ts      # ⌘' / ⌘⇧' cycle the caret through AI marks (edit highlights, comment anchors, asks); menu ids ai_next_mark / ai_prev_mark
     human-edit.ts       # isHumanEdit: did the human change the document (not an agent's edit, not a reload) — a quick look's «Keep»
   lib/ai-commands.ts    # Pure helpers for AI commands (show target resolution, changed-line ranges)

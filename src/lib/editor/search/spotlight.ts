@@ -1,14 +1,5 @@
-import { EditorSelection, Facet, RangeSetBuilder, type EditorState, type Extension, type Line } from '@codemirror/state';
-import {
-  Decoration,
-  EditorView,
-  RectangleMarker,
-  ViewPlugin,
-  layer,
-  type DecorationSet,
-  type LayerMarker,
-  type ViewUpdate,
-} from '@codemirror/view';
+import { EditorSelection, StateEffect, type EditorState, type Extension, type Line } from '@codemirror/state';
+import { EditorView, RectangleMarker, ViewPlugin, layer, type LayerMarker, type ViewUpdate } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import type { SyntaxNode } from '@lezer/common';
 import { getSearchQuery } from '@codemirror/search';
@@ -20,47 +11,37 @@ import { searchFocusField } from './panel-focus';
  * document dims and the matches stay at full strength, so "where are the
  * hits?" is answered at a glance instead of by reading.
  *
- * Three ways of dimming are on the stand (`stand-switcher.ts`, dev only) until
- * the owner picks one:
- *
- * - `veil` (A) — one translucent sheet of the page colour above the content,
- *   with a hole cut out at every visible match. Everything dims the same way —
- *   text, gradient headings, tables, diagrams, checkboxes — because nothing in
- *   the document is restyled; the veil only covers it. The current match also
- *   gets a glow ring drawn above the veil.
- * - `lines` (B) — every visible line without a match drops to low opacity.
- * - `spotlight` (C) — the veil with a single hole, at the current match; the
- *   other matches stay highlighted underneath it.
+ * It is a veil: one translucent sheet of the page colour above the content,
+ * with a hole cut out at every visible match. Everything dims the same way —
+ * text, gradient headings, tables, diagrams, checkboxes — because nothing in
+ * the document is restyled; the veil only covers it. The current match also
+ * gets a soft halo drawn above the veil. (Fading whole lines and a single hole
+ * at the current match were tried on a stand against it and dropped.)
  *
  * Active only while focus is in the panel's query or replace field, the query
  * is valid and has at least one match. Clicking back into the text turns the
  * dimming off; the match highlights stay as long as the panel is open.
  */
 
-export type SpotlightVariant = 'veil' | 'lines' | 'spotlight' | 'off';
-
-/** Which dimming is installed. The first provider wins; the default is the veil. */
-export const spotlightVariant = Facet.define<SpotlightVariant, SpotlightVariant>({
-  combine: (values) => values[0] ?? 'veil',
-});
-
-/** Whether the dimming should be showing right now, whatever its variant. */
+/** Whether the veil should be showing right now. */
 export function spotlightOn(state: EditorState): boolean {
-  if (state.facet(spotlightVariant) === 'off') return false;
   if (!state.field(searchFocusField, false)) return false;
   if (!getSearchQuery(state).valid) return false;
   return searchMatches(state).from.length > 0;
 }
 
+/** Asks the veil to measure again though nothing in the state changed. */
+const remeasureVeil = StateEffect.define<null>();
+
 /** Everything the spotlight draws from. A change in any of them redraws it. */
 function inputsChanged(update: ViewUpdate): boolean {
   return (
+    update.transactions.some((tr) => tr.effects.some((e) => e.is(remeasureVeil))) ||
     update.docChanged ||
     update.selectionSet ||
     update.viewportChanged ||
     update.startState.field(searchFocusField, false) !== update.state.field(searchFocusField, false) ||
-    update.startState.field(searchMatchesField, false) !== update.state.field(searchMatchesField, false) ||
-    update.startState.facet(spotlightVariant) !== update.state.facet(spotlightVariant)
+    update.startState.field(searchMatchesField, false) !== update.state.field(searchMatchesField, false)
   );
 }
 
@@ -106,10 +87,6 @@ function widgetHostLine(state: EditorState, pos: number): Line | null {
   }
   return null;
 }
-
-// ---------------------------------------------------------------------------
-// A and C: the veil
-// ---------------------------------------------------------------------------
 
 interface Hole {
   readonly x: number;
@@ -266,8 +243,7 @@ function layerBase(view: EditorView): { left: number; top: number } {
 
 function veilMarkers(view: EditorView): readonly LayerMarker[] {
   const { state } = view;
-  const variant = state.facet(spotlightVariant);
-  if ((variant !== 'veil' && variant !== 'spotlight') || !spotlightOn(state)) return [];
+  if (!spotlightOn(state)) return [];
 
   const matches = searchMatches(state);
   const main = state.selection.main;
@@ -307,7 +283,6 @@ function veilMarkers(view: EditorView): readonly LayerMarker[] {
 
   for (const match of visibleMatches(view, matches)) {
     const isCurrent = match.index === current;
-    if (variant === 'spotlight' && !isCurrent) continue;
     let boxes: Hole[] =
       match.to > match.from
         ? rangeRects(view, match.from, match.to).map((r) => ({ x: r.left, y: r.top, w: r.width ?? 0, h: r.height }))
@@ -317,8 +292,8 @@ function veilMarkers(view: EditorView): readonly LayerMarker[] {
     if (boxes.length === 0) boxes = widgetRects(view, match.from, match.to, base);
     for (const b of boxes) {
       addHole(b.x, b.y, b.w, b.h);
-      // The ring hugs the match itself; the hole's padding is what keeps the
-      // ring's own width out from under the veil.
+      // The halo hugs the match itself; the hole's padding is what keeps the
+      // match's own ring (search.css) out from under the veil.
       if (isCurrent) glow.push(new RectangleMarker('cm-md-search-glow', round(b.x), round(b.y), round(b.w), round(b.h)));
     }
   }
@@ -333,53 +308,31 @@ const veilLayer = layer({
   update: (update) => inputsChanged(update),
 });
 
-// ---------------------------------------------------------------------------
-// B: line focus
-// ---------------------------------------------------------------------------
-
-const dimLine = Decoration.line({ class: 'cm-md-search-dim' });
-
-function dimDecorations(view: EditorView): DecorationSet {
-  const { state } = view;
-  if (state.facet(spotlightVariant) !== 'lines' || !spotlightOn(state)) return Decoration.none;
-  const lit = new Set<number>();
-  for (const match of visibleMatches(view, searchMatches(state))) {
-    const first = state.doc.lineAt(match.from).number;
-    const last = state.doc.lineAt(match.to).number;
-    for (let n = first; n <= last; n++) lit.add(n);
-    // A match in a table row lives on a hidden line; the widget is drawn on
-    // the header line, so that is the one to keep lit.
-    const host = widgetHostLine(state, match.from);
-    if (host) lit.add(host.number);
-  }
-  const builder = new RangeSetBuilder<Decoration>();
-  let last = 0;
-  for (const { from, to } of view.visibleRanges) {
-    for (let pos = from; pos <= to; ) {
-      const line = state.doc.lineAt(pos);
-      // Two visible ranges split by a fold can share a line; decorate it once.
-      if (line.number > last && !lit.has(line.number)) builder.add(line.from, line.from, dimLine);
-      last = Math.max(last, line.number);
-      pos = line.to + 1;
-    }
-  }
-  return builder.finish();
-}
-
-const linesPlugin = ViewPlugin.fromClass(
+/**
+ * Fonts load lazily — JetBrains Mono the first time inline code or a code
+ * block is on screen — and a late font changes glyph widths without changing
+ * any line's height, so CM6 sees no geometry change (it re-measures for fonts
+ * only once, at construction). The holes then stay at the fallback font's
+ * widths and clip the last letter of a match in code. Measured in the browser.
+ * A font load is rare, so one transaction per load is cheap.
+ */
+const fontWatch = ViewPlugin.fromClass(
   class {
-    decorations: DecorationSet;
-    constructor(view: EditorView) {
-      this.decorations = dimDecorations(view);
+    private readonly onFonts = (): void => {
+      if (spotlightOn(this.view.state)) this.view.dispatch({ effects: remeasureVeil.of(null) });
+    };
+
+    constructor(private readonly view: EditorView) {
+      document.fonts?.addEventListener('loadingdone', this.onFonts);
     }
-    update(update: ViewUpdate): void {
-      if (inputsChanged(update)) this.decorations = dimDecorations(update.view);
+
+    destroy(): void {
+      document.fonts?.removeEventListener('loadingdone', this.onFonts);
     }
-  },
-  { decorations: (v) => v.decorations }
+  }
 );
 
-/** The spotlight in every variant; `spotlightVariant` picks the one that draws. */
+/** The veil, with the state it reads. */
 export function searchSpotlight(): Extension {
-  return [searchFocusField, searchMatchesField, veilLayer, linesPlugin];
+  return [searchFocusField, searchMatchesField, veilLayer, fontWatch];
 }
