@@ -29,6 +29,10 @@ import { aiHighlightField, aiHighlightKeymap } from './ai-highlight';
 import { aiAskField } from './ai-ask';
 import { aiCommentAttention, aiCommentField } from './ai-comment';
 import { jsonFormatKeymap, jsonOfferField } from './json-paste';
+import { findPanel } from './search/panel';
+import { searchSpotlight } from './search/spotlight';
+// STAND ONLY — remove with the file once a spotlight variant is chosen.
+import { searchStandSwitcher } from './search/stand-switcher';
 
 export const previewCompartment = new Compartment();
 export const languageCompartment = new Compartment();
@@ -105,6 +109,11 @@ export function createExtensions(deps: EditorDeps = {}): Extension[] {
         : {}
     ),
     markdownKeybindings(),
+    // ⌘F: the compact Find panel with a match counter, and the spotlight that
+    // dims the document around the matches while typing in it.
+    findPanel(),
+    searchSpotlight(),
+    ...(import.meta.env.DEV ? [searchStandSwitcher()] : []),
     history(),
     closeBrackets(),
     languageCompartment.of(markdownExtension()),
