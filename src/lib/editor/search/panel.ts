@@ -17,11 +17,13 @@ import { t } from '../../i18n';
 import { formatCounter, matchIndexAt, searchMatches, searchMatchesField, type Counter } from './match-count';
 import { searchFocusField, setSearchFocus } from './panel-focus';
 import { widgetMatchHighlights } from './widget-matches';
+import { nativeAccelerator } from '../native-menu-accelerators';
+import { acceleratorAriaKeyShortcuts, acceleratorLabel } from '../hotkey-label';
 
 /**
  * The Find panel: one compact row at the bottom of the editor.
  *
- *   [ query ……………… 3 / 17 ]  ↑  ↓  │  Aa  .*  W  │  ⇄          ×
+ *   [ query ……………… 3 / 17 ]  ⌘⇧G ↑  ↓ ⌘G  │  Aa  .*  W  │  ⇄          ×
  *   [ replacement ………… ]  Заменить  Заменить все        (⇄ opens it)
  *
  * It replaces CodeMirror's default panel (English labels, checkboxes, no
@@ -62,6 +64,32 @@ function button(className: string, label: string, action: () => void, content: {
   else if (content.text) b.textContent = content.text;
   b.addEventListener('mousedown', (e) => e.preventDefault());
   b.addEventListener('click', action);
+  return b;
+}
+
+/**
+ * ↑ / ↓ with their keys printed beside them, always — ⌘G and ⇧⌘G were in
+ * CodeMirror's keymap for years and nobody knew. The keys come from the native
+ * menu's accelerator mirror (`native-menu-accelerators.ts`, held to `menu.rs`
+ * by its test), the same source as every other key caption in the app, so a
+ * rebind in Rust re-labels the panel. The caption is part of the button: one
+ * hit target, and the whole pair hides on a narrow window (search.css).
+ */
+function stepButton(view: EditorView, direction: 'previous' | 'next'): HTMLButtonElement {
+  const id = direction === 'next' ? 'find_next' : 'find_previous';
+  const accelerator = nativeAccelerator(id);
+  const key = accelerator ? acceleratorLabel(accelerator) : '';
+  const command = direction === 'next' ? findNext : findPrevious;
+  const b = button(`cm-md-search-step cm-md-search-${direction}`, t(`search.${direction}`, { key }), () => command(view), {
+    icon: direction === 'next' ? ICON_DOWN : ICON_UP,
+  });
+  if (accelerator) {
+    b.setAttribute('aria-keyshortcuts', acceleratorAriaKeyShortcuts(accelerator));
+    const kbd = el('kbd', 'cm-md-search-key', { 'aria-hidden': 'true' });
+    kbd.textContent = key;
+    if (direction === 'next') b.append(kbd);
+    else b.prepend(kbd);
+  }
   return b;
 }
 
@@ -129,8 +157,8 @@ class FindPanel implements Panel {
     const findRow = el('div', 'cm-md-search-row');
     findRow.append(
       this.searchField,
-      button('', t('search.previous'), () => findPrevious(this.view), { icon: ICON_UP }),
-      button('', t('search.next'), () => findNext(this.view), { icon: ICON_DOWN }),
+      stepButton(this.view, 'previous'),
+      stepButton(this.view, 'next'),
       sep(),
       this.caseBtn,
       this.regexpBtn,

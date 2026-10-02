@@ -26,6 +26,8 @@
   "menu.edit.title": "Bearbeiten",
   "menu.edit.select_all": "Alles auswählen",
   "menu.edit.find": "Suchen...",
+  "menu.edit.find_next": "Weitersuchen",
+  "menu.edit.find_previous": "Rückwärts suchen",
   "menu.edit.format_json": "JSON formatieren",
 
   "menu.view.title": "Ansicht",

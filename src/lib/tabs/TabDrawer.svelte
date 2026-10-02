@@ -99,6 +99,14 @@
      * ⌃T before this drawer's listener sees it, so App asks here instead.
      */
     putAwayTargets(): string[] | null | undefined;
+    /**
+     * ⌘G / ⇧⌘G, which reach the page as Edit → Find Next / Find Previous now
+     * that they are native items (the accelerator is resolved before this
+     * drawer's keydown would see them). While the drawer is open ⌘G is still
+     * «В окно…» (D10) and ⇧⌘G is nothing; `true` means the drawer took the key.
+     * `false` while it is closed: the editor's find step runs as before.
+     */
+    findStepKey(next: boolean): boolean;
   }
 
   let {
@@ -380,6 +388,11 @@
       },
       close: () => closeDrawer(),
       shortcutTarget: (n) => (ds.open ? (visible[n - 1] ?? null) : undefined),
+      findStepKey: (next) => {
+        if (!ds.open) return false;
+        if (next && !gesture) openMoveKeys();
+        return true;
+      },
       toggleStash: () => toggleStash(),
       putAwayTargets: () => {
         if (!ds.open) return undefined;

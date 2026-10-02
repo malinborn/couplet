@@ -381,8 +381,8 @@
 
   "search.find_placeholder": "Rechercher",
   "search.replace_placeholder": "Remplacer par",
-  "search.previous": "Occurrence précédente (⇧↩)",
-  "search.next": "Occurrence suivante (↩)",
+  "search.previous": "Occurrence précédente ({key}, ou ⇧↩ dans le champ)",
+  "search.next": "Occurrence suivante ({key}, ou ↩ dans le champ)",
   "search.match_case": "Respecter la casse",
   "search.regexp": "Expression régulière",
   "search.whole_word": "Mot entier",

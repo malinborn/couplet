@@ -381,8 +381,8 @@
 
   "search.find_placeholder": "Find",
   "search.replace_placeholder": "Replace with",
-  "search.previous": "Previous match (⇧↩)",
-  "search.next": "Next match (↩)",
+  "search.previous": "Previous match ({key}, or ⇧↩ in the field)",
+  "search.next": "Next match ({key}, or ↩ in the field)",
   "search.match_case": "Match case",
   "search.regexp": "Regular expression",
   "search.whole_word": "Whole word",

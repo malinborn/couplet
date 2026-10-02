@@ -27,10 +27,12 @@ export const DRAWER_SORT_KEYS: readonly DrawerSortKey[] = [
 
 /**
  * «В окно…» (plan 05, D10): the carousel for the selection, else the card the
- * arrows are on, else the active tab. A drawer key like the sorts, for the
- * same reason — while the drawer is closed ⌘G is the editor's (CodeMirror's
- * `findNext`), and a native item would fire whether the drawer is open or
- * not. Not ⌘M: that is macOS's Minimize, a native Window-menu item (Q11).
+ * arrows are on, else the active tab. While the drawer is closed ⌘G is the
+ * editor's Find Next. Since that became a native Edit-menu item the key no
+ * longer reaches this drawer's keydown in the app: App hands Find Next to
+ * `TabDrawerHandle.findStepKey` first, the way ⌘1…⌘9 go through
+ * `shortcutTarget`. The keydown path still serves the plain-browser build. Not
+ * ⌘M: that is macOS's Minimize, a native Window-menu item (Q11).
  */
 export const DRAWER_MOVE_KEY = { code: 'KeyG', accelerator: 'CmdOrCtrl+G' } as const;
 

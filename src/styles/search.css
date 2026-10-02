@@ -28,7 +28,6 @@
   --search-current-glow: color-mix(in srgb, rgb(var(--color-glow)) 55%, transparent);
   /* The spotlight's sheet over everything that is not a match. */
   --search-veil: color-mix(in srgb, var(--bg-base) 62%, transparent);
-  --search-dim-opacity: 0.32;
   /* "No matches" / a broken regexp. Same rose as the alarm toast's border. */
   --search-miss: rgb(235, 111, 146);
 }
@@ -129,8 +128,8 @@
 
 /* ----- Spotlight ---------------------------------------------------------- */
 
-/* A and C: the veil (an SVG sheet with holes) and the current match's ring.
- * The layer sits above the content; it must never catch a click. */
+/* The veil: an SVG sheet with holes, plus the current match's halo. The
+ * layer sits above the content; it must never catch a click. */
 .cm-md-search-veil-layer {
   pointer-events: none;
 }
@@ -159,15 +158,8 @@
   to { opacity: 1; }
 }
 
-/* B: lines without a match. */
-.cm-content .cm-line.cm-md-search-dim {
-  opacity: var(--search-dim-opacity);
-  transition: opacity 120ms ease-out;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .cm-md-search-veil { animation: none; }
-  .cm-content .cm-line.cm-md-search-dim { transition: none; }
 }
 
 /* ----- The Find panel ------------------------------------------------------
@@ -304,6 +296,36 @@
   background: rgba(var(--color-glow), 0.16);
   box-shadow: inset 0 0 0 1px rgba(var(--color-glow), 0.5);
   color: var(--text-primary);
+}
+
+/* ↑ / ↓ carry their key beside the arrow (search/panel.ts `stepButton`): the
+ * drawer's quiet key caption — UI font, small, muted — so it reads as a hint,
+ * not as a second label. */
+.cm-panels .cm-panel.cm-md-search .cm-md-search-step {
+  gap: 5px;
+  padding: 0 6px;
+}
+
+.cm-md-search-key {
+  font: 400 10.5px/1 'Inter', -apple-system, system-ui, sans-serif;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  transition: color 0.12s;
+}
+
+.cm-md-search-step:hover .cm-md-search-key {
+  color: var(--text-subtle);
+}
+
+/* A narrow window drops the captions rather than wrapping the row; the keys
+ * stay in the tooltips and the Edit menu. */
+@media (max-width: 720px) {
+  .cm-md-search-key {
+    display: none;
+  }
+  .cm-panels .cm-panel.cm-md-search .cm-md-search-step {
+    padding: 0;
+  }
 }
 
 /* "W" for whole word, underlined like a word boundary. */

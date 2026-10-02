@@ -6,7 +6,7 @@ import { closeSearchPanel, getSearchQuery, openSearchPanel, searchKeymap, search
 import { findPanel, openFind } from './panel';
 import { searchMatches, searchMatchesField } from './match-count';
 import { searchFocusField } from './panel-focus';
-import { searchSpotlight, spotlightOn, spotlightVariant } from './spotlight';
+import { searchSpotlight, spotlightOn } from './spotlight';
 
 const DOC = 'Поиск один. Второй поиск. Третий ПОИСК.';
 
@@ -232,28 +232,43 @@ describe('the spotlight switch', () => {
     expect(v.state.field(searchFocusField)).toBe(false);
     expect(spotlightOn(v.state)).toBe(false);
   });
+});
 
-  it('variant "off" never dims', async () => {
-    const v = make(DOC, [spotlightVariant.of('off')]);
+describe('the step buttons', () => {
+  it('print the native menu keys beside the arrows and in the tooltip', () => {
+    const v = make();
     openSearchPanel(v);
-    type(input(v), 'поиск');
-    await settle();
-    expect(spotlightOn(v.state)).toBe(false);
+    const prev = panel(v).querySelector<HTMLButtonElement>('.cm-md-search-previous');
+    const next = panel(v).querySelector<HTMLButtonElement>('.cm-md-search-next');
+    // Built from native-menu-accelerators.ts (CmdOrCtrl+Shift+G / CmdOrCtrl+G);
+    // jsdom's navigator is not a Mac, so the plain spelling.
+    expect(prev?.querySelector('.cm-md-search-key')?.textContent).toBe('Ctrl+Shift+G');
+    expect(next?.querySelector('.cm-md-search-key')?.textContent).toBe('Ctrl+G');
+    expect(next?.title).toContain('Ctrl+G');
+    expect(prev?.getAttribute('aria-keyshortcuts')).toBeTruthy();
+    // Key before the arrow on ↑, after it on ↓.
+    expect(prev?.firstElementChild?.tagName).toBe('KBD');
+    expect(next?.lastElementChild?.tagName).toBe('KBD');
   });
 
-  it('the veil is the default variant', () => {
-    expect(EditorState.create({ extensions: [] }).facet(spotlightVariant)).toBe('veil');
-  });
-
-  it('line focus dims the visible lines that hold no match', async () => {
-    const v = make('a поиск\nb\nc поиск\nd', [spotlightVariant.of('lines')]);
+  it('⌘G works from the field and from the text, on any layout', () => {
+    const v = make();
     openSearchPanel(v);
     type(input(v), 'поиск');
-    await settle();
-    const dimmed = [...v.contentDOM.querySelectorAll('.cm-line')].map((l) => l.classList.contains('cm-md-search-dim'));
-    expect(dimmed).toEqual([false, true, false, true]);
-    v.focus();
-    await settle();
-    expect(v.contentDOM.querySelector('.cm-md-search-dim')).toBeNull();
+    // Russian layout: key is the Cyrillic letter, CodeMirror falls back to
+    // keyCode. Mod is Ctrl here — jsdom's navigator is not a Mac.
+    const press = (target: HTMLElement, shiftKey = false): void => {
+      target.dispatchEvent(
+        new KeyboardEvent('keydown', { key: shiftKey ? 'П' : 'п', code: 'KeyG', keyCode: 71, ctrlKey: true, shiftKey, bubbles: true, cancelable: true })
+      );
+    };
+    press(input(v));
+    expect(counter(v)).toBe('1 / 3');
+    press(input(v));
+    expect(counter(v)).toBe('2 / 3');
+    press(v.contentDOM);
+    expect(counter(v)).toBe('3 / 3');
+    press(v.contentDOM, true);
+    expect(counter(v)).toBe('2 / 3');
   });
 });

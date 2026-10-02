@@ -114,7 +114,7 @@
   import { gotoAiMark } from './lib/editor/ai-mark-nav';
   import type { TabOwner } from './lib/switch-document';
   import { activeCellEditSession } from './lib/editor/cell-edit-session';
-  import { closeSearchPanel } from '@codemirror/search';
+  import { closeSearchPanel, findNext, findPrevious } from '@codemirror/search';
   import { openFind } from './lib/editor/search/panel';
   import { hideHoverMenu } from './lib/editor/hover-menu';
   import { createTabController, type DiskOptions, type MoveDone, type OpenAnswer, type Stranded } from './lib/tabs/controller';
@@ -577,6 +577,18 @@
     // Not CodeMirror's openSearchPanel: with the query field already focused
     // that does nothing, while ⌘F there should select the query (search/panel.ts).
     openFind(view);
+  }
+
+  /**
+   * ⌘G / ⇧⌘G from the native menu, which takes the key before CodeMirror's
+   * own Mod-g ever sees it. CodeMirror's commands already do the right thing
+   * everywhere: step from the selection, or open the panel when there is no
+   * usable query yet. Focus stays where it was — in the Find field or the text.
+   */
+  function handleFindStep(next: boolean): void {
+    const view = editorHandle?.view;
+    if (!view) return;
+    (next ? findNext : findPrevious)(view);
   }
 
   /**
@@ -2518,6 +2530,14 @@
         case 'find':
           handleFind();
           break;
+        case 'find_next':
+        case 'find_previous': {
+          // Same arrangement as ⌘1…⌘9 below: with the drawer open the key is
+          // the drawer's (⌘G is its «В окно…»), and only otherwise the editor's.
+          const next = action === 'find_next';
+          if (!drawerHandle?.findStepKey(next)) handleFindStep(next);
+          break;
+        }
         case 'toggle_mode':
           engine.cycle();
           break;
