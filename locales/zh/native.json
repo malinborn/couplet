@@ -26,6 +26,8 @@
   "menu.edit.title": "编辑",
   "menu.edit.select_all": "全选",
   "menu.edit.find": "查找…",
+  "menu.edit.find_next": "查找下一个",
+  "menu.edit.find_previous": "查找上一个",
   "menu.edit.format_json": "格式化 JSON",
 
   "menu.view.title": "视图",

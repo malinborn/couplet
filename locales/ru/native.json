@@ -26,6 +26,8 @@
   "menu.edit.title": "Правка",
   "menu.edit.select_all": "Выделить всё",
   "menu.edit.find": "Найти...",
+  "menu.edit.find_next": "Найти далее",
+  "menu.edit.find_previous": "Найти ранее",
   "menu.edit.format_json": "Форматировать JSON",
 
   "menu.view.title": "Вид",

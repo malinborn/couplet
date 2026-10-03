@@ -58,9 +58,6 @@ export const editorTheme = EditorView.theme({
   '.cm-panels.cm-panels-top': {
     borderBottom: '1px solid var(--color-border)',
   },
-  '.cm-searchMatch': {
-    backgroundColor: 'var(--color-selection) !important',
-  },
   '.cm-tooltip': {
     backgroundColor: 'var(--bg-surface)',
     color: 'var(--text-primary)',

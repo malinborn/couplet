@@ -377,5 +377,20 @@
   "toast.stash.kept_open": "{title} was opened again in #{number} — not deleted",
   "toast.stash.kept_busy": "{title} in #{number} is waiting for your answer to an agent — not deleted",
   "toast.stash.held_restore": "{title} is open in a tab — close it to restore",
-  "toast.stash.held_purge": "{title} is open in a tab — close it to delete forever"
+  "toast.stash.held_purge": "{title} is open in a tab — close it to delete forever",
+
+  "search.find_placeholder": "查找",
+  "search.replace_placeholder": "替换为",
+  "search.previous": "上一个匹配（{key}，输入框内 ⇧↩）",
+  "search.next": "下一个匹配（{key}，输入框内 ↩）",
+  "search.match_case": "区分大小写",
+  "search.regexp": "正则表达式",
+  "search.whole_word": "全词匹配",
+  "search.toggle_replace": "查找和替换",
+  "search.close": "关闭 (Esc)",
+  "search.replace_one": "替换",
+  "search.replace_all": "全部替换",
+  "search.no_matches": "无匹配",
+  "search.invalid": "表达式无效",
+  "search.count": "第 {index} 个，共 {total} 个"
 }

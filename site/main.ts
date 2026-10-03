@@ -8,6 +8,7 @@ import './styles/fonts.css';
 import '@app/lib/theme/aurora-dark.css';
 import '@app/lib/theme/aurora-light.css';
 import '@app/styles/editor.css';
+import '@app/styles/search.css';
 import '@app/styles/editor-metrics.css';
 // Landing tokens load last so its --bg family (and everything derived from it)
 // wins over the app stylesheets, which assume they own the whole page.

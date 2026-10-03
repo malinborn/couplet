@@ -35,6 +35,8 @@ export const NATIVE_MENU_ACCELERATORS: readonly NativeMenuAccelerator[] = [
   { id: 'reopen_closed', accelerator: 'CmdOrCtrl+Shift+T' },
   { id: 'select_all', accelerator: 'CmdOrCtrl+A' },
   { id: 'find', accelerator: 'CmdOrCtrl+F' },
+  { id: 'find_next', accelerator: 'CmdOrCtrl+G' },
+  { id: 'find_previous', accelerator: 'CmdOrCtrl+Shift+G' },
   { id: 'format_json', accelerator: 'CmdOrCtrl+Shift+J' },
   { id: 'toggle_mode', accelerator: 'CmdOrCtrl+E' },
   { id: 'zoom_in', accelerator: 'CmdOrCtrl+Equal' },

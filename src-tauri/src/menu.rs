@@ -287,6 +287,21 @@ pub fn build_menu(
                 .accelerator("CmdOrCtrl+F")
                 .build(app)?,
         )
+        // ⌘G / ⇧⌘G existed only inside CodeMirror's keymap, where nobody found
+        // them. As menu items they are listed, and the accelerator is resolved
+        // before the webview sees the key, so the keymap's own Mod-g never
+        // double-fires in the app (it stays for the browser and the landing).
+        // Unclaimed ids: the generic `menu-event` emit delivers them.
+        .item(
+            &MenuItemBuilder::with_id("find_next", t("menu.edit.find_next"))
+                .accelerator("CmdOrCtrl+G")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("find_previous", t("menu.edit.find_previous"))
+                .accelerator("CmdOrCtrl+Shift+G")
+                .build(app)?,
+        )
         .separator()
         // The third way into JSON expansion, after the paste offer and the
         // accelerator. Same PR #11 lesson as "Comment on Selection": a feature

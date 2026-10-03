@@ -13,6 +13,8 @@ export type MenuAction =
   | 'close'
   | 'select_all'
   | 'find'
+  | 'find_next'
+  | 'find_previous'
   | 'toggle_mode'
   | 'engine_raw'
   | 'engine_live_preview'

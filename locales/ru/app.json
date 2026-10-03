@@ -377,5 +377,20 @@
   "toast.stash.kept_open": "Заметку {title} снова открыли в #{number} — не удалена",
   "toast.stash.kept_busy": "Заметка {title} в #{number} ждёт вашего ответа агенту — не удалена",
   "toast.stash.held_restore": "Заметка {title} открыта во вкладке — закройте её, чтобы вернуть",
-  "toast.stash.held_purge": "Заметка {title} открыта во вкладке — закройте её, чтобы удалить навсегда"
+  "toast.stash.held_purge": "Заметка {title} открыта во вкладке — закройте её, чтобы удалить навсегда",
+
+  "search.find_placeholder": "Найти",
+  "search.replace_placeholder": "Заменить на",
+  "search.previous": "Предыдущее совпадение ({key}, в поле — ⇧↩)",
+  "search.next": "Следующее совпадение ({key}, в поле — ↩)",
+  "search.match_case": "Учитывать регистр",
+  "search.regexp": "Регулярное выражение",
+  "search.whole_word": "Слово целиком",
+  "search.toggle_replace": "Замена",
+  "search.close": "Закрыть (Esc)",
+  "search.replace_one": "Заменить",
+  "search.replace_all": "Заменить все",
+  "search.no_matches": "нет совпадений",
+  "search.invalid": "ошибка в выражении",
+  "search.count": "совпадение {index} из {total}"
 }

@@ -1032,6 +1032,49 @@ describe('TabDrawer — the window carousel (plan 05)', () => {
     expect(option(0)).not.toBeNull();
     expect(option(1)).toBeNull();
   });
+
+  // ⌘G reaches the page as the native Edit → Find Next item, which App hands
+  // to the drawer first (`findStepKey`) — the same guards as the keydown path.
+  describe('⌘G from the native menu (findStepKey)', () => {
+    it('drawer closed: not the drawer’s, Find Next runs', async () => {
+      await settle();
+      expect(h.handle().findStepKey(true)).toBe(false);
+      expect(carousel()).toBeNull();
+    });
+
+    it('drawer open: opens the carousel, like the keydown ⌘G', async () => {
+      h.windows.mockResolvedValue([other('editor-2', 7), other('editor-3', 8)]);
+      h.handle().toggle();
+      await settle();
+      expect(h.handle().findStepKey(true)).toBe(true);
+      await settle();
+      await settle();
+      expect(carousel()).not.toBeNull();
+    });
+
+    it('a second ⌘G with the carousel up does nothing: the arrows keep their choice', async () => {
+      h.windows.mockResolvedValue([other('editor-2', 7), other('editor-3', 8)]);
+      h.handle().toggle();
+      await settle();
+      h.handle().findStepKey(true);
+      await settle();
+      await settle();
+      press('ArrowDown');
+      await settle();
+      const chosen = listbox()!.getAttribute('aria-activedescendant');
+      expect(h.handle().findStepKey(true)).toBe(true);
+      await settle();
+      await settle();
+      expect(listbox()!.getAttribute('aria-activedescendant')).toBe(chosen);
+    });
+
+    it('⇧⌘G is never the drawer’s: Find Previous runs with the drawer open too', async () => {
+      h.handle().toggle();
+      await settle();
+      expect(h.handle().findStepKey(false)).toBe(false);
+      expect(carousel()).toBeNull();
+    });
+  });
 });
 
 describe('TabDrawer — renaming the window from the notch (spec §3)', () => {
@@ -1071,6 +1114,15 @@ describe('TabDrawer — renaming the window from the notch (spec §3)', () => {
     field.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
   }
+
+  it('⌘G from the menu while renaming is swallowed: no carousel over the input', async () => {
+    const field = await startEdit();
+    expect(h.handle().findStepKey(true)).toBe(true);
+    await settle();
+    await settle();
+    expect(h.root().parentElement!.querySelector('.carousel')).toBeNull();
+    expect(document.activeElement).toBe(field);
+  });
 
   it('a double-click on #N opens the input, prefilled, selected and focused; the drawer stays open', async () => {
     vi.useFakeTimers();

@@ -1,0 +1,385 @@
+/* ===== In-document search (⌘F) =====
+ *
+ * The Find panel (`lib/editor/search/panel.ts`), the match highlights drawn by
+ * `@codemirror/search`'s highlighter, and the spotlight that dims the rest of
+ * the document while searching (`lib/editor/search/spotlight.ts`).
+ *
+ * `search-*` tokens are not theme tokens: like `stash-*`, they live on plain
+ * `:root`, mixed from the theme's own (`--color-glow`, `--bg-base`,
+ * `--text-primary`), so a new theme gets search colours without an edit here.
+ * A theme whose accent cannot carry readable text gets an override below.
+ * `lib/editor/search/search-contrast.test.ts` evaluates these declarations for
+ * every registered theme and holds them to WCAG contrast — that test, not the
+ * formulas, is the guarantee that a match is readable.
+ *
+ * The rules of the road:
+ * - Every match: a translucent accent fill plus an accent underline bar, with
+ *   the text forced to one readable colour. The bar is what tells a match
+ *   apart from a selection, whose fill is in the same family in most themes.
+ * - The current match: a solid accent fill with the page colour as its text.
+ * - Selection keeps `--color-selection`, drawn underneath; a match covers it.
+ */
+:root {
+  --search-match-bg: color-mix(in srgb, rgb(var(--color-glow)) 26%, transparent);
+  --search-match-line: color-mix(in srgb, rgb(var(--color-glow)) 80%, transparent);
+  --search-match-text: var(--text-primary);
+  --search-current-bg: rgb(var(--color-glow));
+  --search-current-text: var(--bg-base);
+  --search-current-glow: color-mix(in srgb, rgb(var(--color-glow)) 55%, transparent);
+  /* The spotlight's sheet over everything that is not a match. */
+  --search-veil: color-mix(in srgb, var(--bg-base) 62%, transparent);
+  /* "No matches" / a broken regexp. Same rose as the alarm toast's border. */
+  --search-miss: rgb(235, 111, 146);
+}
+
+/* A mid-tone accent on a light page: the page colour on it falls short of
+ * 4.5:1, so the current match takes a deeper shade of the same hue. */
+:root[data-theme='aurora-light'],
+:root[data-theme='ink-light'] {
+  --search-current-bg: color-mix(in srgb, rgb(var(--color-glow)) 82%, #000);
+}
+:root[data-theme='autumn-light'],
+:root[data-theme='paper-light'] {
+  --search-current-bg: color-mix(in srgb, rgb(var(--color-glow)) 72%, #000);
+}
+
+/* ----- Match highlights ----------------------------------------------------
+ *
+ * `@codemirror/search` wraps a match OUTSIDE the document's own marks (bold,
+ * inline code, a heading's `tok-heading`), so a match is a span whose children
+ * carry their own colours, fills and backgrounds. Three of those used to eat
+ * the match:
+ *
+ * 1. Headings and ticked tasks paint glyphs with `background-clip: text` and a
+ *    transparent `-webkit-text-fill-color`. A match's background sits above
+ *    the clipped one, so the text vanished into an empty box. Inside a match
+ *    the fill is a real colour again.
+ * 2. Inline code paints an opaque background on its inner span, over the
+ *    match's. Inside a match the code background steps aside.
+ * 3. The code span is split into fragments around the match, and each
+ *    fragment got the full padding and radius — `inline  поиск  в коде`. The
+ *    fragments that touch a match lose the padding on that side.
+ *
+ * Three classes deep (`.cm-content .cm-line …`) to stay above the per-element
+ * colour rules in editor.css, which reach two.
+ */
+.cm-content .cm-line .cm-searchMatch {
+  background-color: var(--search-match-bg);
+  box-shadow: inset 0 -2px 0 var(--search-match-line);
+  border-radius: 3px;
+  color: var(--search-match-text);
+}
+
+.cm-content .cm-line .cm-searchMatch.cm-searchMatch-selected {
+  background-color: var(--search-current-bg);
+  /* A ring of its own fill: a touch larger than its neighbours, and — under
+   * the spotlight — exactly the width of the veil hole's padding. */
+  box-shadow: 0 0 0 2px var(--search-current-bg);
+  color: var(--search-current-text);
+}
+
+.cm-content .cm-line .cm-searchMatch,
+.cm-content .cm-line .cm-searchMatch * {
+  -webkit-text-fill-color: currentColor;
+}
+
+.cm-content .cm-line .cm-searchMatch * {
+  color: inherit;
+}
+
+.cm-content .cm-line .cm-searchMatch .cm-md-inline-code {
+  background: transparent;
+  padding-left: 0;
+  padding-right: 0;
+  border-radius: 0;
+}
+
+.cm-content .cm-line .cm-md-inline-code:has(+ .cm-searchMatch > .cm-md-inline-code) {
+  padding-right: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.cm-content .cm-line .cm-searchMatch:has(> .cm-md-inline-code) + .cm-md-inline-code {
+  padding-left: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+/* Matches inside table cells, which no mark decoration reaches — painted
+ * through the CSS Custom Highlight API (search/widget-matches.ts). `::highlight`
+ * takes no box-shadow, so the bar is an underline here. */
+::highlight(cm-md-search-widget-match) {
+  background-color: var(--search-match-bg);
+  color: var(--search-match-text);
+  text-decoration: underline 2px var(--search-match-line);
+  text-underline-offset: 3px;
+}
+
+/* The current match in a cell: the solid fill of `.cm-searchMatch-selected`.
+ * (No ring — `::highlight` takes no box-shadow; under the veil the halo marks it.) */
+::highlight(cm-md-search-widget-current) {
+  background-color: var(--search-current-bg);
+  color: var(--search-current-text);
+}
+
+/* The selection is the current match (findNext put it there) and that match
+ * is on screen as a mark: its solid fill says so already, and the selection's
+ * full-line-height rectangle around it only added a second, offset frame. The
+ * caret at the selection's head likewise, while the keyboard is in the panel.
+ *
+ * Keyed on the rendered mark (`@codemirror/search` adds `-selected` exactly
+ * when the selection is the match), not on "the selection is a match": a match
+ * inside hidden live-render markup or a table cell has no mark, and hiding the
+ * selection there would leave the current match drawn nowhere. Without `:has`
+ * (WebKit < 15.4) the selection simply stays visible. */
+.cm-editor:has(.cm-searchMatch-selected) .cm-selectionLayer,
+.cm-editor:not(.cm-focused):has(.cm-searchMatch-selected) .cm-cursorLayer {
+  visibility: hidden;
+}
+
+/* ----- Spotlight ---------------------------------------------------------- */
+
+/* The veil: an SVG sheet with holes, plus the current match's halo. The
+ * layer sits above the content; it must never catch a click. */
+.cm-md-search-veil-layer {
+  pointer-events: none;
+}
+
+.cm-md-search-veil {
+  overflow: visible;
+  animation: cm-md-search-veil-in 140ms ease-out;
+}
+
+.cm-md-search-veil-fill {
+  fill: var(--search-veil);
+}
+
+/* The soft halo around the current match, drawn above the veil so it lights
+ * the dimmed page around it; never over the text. Only a blur: a hard ring
+ * here would sit a subpixel off the match's own box (the layer and the text
+ * round differently) and show a dark sliver between the two — the hard ring
+ * is the match's own box-shadow above. */
+.cm-md-search-glow {
+  border-radius: 3px;
+  box-shadow: 0 0 14px 4px var(--search-current-glow);
+}
+
+@keyframes cm-md-search-veil-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cm-md-search-veil { animation: none; }
+}
+
+/* ----- The Find panel ------------------------------------------------------
+ *
+ * Four classes deep where it competes with the generic `.cm-panels .cm-panel
+ * button` / `input[type="text"]` rules in editor.css (kept for CodeMirror's
+ * other panels, e.g. go-to-line). */
+.cm-panels.cm-panels-bottom:has(> .cm-md-search) {
+  background: var(--bg-surface) !important;
+  border-top: 1px solid var(--border);
+  border-bottom: none;
+}
+
+.cm-panels .cm-panel.cm-md-search {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px 10px 7px 12px;
+  font: 400 13px/1.2 'Inter', -apple-system, system-ui, sans-serif;
+  color: var(--text-primary);
+}
+
+.cm-md-search-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.cm-md-search-row[hidden] {
+  display: none;
+}
+
+.cm-md-search-field {
+  flex: 0 1 380px;
+  min-width: 140px;
+  display: flex;
+  align-items: center;
+  height: 28px;
+  margin-right: 6px;
+  padding: 0 8px 0 9px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s,
+    background 0.15s;
+}
+
+.cm-md-search-field:focus-within {
+  border-color: rgb(var(--color-glow));
+  box-shadow: 0 0 0 2px rgba(var(--color-glow), 0.22);
+}
+
+.cm-md-search-field[data-state='none'],
+.cm-md-search-field[data-state='invalid'] {
+  border-color: var(--search-miss);
+  background: color-mix(in srgb, var(--search-miss) 9%, var(--bg-base));
+}
+
+.cm-md-search-field[data-state='none']:focus-within,
+.cm-md-search-field[data-state='invalid']:focus-within {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--search-miss) 25%, transparent);
+}
+
+.cm-panels .cm-panel.cm-md-search .cm-md-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+  color: var(--text-primary);
+  caret-color: var(--color-cursor);
+  font: inherit;
+}
+
+.cm-panels .cm-panel.cm-md-search .cm-md-search-input::placeholder {
+  color: var(--text-subtle);
+  opacity: 1;
+}
+
+/* Read by screen readers, not shown. */
+.cm-md-search-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.cm-md-search-count {
+  flex: none;
+  padding-left: 8px;
+  color: var(--text-subtle);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.cm-md-search-field[data-state='none'] .cm-md-search-count,
+.cm-md-search-field[data-state='invalid'] .cm-md-search-count {
+  color: var(--search-miss);
+}
+
+.cm-panels .cm-panel.cm-md-search .cm-md-search-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-subtle);
+  font: 500 12px/1 var(--font-code);
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    color 0.12s,
+    box-shadow 0.12s;
+}
+
+.cm-panels .cm-panel.cm-md-search .cm-md-search-btn:hover {
+  background: var(--highlight);
+  box-shadow: none;
+  color: var(--text-primary);
+}
+
+.cm-panels .cm-panel.cm-md-search .cm-md-search-btn:focus-visible {
+  outline: 2px solid rgba(var(--color-glow), 0.7);
+  outline-offset: -1px;
+}
+
+.cm-panels .cm-panel.cm-md-search .cm-md-search-btn[aria-pressed='true'],
+.cm-panels .cm-panel.cm-md-search .cm-md-search-btn[aria-expanded='true'] {
+  background: rgba(var(--color-glow), 0.16);
+  box-shadow: inset 0 0 0 1px rgba(var(--color-glow), 0.5);
+  color: var(--text-primary);
+}
+
+/* ↑ / ↓ carry their key beside the arrow (search/panel.ts `stepButton`): the
+ * drawer's quiet key caption — UI font, small, muted — so it reads as a hint,
+ * not as a second label. */
+.cm-panels .cm-panel.cm-md-search .cm-md-search-step {
+  gap: 5px;
+  padding: 0 6px;
+}
+
+.cm-md-search-key {
+  font: 400 10.5px/1 'Inter', -apple-system, system-ui, sans-serif;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  transition: color 0.12s;
+}
+
+.cm-md-search-step:hover .cm-md-search-key {
+  color: var(--text-subtle);
+}
+
+/* A narrow window drops the captions rather than wrapping the row; the keys
+ * stay in the tooltips and the Edit menu. */
+@media (max-width: 720px) {
+  .cm-md-search-key {
+    display: none;
+  }
+  .cm-panels .cm-panel.cm-md-search .cm-md-search-step {
+    padding: 0;
+  }
+}
+
+/* "W" for whole word, underlined like a word boundary. */
+.cm-md-search-word {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+
+.cm-panels .cm-panel.cm-md-search .cm-md-search-text {
+  padding: 0 10px;
+  margin-left: 2px;
+  background: var(--bg-base);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--text-primary);
+  font: 500 12px/1 'Inter', -apple-system, system-ui, sans-serif;
+}
+
+.cm-panels .cm-panel.cm-md-search .cm-md-search-text:hover {
+  box-shadow: inset 0 0 0 1px var(--text-muted);
+}
+
+.cm-md-search-sep {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin: 0 5px;
+  background: var(--border);
+}
+
+.cm-md-search-spacer {
+  flex: 1 1 0;
+  min-width: 4px;
+}

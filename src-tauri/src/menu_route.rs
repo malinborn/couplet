@@ -128,7 +128,8 @@ mod tests {
     #[test]
     fn document_actions_go_to_one_window() {
         for id in [
-            "open", "save", "save_as", "close", "select_all", "find", "recent_files",
+            "open", "save", "save_as", "close", "select_all", "find", "find_next", "find_previous",
+            "recent_files",
             "ai_comment", "ai_next_mark", "ai_prev_mark", "ai_watch_command", "format_json",
             "new_tab", "next_tab", "prev_tab", "select_tab_1", "select_tab_9", "toggle_drawer",
             "toggle_stash", "stash_put_away",

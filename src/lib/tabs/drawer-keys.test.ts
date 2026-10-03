@@ -6,6 +6,7 @@ import { NATIVE_MENU_ACCELERATORS, nativeAccelerator } from '../editor/native-me
 
 const MENU_RS = fileURLToPath(new URL('../../../src-tauri/src/menu.rs', import.meta.url));
 const LIB_RS = fileURLToPath(new URL('../../../src-tauri/src/lib.rs', import.meta.url));
+const APP_SVELTE = fileURLToPath(new URL('../../App.svelte', import.meta.url));
 
 describe('drawer sort keys', () => {
   it('NeverCollideWithANativeMenuAccelerator', () => {
@@ -43,14 +44,15 @@ describe('drawer sort keys', () => {
     expect(nativeAccelerator('toggle_drawer')).toBe('CmdOrCtrl+J');
   });
 
-  it('TheMoveKeyIsNobodysEither', () => {
+  it('TheMoveKeyIsFindNextOutsideTheDrawer_AndAppHandsItToTheDrawerFirst', () => {
     // ⌘G is «В окно…» only while the drawer is open (plan 05, D10, Q11);
-    // outside it, CodeMirror's findNext. A menu item would take it in both.
+    // outside it, Find Next. It is the native Edit → Find Next item, so the
+    // key never reaches the drawer's keydown in the app — App asks the drawer
+    // first (`findStepKey`), as it does for ⌘1…⌘9 (`shortcutTarget`).
     expect(DRAWER_MOVE_KEY.accelerator).toBe('CmdOrCtrl+G');
-    const native = new Set(NATIVE_MENU_ACCELERATORS.map((a) => a.accelerator));
-    expect(native.has(DRAWER_MOVE_KEY.accelerator)).toBe(false);
-    const claimed = [...readFileSync(MENU_RS, 'utf8').matchAll(/\.accelerator\(\s*"([^"]+)"\s*\)/g)].map((m) => m[1]);
-    expect(claimed).not.toContain(DRAWER_MOVE_KEY.accelerator);
+    expect(nativeAccelerator('find_next')).toBe(DRAWER_MOVE_KEY.accelerator);
+    const app = readFileSync(APP_SVELTE, 'utf8');
+    expect(app).toMatch(/drawerHandle\?\.findStepKey\(/);
     expect(DRAWER_MOVE_KEY.accelerator).toBe(`CmdOrCtrl+${DRAWER_MOVE_KEY.code.slice(3)}`);
   });
 
