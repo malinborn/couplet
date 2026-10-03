@@ -53,7 +53,7 @@
     "url": "https://couplet.pro/",
     "downloadUrl": "https://github.com/malinborn/couplet/releases",
     "sameAs": ["https://github.com/malinborn/couplet"],
-    "softwareVersion": "2.1.1",
+    "softwareVersion": "2.2.0",
     "license": "https://opensource.org/licenses/GPL-3.0"
   }
   </script>
@@ -62,8 +62,8 @@
   <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 
-  <script type="module" crossorigin src="/assets/index-CVCKN3m6.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-CJga93KC.css">
+  <script type="module" crossorigin src="/assets/index-fWYPqsBq.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-D-54vI-R.css">
 </head>
 <body>
 
@@ -458,6 +458,22 @@
       <div class="changelog-list">
 
         <details class="changelog-entry" open>
+          <summary class="changelog-summary">
+            <span class="changelog-version">v2.2.0</span>
+            <span class="changelog-date">2026-10-03</span>
+            <span class="changelog-tag feature">feature</span>
+            <span class="changelog-title">Find shows what it found</span>
+          </summary>
+          <ul class="changelog-body-list">
+            <li><strong>Matches you can read</strong> &mdash; a match inside a heading used to be an empty box: heading text is painted through its gradient with a transparent fill, and the match background landed on top of the glyphs. Inside inline code the code&rsquo;s own background covered the match, and inside a table nothing was highlighted at all. All three now show real text, and the current match, the other matches and the selection are three different colours &mdash; one shared <code>!important</code> rule used to paint them identically. A test holds every theme to a 4.5:1 contrast for match text</li>
+            <li><strong>Everything else steps back</strong> &mdash; while the cursor is in the Find field, the page dims except for the matches, and the current one glows. Click back into the text and the dimming lifts, the highlights stay</li>
+            <li><strong>How many, and which one</strong> &mdash; the Find panel is new: <code>3 / 17</code> right in the field, toggles for case, regexp and whole word, a replace row on demand, and a red field when nothing matches or the pattern is broken</li>
+            <li><strong><code>&#8984;G</code> / <code>&#8984;&#8679;G</code></strong> &mdash; Find Next and Find Previous are in the Edit menu and printed next to the arrows in the panel. They always worked; nothing said so. With the tab drawer open, <code>&#8984;G</code> is still &ldquo;To a window&hellip;&rdquo;</li>
+            <li><strong>Stepping through tables</strong> &mdash; landing on a match in a table row snapped the caret out of the table, so the next step skipped every other match in it. Search steps now stay in the row, and the current match is outlined in its cell</li>
+          </ul>
+        </details>
+
+        <details class="changelog-entry">
           <summary class="changelog-summary">
             <span class="changelog-version">v2.1.1</span>
             <span class="changelog-date">2026-09-27</span>
