@@ -41,4 +41,21 @@ describe('document read/write boundary', () => {
     await writeDocument('/x.md', 'a\nb\n', 'lf');
     expect(invoke).toHaveBeenCalledWith('write_file', { path: '/x.md', content: 'a\nb\n' });
   });
+
+  it('ReadDocument_Csv_DecodesToATable', async () => {
+    invoke.mockResolvedValueOnce('a;b\r\n1;2\r\n');
+    const doc = await readDocument('/t/read.csv');
+    expect(doc).toEqual({ text: '| a | b |\n| - | - |\n| 1 | 2 |\n', lineEnding: 'lf' });
+  });
+
+  it('WriteDocument_Csv_EncodesInTheDialectItWasReadIn', async () => {
+    invoke.mockResolvedValueOnce('a;b\r\n1;2\r\n');
+    const doc = await readDocument('/t/write.csv');
+    invoke.mockResolvedValueOnce(undefined);
+    await writeDocument('/t/write.csv', doc.text.replace('| 2 |', '| 3 |'), doc.lineEnding);
+    expect(invoke).toHaveBeenLastCalledWith('write_file', {
+      path: '/t/write.csv',
+      content: 'a;b\r\n1;3\r\n',
+    });
+  });
 });

@@ -4,7 +4,8 @@ import type { ConcreteTheme, ThemeFamily, ThemeHalf } from '../theme-resolve';
 import type { EditorEngine } from '../stores.svelte';
 import type { CommentThread } from '../comment-format';
 import type { InboxItem } from '../tabs/agent-inbox';
-import { applyLineEnding, fromDisk, type DiskDocument, type LineEnding } from '../line-endings';
+import type { DiskDocument, LineEnding } from '../line-endings';
+import { decodeFromDisk, encodeForDisk } from '../csv/csv-codec';
 
 /**
  * Read a document from disk, normalized to LF for the editor.
@@ -13,18 +14,20 @@ import { applyLineEnding, fromDisk, type DiskDocument, type LineEnding } from '.
  * never reaches the editor, because CM6 would normalize `\r\n` itself and
  * every length computed from the raw string would then be wrong — see
  * `line-endings.ts`. `fallback` is the ending to assume when the file has no
- * line break at all.
+ * line break at all. A `.csv`/`.tsv` path is decoded to a GFM table here — see
+ * `csv/csv-codec.ts`.
  */
 export async function readDocument(path: string, fallback: LineEnding = 'lf'): Promise<DiskDocument> {
-  return fromDisk(await invoke<string>('read_file', { path }), fallback);
+  return decodeFromDisk(path, await invoke<string>('read_file', { path }), fallback);
 }
 
 /**
  * Write editor (LF) text to disk in the file's own line ending — the mirror of
- * `readDocument`, and the one write boundary for document text.
+ * `readDocument`, and the one write boundary for document text. A `.csv`/`.tsv`
+ * path is encoded from a GFM table here — see `csv/csv-codec.ts`.
  */
 export async function writeDocument(path: string, text: string, lineEnding: LineEnding): Promise<void> {
-  return invoke('write_file', { path, content: applyLineEnding(text, lineEnding) });
+  return invoke('write_file', { path, content: encodeForDisk(path, text, lineEnding) });
 }
 
 export async function fileExists(path: string): Promise<boolean> {
