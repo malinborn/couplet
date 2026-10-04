@@ -1519,6 +1519,15 @@
   display: none;
 }
 
+/* The whole CSV buffer is one table, drawn as one widget on one line, so the
+   caret `drawSelection` paints at a document position is as tall as the table:
+   a red bar down its left edge. There is no text outside the table to put a
+   caret in, and the caret in a cell is the cell host's own DOM caret
+   (`.cm-md-table-celltext { caret-color }`), which this does not touch. */
+.cm-editor.cm-csv-file-mode .cm-cursorLayer {
+  display: none !important;
+}
+
 /* ===== .env file preview ===== */
 .cm-env-comment {
   color: var(--color-list-marker);
