@@ -132,7 +132,10 @@ symlink) kept its dialect under one key and was written under the other, so
   `writeDocument` reads the current file at the same path it is about to
   write and takes its dialect with `sniffDialect(raw)` (delimiter, BOM, record
   separator, trailing newline/blank lines — never fails, also on a file that
-  no longer parses). No file there → the extension's default (`,` / `\t`, no
+  no longer parses). Any other read error (iCloud placeholder, a file being
+  replaced, EACCES) fails the save — the `save-error` toast, retried on the
+  next save — instead of silently dropping the BOM. No file there → the
+  extension's default (`,` / `\t`, no
   BOM, LF). The read and the write use one path, so path spelling cannot
   split them. Cost: one extra read per CSV save.
 - **Read** of a CSV path: `parseCsv` → `rowsToTable`; parse failure → the raw
@@ -143,10 +146,15 @@ symlink) kept its dialect under one key and was written under the other, so
 - CSV owns its own line endings — `applyLineEnding` is not applied on top.
 - **Baseline.** External-change detection compares disk text (after decode)
   with `diskBaseline` by string equality, and a cell commit leaves the buffer
-  non-canonical. `writeDocument` therefore returns what the next read of the
-  file will return — `decodeFromDisk(path, writtenBytes)`, the buffer itself
-  for non-CSV paths — and `doSave` stores that as the baseline. Computed from
-  the real bytes, so it cannot drift from the decoder.
+  non-canonical. When it CSV-encoded a table, `writeDocument` therefore
+  returns what the next read of the file will return —
+  `decodeFromDisk(path, writtenBytes)`, computed from the real bytes so it
+  cannot drift from the decoder — and `doSave` stores that as the baseline.
+  When it wrote the buffer as is (non-CSV paths, and plain text on a CSV path)
+  it returns the buffer. Almost any text parses as CSV, so for plain text the
+  decoded table would leave buffer ≠ baseline for good (every later external
+  change a conflict); with the buffer as baseline the own-save echo takes the
+  ordinary `reload` path and the tab becomes a table.
 - `serializeCsv` quotes, in a one-column table, every value containing any of
   `,` `;` Tab: with a single column the re-read sniffs the delimiter again,
   and an unquoted `Moscow, RU` would come back as two columns.
