@@ -671,6 +671,10 @@
     fileState.isDirty = dirty;
     diskBaseline = baseline;
     dismissedDisk = null;
+    // By name only; `applyDocumentConfig` corrects it from the buffer where it
+    // follows. Kept because two callers have no such follow-up: a note's birth
+    // and the window emptying (a stale 'csv' would put the CSV bundle on the
+    // read-only stand-in state).
     activePreview = previewKindFor(path);
   }
 

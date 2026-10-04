@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import {
-  isCsvPath,
   isTableBuffer,
   decodeFromDisk,
   encodeForDisk,
@@ -10,13 +9,6 @@ import {
 import { rowsToTable } from './csv-table';
 
 const TABLE = '| a | b |\n| - | - |\n| 1 | 2 |\n';
-
-describe('isCsvPath', () => {
-  it('is re-exported from csv-path', () => {
-    expect(isCsvPath('/a/b.csv')).toBe(true);
-    expect(isCsvPath('/a/.csv')).toBe(false);
-  });
-});
 
 describe('isTableBuffer', () => {
   it.each([

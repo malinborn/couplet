@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { EditorState, Transaction } from '@codemirror/state';
 import { history, undo, redo } from '@codemirror/commands';
+import { markdownTable } from 'markdown-table';
 import { computeReplacement } from '../editor/content-diff';
 import { csvEditGuard, csvRedo, csvUndo } from './csv-guard';
 import { rowsToTable } from './csv-table';
@@ -113,6 +114,31 @@ describe('csvEditGuard', () => {
  * inverse of the deletion lands at the edge of the replaced span — glued onto
  * the new table; autosave would then write markdown into the .csv.
  */
+/**
+ * The widget's table operations (`replaceTable` in tables.ts) replace the
+ * Table node — the canonical buffer minus its trailing newline — with
+ * `markdownTable(grid, { align: null, padding: true })`. Every one must pass.
+ */
+describe('csvEditGuard and whole-table replaces as the widget does them', () => {
+  const GRID = [['a', 'b', 'c'], ['1', '2', '3'], ['4', '5', '6']];
+
+  function widgetReplace(grid: string[][]): string {
+    const s = stateOf(rowsToTable(GRID));
+    const insert = markdownTable(grid, { align: null, padding: true });
+    return s.update({ changes: { from: 0, to: s.doc.length - 1, insert } }).state.doc.toString();
+  }
+
+  it.each([
+    ['delete a row', [['a', 'b', 'c'], ['4', '5', '6']]],
+    ['add a column with empty cells', [['a', 'b', 'c', 'New column'], ['1', '2', '3', ''], ['4', '5', '6', '']]],
+    ['delete a column', [['a', 'c'], ['1', '3'], ['4', '6']]],
+    ['drag a column', [['c', 'a', 'b'], ['3', '1', '2'], ['6', '4', '5']]],
+    ['drag a row', [['a', 'b', 'c'], ['4', '5', '6'], ['1', '2', '3']]],
+  ])('%s', (_name, grid) => {
+    expect(widgetReplace(grid)).toBe(markdownTable(grid, { align: null, padding: true }) + '\n');
+  });
+});
+
 function editThenReload(): { state: EditorState; disk: string } {
   let s = stateOf(rowsToTable([['a', 'b'], ['1', '2'], ['3', '4']]));
   s = s.update({

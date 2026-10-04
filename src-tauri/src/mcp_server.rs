@@ -239,7 +239,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "edit",
-            "description": "Replace the content of a document open in couplet with new content. couplet diffs against the live buffer, applies only the changed span, highlights it for the user, and autosaves. Send the COMPLETE new document, never a diff. Opens the file if not already open (must exist on disk).",
+            "description": "Replace the content of a document open in couplet with new content. couplet diffs against the live buffer, applies only the changed span, highlights it for the user, and autosaves. Send the COMPLETE new document, never a diff. Opens the file if not already open (must exist on disk). .csv/.tsv files are refused — they open as a table for the user to edit.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

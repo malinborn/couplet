@@ -16,8 +16,6 @@ import { extOf, isCsvPath } from './csv-path';
  * by the file being replaced, read at the same path just before the write.
  */
 
-export { isCsvPath };
-
 /**
  * Will `encodeForDisk` write this buffer as CSV? A CSV path whose buffer is
  * exactly one table — the same rule `encodeForDisk` applies. Anything else is
