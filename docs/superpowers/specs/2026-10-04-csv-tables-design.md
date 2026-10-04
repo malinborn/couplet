@@ -107,41 +107,59 @@ tableToRows(md: string): { ok: true; rows: string[][] } | { ok: false; error: st
   delimiter row has as many cells as the header, and no row is wider than the
   header (GFM would drop the extra cells, a silent loss on save).
 
-### 3. Document codec at the disk boundary
+### 3. Document codec at the disk boundary — stateless
 
 `src/lib/csv/csv-codec.ts` plus a small change in `readDocument` /
 `writeDocument` (`src/lib/tauri/commands.ts`), the one pair every buffer load
 and save already goes through (open, tab switch, session restore,
 external-change reload, agent background edit).
 
+**No state.** An earlier draft kept a per-path `Map<path, dialect | 'raw'>`.
+Review found it corrupts files: every read rewrote the entry — a drawer
+preview or an agent read of a file broken by another program flipped it to
+`'raw'`, and the next autosave wrote the markdown buffer into the `.csv`;
+the same file opened under two spellings (`/tmp` vs `/private/tmp`, a
+symlink) kept its dialect under one key and was written under the other, so
+`;` + BOM + CRLF silently became `,` + LF. So nothing is remembered:
+
 - `isCsvPath(path)` — extension `csv` or `tsv`.
-- The codec keeps per-path state in a module-level
-  `Map<path, CsvDialect | 'raw'>`. `isCsvDocument(path)` is true only when the
-  entry is a dialect, or there is no entry yet (a new file).
-- **Read** of a CSV path: `parseCsv` → `rowsToTable`. The buffer gets the
-  table; the dialect is stored. Parse failure → the read returns the raw text
-  and the entry becomes `'raw'` (see Error handling). A later successful parse
-  (external change fixed the file) flips it back.
-- **Write** of a CSV path in `'raw'` state: the buffer is written as is, like
-  any text file. Otherwise `tableToRows(buffer)` → `serializeCsv(rows,
-  dialect)`; the dialect comes from the map, else the default for the extension
-  (`,` / `\t`, no BOM, LF). CSV owns its own line endings — `applyLineEnding`
-  is not applied on top. A buffer that is not exactly one table throws, which
-  surfaces through the existing `save-error` toast and keeps the document
-  dirty.
+- **What to write is decided by the buffer.** A CSV path whose buffer is
+  exactly one table (`tableToRows(buffer).ok`) is encoded as CSV; any other
+  buffer — the plain text of a CSV that failed to parse — is written as is,
+  like any text file. The two cannot be confused in practice: CSV text that
+  parses as a GFM table would have to start every line with `|`.
+- **The dialect is read from the file being replaced, at write time.**
+  `writeDocument` reads the current file at the same path it is about to
+  write and takes its dialect with `sniffDialect(raw)` (delimiter, BOM, record
+  separator, trailing newline/blank lines — never fails, also on a file that
+  no longer parses). No file there → the extension's default (`,` / `\t`, no
+  BOM, LF). The read and the write use one path, so path spelling cannot
+  split them. Cost: one extra read per CSV save.
+- **Read** of a CSV path: `parseCsv` → `rowsToTable`; parse failure → the raw
+  text, as any file.
+- **A CSV path that does not exist yet** opens as `rowsToTable([])` (an empty
+  one-column table), so a new `.csv` is editable as a table and saves as an
+  empty file until something is typed.
+- CSV owns its own line endings — `applyLineEnding` is not applied on top.
 - **Baseline.** External-change detection compares disk text (after decode)
-  with `diskBaseline` by string equality. A user edit leaves the buffer
-  non-canonical (a commit does not re-pad the table), so the echo of our own
-  save would decode to something ≠ buffer and be taken for an external change.
-  For CSV paths `doSave` therefore stores `diskBaseline = decode(encode(buffer))`
-  — exactly what the next read of that file returns. Exposed as
-  `codecRoundTrip(path, text)`, identity for non-CSV paths.
+  with `diskBaseline` by string equality, and a cell commit leaves the buffer
+  non-canonical. `writeDocument` therefore returns what the next read of the
+  file will return — `decodeFromDisk(path, writtenBytes)`, the buffer itself
+  for non-CSV paths — and `doSave` stores that as the baseline. Computed from
+  the real bytes, so it cannot drift from the decoder.
+- `serializeCsv` quotes, in a one-column table, every value containing any of
+  `,` `;` Tab: with a single column the re-read sniffs the delimiter again,
+  and an unquoted `Moscow, RU` would come back as two columns.
 
 ### 4. CSV document kind
 
-- `previewKindFor` (`file-language.ts`) gains `'csv'` for `isCsvPath`, and
-  `setActiveDocument` downgrades it to `'code'` when
-  `!isCsvDocument(path)` (the file did not parse).
+- `previewKindFor` (`file-language.ts`) gains `'csv'` for `isCsvPath`.
+- The kind a document actually gets is `documentPreviewKind(path, text)`:
+  `'csv'` only when its buffer is one table, otherwise `'code'` (a CSV that did
+  not parse is shown as plain text). It is derived from the buffer, so it is
+  recomputed whenever the buffer is replaced from disk — including an
+  external-change reload, which can turn a table into plain text (the file was
+  broken elsewhere) or back (it was fixed).
 - `applyDocumentConfig`: `'csv'` → markdown language, `setCodeMode(null)`, plus
   an editor class `cm-csv-file-mode`.
 - `applyPreviewConfig`: `'csv'` always installs
@@ -173,6 +191,9 @@ A `transactionFilter` installed only for CSV:
 
 - Undo/redo pass through (`tr.isUserEvent('undo' | 'redo')`), as do
   transactions without `docChanged`.
+- A buffer replaced from disk passes too (`addToHistory: false`, the mark
+  `human-edit.ts` already uses for a disk reload): the file is the truth, and
+  if it no longer holds a table the document kind becomes `'code'` (§4).
 - Otherwise: if `tableToRows(tr.newDoc)` fails, the transaction is dropped
   (`return []`). This covers typing outside the table, slash commands, hover
   inserts, pasted text, and a second table.
@@ -194,10 +215,12 @@ paid on every commit.
 
 | Situation | Behaviour |
 |---|---|
-| CSV does not parse (unterminated quote) | Opens as plain text, as `.csv` does today, with a toast "Could not read as a table: …". This tab is not CSV kind: no codec on write — what is on screen is what is saved. |
-| Save of a buffer that is not one table | Cannot happen through the UI (guard). If it does: `writeDocument` throws → existing `save-error` toast, document stays dirty, nothing written. |
-| Save As a markdown note to `.csv` | Same as above if the note is not a single table; a note that is one table is exported as CSV. |
+| CSV does not parse (unterminated quote) | Opens as plain text (kind `'code'`), as `.csv` does today. What is on screen is what is saved. Once the text parses again (fixed here or elsewhere), the next read shows it as a table. |
+| File broken by another program while the table has unsaved edits | The usual conflict dialog. "Keep mine" writes the table as CSV in the dialect sniffed from the broken file. |
+| Save of a CSV buffer that is not one table | Written as is (that is what a plain-text CSV tab is). The guard keeps a table tab from getting there. |
+| Save As a markdown note to `.csv` | A note that is one table is exported as CSV; any other note is written as is. |
 | Save As a CSV to `.md` | Writes the markdown table — an export. |
+| Save As a CSV to a new `.csv` | The default dialect (there is no file to sniff); over an existing `.csv`, that file's dialect. |
 
 ## Out of scope
 
@@ -205,6 +228,9 @@ paid on every commit.
 - Comments and AI `show` precision on CSV (they work in buffer coordinates).
 - Recovery restore (not wired for any file type today; snapshots of a CSV hold
   the markdown buffer, harmless).
+- Drawer card previews read a CSV through the codec, i.e. parse and pad the
+  whole file for a card. Fine for typical files; a size-capped peek is a later
+  optimisation.
 - Choosing a header-less mode, changing the delimiter from the UI.
 
 ## Testing
@@ -214,8 +240,11 @@ paid on every commit.
   kept/absent, `serializeCsv(parseCsv(x)) === x` for canonical inputs.
 - **Vitest, `csv-table.ts`:** ragged rows, all-empty rows (kept as a table row by Lezer),
   pipes/newlines in cells, canonical idempotence, rejection of non-table text.
-- **Vitest, codec:** `codecRoundTrip` makes an own-save echo resolve to
-  `ignore` in `resolveExternalChange`.
+- **Vitest, codec:** the baseline `writeDocument` returns makes an own-save
+  echo resolve to `ignore` in `resolveExternalChange`; the dialect follows the
+  file on disk (incl. a broken one and a never-existing one); a read never
+  changes how a later write behaves (no state); a one-column value with `,`
+  survives a save + re-read.
 - **Vitest, guard:** typing outside the table rejected; cell edit, add/delete
   row and column, undo, an emptied row pass.
 - **Vitest, tables:** default `tableConfig` keeps the 500 cap and `-`

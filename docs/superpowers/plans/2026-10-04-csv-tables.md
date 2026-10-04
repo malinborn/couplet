@@ -25,7 +25,7 @@
 |---|---|---|
 | `src/lib/csv/csv.ts` | new | RFC 4180 parse/serialize, delimiter sniffing, dialect |
 | `src/lib/csv/csv-table.ts` | new | rows ↔ canonical GFM table text |
-| `src/lib/csv/csv-codec.ts` | new | per-path codec state, disk decode/encode, baseline round trip, preview kind |
+| `src/lib/csv/csv-codec.ts` | new | stateless disk decode/encode, document preview kind |
 | `src/lib/csv/csv-guard.ts` | new | transaction filter: the buffer stays one table; repairs emptied rows |
 | `src/lib/csv/csv-extensions.ts` | new | the stable extension array a CSV tab installs |
 | `src/lib/editor/preview/table-config.ts` | new | `tableConfig` facet (`maxLines`, `placeholder`) |
@@ -644,6 +644,8 @@ git commit -m "feat(tables): tableConfig facet for row cap and new-cell placehol
 
 ### Task 4: Disk codec
 
+> **Superseded in part by Task 4b** (the per-path state below was found to corrupt files). Kept as the record of what was built first.
+
 **Files:**
 - Create: `src/lib/csv/csv-codec.ts`
 - Modify: `src/lib/tauri/commands.ts:18-28` (`readDocument`, `writeDocument`)
@@ -872,6 +874,65 @@ git commit -m "feat(csv): decode and encode CSV at the document disk boundary"
 
 ---
 
+### Task 4b: Stateless codec (rework after the Task 4 review)
+
+Task 4's per-path `Map` was found to corrupt files (spec §3, "No state"). This task replaces it. Read spec §3 and §4 first — they are the requirements.
+
+**Files:**
+- Modify: `src/lib/csv/csv.ts` (export `sniffDialect`; one-column quoting in `serializeCsv`)
+- Modify: `src/lib/csv/csv-codec.ts` (remove all state)
+- Modify: `src/lib/tauri/commands.ts` (`writeDocument` reads the current file for CSV paths and returns the next-read text)
+- Modify: the place that opens a path that does not exist yet (find it: `fileExists` / the controller's open path — today it yields `''`) so a missing `.csv` opens as `rowsToTable([])`
+- Tests: `src/lib/csv/csv.test.ts`, `src/lib/csv/csv-codec.test.ts`, `src/lib/tauri/commands.test.ts`
+
+**Target API of `csv-codec.ts` (no module state at all):**
+
+```ts
+export function isCsvPath(path: string | null | undefined): boolean;
+/** Disk bytes → buffer. CSV path: table if it parses, else the text as any file. */
+export function decodeFromDisk(path: string, raw: string, fallback: LineEnding): DiskDocument;
+/**
+ * Buffer → bytes. CSV path + buffer that is exactly one table → CSV in the
+ * dialect sniffed from `current` (the file being replaced), or the extension's
+ * default when `current` is null. Any other buffer → applyLineEnding, as today.
+ */
+export function encodeForDisk(path: string, text: string, lineEnding: LineEnding, current: string | null): string;
+/** The kind a document gets: 'csv' only when the buffer is one table; a CSV path otherwise 'code'. */
+export function documentPreviewKind(path: string | null, text: string): PreviewKind;
+```
+
+`isCsvDocument`, `codecRoundTrip` and `resetCsvCodec` are deleted.
+
+**`csv.ts`:**
+- `export function sniffDialect(raw: string, hint?: { delimiter?: CsvDelimiter }): CsvDialect` — never fails; same rules `parseCsv` uses (delimiter sniff, BOM, first unquoted record separator, trailingNewline, trailingBlankLines), computed leniently on a file that does not parse. `parseCsv` uses it, so there is one implementation of the rules.
+- `serializeCsv`: when the header row has exactly one column, quote every value that contains `,`, `;` or a Tab (and the existing triggers). Test: one-column rows `[['city'], ['Moscow, RU']]` written with a `;` dialect → re-parsed (sniffing, no hint) gives the same rows.
+
+**`commands.ts`:**
+
+```ts
+/** … returns what the next read of `path` will return — the save baseline. */
+export async function writeDocument(path: string, text: string, lineEnding: LineEnding): Promise<string> {
+  const current = isCsvPath(path) ? await invoke<string>('read_file', { path }).catch(() => null) : null;
+  const content = encodeForDisk(path, text, lineEnding, current);
+  await invoke('write_file', { path, content });
+  return isCsvPath(path) ? decodeFromDisk(path, content, lineEnding).text : text;
+}
+```
+
+Every existing caller that ignores the return value keeps working; check them all compile (`npm run check`). Wiring the return value into `doSave` is Task 6.
+
+**Tests that must exist (write them first):**
+- No state: decode a file that fails to parse, then encode a table buffer for the same path → CSV (a read never changes how a later write behaves). Decode with path spelling A, encode with spelling B → identical bytes.
+- Dialect from `current`: `;` + BOM + CRLF current → output in that dialect; a `current` that does not parse (`'a;b\r\n"open'`) → still `;`/CRLF; `current = null` → `,`/LF (`\t` for `.tsv`).
+- A raw (non-table) buffer on a CSV path is written as is (with its line ending).
+- Echo: with `writeDocument` mocked as in `commands.test.ts`, the string it returns equals `decodeFromDisk(path, writtenBytes).text`, and `resolveExternalChange` (src/lib/external-change.ts) on that echo with that baseline → `'ignore'`; with the raw buffer as baseline → not ignore.
+- `documentPreviewKind`: table buffer on `.csv` → `'csv'`; plain text on `.csv` → `'code'`; `.md` → `'markdown'`; `null` → `'markdown'`. (This needs `previewKindFor` to return `'csv'` for `.csv`/`.tsv` — move that one-line change from Task 6 here: `if (ext === 'csv' || ext === 'tsv') return 'csv';` right after the env check in `file-language.ts`, and add `'csv'` to `PreviewKind`; fix any exhaustive switch `npm run check` flags.)
+- A missing `.csv` opens as `rowsToTable([])`; saving it untouched writes `''`.
+
+**Commit:** `refactor(csv): stateless codec — dialect from the file, mode from the buffer`
+
+---
+
 ### Task 5: Edit guard + CSV extension bundle
 
 **Files:**
@@ -884,7 +945,7 @@ git commit -m "feat(csv): decode and encode CSV at the document disk boundary"
 ```ts
 // src/lib/csv/csv-guard.test.ts
 import { describe, it, expect } from 'vitest';
-import { EditorState } from '@codemirror/state';
+import { EditorState, Transaction } from '@codemirror/state';
 import { history, undo } from '@codemirror/commands';
 import { csvEditGuard } from './csv-guard';
 import { rowsToTable } from './csv-table';
@@ -928,6 +989,15 @@ describe('csvEditGuard', () => {
     expect(next.doc.line(3).text).toBe('|   |   |');
   });
 
+  it('lets a reload from disk through, even when it is not a table', () => {
+    const s = stateOf();
+    const next = s.update({
+      changes: { from: 0, to: s.doc.length, insert: 'a,"broken\n' },
+      annotations: Transaction.addToHistory.of(false),
+    }).state;
+    expect(next.doc.toString()).toBe('a,"broken\n');
+  });
+
   it('lets undo through', () => {
     let s = stateOf();
     const at = DOC.indexOf('1');
@@ -948,7 +1018,7 @@ Expected: FAIL — `Failed to resolve import "./csv-guard"`.
 
 ```ts
 // src/lib/csv/csv-guard.ts
-import { EditorState } from '@codemirror/state';
+import { EditorState, Transaction } from '@codemirror/state';
 import { tableToRows } from './csv-table';
 
 /**
@@ -957,10 +1027,14 @@ import { tableToRows } from './csv-table';
  * below, a second table, a pasted paragraph — is dropped.
  *
  * Undo/redo pass untouched: they replay states this filter already accepted.
+ * So does a buffer replaced from disk (`addToHistory: false`, the mark
+ * `human-edit.ts` uses for a reload): the file is the truth, and when it no
+ * longer holds a table the document kind becomes 'code' (spec §4).
  */
 export const csvEditGuard = EditorState.transactionFilter.of((tr) => {
   if (!tr.docChanged) return tr;
   if (tr.isUserEvent('undo') || tr.isUserEvent('redo')) return tr;
+  if (tr.annotation(Transaction.addToHistory) === false) return tr;
   return tableToRows(tr.newDoc.toString()).ok ? tr : [];
 });
 ```
@@ -1007,114 +1081,52 @@ git commit -m "feat(csv): keep a CSV buffer to exactly one table"
 
 ### Task 6: CSV document kind in the app
 
+`previewKindFor` → `'csv'` and `documentPreviewKind(path, text)` already exist (Task 4b). This task wires them, the preview config and the save baseline into the app.
+
 **Files:**
-- Modify: `src/lib/editor/file-language.ts` (`PreviewKind`, `previewKindFor` ~line 79-92)
-- Modify: `src/lib/csv/csv-codec.ts` (add `documentPreviewKind`)
-- Modify: `src/App.svelte` (`setActiveDocument` ~647, `applyDocumentConfig` ~671, `doSave` ~427, `applyPreviewConfig` ~2950)
-- Modify: `src/styles/editor.css` (next to the `.cm-code-file-mode` block ~1482)
-- Test: the existing `file-language` test file (find it with `ls src/lib/editor/file-language*.test.ts`), `src/lib/csv/csv-codec.test.ts`
+- Modify: `src/App.svelte` (`applyDocumentConfig`, `doSave`, `applyPreviewConfig`, the external-change reload path in `handleExternalChange`)
+- Modify: `src/styles/editor.css` (next to the `.cm-code-file-mode` block)
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Kind from the buffer**
 
-Add to the file-language test file:
+`src/App.svelte` — import `{ documentPreviewKind }` from `./lib/csv/csv-codec` and `{ csvPreviewExtensions }` from `./lib/csv/csv-extensions`.
 
+- `applyDocumentConfig(path)` runs after the tab's state is swapped in. At its top:
+  ```ts
+  const kind = documentPreviewKind(path, editorHandle?.view?.state.doc.toString() ?? '');
+  // The kind of a CSV file depends on its buffer (a table, or the text of a
+  // file that did not parse), so it is settled here, after the swap.
+  activePreview = kind;
+  editorHandle?.view?.dom.classList.toggle('cm-csv-file-mode', kind === 'csv');
+  ```
+  and the branch `else if (kind === 'markdown')` becomes `else if (kind === 'markdown' || kind === 'csv')` (body unchanged). `setActiveDocument` keeps `previewKindFor(path)`; `applyDocumentConfig` always follows it.
+- External-change reload: after the buffer is replaced from disk (`editorHandle.updateContent(...)` in `handleExternalChange`), if `documentPreviewKind(path, newText) !== activePreview`, call `applyDocumentConfig(path)` — a file broken elsewhere turns the table into plain text, a fixed one back.
+
+- [ ] **Step 2: Baseline from the write**
+
+In `doSave`, `await writeDocument(path, content, lineEnding)` becomes `const written = await writeDocument(path, content, lineEnding);` and `diskBaseline = content;` becomes:
 ```ts
-import { previewKindFor } from './file-language';
-
-describe('previewKindFor csv', () => {
-  it.each(['/d/a.csv', '/d/a.TSV'])('%s is csv', (p) => {
-    expect(previewKindFor(p)).toBe('csv');
-  });
-});
+        // What the next read of the file returns — for a CSV the canonical
+        // table, not the buffer as typed; with the buffer here our own
+        // save's echo would read as an external change.
+        diskBaseline = written;
 ```
+The dirty check (`doc.toString() === content`) is unchanged.
 
-Add to `src/lib/csv/csv-codec.test.ts` (import `documentPreviewKind`):
+- [ ] **Step 3: Preview config**
 
+`applyPreviewConfig`: right after `if (!v) return;` insert:
 ```ts
-describe('documentPreviewKind', () => {
-  it('is csv for a parsed CSV and code for one that failed', () => {
-    decodeFromDisk('/ok.csv', 'a,b\n', 'lf');
-    decodeFromDisk('/bad.csv', 'a,"open\n', 'lf');
-    expect(documentPreviewKind('/ok.csv')).toBe('csv');
-    expect(documentPreviewKind('/bad.csv')).toBe('code');
-    expect(documentPreviewKind('/x.md')).toBe('markdown');
-    expect(documentPreviewKind(null)).toBe('markdown');
-  });
-});
+    // A CSV tab is a table whatever the engine: Raw would expose a markdown
+    // table the file does not contain, and the engine is a window-wide
+    // setting a tab cannot veto.
+    if (activePreview === 'csv') {
+      v.dispatch({ effects: previewCompartment.reconfigure(csvPreviewExtensions) });
+      return;
+    }
 ```
-
-- [ ] **Step 2: Run to verify failure**
-
-Run: `npx vitest run src/lib/editor/file-language src/lib/csv/csv-codec.test.ts`
-Expected: FAIL (`'code'` ≠ `'csv'`; `documentPreviewKind` not exported).
-
-- [ ] **Step 3: Implement the kind**
-
-`file-language.ts`:
-
-```ts
-export type PreviewKind = 'markdown' | 'env' | 'code' | 'shell' | 'csv';
-```
-
-and in `previewKindFor`, right after the env check:
-
-```ts
-  if (ext === 'csv' || ext === 'tsv') return 'csv';
-```
-
-Update its doc comment: "`.csv`/`.tsv` are `'csv'` — a table buffer, see `csv/csv-codec.ts`."
-
-`csv-codec.ts`:
-
-```ts
-import { previewKindFor, type PreviewKind } from '../editor/file-language';
-
-/**
- * The preview kind a document actually gets: a CSV that failed to parse is
- * shown as plain text (`'code'`), never as a table it cannot be saved from.
- */
-export function documentPreviewKind(path: string | null): PreviewKind {
-  const kind = previewKindFor(path);
-  return kind === 'csv' && !isCsvDocument(path) ? 'code' : kind;
-}
-```
-
-Run `npx vitest run src/lib/editor/file-language src/lib/csv` → PASS. Run `npm run check` and fix every place that switches exhaustively on `PreviewKind`.
-
-- [ ] **Step 4: Wire the app**
-
-`src/App.svelte` — import `{ codecRoundTrip, documentPreviewKind }` from `./lib/csv/csv-codec` and `{ csvPreviewExtensions }` from `./lib/csv/csv-extensions`.
-
-1. `setActiveDocument`: `activePreview = documentPreviewKind(path);`
-2. `applyDocumentConfig`: `const kind = documentPreviewKind(path);`, then the first branch becomes:
-   ```ts
-   editorHandle?.view?.dom.classList.toggle('cm-csv-file-mode', kind === 'csv');
-   if (kind === 'env') {
-     editorHandle?.setEnvMode(true);
-   } else if (kind === 'markdown' || kind === 'csv') {
-   ```
-   (the body of the markdown branch is unchanged).
-3. `doSave`: replace `diskBaseline = content;` with
-   ```ts
-   // For a CSV file the next read returns the canonical table, not the
-   // buffer as typed — store that, or our own save's echo reads as an
-   // external change (see csv-codec.ts `codecRoundTrip`).
-   diskBaseline = codecRoundTrip(path, content);
-   ```
-4. `applyPreviewConfig`: right after `if (!v) return;` insert:
-   ```ts
-   // A CSV tab is a table whatever the engine: Raw would expose a markdown
-   // table the file does not contain, and the engine is a window-wide
-   // setting a tab cannot veto.
-   if (activePreview === 'csv') {
-     v.dispatch({ effects: previewCompartment.reconfigure(csvPreviewExtensions) });
-     return;
-   }
-   ```
-   and change `if (activePreview !== 'markdown') {` to keep `'csv'` out of it (it already returned above, so no change is needed there unless `npm run check` complains about the union).
 
 `src/styles/editor.css` after the `.cm-code-file-mode` rules:
-
 ```css
 /* A CSV tab holds exactly one table: the block "+" menu has nothing to add. */
 .cm-csv-file-mode .cm-hover-gutter {
@@ -1122,14 +1134,14 @@ Run `npx vitest run src/lib/editor/file-language src/lib/csv` → PASS. Run `npm
 }
 ```
 
-- [ ] **Step 5: Verify**
+- [ ] **Step 4: Verify**
 
-Run: `npm run check` → 0 errors. Run: `npx vitest run --dir src` → all pass (compare the count with the run before this task; nothing previously green may fail).
+`npm run check` → 0 errors; `npx vitest run --dir src` → all pass (nothing previously green may fail). Where `App.svelte` logic is unit-testable through existing helpers (e.g. `external-change.ts`), add a test; the rest is verified live in Task 8.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add src/lib/editor/file-language.ts src/lib/editor/file-language*.test.ts src/lib/csv/csv-codec.ts src/lib/csv/csv-codec.test.ts src/App.svelte src/styles/editor.css
+git add src/App.svelte src/styles/editor.css
 git commit -m "feat(csv): open .csv/.tsv as a table document"
 ```
 
@@ -1251,14 +1263,15 @@ Root `CLAUDE.md`, Architecture tree under `src/lib/`:
   lib/csv/              # CSV documents: the buffer is a GFM table, CSV only at the disk boundary
     csv.ts              # RFC 4180 parse/serialize + dialect (delimiter, BOM, eol)
     csv-table.ts        # rows ↔ canonical GFM table
-    csv-codec.ts        # readDocument/writeDocument hook, per-path dialect, save baseline
+    csv-codec.ts        # readDocument/writeDocument hook — stateless: dialect from the file, mode from the buffer
     csv-guard.ts        # transactionFilter: the buffer stays exactly one table
 ```
 
 Root `CLAUDE.md`, Gotchas — one entry:
 
 ```
-- **A CSV document's save baseline is `codecRoundTrip(buffer)`, not the buffer.** A cell commit leaves the table unpadded; the saved CSV reads back as the canonical padded table. With the buffer as `diskBaseline`, the watcher's echo of our own save compares unequal and `resolveExternalChange` reloads the buffer under the user. `doSave` stores what the next read will return instead.
+- **A CSV document's save baseline is what `writeDocument` returns, not the buffer.** A cell commit leaves the table unpadded; the saved CSV reads back as the canonical padded table. With the buffer as `diskBaseline`, the watcher's echo of our own save compares unequal and `resolveExternalChange` reloads the buffer under the user.
+- **The CSV codec has no state, on purpose.** Write mode comes from the buffer (one table → CSV, anything else as is) and the dialect from the file being replaced, read at write time. A per-path map was tried and corrupted files: any read (drawer preview, agent) rewrote it, and two spellings of one path (`/tmp` vs `/private/tmp`) split read state from write.
 ```
 
 `src/lib/editor/preview/CLAUDE.md` — add a section "CSV documents": the `tableConfig` facet is the only CSV-facing hook in table code (`maxLines`, `placeholder`); the default is today's behaviour; CSV supplies `Infinity` and `''`; never branch on "is CSV" inside `tables.ts`.
