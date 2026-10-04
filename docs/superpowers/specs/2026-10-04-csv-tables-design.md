@@ -42,6 +42,20 @@ the overlay `<textarea>` and costs nothing; only the commit pays. Accepted for
 CSV without a cap. To be re-measured in WKWebView (`dev:app`) during
 implementation.
 
+Re-measured 2026-10-04 in WKWebView (`dev:app`, debug build + Vite dev
+server, window occluded by a locked screen), 6 columns. A cell commit costs
+`view.update` (decoration rebuild + DOM of the whole widget) **plus the first
+layout of the rebuilt widget**, which the Chrome estimate above did not
+count:
+
+| Rows | `view.update` per edit | first layout after it | cell commit total | open (command → editor configured) |
+|---|---|---|---|---|
+| 2 000 | ~0.42 s | ~0.8 s | 1.2–1.4 s | ~0.5 s sync work; agent `open` answered in 1.7 s |
+| 10 000 | ~2.3–2.4 s | ~6.7 s | ~11 s | ~2.1 s sync work + layout; agent `open` timed out (8 s) |
+
+So a 10k-row CSV is not practically editable without row virtualization
+(out of scope below); 2k is usable but sluggish.
+
 ## Units
 
 ### 1. `src/lib/csv/csv.ts` — CSV parse / serialize (pure, no deps)

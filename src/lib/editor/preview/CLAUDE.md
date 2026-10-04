@@ -167,8 +167,8 @@ Used by: `deleteRow`, `addColumn`, `deleteColumn`
 Used by: `addRow`
 
 - Inserts a new line directly after the last row
-- Uses `-` as placeholder in cells (visible content so Lezer includes it in Table node)
-- **Cannot** use `replaceTable` for add-row because `markdownTable` produces whitespace-only cells for empty rows, and Lezer GFM parser **excludes** rows with only whitespace from the Table node
+- Uses `tableConfig`'s placeholder in cells: `-` in markdown (a visible prompt), empty in CSV
+- The original reason for `-` — "Lezer GFM excludes whitespace-only rows from the Table node, so `replaceTable`'s blank cells would drop the row" — does not hold. **Re-measured 2026-10-04 with `@lezer/markdown` 1.6.3:** an all-empty row `|   |   |` IS kept in the `Table` node and drawn by the widget (in the middle, at the end, with no trailing newline, as an empty header). Markdown still inserts `-` as a visible prompt; CSV inserts empty cells. Add-row stays a direct line insert (no behaviour change)
 
 ### Empty Cell Handling
 
@@ -464,6 +464,15 @@ text wrapping). If styles were on the line, they'd extend to viewport width.
   corner cells)
 - Right-side buttons (add-col, add-row): `position: absolute` against
   `.cm-md-table-wrap`, so they don't affect column layout
+
+### CSV documents
+
+A `.csv`/`.tsv` buffer **is** a GFM table (`src/lib/csv/`: decoded on read, encoded on write), so every table operation here works on it unchanged. Table code has exactly one CSV-facing hook — the `tableConfig` facet (`table-config.ts`):
+
+- `maxLines` — the row cap `buildTableContext` applies (default 500; CSV `Infinity`). `decorateTable` and `tableContextAtLine` read it from state.
+- `placeholder` — what `addRow`, `addColumn` and `newRowMarkdown` (`Mod-Shift-Enter`) put in a new cell (default `-`; CSV `''`).
+
+The default is today's markdown behaviour; CSV supplies its values through `csvPreviewExtensions`. `livePreviewPlugin` rebuilds when the facet changes. **Never branch on "is this CSV" inside `tables.ts`** — a CSV need that the facet cannot express is a new facet field with a markdown default, not an `if`. Keeping the buffer one table (no text around it, undo across a reload) is `csv-guard.ts`'s job, outside table code; the ⇔ toggle and the hover "+" gutter are hidden in a CSV tab by CSS (`cm-csv-file-mode`).
 
 ## Mermaid Pan/Zoom (`mermaid-viewport.ts`, `mermaid-state.ts`)
 

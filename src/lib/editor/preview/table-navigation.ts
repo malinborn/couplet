@@ -125,10 +125,12 @@ export function planTableExit(
 /**
  * A fresh table row, padded to the table's column widths.
  *
- * `-` rather than a space, and that is load-bearing rather than cosmetic: the
- * Lezer GFM parser **excludes whitespace-only rows** from the `Table` node, so a
- * row of blanks would not be part of the table at all and the widget would stop
- * drawing it. Same reason `addRow` has always done it this way.
+ * Markdown fills it with `-` as a visible prompt; CSV passes `''` (its
+ * `tableConfig` placeholder) and gets empty cells. The `-` used to be called
+ * load-bearing — "Lezer GFM excludes whitespace-only rows from the `Table`
+ * node". Re-measured 2026-10-04 with `@lezer/markdown` 1.6.3: an all-empty row
+ * IS kept in the `Table` node and drawn by the widget (middle, end, no trailing
+ * newline, empty header). Same text as `addRow`'s.
  */
 export function newRowMarkdown(colWidths: number[], placeholder: string = '-'): string {
   const cells = colWidths.map((w) => ' ' + placeholder.padEnd(Math.max(w, 1)) + ' ');

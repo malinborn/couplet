@@ -113,8 +113,11 @@ function replaceTable(view: EditorView, ctx: TableContext, grid: string[][]): vo
 }
 
 function addRow(view: EditorView, ctx: TableContext): void {
-  // Insert directly after the last row — use visible placeholders so Lezer
-  // includes the row in the Table node (whitespace-only cells get excluded).
+  // Insert directly after the last row, with `tableConfig`'s placeholder in
+  // every cell: `-` in markdown as a visible prompt, empty in CSV. (This used to
+  // say Lezer excludes whitespace-only rows from the Table node. Re-measured
+  // 2026-10-04 with @lezer/markdown 1.6.3: an all-empty row is kept and drawn
+  // — middle, end, no trailing newline, empty header.)
   // The row text comes from `table-navigation.ts` because Cmd+Shift+Enter (#68)
   // builds the same thing, and two spellings of "an empty row" would diverge on
   // the first change to the padding.
