@@ -316,7 +316,7 @@ Context: `parseCellsWithPositions(text, lineFrom)` is exported from `src/lib/edi
 // src/lib/csv/csv-table.test.ts
 import { describe, it, expect } from 'vitest';
 import { parser, GFM } from '@lezer/markdown';
-import { rowsToTable, tableToRows, EMPTY_CELL_MARK } from './csv-table';
+import { rowsToTable, tableToRows } from './csv-table';
 
 function rows(md: string): string[][] {
   const r = tableToRows(md);
@@ -349,14 +349,14 @@ describe('rowsToTable', () => {
     expect(rows(md)).toEqual([['h'], ['a|b\nc']]);
   });
 
-  it('marks an all-empty row so Lezer keeps it in the table', () => {
+  it('keeps an all-empty row as a table row, with no mark', () => {
     const md = rowsToTable([['a', 'b'], ['', ''], ['x', 'y']]);
-    expect(md).toContain(EMPTY_CELL_MARK);
+    expect(md).not.toMatch(/[^\x20-\x7e\n]/);
     expect(tableRowCount(md)).toBe(2);
     expect(rows(md)).toEqual([['a', 'b'], ['', ''], ['x', 'y']]);
   });
 
-  it('turns zero rows into a one-cell marked header', () => {
+  it('turns zero rows into a one-cell empty header', () => {
     const md = rowsToTable([]);
     expect(rows(md)).toEqual([['']]);
   });
@@ -368,11 +368,6 @@ describe('rowsToTable', () => {
 });
 
 describe('tableToRows', () => {
-  it('strips every empty-cell mark from values', () => {
-    const md = `| h |\n| - |\n| ${EMPTY_CELL_MARK}foo${EMPTY_CELL_MARK} |\n`;
-    expect(rows(md)).toEqual([['h'], ['foo']]);
-  });
-
   it('accepts trailing blank lines', () => {
     expect(rows('| a |\n| - |\n| 1 |\n\n\n')).toEqual([['a'], ['1']]);
   });
@@ -406,15 +401,6 @@ import { markdownTable } from 'markdown-table';
 import { parseCellsWithPositions } from '../editor/preview/tables';
 import { decodeForEdit } from '../editor/preview/table-encoding';
 
-/**
- * The invisible content an otherwise empty table row carries. Lezer GFM drops
- * a whitespace-only row from the `Table` node — the table would end there —
- * while a row holding U+200B is kept, and `trim()` does not strip it. Every
- * U+200B is removed when the table is read back as CSV, so the mark never
- * reaches the file, wherever the caret was when someone typed into the cell.
- */
-export const EMPTY_CELL_MARK = '​';
-
 const DELIMITER_ROW = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
 
 export type TableRows = { ok: true; rows: string[][] } | { ok: false; error: string };
@@ -424,7 +410,7 @@ function encodeCell(value: string): string {
 }
 
 function decodeCell(text: string): string {
-  return decodeForEdit(text).split(EMPTY_CELL_MARK).join('');
+  return decodeForEdit(text);
 }
 
 /**
@@ -435,11 +421,9 @@ function decodeCell(text: string): string {
 export function rowsToTable(rows: string[][]): string {
   const source = rows.length === 0 ? [['']] : rows;
   const width = Math.max(1, ...source.map((r) => r.length));
-  const grid = source.map((row) => {
-    const cells = Array.from({ length: width }, (_, i) => encodeCell(row[i] ?? ''));
-    if (cells.every((c) => c === '')) cells[0] = EMPTY_CELL_MARK;
-    return cells;
-  });
+  // An all-empty row stays a table row: Lezer GFM keeps `|   |   |` in the
+  // Table node (measured with @lezer/markdown 1.6.3), so it needs no mark.
+  const grid = source.map((row) => Array.from({ length: width }, (_, i) => encodeCell(row[i] ?? '')));
   return markdownTable(grid, { align: null, padding: true }) + '\n';
 }
 
@@ -538,8 +522,9 @@ describe('newRowMarkdown placeholder', () => {
     expect(newRowMarkdown([1, 3])).toBe('| - | -   |');
   });
 
-  it('uses the given placeholder', () => {
-    expect(newRowMarkdown([1, 3], '​')).toBe('| ​ | ​   |');
+  it('uses the given placeholder, including an empty one', () => {
+    expect(newRowMarkdown([1, 3], 'x')).toBe('| x | x   |');
+    expect(newRowMarkdown([1, 3], '')).toBe('|   |     |');
   });
 });
 ```
@@ -560,8 +545,9 @@ import { Facet } from '@codemirror/state';
  *
  * - `maxLines`: tables longer than this stay raw markdown (a performance guard
  *   for prose documents; a CSV document lifts it).
- * - `placeholder`: what a new row's or new column's cells hold. It must be
- *   non-whitespace — Lezer drops a whitespace-only row from the `Table` node.
+ * - `placeholder`: what a new row's or new column's cells hold. Markdown
+ *   keeps `-`; a CSV document uses `''`, since `-` would be written to the
+ *   file as data.
  *
  * The default is today's behaviour, so a state that never provides the facet
  * (every markdown document) is unaffected.
@@ -895,7 +881,7 @@ import { describe, it, expect } from 'vitest';
 import { EditorState } from '@codemirror/state';
 import { history, undo } from '@codemirror/commands';
 import { csvEditGuard } from './csv-guard';
-import { EMPTY_CELL_MARK, rowsToTable } from './csv-table';
+import { rowsToTable } from './csv-table';
 
 const DOC = rowsToTable([['a', 'b'], ['1', '2']]); // '| a | b |\n| - | - |\n| 1 | 2 |\n'
 
@@ -929,11 +915,11 @@ describe('csvEditGuard', () => {
     expect(next.doc.lines).toBe(5);
   });
 
-  it('repairs a row whose cells were all emptied', () => {
+  it('lets a row whose cells were all emptied through', () => {
     const s = stateOf();
     const row = s.doc.line(3);
     const next = s.update({ changes: { from: row.from, to: row.to, insert: '|   |   |' } }).state;
-    expect(next.doc.line(3).text).toBe(`|${EMPTY_CELL_MARK}   |   |`);
+    expect(next.doc.line(3).text).toBe('|   |   |');
   });
 
   it('lets undo through', () => {
@@ -956,49 +942,22 @@ Expected: FAIL — `Failed to resolve import "./csv-guard"`.
 
 ```ts
 // src/lib/csv/csv-guard.ts
-import { EditorState, type ChangeSpec } from '@codemirror/state';
-import { EMPTY_CELL_MARK, tableToRows } from './csv-table';
-
-/**
- * Offsets (in `text`) where a table row is whitespace-only and needs the
- * empty-cell mark after its first pipe. The delimiter row (line 2) never is.
- */
-function emptyRowMarks(text: string): number[] {
-  const marks: number[] = [];
-  let from = 0;
-  const lines = text.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (i !== 1 && line.includes('|') && line.replace(/\|/g, '').trim() === '') {
-      marks.push(from + line.indexOf('|') + 1);
-    }
-    from += line.length + 1;
-  }
-  return marks;
-}
+import { EditorState } from '@codemirror/state';
+import { tableToRows } from './csv-table';
 
 /**
  * A CSV document's buffer is exactly one GFM table, because that is all a CSV
  * file can hold. Any edit that would leave something else — text above or
- * below, a second table, a pasted paragraph — is dropped. A row whose every
- * cell was emptied gets the empty-cell mark instead of being dropped: Lezer
- * would otherwise end the table at it.
+ * below, a second table, a pasted paragraph — is dropped.
  *
  * Undo/redo pass untouched: they replay states this filter already accepted.
  */
 export const csvEditGuard = EditorState.transactionFilter.of((tr) => {
   if (!tr.docChanged) return tr;
   if (tr.isUserEvent('undo') || tr.isUserEvent('redo')) return tr;
-  const text = tr.newDoc.toString();
-  if (!tableToRows(text).ok) return [];
-  const marks = emptyRowMarks(text);
-  if (marks.length === 0) return tr;
-  const repair: ChangeSpec[] = marks.map((pos) => ({ from: pos, insert: EMPTY_CELL_MARK }));
-  return [tr, { changes: repair, sequential: true }];
+  return tableToRows(tr.newDoc.toString()).ok ? tr : [];
 });
 ```
-
-`sequential: true` makes the repair's positions refer to the document after `tr`, which is what `emptyRowMarks(text)` computed them against.
 
 - [ ] **Step 4: Implement the extension bundle**
 
@@ -1008,19 +967,18 @@ import type { Extension } from '@codemirror/state';
 import { livePreviewPlugin } from '../editor/preview/plugin';
 import { flavourFacet, LIVE_PREVIEW } from '../editor/preview/flavour';
 import { tableConfig } from '../editor/preview/table-config';
-import { EMPTY_CELL_MARK } from './csv-table';
 import { csvEditGuard } from './csv-guard';
 
 /**
  * What a CSV tab puts in the preview compartment, whatever the engine: the
- * table preview, no cap on rows, invisible placeholders for new cells, and the
+ * table preview, no cap on rows, empty (not `-`) new cells, and the
  * one-table guard. One stable array — a compartment reconfigure with the same
  * value is a no-op.
  */
 export const csvPreviewExtensions: Extension = [
   livePreviewPlugin,
   flavourFacet.of(LIVE_PREVIEW),
-  tableConfig.of({ maxLines: Infinity, placeholder: EMPTY_CELL_MARK }),
+  tableConfig.of({ maxLines: Infinity, placeholder: '' }),
   csvEditGuard,
 ];
 ```
@@ -1265,7 +1223,7 @@ git commit -m "feat(csv): refuse agent edits on CSV files; register csv/tsv"
 
 At `http://localhost:1420`, reach the view with `document.querySelector('.cm-content').cmTile.root.view`. There is no Tauri I/O in the browser, so drive the pieces directly via `import()` of `/src/lib/csv/csv-codec.ts` and `/src/lib/csv/csv-extensions.ts` from the page (Vite serves source modules):
 - install `csvPreviewExtensions` through `previewCompartment` (import `/src/lib/editor/setup.ts`), set the doc to `decodeFromDisk('/t.csv', '<csv>', 'lf').text`;
-- confirm `.cm-md-table-row` count = records; type after the table → doc unchanged; click the table's add-row "+" → the new row shows no `-`, and `encodeForDisk('/t.csv', doc, 'lf')` ends with `,\n` for a 2-column file;
+- confirm `.cm-md-table-row` count = records; type after the table → doc unchanged; click the table's add-row "+" → the new row is drawn and shows no `-`; double-click one of its cells, type, commit → the value lands in that cell; and `encodeForDisk('/t.csv', doc, 'lf')` ends with `,\n` for a 2-column file;
 - 1 200-row CSV renders (above the markdown 500-line cap).
 Screenshot to `$CLAUDE_JOB_DIR/tmp/`. Stop the dev server afterwards.
 
@@ -1286,7 +1244,7 @@ Root `CLAUDE.md`, Architecture tree under `src/lib/`:
 ```
   lib/csv/              # CSV documents: the buffer is a GFM table, CSV only at the disk boundary
     csv.ts              # RFC 4180 parse/serialize + dialect (delimiter, BOM, eol)
-    csv-table.ts        # rows ↔ canonical GFM table; U+200B empty-cell mark
+    csv-table.ts        # rows ↔ canonical GFM table
     csv-codec.ts        # readDocument/writeDocument hook, per-path dialect, save baseline
     csv-guard.ts        # transactionFilter: the buffer stays exactly one table
 ```
@@ -1297,7 +1255,9 @@ Root `CLAUDE.md`, Gotchas — one entry:
 - **A CSV document's save baseline is `codecRoundTrip(buffer)`, not the buffer.** A cell commit leaves the table unpadded; the saved CSV reads back as the canonical padded table. With the buffer as `diskBaseline`, the watcher's echo of our own save compares unequal and `resolveExternalChange` reloads the buffer under the user. `doSave` stores what the next read will return instead.
 ```
 
-`src/lib/editor/preview/CLAUDE.md` — add a section "CSV documents": the `tableConfig` facet is the only CSV-facing hook in table code (`maxLines`, `placeholder`); the default is today's behaviour; CSV supplies `Infinity` and U+200B; never branch on "is CSV" inside `tables.ts`.
+`src/lib/editor/preview/CLAUDE.md` — add a section "CSV documents": the `tableConfig` facet is the only CSV-facing hook in table code (`maxLines`, `placeholder`); the default is today's behaviour; CSV supplies `Infinity` and `''`; never branch on "is CSV" inside `tables.ts`.
+
+Root `CLAUDE.md` gotcha "Lezer GFM tables exclude whitespace-only rows" and the matching lines in `preview/CLAUDE.md` (add-row strategy, "whitespace-only cells get excluded"): append a dated correction without changing markdown behaviour — "Re-measured 2026-10-04 with `@lezer/markdown` 1.6.3: an all-empty row `|   |   |` IS kept in the `Table` node and drawn by the widget (middle, end, no trailing newline, empty header). Markdown still inserts `-` as a visible prompt; CSV inserts empty cells." Fix the matching comment in `tables.ts` `addRow` the same way (comment only).
 
 - [ ] **Step 4: Full verification**
 

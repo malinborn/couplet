@@ -81,13 +81,12 @@ tableToRows(md: string): { ok: true; rows: string[][] } | { ok: false; error: st
   (`preview/table-encoding.ts`): newline ↔ `<br>`, `|` ↔ `\|`. Known, tested
   limitation: a literal `<br>` or `\|` in a CSV cell comes back as a newline /
   `|`.
-- **Empty-row mark.** Lezer drops a whitespace-only row from the `Table`
-  node, which would end the table there. A row whose cells are all empty gets
-  `EMPTY_CELL_MARK` (U+200B ZERO WIDTH SPACE) in its first cell. Verified:
-  Lezer GFM keeps such a row as a `TableRow`, and JS `trim()` does not strip
-  U+200B. `tableToRows` removes **every** U+200B from cell values, so the mark
-  never reaches the file wherever the caret was when the user typed into such
-  a cell. Cost: a U+200B that was genuinely in the CSV data is dropped on save.
+- **No empty-row mark.** The project notes claimed Lezer GFM drops a
+  whitespace-only row from the `Table` node. Measured 2026-10-04
+  (`@lezer/markdown` 1.6.3, Lezer and the rendered widget): an all-empty row is
+  kept and drawn — in the middle, at the end with and without a trailing
+  newline, and as an empty header. So empty CSV rows are written as plain empty
+  cells; nothing invisible ever enters the buffer.
 - Cells are read back with the table code's own `parseCellsWithPositions`, so
   the codec sees exactly the cells the widget shows. That function trims cells,
   hence a known limitation: leading/trailing spaces of a CSV value
@@ -150,14 +149,14 @@ external-change reload, agent background edit).
 ```ts
 type TableConfig = { maxLines: number; placeholder: string };
 // default { maxLines: 500, placeholder: '-' }  — today's behaviour
-// CSV     { maxLines: Infinity, placeholder: EMPTY_CELL_MARK }
+// CSV     { maxLines: Infinity, placeholder: '' }
 ```
 
 - `buildTableContext(doc, from, to, maxLines = 500)`; `decorateTable` and
   `tableContextAtLine` read the facet from state and pass it in.
 - `addRow`, `newRowMarkdown` (`table-navigation.ts`, used by
   `Mod-Shift-Enter`) and `addColumn` take the placeholder from the facet: in a
-  CSV a new row or column is invisible-empty, not `-` in the file.
+  CSV a new row or column is empty, not `-` in the file.
 - `livePreviewPlugin` rebuilds on a change of this facet, like `flavourFacet`.
 
 ### 6. `csvEditGuard` — the window holds exactly one table
@@ -169,10 +168,6 @@ A `transactionFilter` installed only for CSV:
 - Otherwise: if `tableToRows(tr.newDoc)` fails, the transaction is dropped
   (`return []`). This covers typing outside the table, slash commands, hover
   inserts, pasted text, and a second table.
-- **Repair instead of reject** for one case: a cell commit that empties every
-  cell of a row would make Lezer drop the row. The filter detects whitespace-only
-  table rows in changed lines and returns the same change plus
-  `EMPTY_CELL_MARK` inserted in that row's first cell.
 
 The check is O(document) per edit — same order as the widget rebuild already
 paid on every commit.
@@ -209,12 +204,12 @@ paid on every commit.
 - **Vitest, `csv.ts`:** quotes, `""`, embedded delimiter/newline, CRLF vs LF,
   BOM, `,`/`;`/Tab sniffing, unterminated quote, empty file, trailing newline
   kept/absent, `serializeCsv(parseCsv(x)) === x` for canonical inputs.
-- **Vitest, `csv-table.ts`:** ragged rows, all-empty rows (placeholder),
+- **Vitest, `csv-table.ts`:** ragged rows, all-empty rows (kept as a table row by Lezer),
   pipes/newlines in cells, canonical idempotence, rejection of non-table text.
 - **Vitest, codec:** `codecRoundTrip` makes an own-save echo resolve to
   `ignore` in `resolveExternalChange`.
 - **Vitest, guard:** typing outside the table rejected; cell edit, add/delete
-  row and column, undo pass; emptied row repaired.
+  row and column, undo, an emptied row pass.
 - **Vitest, tables:** default `tableConfig` keeps the 500 cap and `-`
   placeholder (no regression in markdown).
 - **Browser (`npm run dev`):** CSV injected through the codec — table renders,
