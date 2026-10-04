@@ -12,6 +12,8 @@ export function slugify(text: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
+const LEAF_BLOCKS = new Set(['Table', 'Paragraph', 'FencedCode', 'CodeBlock', 'HTMLBlock']);
+
 // Only ATX headings (`# Foo`) are indexed; setext (`Foo\n===`) is not — matches
 // the rest of the editor (folding.ts, preview/headings.ts) which is also ATX-only.
 function buildIndex(state: EditorState): Map<string, number> {
@@ -23,13 +25,17 @@ function buildIndex(state: EditorState): Map<string, number> {
   tree.iterate({
     enter(node) {
       const name = node.name;
+      // Leaf blocks hold no headings: not descending into them keeps this pass
+      // off every cell of a table — a CSV tab is one table of possibly 100k
+      // rows, and this runs on every edit.
+      if (LEAF_BLOCKS.has(name)) return false;
       if (!name.startsWith('ATXHeading') || name.length !== 11) return;
 
       const headerMark = node.node.getChild('HeaderMark');
       const textFrom = headerMark ? Math.min(headerMark.to + 1, node.to) : node.from;
       const raw = doc.sliceString(textFrom, node.to);
       const base = slugify(raw);
-      if (!base) return;
+      if (!base) return false;
 
       const n = counts.get(base) ?? 0;
       counts.set(base, n + 1);
@@ -37,6 +43,7 @@ function buildIndex(state: EditorState): Map<string, number> {
       if (!map.has(slug)) {
         map.set(slug, doc.lineAt(node.from).from);
       }
+      return false; // a heading's children are inline
     },
   });
 

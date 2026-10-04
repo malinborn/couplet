@@ -85,6 +85,17 @@ describe('headingSlugsField', () => {
     expect(getHeadingPos(updated, 'old')).toBeNull();
   });
 
+  // The index skips leaf blocks (a CSV tab is one huge table) but must still
+  // descend into the containers a heading can live in.
+  it('indexes headings inside quotes and list items, around a table', () => {
+    const doc = '> # Quoted\n\n- # In list\n\n| a |\n| - |\n| # not |\n\n# After table\n';
+    const state = makeState(doc);
+    expect(getHeadingPos(state, 'quoted')).toBe(0);
+    expect(getHeadingPos(state, 'in-list')).toBe(doc.indexOf('- # In list'));
+    expect(getHeadingPos(state, 'after-table')).toBe(doc.indexOf('# After table'));
+    expect(getHeadingPos(state, 'not')).toBeNull();
+  });
+
   it('does not index setext headings', () => {
     const state = makeState('Foo\n===\n\nbody\n');
     expect(getHeadingPos(state, 'foo')).toBeNull();
