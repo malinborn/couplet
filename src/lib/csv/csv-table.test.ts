@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parser, GFM } from '@lezer/markdown';
-import { rowsToTable, tableToRows, EMPTY_CELL_MARK } from './csv-table';
+import { rowsToTable, tableToRows } from './csv-table';
 
 function rows(md: string): string[][] {
   const r = tableToRows(md);
@@ -33,14 +33,14 @@ describe('rowsToTable', () => {
     expect(rows(md)).toEqual([['h'], ['a|b\nc']]);
   });
 
-  it('marks an all-empty row so Lezer keeps it in the table', () => {
+  it('keeps an all-empty row as a table row, with no mark', () => {
     const md = rowsToTable([['a', 'b'], ['', ''], ['x', 'y']]);
-    expect(md).toContain(EMPTY_CELL_MARK);
+    expect(md).not.toMatch(/[^\x20-\x7e\n]/);
     expect(tableRowCount(md)).toBe(2);
     expect(rows(md)).toEqual([['a', 'b'], ['', ''], ['x', 'y']]);
   });
 
-  it('turns zero rows into a one-cell marked header', () => {
+  it('turns zero rows into a one-cell empty header', () => {
     const md = rowsToTable([]);
     expect(rows(md)).toEqual([['']]);
   });
@@ -52,11 +52,6 @@ describe('rowsToTable', () => {
 });
 
 describe('tableToRows', () => {
-  it('strips every empty-cell mark from values', () => {
-    const md = `| h |\n| - |\n| ${EMPTY_CELL_MARK}foo${EMPTY_CELL_MARK} |\n`;
-    expect(rows(md)).toEqual([['h'], ['foo']]);
-  });
-
   it('accepts trailing blank lines', () => {
     expect(rows('| a |\n| - |\n| 1 |\n\n\n')).toEqual([['a'], ['1']]);
   });

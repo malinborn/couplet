@@ -2,25 +2,12 @@ import { markdownTable } from 'markdown-table';
 import { parseCellsWithPositions } from '../editor/preview/tables';
 import { decodeForEdit } from '../editor/preview/table-encoding';
 
-/**
- * The invisible content an otherwise empty table row carries. Lezer GFM drops
- * a whitespace-only row from the `Table` node — the table would end there —
- * while a row holding U+200B is kept, and `trim()` does not strip it. Every
- * U+200B is removed when the table is read back as CSV, so the mark never
- * reaches the file, wherever the caret was when someone typed into the cell.
- */
-export const EMPTY_CELL_MARK = '\u200B';
-
 const DELIMITER_ROW = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
 
 export type TableRows = { ok: true; rows: string[][] } | { ok: false; error: string };
 
 function encodeCell(value: string): string {
   return value.replace(/\|/g, '\\|').replace(/\r\n|\r|\n/g, '<br>');
-}
-
-function decodeCell(text: string): string {
-  return decodeForEdit(text).split(EMPTY_CELL_MARK).join('');
 }
 
 /**
@@ -33,13 +20,11 @@ export function rowsToTable(rows: string[][]): string {
   // A reduce, not `Math.max(...spread)`: a CSV has no row cap, and spreading
   // one argument per row overflows the engine's argument limit on a big file.
   const width = source.reduce((w, r) => Math.max(w, r.length), 1);
-  const grid = source.map((row) => {
-    const cells = Array.from({ length: width }, (_, i) => encodeCell(row[i] ?? ''));
-    // `some`, not `every`: TS infers `every((c) => c === '')` as a type
-    // predicate and narrows `cells` to `''[]`, rejecting the assignment.
-    if (!cells.some((c) => c !== '')) cells[0] = EMPTY_CELL_MARK;
-    return cells;
-  });
+  // An all-empty row stays a table row (Lezer GFM keeps `|   |   |`, measured
+  // with @lezer/markdown 1.6.3), so it needs no mark.
+  const grid = source.map((row) =>
+    Array.from({ length: width }, (_, i) => encodeCell(row[i] ?? ''))
+  );
   return markdownTable(grid, { align: null, padding: true }) + '\n';
 }
 
@@ -59,7 +44,7 @@ export function tableToRows(md: string): TableRows {
     if (!lines[i].trimStart().startsWith('|')) {
       return { ok: false, error: `line ${i + 1} is not a table row` };
     }
-    rows.push(parseCellsWithPositions(lines[i], 0).map((c) => decodeCell(c.text)));
+    rows.push(parseCellsWithPositions(lines[i], 0).map((c) => decodeForEdit(c.text)));
   }
   return { ok: true, rows };
 }
