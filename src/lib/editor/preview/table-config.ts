@@ -1,4 +1,4 @@
-import { Facet } from '@codemirror/state';
+import { Facet, type Text } from '@codemirror/state';
 
 /**
  * What a document type may tune about table rendering, and nothing else.
@@ -31,3 +31,15 @@ export const DEFAULT_TABLE_CONFIG: Readonly<TableConfig> = Object.freeze({ maxLi
 export const tableConfig: Facet<Readonly<TableConfig>, Readonly<TableConfig>> = Facet.define({
   combine: (values) => (values.length ? values[values.length - 1] : DEFAULT_TABLE_CONFIG),
 });
+
+/**
+ * Is the table node spanning `from`..`to` short enough to be drawn as a
+ * widget? Longer ones stay raw markdown with real, visible lines. The one rule
+ * shared by `buildTableContext` (which draws it) and by everything that treats
+ * a table's lines as hidden behind a widget — the snap-out
+ * (`table-selection.ts`) and the search spotlight — so a raw table is never
+ * handled as a rendered one.
+ */
+export function tableFitsCap(doc: Text, from: number, to: number, maxLines: number): boolean {
+  return doc.lineAt(to).number - doc.lineAt(from).number + 1 <= maxLines;
+}

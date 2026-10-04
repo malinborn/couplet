@@ -3,6 +3,7 @@ import { syntaxTree } from '@codemirror/language';
 import { searchPanelOpen } from '@codemirror/search';
 import type { EditorState, Line } from '@codemirror/state';
 import { insideBlockquote } from './lists';
+import { tableConfig, tableFitsCap } from './table-config';
 
 /**
  * The rendered table whose lines include `line`, or null.
@@ -15,6 +16,7 @@ export function findContainingTable(
   line: Line
 ): { from: number; to: number } | null {
   let result: { from: number; to: number } | null = null;
+  const { maxLines } = state.facet(tableConfig);
   syntaxTree(state).iterate({
     from: line.from,
     to: line.to,
@@ -24,7 +26,11 @@ export function findContainingTable(
         node.from <= line.from &&
         node.to >= line.to
       ) {
-        if (!insideBlockquote(node.node)) result = { from: node.from, to: node.to };
+        // A table over the cap stays raw (`buildTableContext`): its rows are
+        // visible lines the caret must be free to stay on.
+        if (!insideBlockquote(node.node) && tableFitsCap(state.doc, node.from, node.to, maxLines)) {
+          result = { from: node.from, to: node.to };
+        }
         return false;
       }
       return undefined;

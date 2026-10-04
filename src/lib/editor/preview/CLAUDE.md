@@ -377,6 +377,13 @@ snap-out above make it visible. That rides the update listener rather than a
 which is exactly the case to cover, since the cell edit overlay calls it from its
 own `destroy()`.
 
+A table longer than `tableConfig.maxLines` is not drawn (`buildTableContext`
+returns `null`) — its lines are ordinary visible text. `findContainingTable`
+and the search spotlight's `widgetHostLine` therefore ask the same
+`tableFitsCap` (`table-config.ts`) before treating a table's lines as hidden:
+without it the snap-out threw the caret off every data line of a raw table,
+which could then not be edited at all.
+
 ### `ignoreEvent()` — `true` Everywhere (#53)
 
 The sense of this method is the opposite of what the name suggests to most
@@ -559,6 +566,11 @@ A `.csv`/`.tsv` buffer **is** a GFM table (`src/lib/csv/`: decoded on read, enco
 - `placeholder` — what `addRow`, `addColumn` and `newRowMarkdown` (`Mod-Shift-Enter`) put in a new cell (default `-`; CSV `''`).
 
 The default is today's markdown behaviour; CSV supplies its values through `csvPreviewExtensions`. `livePreviewPlugin` rebuilds when the facet changes.
+
+Two costs bound how far the markdown default can go (measured, `table-config.ts`) — fix them before raising it:
+
+- **`updateDOM` rewrites `data-source-from`/`-to` of every cell after the edit** — O(cells after the edited one) per commit or per keystroke above a table, since every later cell moved.
+- **Typing below a tall table in markdown makes CM6 re-measure its viewport several times** (a viewport flip-flop): markdown rebuilds decorations on viewport changes (`previewRebuild` default), and each rebuild re-measures the tall widget. CSV opts out of viewport rebuilds, markdown cannot (reveal-on-cursor elements need them).
 
 The plugin has one more CSV-facing knob, outside table code — the `previewRebuild` facet (`plugin.ts`), `{ onSelection, onViewport }`, both `true` by default (markdown: a reveal-on-cursor element changes with the selection). CSV sets both to `false`: its buffer is one table, a table never reveals, so a selection- or viewport-only update can only rebuild an equal set — and in a CSV that pass is a `TableContext` over every row plus a `TableWidget.eq` over every cell, paid on every cell click (the parked caret, #53, is a selection change). Rules for it:
 

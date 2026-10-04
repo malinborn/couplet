@@ -5,6 +5,7 @@ import type { SyntaxNode } from '@lezer/common';
 import { getSearchQuery } from '@codemirror/search';
 import { matchIndexAt, searchMatches, searchMatchesExtension, searchMatchesField, type MatchList } from './match-count';
 import { searchFocusField } from './panel-focus';
+import { tableConfig, tableFitsCap } from '../preview/table-config';
 
 /**
  * The search spotlight: while the human is typing in the Find panel, the
@@ -86,9 +87,13 @@ function visibleMatches(view: EditorView, matches: MatchList): { from: number; t
  * one widget on their header line with the source lines hidden, and a mermaid
  * fence is one diagram on its opening line. Null for ordinary text.
  */
-function widgetHostLine(state: EditorState, pos: number): Line | null {
+export function widgetHostLine(state: EditorState, pos: number): Line | null {
   for (let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, 1); node; node = node.parent) {
-    if (node.name === 'Table') return state.doc.lineAt(node.from);
+    if (node.name === 'Table') {
+      // Over the cap a table stays raw markdown: the match is on its own line.
+      const fits = tableFitsCap(state.doc, node.from, node.to, state.facet(tableConfig).maxLines);
+      return fits ? state.doc.lineAt(node.from) : null;
+    }
     if (node.name === 'FencedCode') {
       const info = node.getChild('CodeInfo');
       const lang = info ? state.sliceDoc(info.from, info.to).trim().toLowerCase() : '';

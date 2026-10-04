@@ -18,7 +18,7 @@ import {
 import { matchCellBinding } from './table-keys';
 import { createHotkeySheetButton, clearHotkeySheets } from './table-hotkey-sheet';
 import { toggleTableMode, getTableMode } from './table-state';
-import { tableConfig, DEFAULT_TABLE_CONFIG } from './table-config';
+import { tableConfig, DEFAULT_TABLE_CONFIG, tableFitsCap } from './table-config';
 import {
   encodeForCommit,
   decodeForEdit,
@@ -2015,7 +2015,7 @@ export function buildTableContext(
 
   // Performance guard — bail before parsing pathological tables. A document
   // type can lift it through the `tableConfig` facet (CSV does).
-  if (endLine.number - startLine.number + 1 > maxLines) return null;
+  if (!tableFitsCap(doc, nodeFrom, nodeTo, maxLines)) return null;
 
   const rows: RowData[] = [];
   const colWidths: number[] = [];
