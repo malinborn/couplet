@@ -763,7 +763,11 @@
   background: var(--color-code-bg);
 }
 
-.cm-md-table .cm-md-table-row-data:nth-child(even of .cm-md-table-row-data) {
+/* Even DATA rows = odd children: the header is always the first child of
+   `.cm-md-table` and nothing but rows lives in it. Not `:nth-child(even of
+   .cm-md-table-row-data)` — WebKit has no cache for `of S`, and that selector
+   made style recalc quadratic in the row count (20k rows: 4.6 s vs 0.5 s). */
+.cm-md-table .cm-md-table-row-data:nth-child(odd) {
   background: var(--color-table-even-bg);
 }
 
