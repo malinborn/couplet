@@ -54,6 +54,32 @@ describe('ToastStack: tabs that stayed after "to new windows"', () => {
   });
 });
 
+describe('ToastStack: a CSV opened as text', () => {
+  const dim = (root: HTMLElement) => root.querySelector('.md-toast-dim')?.textContent?.trim();
+  const head = (root: HTMLElement) => root.querySelector('.md-toast-text')?.textContent?.trim();
+
+  it('TooLarge_SaysTheRowCountAndTheLimit', () => {
+    const root = render({ kind: 'csv-as-text', fileName: 'big.csv', refusal: { reason: 'too-large', rows: 100000 } });
+    expect(head(root)).toBe('big.csv opened as text');
+    expect(dim(root)).toBe('Too large for the table view (100,000 rows, limit 20,000)');
+  });
+
+  it('Unparseable_SaysItCouldNotBeReadAsATable', () => {
+    const root = render({ kind: 'csv-as-text', fileName: 'x.csv', refusal: { reason: 'unparseable' } });
+    expect(dim(root)).toBe('Could not read it as a table');
+  });
+
+  it('AgreesInNumberInRussian_WithRussianDigitGrouping', () => {
+    installCatalog('ru');
+    const one = render({ kind: 'csv-as-text', fileName: 'big.csv', refusal: { reason: 'too-large', rows: 20001 } });
+    expect(head(one)).toBe('big.csv открыт как текст');
+    expect(dim(one)?.replace(/\s/g, ' ')).toBe('Слишком большой для таблицы (20 001 строка, лимит 20 000)');
+    cleanup?.();
+    const many = render({ kind: 'csv-as-text', fileName: 'big.csv', refusal: { reason: 'too-large', rows: 100000 } });
+    expect(dim(many)?.replace(/\s/g, ' ')).toBe('Слишком большой для таблицы (100 000 строк, лимит 20 000)');
+  });
+});
+
 describe('ToastStack: tabs moved to another window (plan 05)', () => {
   function renderMoved(numbers: (number | null)[]) {
     const store = createToastStore();

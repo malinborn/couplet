@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseCsv, serializeCsv, sniffDialect, type CsvDialect } from './csv';
+import { countCsvRecords, parseCsv, serializeCsv, sniffDialect, type CsvDialect } from './csv';
 
 function ok(text: string, hint?: Parameters<typeof parseCsv>[1]) {
   const r = parseCsv(text, hint);
@@ -204,5 +204,55 @@ describe('serializeCsv — one column', () => {
 
   it('with two columns only the dialect delimiter forces quotes', () => {
     expect(serializeCsv([['a', 'b'], ['1,5', '2']], semi)).toBe('a;b\n1,5;2\n');
+  });
+});
+
+/** mulberry32 — deterministic, so a failure reproduces from its seed. */
+function rng(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+describe('countCsvRecords', () => {
+  const expected = (text: string, hint?: Parameters<typeof parseCsv>[1]) => {
+    const r = parseCsv(text, hint);
+    return r.ok ? r.rows.length : null;
+  };
+
+  it.each([
+    ['', 0],
+    ['a,b\n1,2\n', 2],
+    ['a,b\n1,2', 2],
+    ['a,"x\ny"\n1,2\n', 2],
+    ['a,b\n\n1,2\n\n\n', 3],
+    ['""\n', 1],
+    ['a\r\n"q""\r\n"\r\nb', 3],
+    ['﻿a;b\r1;2\r', 2],
+    ['a,"open\n', null],
+  ] as const)('%j → %s, as parseCsv', (text, count) => {
+    expect(countCsvRecords(text)).toBe(count);
+    expect(countCsvRecords(text)).toBe(expected(text));
+  });
+
+  it('agrees with parseCsv on seeded random text, every delimiter hint', () => {
+    // Only the characters that steer the machine, so quote/delimiter/newline
+    // interactions come up constantly.
+    const alphabet = ['a', 'b', ' ', ',', ';', '\t', '"', '""', '\n', '\r', '\r\n', '﻿'];
+    const hints = [undefined, { delimiter: ',' }, { delimiter: ';' }, { delimiter: '\t' }] as const;
+    for (let seed = 1; seed <= 400; seed++) {
+      const next = rng(seed);
+      const length = Math.floor(next() * 40);
+      let text = '';
+      for (let i = 0; i < length; i++) text += alphabet[Math.floor(next() * alphabet.length)];
+      for (const hint of hints) {
+        expect(countCsvRecords(text, hint), `seed ${seed}, ${JSON.stringify(text)}`).toBe(expected(text, hint));
+      }
+    }
   });
 });

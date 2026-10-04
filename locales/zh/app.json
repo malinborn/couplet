@@ -19,6 +19,12 @@
   "toast.save_as_blocked.held": "该文件已在另一个标签页中打开，未写入任何内容",
   "toast.save_as_blocked.tab_gone": "选择该名称的标签页已关闭，未写入任何内容",
   "toast.save_as_blocked.unavailable": "此标签页无法使用该名称，未写入任何内容",
+  "toast.csv_as_text.headline": "{fileName} 已以文本方式打开",
+  "toast.csv_as_text.too_large.one": "文件过大，无法以表格显示（{rows} 行，上限 {limit}）",
+  "toast.csv_as_text.too_large.few": "文件过大，无法以表格显示（{rows} 行，上限 {limit}）",
+  "toast.csv_as_text.too_large.many": "文件过大，无法以表格显示（{rows} 行，上限 {limit}）",
+  "toast.csv_as_text.too_large.other": "文件过大，无法以表格显示（{rows} 行，上限 {limit}）",
+  "toast.csv_as_text.unparseable": "无法作为表格读取",
   "toast.window_number.taken": "编号 #{number} 已被占用",
   "toast.window_number.missing": "没有窗口 #{number}",
 

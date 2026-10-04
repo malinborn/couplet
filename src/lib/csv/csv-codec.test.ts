@@ -5,6 +5,8 @@ import {
   encodeForDisk,
   documentPreviewKind,
   newFileText,
+  csvTableRefusal,
+  CSV_TABLE_MAX_ROWS,
 } from './csv-codec';
 import { rowsToTable } from './csv-table';
 
@@ -130,5 +132,63 @@ describe('newFileText', () => {
 
   it('any other path opens empty, as before', () => {
     expect(newFileText('/new.md')).toBe('');
+  });
+});
+
+/** A header plus `dataRows` records. */
+function csvWith(dataRows: number, eol = '\n'): string {
+  const lines = ['id,name'];
+  for (let i = 0; i < dataRows; i++) lines.push(`${i},n ${i}`);
+  return lines.join(eol) + eol;
+}
+
+describe('CSV_TABLE_MAX_ROWS', () => {
+  it('counts data rows: at the cap the file is still a table', () => {
+    const doc = decodeFromDisk('/x.csv', csvWith(CSV_TABLE_MAX_ROWS), 'lf');
+    expect(doc.lineEnding).toBe('lf');
+    expect(doc.text.startsWith('| id')).toBe(true);
+    expect(documentPreviewKind('/x.csv', doc.text)).toBe('csv');
+  });
+
+  it('one row above the cap decodes to the raw text, like a parse failure', () => {
+    const raw = csvWith(CSV_TABLE_MAX_ROWS + 1, '\r\n');
+    const doc = decodeFromDisk('/x.csv', raw, 'lf');
+    expect(doc).toEqual({ text: raw.replace(/\r\n/g, '\n'), lineEnding: 'crlf' });
+    expect(documentPreviewKind('/x.csv', doc.text)).toBe('code');
+    // …and is written back as is.
+    expect(encodeForDisk('/x.csv', doc.text, doc.lineEnding, raw)).toBe(raw);
+  });
+
+  it('counts records, not lines: quoted newlines and trailing blank lines are not rows', () => {
+    const lines = ['id,note'];
+    for (let i = 0; i < CSV_TABLE_MAX_ROWS; i++) lines.push(`${i},"two\nlines"`);
+    const raw = lines.join('\n') + '\n\n\n';
+    expect(documentPreviewKind('/x.csv', decodeFromDisk('/x.csv', raw, 'lf').text)).toBe('csv');
+  });
+});
+
+describe('csvTableRefusal', () => {
+  it('a too-large CSV buffer: the reason and its data-row count', () => {
+    const text = decodeFromDisk('/x.csv', csvWith(CSV_TABLE_MAX_ROWS + 5), 'lf').text;
+    expect(csvTableRefusal('/x.csv', text)).toEqual({ reason: 'too-large', rows: CSV_TABLE_MAX_ROWS + 5 });
+  });
+
+  it('a CSV buffer that does not parse', () => {
+    expect(csvTableRefusal('/x.csv', 'a,"open\n')).toEqual({ reason: 'unparseable' });
+  });
+
+  it('agrees with decodeFromDisk on the raw bytes, CRLF and BOM included', () => {
+    const raw = '﻿' + csvWith(CSV_TABLE_MAX_ROWS + 1, '\r\n');
+    const text = decodeFromDisk('/x.csv', raw, 'lf').text;
+    expect(csvTableRefusal('/x.csv', text)).toEqual({ reason: 'too-large', rows: CSV_TABLE_MAX_ROWS + 1 });
+  });
+
+  it.each([
+    ['a table buffer', '/x.csv', TABLE],
+    ['a non-CSV path', '/x.md', 'a,"open\n'],
+    ['an untitled document', null, 'a,"open\n'],
+    ['plain text that would read as a table now', '/x.csv', 'a,b\n1,2\n'],
+  ] as const)('null for %s', (_name, path, text) => {
+    expect(csvTableRefusal(path, text)).toBeNull();
   });
 });

@@ -5,7 +5,8 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: (...args: unknown[]) => invoke(
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), save: vi.fn() }));
 
 const { readDocument, writeDocument } = await import('./commands');
-const { decodeFromDisk, newFileText } = await import('../csv/csv-codec');
+const { decodeFromDisk, newFileText, CSV_TABLE_MAX_ROWS } = await import('../csv/csv-codec');
+const { rowsToTable } = await import('../csv/csv-table');
 const { resolveExternalChange } = await import('../external-change');
 
 describe('document read/write boundary', () => {
@@ -154,5 +155,52 @@ describe('writeDocument on a CSV path', () => {
     const disk = fakeDisk({ '/t/raw.csv': 'a,"open\r\n' });
     await expect(writeDocument('/t/raw.csv', 'a,"open\nmore\n', 'crlf')).resolves.toBe('a,"open\nmore\n');
     expect(disk['/t/raw.csv']).toBe('a,"open\r\nmore\r\n');
+  });
+});
+
+describe('a CSV above CSV_TABLE_MAX_ROWS', () => {
+  beforeEach(() => {
+    invoke.mockReset();
+  });
+
+  /** A header plus `dataRows` records, `;`-separated, BOM, CRLF — a dialect a table save would show. */
+  function bigCsv(dataRows: number): string {
+    const lines = ['﻿id;name'];
+    for (let i = 0; i < dataRows; i++) lines.push(`${i};"n ${i}"`);
+    return lines.join('\r\n') + '\r\n';
+  }
+
+  it('OpensAsText_SavesByteIdentical_ReturnsTheBuffer_AndItsEchoIsIgnored', async () => {
+    const path = '/t/big.csv';
+    const raw = bigCsv(CSV_TABLE_MAX_ROWS + 1);
+    const disk = fakeDisk({ [path]: raw });
+    const doc = await readDocument(path);
+    expect(doc.lineEnding).toBe('crlf');
+    expect(doc.text.startsWith('﻿id;name\n0;"n 0"\n')).toBe(true);
+
+    invoke.mockClear();
+    const baseline = await writeDocument(path, doc.text, doc.lineEnding);
+    expect(disk[path]).toBe(raw);
+    expect(baseline).toBe(doc.text);
+    // Written as is: no dialect sniff, no read of the file it replaces.
+    expect(commands()).toEqual(['write_file']);
+
+    const echo = (await readDocument(path)).text;
+    expect(echo).toBe(baseline);
+    expect(resolveExternalChange({ disk: echo, buffer: doc.text, baseline, dismissedDisk: null })).toBe('ignore');
+  });
+
+  it('ATableGrownPastTheCap_SavesAsCsv_AndReturnsWhatTheNextReadReturns', async () => {
+    // Rows added one by one in an open table: it stays a table until reopened.
+    const path = '/t/grown.csv';
+    const disk = fakeDisk({ [path]: 'id,name\n' });
+    const rows = [['id', 'name']];
+    for (let i = 0; i <= CSV_TABLE_MAX_ROWS; i++) rows.push([String(i), `n ${i}`]);
+    const buffer = rowsToTable(rows);
+    const baseline = await writeDocument(path, buffer, 'lf');
+    expect(disk[path].split('\n')[1]).toBe('0,n 0');
+    const echo = (await readDocument(path)).text;
+    expect(baseline).toBe(echo); // the plain text: the next open is a text tab
+    expect(resolveExternalChange({ disk: echo, buffer, baseline, dismissedDisk: null })).toBe('ignore');
   });
 });

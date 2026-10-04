@@ -19,6 +19,12 @@
   "toast.save_as_blocked.held": "Diese Datei ist in einem anderen Tab geöffnet – nichts wurde geschrieben",
   "toast.save_as_blocked.tab_gone": "Der Tab, für den der Name gewählt wurde, ist geschlossen – nichts wurde geschrieben",
   "toast.save_as_blocked.unavailable": "Dieser Tab konnte den Namen nicht übernehmen – nichts wurde geschrieben",
+  "toast.csv_as_text.headline": "{fileName} als Text geöffnet",
+  "toast.csv_as_text.too_large.one": "Zu groß für die Tabellenansicht ({rows} Zeile, Limit {limit})",
+  "toast.csv_as_text.too_large.few": "Zu groß für die Tabellenansicht ({rows} Zeilen, Limit {limit})",
+  "toast.csv_as_text.too_large.many": "Zu groß für die Tabellenansicht ({rows} Zeilen, Limit {limit})",
+  "toast.csv_as_text.too_large.other": "Zu groß für die Tabellenansicht ({rows} Zeilen, Limit {limit})",
+  "toast.csv_as_text.unparseable": "Konnte nicht als Tabelle gelesen werden",
   "toast.window_number.taken": "Nummer #{number} ist vergeben",
   "toast.window_number.missing": "Kein Fenster #{number}",
 

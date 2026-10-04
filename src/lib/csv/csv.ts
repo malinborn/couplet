@@ -28,7 +28,10 @@ export type CsvParse =
   | { ok: false; error: string };
 
 interface Records {
+  /** The records read; left empty when only counting (`collect` false). */
   rows: string[][];
+  /** How many records were read, trailing empty lines included. */
+  count: number;
   /** The first line break outside quotes, or null when there is none. */
   eol: CsvEol | null;
   /** How many of the last rows are empty lines (not a quoted `""`). */
@@ -43,12 +46,21 @@ const SNIFF_ROWS = 20;
 /**
  * Split `text` into records. `lenient` returns what was read when the text
  * ends inside quotes (used for sniffing a truncated sample); otherwise that
- * is an error and the answer is `null`.
+ * is an error and the answer is `null`. `collect` false runs the same machine
+ * without building a single string — only `count`, `eol` and `trailingBlank`
+ * are filled — so the size of a huge file can be learned without paying for
+ * its rows (`countCsvRecords`). One machine for both, so the count cannot
+ * drift from what a parse returns.
  */
-function parseWith(text: string, delimiter: string, lenient: boolean): Records | null {
+function parseWith(text: string, delimiter: string, lenient: boolean, collect = true): Records | null {
   const rows: string[][] = [];
+  let count = 0;
   let row: string[] = [];
+  /** Fields already ended in the current record (`row.length` when collecting). */
+  let rowFields = 0;
   let field = '';
+  /** `field === ''` — tracked apart from `field` because counting never builds it. */
+  let fieldEmpty = true;
   let quoted = false;
   /** The current field was opened by a quote — `""` is a field, not nothing. */
   let fieldQuoted = false;
@@ -58,14 +70,21 @@ function parseWith(text: string, delimiter: string, lenient: boolean): Records |
   let trailingBlank = 0;
   let i = 0;
   const n = text.length;
-  const endRecord = () => {
-    row.push(field);
-    const blank = row.length === 1 && field === '' && !rowQuoted;
-    trailingBlank = blank ? trailingBlank + 1 : 0;
-    rows.push(row);
-    row = [];
+  const endField = () => {
+    if (collect) row.push(field);
+    rowFields++;
     field = '';
+    fieldEmpty = true;
     fieldQuoted = false;
+  };
+  const endRecord = () => {
+    const blank = rowFields === 0 && fieldEmpty && !rowQuoted;
+    endField();
+    trailingBlank = blank ? trailingBlank + 1 : 0;
+    if (collect) rows.push(row);
+    count++;
+    row = [];
+    rowFields = 0;
     rowQuoted = false;
   };
   while (i < n) {
@@ -73,7 +92,8 @@ function parseWith(text: string, delimiter: string, lenient: boolean): Records |
     if (quoted) {
       if (c === '"') {
         if (text[i + 1] === '"') {
-          field += '"';
+          if (collect) field += '"';
+          fieldEmpty = false;
           i += 2;
           continue;
         }
@@ -81,11 +101,12 @@ function parseWith(text: string, delimiter: string, lenient: boolean): Records |
         i++;
         continue;
       }
-      field += c;
+      if (collect) field += c;
+      fieldEmpty = false;
       i++;
       continue;
     }
-    if (c === '"' && field === '') {
+    if (c === '"' && fieldEmpty) {
       quoted = true;
       fieldQuoted = true;
       rowQuoted = true;
@@ -93,9 +114,7 @@ function parseWith(text: string, delimiter: string, lenient: boolean): Records |
       continue;
     }
     if (c === delimiter) {
-      row.push(field);
-      field = '';
-      fieldQuoted = false;
+      endField();
       i++;
       continue;
     }
@@ -106,12 +125,13 @@ function parseWith(text: string, delimiter: string, lenient: boolean): Records |
       i += crlf ? 2 : 1;
       continue;
     }
-    field += c;
+    if (collect) field += c;
+    fieldEmpty = false;
     i++;
   }
   if (quoted && !lenient) return null;
-  if (field !== '' || fieldQuoted || row.length > 0) endRecord();
-  return { rows, eol, trailingBlank };
+  if (!fieldEmpty || fieldQuoted || rowFields > 0) endRecord();
+  return { rows, count, eol, trailingBlank };
 }
 
 /**
@@ -142,14 +162,22 @@ function sniffDelimiter(text: string): CsvDelimiter {
  * even inside an unterminated quote (the dialect of a file that no longer
  * parses), otherwise that is a failure and the answer is `null`.
  */
+/** The BOM split off and the delimiter chosen: the first step of every read. */
+function prepare(
+  text: string,
+  hint: { delimiter?: CsvDelimiter } | undefined
+): { bom: boolean; body: string; delimiter: CsvDelimiter } {
+  const bom = text.startsWith(BOM);
+  const body = bom ? text.slice(1) : text;
+  return { bom, body, delimiter: hint?.delimiter ?? sniffDelimiter(body) };
+}
+
 function analyse(
   text: string,
   hint: { delimiter?: CsvDelimiter } | undefined,
   lenient: boolean
 ): { rows: string[][]; dialect: CsvDialect } | null {
-  const bom = text.startsWith(BOM);
-  const body = bom ? text.slice(1) : text;
-  const delimiter = hint?.delimiter ?? sniffDelimiter(body);
+  const { bom, body, delimiter } = prepare(text, hint);
   const records = parseWith(body, delimiter, lenient);
   if (records === null) return null;
   const { eol, trailingBlank } = records;
@@ -169,6 +197,18 @@ function analyse(
 export function sniffDialect(text: string, hint?: { delimiter?: CsvDelimiter }): CsvDialect {
   // A lenient parse never answers null.
   return (analyse(text, hint, true) as { dialect: CsvDialect }).dialect;
+}
+
+/**
+ * How many rows `parseCsv(text, hint)` would return — or `null` exactly when
+ * it would fail — without building them: the same machine, no strings. For
+ * deciding whether a file is too large to show as a table before paying for
+ * the table (`csv-codec.ts`).
+ */
+export function countCsvRecords(text: string, hint?: { delimiter?: CsvDelimiter }): number | null {
+  const { body, delimiter } = prepare(text, hint);
+  const records = parseWith(body, delimiter, false, false);
+  return records === null ? null : records.count - records.trailingBlank;
 }
 
 export function parseCsv(text: string, hint?: { delimiter?: CsvDelimiter }): CsvParse {

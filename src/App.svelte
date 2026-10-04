@@ -98,7 +98,7 @@
   import { envPreviewPlugin } from './lib/editor/preview/env';
   import { shellSecretsPlugin } from './lib/editor/preview/shell-secrets';
   import { findCodeLanguage, previewKindFor, type PreviewKind } from './lib/editor/file-language';
-  import { documentPreviewKind } from './lib/csv/csv-codec';
+  import { documentPreviewKind, csvTableRefusal } from './lib/csv/csv-codec';
   import { csvPreviewExtensions } from './lib/csv/csv-extensions';
   import { reinitializeTheme } from './lib/editor/preview/mermaid';
   import { resolveExternalChange } from './lib/external-change';
@@ -679,15 +679,43 @@
   }
 
   /**
+   * CSV paths whose `csv-as-text` toast this window has shown. Once per open
+   * tab, not per switch: a path leaves the set when its tab is no longer open
+   * (so reopening the file says it again) or when it shows as a table again
+   * (so a later break of the same file is reported). Not reactive — nothing
+   * renders from it.
+   */
+  const csvAsTextTold = new Set<string>();
+
+  /** Say why a CSV document is on screen as plain text — once, see `csvAsTextTold`. */
+  function tellCsvAsText(path: string | null, kind: PreviewKind, text: string): void {
+    const open = new Set(tabList.tabs.map((tab) => tab.path));
+    for (const told of csvAsTextTold) if (!open.has(told)) csvAsTextTold.delete(told);
+    if (path === null) return;
+    if (kind !== 'code') {
+      csvAsTextTold.delete(path);
+      return;
+    }
+    if (csvAsTextTold.has(path)) return;
+    // Null for every non-CSV path: a cheap extension check before any scan.
+    const refusal = csvTableRefusal(path, text);
+    if (refusal === null) return;
+    csvAsTextTold.add(path);
+    toasts.push({ kind: 'csv-as-text', fileName: path.split('/').pop() ?? path, refusal });
+  }
+
+  /**
    * Re-apply this window's configuration for `path` to the state just swapped
    * in — cached ones included, whose compartments hold whatever they held when
    * they were left.
    */
   function applyDocumentConfig(path: string | null): void {
-    const kind = documentPreviewKind(path, editorHandle?.view?.state.doc.toString() ?? '');
+    const text = editorHandle?.view?.state.doc.toString() ?? '';
+    const kind = documentPreviewKind(path, text);
     // The kind of a CSV file depends on its buffer (a table, or the text of a
-    // file that did not parse), so it is settled here, after the swap.
+    // file that did not parse or is too large), so it is settled here, after the swap.
     activePreview = kind;
+    tellCsvAsText(path, kind, text);
     // `cm-csv-file-mode` rides on `csvPreviewExtensions` (editorAttributes):
     // a classList toggle here was wiped by CM6 on the next focus change.
     const basename = path?.split('/').pop()?.toLowerCase() ?? '';

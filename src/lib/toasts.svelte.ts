@@ -6,6 +6,7 @@
  * after launch and would otherwise land below the session toast.
  */
 import type { StandingStashNote, StashToastNote } from './stash/stash-toast';
+import type { CsvTableRefusal } from './csv/csv-codec';
 
 export type ToastPayload =
   /**
@@ -61,6 +62,15 @@ export type ToastPayload =
    * was ever read.
    */
   | { kind: 'open-error'; fileName: string; message: string }
+  /**
+   * A `.csv`/`.tsv` opened as plain text instead of a table: it does not
+   * parse, or it has more data rows than `CSV_TABLE_MAX_ROWS` (the table has
+   * no row virtualization yet, and a 100k-row one hung the window). Without
+   * it the same extension sometimes opens as a table and sometimes as raw
+   * text, with nothing saying why. Shown once per open tab, not on every
+   * switch back to it (App keeps the paths it has told about).
+   */
+  | { kind: 'csv-as-text'; fileName: string; refusal: CsvTableRefusal }
   /**
    * "To new windows" (spec §6) left some tabs where they were: their window
    * did not open, or this window still held the file. Not `open-error` —
@@ -229,6 +239,8 @@ const ORDER: Record<ToastKind, number> = {
   'tabs-moved': 4,
   'save-as-blocked': 4,
   'window-number': 4,
+  // Answers the open the user just did; nothing failed, the file is on screen.
+  'csv-as-text': 4,
   // Answers a drawer action the user just took, like the rest of this group.
   stash: 4,
   'stash-standing': 4,

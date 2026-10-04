@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { ToastEntry, ToastStore } from './toasts.svelte';
-  import { t, plural } from './i18n';
+  import { t, plural, activeLanguage } from './i18n';
   import { stashToastText } from './stash/stash-toast';
+  import { CSV_TABLE_MAX_ROWS } from './csv/csv-codec';
 
   let {
     store,
@@ -45,7 +46,12 @@
     unavailable: 'toast.save_as_blocked.unavailable',
   } as const;
 
-  const BREW_CMD = 'brew update && brew upgrade --cask couplet';
+  /** A row count with the language's digit grouping: «20 000», "20,000". */
+  function formatCount(n: number): string {
+    return n.toLocaleString(activeLanguage());
+  }
+
+  const BREW_CMD ='brew update && brew upgrade --cask couplet';
 
   let copied = $state(false);
 
@@ -162,6 +168,19 @@
           >
             {t('toast.tabs_moved.go')}
           </button>
+        {:else if toast.payload.kind === 'csv-as-text'}
+          {@const refusal = toast.payload.refusal}
+          <span class="md-toast-text">
+            <strong>{t('toast.csv_as_text.headline', { fileName: toast.payload.fileName })}</strong>
+          </span>
+          <span class="md-toast-dim"
+            >{refusal.reason === 'too-large'
+              ? plural(refusal.rows, 'toast.csv_as_text.too_large', {
+                  rows: formatCount(refusal.rows),
+                  limit: formatCount(CSV_TABLE_MAX_ROWS),
+                })
+              : t('toast.csv_as_text.unparseable')}</span
+          >
         {:else if toast.payload.kind === 'save-as-blocked'}
           <span class="md-toast-text">
             <strong>{t('toast.save_as_blocked.headline', { fileName: toast.payload.fileName })}</strong>

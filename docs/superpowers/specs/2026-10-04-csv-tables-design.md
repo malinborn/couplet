@@ -32,14 +32,14 @@ Rejected alternatives:
 | View or edit? | Edit, and autosave writes CSV back to the same file. |
 | Content outside the table | Not allowed: the window holds exactly one table. Edits that would break that are rejected. |
 | Header | The first CSV record is always the header row. |
-| Size cap | None for CSV. Markdown tables keep their 500-line cap. |
+| Size cap | `CSV_TABLE_MAX_ROWS = 20_000` data rows (header excluded), applied at the disk boundary: a larger CSV opens as plain text, like one that does not parse (§3). Inside the table code there is no cap for CSV; markdown tables keep their 500-line cap. |
 | Extensions | `.csv` (delimiter sniffed), `.tsv` (always Tab). |
 
 Measured cost, Chrome, 6 columns, markdown table below the cap: open 23–36 ms
 up to 500 rows; a cell commit ~0.1 ms per row (full widget rebuild) — 50–64 ms
 at 498 rows, so ~200 ms at 2k rows, ~1 s at 10k. Typing inside a cell goes to
-the overlay `<textarea>` and costs nothing; only the commit pays. Accepted for
-CSV without a cap. To be re-measured in WKWebView (`dev:app`) during
+the overlay `<textarea>` and costs nothing; only the commit pays. Accepted at
+first for CSV without a cap (since capped at 20 000 data rows, see below). To be re-measured in WKWebView (`dev:app`) during
 implementation.
 
 Re-measured 2026-10-04 in WKWebView (`dev:app`, debug build + Vite dev
@@ -55,6 +55,12 @@ count:
 
 So a 10k-row CSV is not practically editable without row virtualization
 (out of scope below); 2k is usable but sluggish.
+
+At 100k rows it is worse than slow: ≈1.6M DOM nodes, CM6's height map
+re-measuring the hidden table lines in a loop, and the window (drawer
+included) stops responding. Hence the size cap above (added 2026-10-04): until
+row virtualization exists, a CSV with more than `CSV_TABLE_MAX_ROWS` data rows
+is opened as plain text, so the app never hangs on a big file.
 
 ## Units
 
@@ -154,6 +160,31 @@ symlink) kept its dialect under one key and was written under the other, so
   split them. Cost: one extra read per CSV save.
 - **Read** of a CSV path: `parseCsv` → `rowsToTable`; parse failure → the raw
   text, as any file.
+- **Size cap.** More than `CSV_TABLE_MAX_ROWS` (20 000) data rows — records
+  minus the header, trailing blank lines not counted; exactly 20 000 is still
+  a table — → the raw text, exactly as a parse failure. The size is learned
+  before anything is built: `countCsvRecords` (`csv.ts`) runs the parser's own
+  state machine with string building switched off, so it answers exactly what
+  `parseCsv(...).rows.length` would (or `null` where the parse fails; a seeded
+  property test pins the agreement), counts records not lines (a newline
+  inside quotes is not a row), and costs ~16–22 ms on a 100k-row, 6.8 MB file
+  in Node, against ~60–100 ms for the parse and ~120–150 ms for `rowsToTable`,
+  neither of which a file over the cap pays. Nothing else is needed downstream:
+  the buffer is not a table, so the kind is `'code'` (§4), the guard is not
+  installed, and `writeDocument` writes it as is and returns the buffer as the
+  baseline — byte-identical round trip, own echo ignored.
+- **Why it is plain text — the toast.** `csvTableRefusal(path, buffer)` gives
+  `{ reason: 'too-large', rows }` or `{ reason: 'unparseable' }` (null for a
+  non-CSV path, a table buffer, or plain text that would read as a table now).
+  It runs the same count on the LF buffer, which gives the same answer as on
+  the disk bytes: normalizing line endings changes neither the quotes nor the
+  number of record separators, and fromDisk keeps the BOM. `applyDocumentConfig`
+  (App.svelte), where the kind is settled, pushes a `csv-as-text` toast when a
+  CSV path ends up as `'code'` — "big.csv opened as text · Too large for the
+  table view (100,000 rows, limit 20,000)" / "· Could not read it as a table".
+  Once per open tab: the window keeps the paths it told about, and a path
+  leaves that set when its tab is no longer open or when it shows as a table
+  again (so a later break of the same file is reported).
 - **A CSV path that does not exist yet** opens as `rowsToTable([])` (an empty
   one-column table), so a new `.csv` is editable as a table and saves as an
   empty file until something is typed.
@@ -284,7 +315,9 @@ Measured (WebKit, 100k rows): the guard's share of a one-cell commit went from
 
 | Situation | Behaviour |
 |---|---|
-| CSV does not parse (unterminated quote) | Opens as plain text (kind `'code'`), as `.csv` does today. What is on screen is what is saved. Once the text parses again (fixed here or elsewhere), the next read shows it as a table. |
+| CSV does not parse (unterminated quote) | Opens as plain text (kind `'code'`), as `.csv` does today, with a `csv-as-text` toast ("could not read it as a table"). What is on screen is what is saved. Once the text parses again (fixed here or elsewhere), the next read shows it as a table. |
+| CSV has more than `CSV_TABLE_MAX_ROWS` (20 000) data rows | Opens as plain text, the same path as a parse failure, with a `csv-as-text` toast ("too large for the table view (N rows, limit 20 000)"). Saved as is, byte-identical. Cut below the cap (here or elsewhere), the next read shows it as a table. |
+| A table grows past the cap while open (rows added one by one) | Stays a table for this session and saves as CSV; the baseline `writeDocument` returns is the plain text the next read gives, so its own echo is ignored. The next open shows it as text. |
 | File broken by another program while the table has unsaved edits | The usual conflict dialog. "Keep mine" writes the table as CSV in the dialect sniffed from the broken file. |
 | Save of a CSV buffer that is not one table | Written as is (that is what a plain-text CSV tab is). The guard keeps a table tab from getting there. |
 | Save As a markdown note to `.csv` | A note that is one table is exported as CSV; any other note is written as is. |
@@ -306,6 +339,18 @@ Measured (WebKit, 100k rows): the guard's share of a one-cell commit went from
 - Enter on the last row leaves the table onto the empty line below it, where
   typing is dropped; Cmd+Shift+Enter adds a row.
 - Every CSV save reads the current file once more (to sniff its dialect).
+- A CSV with more than 20 000 data rows is not a table — it opens as plain
+  text until row virtualization exists (the 100k-row table hung the window).
+  Even below the cap a large table is slow: ~1.2 s per cell commit at 2k rows
+  and ~11 s at 10k (WKWebView, table above); the cap prevents the hang, not
+  the slowness.
+- A table that grows past the cap while open keeps its table view for the
+  session, but its baseline is the plain text the next read returns, so an
+  external change to it shows the conflict dialog even with no unsaved
+  edits (buffer ≠ baseline). Reopening it shows it as text.
+- The toast is not shown again for a path while its tab stays open as text;
+  a background tab closed and reopened without any other tab being shown in
+  between keeps the earlier notice as its only one.
 
 ## Out of scope
 
@@ -314,7 +359,8 @@ Measured (WebKit, 100k rows): the guard's share of a one-cell commit went from
 - Recovery restore (not wired for any file type today; snapshots of a CSV hold
   the markdown buffer, harmless).
 - Drawer card previews read a CSV through the codec, i.e. parse and pad the
-  whole file for a card. Fine for typical files; a size-capped peek is a later
+  whole file for a card (up to the 20 000-row cap; above it, one counting scan
+  and the raw text). Fine for typical files; a size-capped peek is a later
   optimisation.
 - Choosing a header-less mode, changing the delimiter from the UI.
 
@@ -329,7 +375,15 @@ Measured (WebKit, 100k rows): the guard's share of a one-cell commit went from
   echo resolve to `ignore` in `resolveExternalChange`; the dialect follows the
   file on disk (incl. a broken one and a never-existing one); a read never
   changes how a later write behaves (no state); a one-column value with `,`
-  survives a save + re-read.
+  survives a save + re-read. Size cap: exactly `CSV_TABLE_MAX_ROWS` data rows
+  is a table, one more is the raw text; quoted newlines and trailing blank
+  lines are not rows; a too-large file round-trips byte-identical through
+  `writeDocument`, which returns the buffer and whose echo is ignored; a table
+  grown past the cap returns what the next read returns; `csvTableRefusal`
+  agrees with the decoder on CRLF + BOM bytes; `countCsvRecords` equals
+  `parseCsv(...).rows.length` (or `null`) over seeded random text.
+- **Vitest, `ToastStack`:** the `csv-as-text` wording in EN and RU, plural and
+  digit grouping.
 - **Vitest, guard:** typing outside the table rejected; cell edit, add/delete
   row and column, undo, an emptied row pass.
 - **Vitest, tables:** default `tableConfig` keeps the 500 cap and `-`
