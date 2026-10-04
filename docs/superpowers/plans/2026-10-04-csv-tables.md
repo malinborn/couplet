@@ -1129,8 +1129,9 @@ The dirty check (`doc.toString() === content`) is unchanged.
 `src/styles/editor.css` after the `.cm-code-file-mode` rules:
 ```css
 /* A CSV tab holds exactly one table: the block "+" menu has nothing to add. */
-.cm-csv-file-mode .cm-hover-gutter {
-  display: none;
+/* CM6's base theme has `.ͼ1 .cm-gutter { display: flex !important }`. */
+.cm-editor.cm-csv-file-mode .cm-hover-gutter {
+  display: none !important;
 }
 ```
 
@@ -1147,9 +1148,12 @@ git commit -m "feat(csv): open .csv/.tsv as a table document"
 
 ---
 
-### Task 7: AI edit refusal, file associations, dialog filter
+### Task 7: AI edit refusal, file associations, dialog filter, Save As kind
+
+**Also in this task — Save As re-derives the document kind.** `handleSaveAs` in `src/App.svelte` changes the path but never calls `applyDocumentConfig`, so a CSV saved as `.md` would keep the one-table guard on a markdown file, and a note saved as `.csv` would keep the markdown engine. After the Save As save lands, call `applyDocumentConfig(newPath)` (it derives the kind from the path and the buffer). For a CSV → `.md` export the buffer is the markdown table, so the tab becomes a markdown document; for a one-table note → `.csv` the tab becomes a CSV table. Verify there is no other path change (rename/move, `stashNoteSavedAs`) that needs the same.
 
 **Files:**
+- Modify: `src/App.svelte` (`handleSaveAs`)
 - Modify: `src/lib/tabs/agent-commands.ts` (`AGENT_ERRORS` ~line 34, `handle` ~line 392)
 - Test: `src/lib/tabs/agent-commands.test.ts`
 - Modify: `src-tauri/tauri.conf.json` (`bundle.fileAssociations`, line ~47)
