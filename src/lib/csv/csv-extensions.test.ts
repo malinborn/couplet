@@ -5,7 +5,7 @@
  * runs on transactions dispatched through the view.
  */
 import { describe, it, expect } from 'vitest';
-import { EditorState, Transaction, type Extension } from '@codemirror/state';
+import { Compartment, EditorState, Transaction, type Extension } from '@codemirror/state';
 import { EditorView, keymap, runScopeHandlers } from '@codemirror/view';
 import { history, historyKeymap, undo } from '@codemirror/commands';
 import { computeReplacement } from '../editor/content-diff';
@@ -178,6 +178,29 @@ describe('undo across a disk reload, through the view', () => {
     view.dispatch({ changes: { from: at, to: at + 1, insert: 'one' }, userEvent: 'input' });
     pressUndo(view);
     expect(view.state.doc.toString()).toBe(before);
+    view.destroy();
+  });
+});
+
+describe('cm-csv-file-mode', () => {
+  // CM6 rebuilds the editor's whole `class` attribute whenever its own
+  // attributes change — on every focus change in the app. Reconfiguring an
+  // unrelated editorAttributes value forces the same rebuild here.
+  it('survives a rebuild of the editor class attribute; a classList class does not', () => {
+    const other = new Compartment();
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: csvTable(3),
+        extensions: [markdownExtension(), csvPreviewExtensions, other.of([])],
+      }),
+    });
+    view.dom.classList.add('hand-added');
+    expect(view.dom.classList.contains('cm-csv-file-mode')).toBe(true);
+
+    view.dispatch({ effects: other.reconfigure(EditorView.editorAttributes.of({ class: 'other' })) });
+
+    expect(view.dom.classList.contains('cm-csv-file-mode')).toBe(true);
+    expect(view.dom.classList.contains('hand-added')).toBe(false);
     view.destroy();
   });
 });

@@ -688,7 +688,8 @@
     // The kind of a CSV file depends on its buffer (a table, or the text of a
     // file that did not parse), so it is settled here, after the swap.
     activePreview = kind;
-    editorHandle?.view?.dom.classList.toggle('cm-csv-file-mode', kind === 'csv');
+    // `cm-csv-file-mode` rides on `csvPreviewExtensions` (editorAttributes):
+    // a classList toggle here was wiped by CM6 on the next focus change.
     const basename = path?.split('/').pop()?.toLowerCase() ?? '';
     const ext = path?.split('.').pop()?.toLowerCase() ?? '';
     if (kind === 'env') {
