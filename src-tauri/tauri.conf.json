@@ -98,12 +98,14 @@
       {
         "ext": ["csv"],
         "mimeType": "text/csv",
-        "description": "CSV Document"
+        "description": "CSV Document",
+        "rank": "Alternate"
       },
       {
         "ext": ["tsv"],
         "mimeType": "text/tab-separated-values",
-        "description": "TSV Document"
+        "description": "TSV Document",
+        "rank": "Alternate"
       }
     ]
   },

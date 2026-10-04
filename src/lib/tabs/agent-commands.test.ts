@@ -464,7 +464,9 @@ describe('focus (spec §5)', () => {
     expect(w.log).toEqual(['respond 1']);
     expect(w.list().activeId).toBe('a');
   });
+});
 
+describe('edit of a CSV file (CSV spec §7)', () => {
   it('AnEditOfACsvFileIsRefusedBeforeAnyTabMoves', async () => {
     const w = makeWorld(['a', 'b'], 'a');
     await w.send(payload({ id: 1, cmd: 'edit', path: '/d/data.csv', content: 'x,y', show: true, focus: true }));
