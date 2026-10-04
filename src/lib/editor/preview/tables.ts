@@ -70,6 +70,41 @@ export interface TableContext {
   nodeTo: number;
 }
 
+/**
+ * What one table's DOM shows right now — and the only place its event handlers
+ * read document positions from.
+ *
+ * `TableWidget.updateDOM` patches a widget's DOM in place instead of rebuilding
+ * it, so the DOM outlives the `TableContext` it was built from: a commit moves
+ * every position after the edited cell, typing above the table moves all of
+ * them. A handler that closed over a `CellInfo` or a `ctx` at build time would
+ * then write to where the cell *used* to be. So handlers close over this object
+ * and the cell's (row, col) instead — both stable across a compatible update,
+ * which by definition keeps every row's cell count — and resolve the cell when
+ * the event fires. `updateDOM` swaps `ctx` and `anchors` after patching.
+ */
+interface TableDomModel {
+  ctx: TableContext;
+  anchors: CommentAnchorSpan[];
+  mode: 'wrap' | 'full';
+  /** Every cell's nested editing host, as `textEls[row][col]` over `ctx.rows`; `[]` for the delimiter. */
+  textEls: HTMLElement[][];
+}
+
+/** Widget root (`.cm-md-table-wrap`) → its model. */
+const tableModels = new WeakMap<HTMLElement, TableDomModel>();
+
+/** The model of the table `el` sits in, for code that only holds a cell element. */
+function tableModelOf(el: HTMLElement): TableDomModel | undefined {
+  const wrap = el.closest<HTMLElement>('.cm-md-table-wrap');
+  return wrap ? tableModels.get(wrap) : undefined;
+}
+
+/** The cell at (row, col) as the document has it now — never a copy taken at build time. */
+function liveCell(model: TableDomModel, row: number, col: number): CellInfo | undefined {
+  return model.ctx.rows[row]?.cells[col];
+}
+
 export function parseCellsWithPositions(text: string, lineFrom: number): CellInfo[] {
   const cells: CellInfo[] = [];
   let i = 0;
@@ -213,7 +248,7 @@ function getHeaderCells(anyTableEl: HTMLElement | null): HTMLElement[] {
 function startRowDrag(
   e: MouseEvent,
   view: EditorView,
-  ctx: TableContext,
+  model: TableDomModel,
   dataRowIndex: number,
   wrapEl: HTMLElement
 ): void {
@@ -287,6 +322,8 @@ function startRowDrag(
     // No-op if same position or adjacent (moving to its own slot)
     if (tgt === src || tgt === src + 1) return;
 
+    // Read at drop time: the DOM may have been patched under the drag.
+    const ctx = model.ctx;
     const grid = tableToGrid(ctx);
     // grid[0] = header, grid[1..] = data rows
     const dataRows = grid.slice(1);
@@ -318,7 +355,7 @@ function startRowDrag(
 function startColDrag(
   e: MouseEvent,
   view: EditorView,
-  ctx: TableContext,
+  model: TableDomModel,
   colIndex: number,
   headerCellEl: HTMLElement
 ): void {
@@ -391,6 +428,7 @@ function startColDrag(
 
     if (tgt === src || tgt === src + 1) return;
 
+    const ctx = model.ctx;
     const grid = tableToGrid(ctx);
     const newGrid = grid.map(row => {
       const cols = [...row];
@@ -421,6 +459,28 @@ function startColDrag(
 
 // --- Widgets ---
 
+/**
+ * Whether one table's DOM can show another table's context by patching cells.
+ *
+ * Same row count and the same cell count in every row. That also pins the
+ * header (always row 0), the delimiter (always row 1), `colCount` and the
+ * number of data rows — everything `toDOM` builds structure or controls from.
+ */
+function sameTableShape(a: TableContext, b: TableContext): boolean {
+  if (a.rows.length !== b.rows.length || a.colCount !== b.colCount) return false;
+  for (let i = 0; i < a.rows.length; i++) {
+    if (a.rows[i].cells.length !== b.rows[i].cells.length) return false;
+  }
+  return true;
+}
+
+function sameHighlights(a: CellHighlight[], b: CellHighlight[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((h, i) => h.id === b[i].id && h.visFrom === b[i].visFrom && h.visTo === b[i].visTo)
+  );
+}
+
 class TableWidget extends WidgetType {
   constructor(
     private ctx: TableContext,
@@ -440,20 +500,35 @@ class TableWidget extends WidgetType {
     wrap.className = 'cm-md-table-wrap';
     wrap.setAttribute('data-mode', this.mode);
 
+    const model: TableDomModel = {
+      ctx: this.ctx,
+      anchors: this.anchors,
+      mode: this.mode,
+      textEls: new Array<HTMLElement[]>(this.ctx.rows.length),
+    };
+    tableModels.set(wrap, model);
+
     const table = document.createElement('span');
     table.className = 'cm-md-table';
 
-    const colCtrl = createColCtrl(view, this.ctx, wrap);
+    const colCtrl = createColCtrl(view, model, wrap);
 
-    const headerRow = this.ctx.rows.find((r) => r.isHeader);
-    if (headerRow) {
-      table.appendChild(buildHeaderRow(headerRow, this.ctx, view, colCtrl, this.anchors));
-    }
+    let dataCount = 0;
+    for (const r of this.ctx.rows) if (!r.isDelimiter && !r.isHeader) dataCount++;
 
-    const dataRows = this.ctx.rows.filter((r) => !r.isDelimiter && !r.isHeader);
-    const dataCount = dataRows.length;
-    dataRows.forEach((row, i) => {
-      table.appendChild(buildDataRow(row, i, this.ctx, view, dataCount, this.anchors));
+    // One pass in document order: the header is `ctx.rows[0]` by GFM's
+    // definition, so this appends it first, then the data rows. The row's index
+    // in `ctx.rows` is handed down rather than looked up — `indexOf` per row was
+    // quadratic, and a CSV table has 100k of them.
+    let dataRowIndex = 0;
+    this.ctx.rows.forEach((row, rowIndex) => {
+      if (row.isDelimiter) {
+        model.textEls[rowIndex] = [];
+      } else if (row.isHeader) {
+        table.appendChild(buildHeaderRow(row, rowIndex, model, view, colCtrl));
+      } else {
+        table.appendChild(buildDataRow(row, rowIndex, dataRowIndex++, model, view, dataCount));
+      }
     });
 
     wrap.appendChild(table);
@@ -463,23 +538,93 @@ class TableWidget extends WidgetType {
 
     // "+ add column" — absolutely positioned at right of the header row
     const addCol = mkBtn('+', 'cm-md-table-btn-add cm-md-table-btn-add-col', () =>
-      addColumn(view, this.ctx)
+      addColumn(view, model.ctx)
     );
     wrap.appendChild(addCol);
 
     // "+ add row" — inline button at end of last data row plus floating "+" below
     const addRowInline = mkBtn('+', 'cm-md-table-btn-add cm-md-table-btn-add-row', () =>
-      addRow(view, this.ctx)
+      addRow(view, model.ctx)
     );
     wrap.appendChild(addRowInline);
 
     const bottomContainer = document.createElement('span');
     bottomContainer.className = 'cm-md-table-add-row-bottom';
-    const addRowBottom = mkBtn('+', 'cm-md-table-btn-add', () => addRow(view, this.ctx));
+    const addRowBottom = mkBtn('+', 'cm-md-table-btn-add', () => addRow(view, model.ctx));
     bottomContainer.appendChild(addRowBottom);
     wrap.appendChild(bottomContainer);
 
     return wrap;
+  }
+
+  /**
+   * Patch a table's DOM in place when only cell text, positions or comment
+   * highlights changed; `false` hands CM6 back to `toDOM`.
+   *
+   * CM6 calls this when `eq` said no — so on every commit into a cell, and on
+   * every keystroke above a table, since both move cell `from`s. A rebuild there
+   * cost a whole table of DOM per edit: measured at 10k rows, ~220k nodes and
+   * 1.7 s in WebKit for a one-cell commit.
+   *
+   * Compatible means the same `mode` and the same shape — row count and every
+   * row's cell count (which fixes `colCount`, the header and the delimiter). The
+   * shape decides which controls exist at all (− on rows only past one data
+   * row, − on columns only past one column), so a different shape is a rebuild.
+   * Adding or deleting a row therefore still rebuilds; reordering rows or
+   * columns keeps the shape and is patched like any other text change.
+   *
+   * Patched: the text of every cell whose text changed or whose comment
+   * highlights changed, through `renderCellContent` as in `toDOM`; and every
+   * moved cell's `data-source-from`/`-to`, which search, the selection toolbar
+   * and keyboard navigation read off the DOM. Handlers need nothing: they read
+   * positions from {@link TableDomModel} at event time, swapped below.
+   *
+   * Nothing is mutated before the shape check passes — CM6 offers the DOM of any
+   * cached table widget here, and a refused candidate must come back untouched.
+   */
+  updateDOM(dom: HTMLElement, view: EditorView): boolean {
+    const model = tableModels.get(dom);
+    if (!model) return false;
+    if (model.mode !== this.mode) return false;
+    const prev = model.ctx;
+    const next = this.ctx;
+    if (!sameTableShape(prev, next)) return false;
+
+    // Comment highlights are relative to the cell, so they only need looking at
+    // when either side has anchors at all — usually neither does.
+    const checkAnchors = model.anchors.length > 0 || this.anchors.length > 0;
+
+    for (let r = 0; r < next.rows.length; r++) {
+      const a = prev.rows[r];
+      const b = next.rows[r];
+      if (b.isDelimiter) continue;
+      // Same text at the same place means every cell is identical.
+      if (a.text === b.text && a.from === b.from && !checkAnchors) continue;
+      const els = model.textEls[r];
+      for (let c = 0; c < b.cells.length; c++) {
+        const ca = a.cells[c];
+        const cb = b.cells[c];
+        const el = els[c];
+        if (ca.from !== cb.from || ca.to !== cb.to) {
+          el.dataset.sourceFrom = String(cb.from);
+          el.dataset.sourceTo = String(cb.to);
+        }
+        let highlights: CellHighlight[] | null = null;
+        let rerender = ca.text !== cb.text;
+        if (!rerender && checkAnchors) {
+          highlights = cellHighlights(cb, this.anchors);
+          rerender = !sameHighlights(cellHighlights(ca, model.anchors), highlights);
+        }
+        if (rerender) {
+          el.textContent = '';
+          renderCellContent(el, cb.text, view, highlights ?? cellHighlights(cb, this.anchors));
+        }
+      }
+    }
+
+    model.ctx = next;
+    model.anchors = this.anchors;
+    return true;
   }
 
   eq(other: TableWidget): boolean {
@@ -515,9 +660,10 @@ class TableWidget extends WidgetType {
 
   /**
    * The hotkey cheatsheet lives in `document.body`, so it does not go away with
-   * the widget's own DOM. A structural edit rebuilds the table on every
-   * keystroke's worth of change, and a panel left behind would hover over a
-   * button that no longer exists.
+   * the widget's own DOM. A structural edit rebuilds the table, and a panel
+   * left behind would hover over a button that no longer exists. (A patch in
+   * place through `updateDOM` keeps the button, and CM6 does not call this for
+   * it.)
    */
   destroy(): void {
     clearHotkeySheets();
@@ -897,11 +1043,11 @@ function tableContextAtLine(view: EditorView, tableLine: number): TableContext |
 /**
  * Open the edit overlay on one cell of a freshly re-read table.
  *
- * The cell is found by the source range frozen onto its nested editing host by
+ * The cell is found by the source range written onto its nested editing host by
  * `makeWidgetTextSelectable`, which is exactly the cell's identity and is safe
- * to trust for the reason the attribute exists at all: `TableWidget.eq()`
- * compares every cell `from`, so a widget whose cells moved is rebuilt rather
- * than reused.
+ * to trust because it is never stale: a widget whose cells moved is either
+ * rebuilt (`eq()` compares every cell `from`) or patched by
+ * `TableWidget.updateDOM`, which rewrites the range of every moved cell.
  *
  * CM6 writes the DOM synchronously inside `dispatch`, so the element is normally
  * there already; the one retried frame covers a rebuild deferred into a measure
@@ -1022,6 +1168,17 @@ function showCellEditor(
 ): void {
   document.querySelector('.cm-md-table-editor')?.remove();
 
+  /**
+   * The cell as the document has it *now*. `cell` is what the field opened
+   * with; while it is open the table can be patched in place under it
+   * (`TableWidget.updateDOM` — another edit, an AI edit, a reload), so every
+   * write resolves the range through the table's model by the cell's (row,
+   * col). Without a `place` there is nothing to resolve by, and `cell` stands.
+   */
+  const model = place ? tableModelOf(cellEl) : undefined;
+  const current = (): CellInfo =>
+    (model && place ? liveCell(model, place.row, place.col) : undefined) ?? cell;
+
   const rect = cellEl.getBoundingClientRect();
   const cellStyle = getComputedStyle(cellEl);
   const lineEl = cellEl.closest('.cm-md-table-line');
@@ -1098,9 +1255,13 @@ function showCellEditor(
     if (committed) return;
     committed = true;
     const newText = encodeForCommit(ta.value);
+    // "Unchanged" is against what the field opened with — an untouched field
+    // must not overwrite a cell that changed underneath it — but the write goes
+    // to where the cell is now.
     if (newText !== cell.text) {
+      const at = current();
       view.dispatch({
-        changes: { from: cell.from, to: cell.to, insert: newText },
+        changes: { from: at.from, to: at.to, insert: newText },
       });
     }
     destroy();
@@ -1121,11 +1282,12 @@ function showCellEditor(
       return;
     }
     const doc = view.state.doc;
-    if (cell.from > doc.length) {
+    const at = current();
+    if (at.from > doc.length) {
       commit();
       return;
     }
-    const tableLine = doc.lineAt(cell.from).number - place.row;
+    const tableLine = doc.lineAt(at.from).number - place.row;
     commit();
     moveAfterCommit(view, tableLine, place, move);
   };
@@ -1211,7 +1373,7 @@ function showCellEditor(
       // Снимок до коммита: `commit()` разрушает поле, а `ta.value` после
       // `remove()` читать уже нечестно.
       const value = ta.value;
-      const base = cell.from;
+      const base = current().from;
       commit();
       return {
         from: base + encodedOffset(value, from),
@@ -1273,7 +1435,8 @@ function parkCaretOnMouseDown(
   e: MouseEvent,
   view: EditorView,
   textEl: HTMLElement,
-  cell: CellInfo
+  /** Resolved on `mouseup`, so a table patched in between is read as it is then. */
+  cellAt: () => CellInfo | undefined
 ): void {
   if (e.button !== 0 || e.defaultPrevented) return;
   if (cellEditorOpen()) return;
@@ -1288,7 +1451,8 @@ function parkCaretOnMouseDown(
   const sync = (): void => {
     document.removeEventListener('mouseup', sync, true);
     if (cellEditorOpen()) return;
-    syncDocCaret(view, textEl, cell);
+    const cell = cellAt();
+    if (cell) syncDocCaret(view, textEl, cell);
   };
   document.addEventListener('mouseup', sync, true);
 }
@@ -1384,16 +1548,20 @@ function buildCell(
   cell: CellInfo,
   colIndex: number,
   isHeader: boolean,
-  ctx: TableContext,
+  model: TableDomModel,
   view: EditorView,
   /** Index of this cell's row in `ctx.rows` — what keyboard navigation steps (#68). */
   rowIndex: number,
-  colCtrl?: ColCtrl,
-  anchors: CommentAnchorSpan[] = []
+  colCtrl?: ColCtrl
 ): HTMLElement {
   const cellEl = document.createElement('span');
   cellEl.className = 'cm-md-table-cell';
   if (isHeader) cellEl.classList.add('cm-md-table-cell-header');
+
+  // Every handler below resolves the cell when it fires, never through `cell`:
+  // `TableWidget.updateDOM` keeps this element across edits that move it.
+  const place: CellPlace = { row: rowIndex, col: colIndex };
+  const cellAt = (): CellInfo | undefined => liveCell(model, rowIndex, colIndex);
 
   // The text gets its own element so the nested editing host covers exactly
   // the cell's content and none of the hover controls: a `contenteditable`
@@ -1403,27 +1571,29 @@ function buildCell(
   // The cell's source range travels on the element: a selection made inside it
   // is invisible to `state.selection` (the widget claims the events), so this
   // is the only way back from rendered characters to document positions — see
-  // `live-render/cell-anchor.ts`. Safe to freeze into the DOM because the
-  // widget's `eq()` compares every cell `from`, so any shift rebuilds it.
+  // `live-render/cell-anchor.ts`. Kept current by `TableWidget.updateDOM`,
+  // which rewrites it for every cell an edit moved.
   makeWidgetTextSelectable(textEl, {
     source: { from: cell.from, to: cell.to },
     // A caret parked in a cell promises that typing edits that cell. The host
     // cannot keep that promise itself, so the keystroke opens the edit overlay
     // at the parked offset and is replayed into it (#53).
-    onRefusedInput: (event) =>
-      handleCellInput(event, view, cellEl, textEl, cell, { row: rowIndex, col: colIndex }),
+    onRefusedInput: (event) => {
+      const live = cellAt();
+      if (live) handleCellInput(event, view, cellEl, textEl, live, place);
+    },
   });
-  renderCellContent(textEl, cell.text, view, cellHighlights(cell, anchors));
+  renderCellContent(textEl, cell.text, view, cellHighlights(cell, model.anchors));
   cellEl.appendChild(textEl);
+  model.textEls[rowIndex].push(textEl);
 
-  cellEl.addEventListener('mousedown', (e) =>
-    parkCaretOnMouseDown(e, view, textEl, cell)
-  );
+  cellEl.addEventListener('mousedown', (e) => parkCaretOnMouseDown(e, view, textEl, cellAt));
 
   cellEl.addEventListener('dblclick', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    showCellEditor(view, cellEl, cell, undefined, { row: rowIndex, col: colIndex });
+    const live = cellAt();
+    if (live) showCellEditor(view, cellEl, live, undefined, place);
   });
 
   if (isHeader && colCtrl) {
@@ -1464,7 +1634,7 @@ function selectionInside(root: HTMLElement): boolean {
   return node !== null && root.contains(node);
 }
 
-function createColCtrl(view: EditorView, ctx: TableContext, wrap: HTMLElement): ColCtrl {
+function createColCtrl(view: EditorView, model: TableDomModel, wrap: HTMLElement): ColCtrl {
   const el = document.createElement('span');
   el.className = 'cm-md-table-col-ctrl';
 
@@ -1473,14 +1643,17 @@ function createColCtrl(view: EditorView, ctx: TableContext, wrap: HTMLElement): 
 
   const drag = mkBtn('⠿', 'cm-md-table-btn-drag cm-md-table-btn-drag-col', () => {});
   drag.addEventListener('mousedown', (e) => {
-    if (target) startColDrag(e, view, ctx, target.colIndex, target.cellEl);
+    if (target) startColDrag(e, view, model, target.colIndex, target.cellEl);
   });
   el.appendChild(drag);
 
-  if (ctx.colCount > 1) {
+  // Whether − exists is shape, and `updateDOM` never patches across a change of
+  // shape — so reading `colCount` once, here, is safe. What it deletes is not:
+  // that is read from the model on the click.
+  if (model.ctx.colCount > 1) {
     el.appendChild(
       mkBtn('−', 'cm-md-table-btn-del', () => {
-        if (target) deleteColumn(view, ctx, target.colIndex);
+        if (target) deleteColumn(view, model.ctx, target.colIndex);
       })
     );
   }
@@ -1535,12 +1708,14 @@ function createColCtrl(view: EditorView, ctx: TableContext, wrap: HTMLElement): 
   return { el, attach, scheduleHide };
 }
 
-function buildHeaderCtrlCell(view: EditorView, ctx: TableContext): HTMLElement {
+function buildHeaderCtrlCell(view: EditorView, model: TableDomModel): HTMLElement {
   const cellEl = document.createElement('span');
   cellEl.className = 'cm-md-table-cell cm-md-table-row-ctrl';
 
+  // The mode is keyed by the table's position, which typing above the table
+  // moves without rebuilding it — read on the click, not here.
   const toggleBtn = mkBtn('⇔', 'cm-md-table-btn-toggle', () => {
-    view.dispatch({ effects: toggleTableMode.of({ pos: ctx.nodeFrom }) });
+    view.dispatch({ effects: toggleTableMode.of({ pos: model.ctx.nodeFrom }) });
   });
   toggleBtn.title = t('editor.tables.toggle_mode');
   cellEl.appendChild(toggleBtn);
@@ -1556,7 +1731,7 @@ function buildHeaderCtrlCell(view: EditorView, ctx: TableContext): HTMLElement {
 
 function buildDataCtrlCell(
   view: EditorView,
-  ctx: TableContext,
+  model: TableDomModel,
   dataRowIndex: number,
   rowEl: HTMLElement,
   dataCount: number
@@ -1564,16 +1739,17 @@ function buildDataCtrlCell(
   const cellEl = document.createElement('span');
   cellEl.className = 'cm-md-table-cell cm-md-table-row-ctrl';
 
+  // `dataCount` is shape (see `createColCtrl`); the grid the − rewrites is not.
   if (dataCount > 1) {
     const del = mkBtn('−', 'cm-md-table-btn-del cm-md-table-btn-del-row-left', () =>
-      deleteRow(view, ctx, dataRowIndex)
+      deleteRow(view, model.ctx, dataRowIndex)
     );
     cellEl.appendChild(del);
   }
 
   const dragHandle = mkBtn('⠿', 'cm-md-table-btn-drag cm-md-table-btn-drag-row', () => {});
   dragHandle.addEventListener('mousedown', (e) => {
-    startRowDrag(e, view, ctx, dataRowIndex, rowEl);
+    startRowDrag(e, view, model, dataRowIndex, rowEl);
   });
   cellEl.appendChild(dragHandle);
 
@@ -1582,22 +1758,20 @@ function buildDataCtrlCell(
 
 function buildHeaderRow(
   row: RowData,
-  ctx: TableContext,
+  /** Always 0 — the header is the table's first line by GFM's definition. */
+  rowIndex: number,
+  model: TableDomModel,
   view: EditorView,
-  colCtrl: ColCtrl,
-  anchors: CommentAnchorSpan[] = []
+  colCtrl: ColCtrl
 ): HTMLElement {
   const tr = document.createElement('span');
   tr.className = 'cm-md-table-row cm-md-table-row-header';
 
-  // The header is always `ctx.rows[0]` — `buildTableContext` walks the table's
-  // lines in order and the first one is the header by GFM's definition.
-  const rowIndex = 0;
+  tr.appendChild(buildHeaderCtrlCell(view, model));
 
-  tr.appendChild(buildHeaderCtrlCell(view, ctx));
-
+  model.textEls[rowIndex] = [];
   row.cells.forEach((cell, i) => {
-    tr.appendChild(buildCell(cell, i, true, ctx, view, rowIndex, colCtrl, anchors));
+    tr.appendChild(buildCell(cell, i, true, model, view, rowIndex, colCtrl));
   });
 
   tr.addEventListener('mouseleave', colCtrl.scheduleHide);
@@ -1607,24 +1781,27 @@ function buildHeaderRow(
 
 function buildDataRow(
   row: RowData,
+  /**
+   * Index of the row in `ctx.rows`, which still contains the delimiter — what
+   * navigation steps (#68). Passed in rather than found with `indexOf`, which
+   * made building a table quadratic in its rows.
+   */
+  rowIndex: number,
+  /** Index among the data rows only — what delete and drag count in. */
   dataRowIndex: number,
-  ctx: TableContext,
+  model: TableDomModel,
   view: EditorView,
-  dataCount: number,
-  anchors: CommentAnchorSpan[] = []
+  dataCount: number
 ): HTMLElement {
   const tr = document.createElement('span');
   tr.className = 'cm-md-table-row cm-md-table-row-data';
 
-  const ctrlCell = buildDataCtrlCell(view, ctx, dataRowIndex, tr, dataCount);
+  const ctrlCell = buildDataCtrlCell(view, model, dataRowIndex, tr, dataCount);
   tr.appendChild(ctrlCell);
 
-  // Navigation steps `ctx.rows`, which still contains the delimiter this row
-  // list has filtered out, so the data index is not the one to hand on (#68).
-  const rowIndex = ctx.rows.indexOf(row);
-
+  model.textEls[rowIndex] = [];
   row.cells.forEach((cell, i) => {
-    tr.appendChild(buildCell(cell, i, false, ctx, view, rowIndex, undefined, anchors));
+    tr.appendChild(buildCell(cell, i, false, model, view, rowIndex));
   });
 
   return tr;

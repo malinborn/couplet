@@ -152,6 +152,54 @@ Without these comparisons, CM6 reuses the stale widget after structural
 changes (add/delete row/col) or mode toggle, causing wrong DOM positions and
 out-of-date rendering.
 
+`eq` true means nothing to do. `eq` false no longer means a rebuild — see
+`updateDOM` below.
+
+### `updateDOM` — Patch in Place, Rebuild Only on a New Shape
+
+A commit into a cell, and every keystroke above a table, moves cell `from`s,
+so `eq` is false on both. Rebuilding there cost a whole table of DOM per edit —
+measured in WebKit at 10k rows × 6 columns: ~220k nodes and 1.7 s for a
+one-cell commit, and 30–40 ms per keystroke above a 300-row markdown table.
+`TableWidget.updateDOM` patches the existing DOM instead (10k rows: 1 node,
+0.26 s; typing above: DOM kept, ~4 ms dispatch).
+
+- **Compatible = same `mode` and same shape**: row count and every row's cell
+  count (`sameTableShape`). Shape decides which controls exist (row − only past
+  one data row, column − only past one column), so anything else returns
+  `false` and CM6 calls `toDOM`. **Add/delete row/column rebuilds** — fine for
+  now; a row-level patch would be the next step for huge CSVs. A same-shape
+  reorder (row/column drag, an AI edit swapping lines) is patched like any text
+  change.
+- **Patched**: every cell whose text changed or whose comment highlights
+  changed (re-rendered through `renderCellContent`, so #62 highlights stay one
+  code path), and `data-source-from`/`-to` of every cell that moved. Nothing is
+  mutated before the shape check: CM6's tile cache offers the DOM of *any*
+  cached widget of this class, and a refused candidate must come back intact.
+- **Handlers read live state.** This is the part that breaks silently. Every
+  handler built in `toDOM` used to close over a `CellInfo` or the `ctx`; after
+  an in-place patch those are stale and an edit lands where the cell *used* to
+  be. Now each widget DOM owns a mutable `TableDomModel` (`tableModels`,
+  a `WeakMap` keyed by the `.cm-md-table-wrap` root) holding the `ctx` and
+  anchors the DOM currently shows; `updateDOM` swaps them after patching.
+  Handlers close over the model plus the cell's (row, col) — stable across a
+  compatible update by definition — and resolve the cell when the event fires:
+  dblclick, mousedown/mouseup caret parking, the `beforeinput` replay, the ⇔
+  toggle (`model.ctx.nodeFrom`), row −/drag, column −/drag, add row/column.
+  Only *shape* (`colCount > 1`, `dataCount > 1`) is read at build time.
+- **The overlay resolves too.** `showCellEditor` takes the model from
+  `cellEl` and re-reads its cell by `place` on commit, Tab/Enter and 💬, so an
+  edit patched in while it is open does not misdirect the write. "Unchanged"
+  is still judged against the text it opened with.
+- **When adding a handler to the widget:** never capture a position-bearing
+  value (`cell`, `ctx`, `row.from`, `nodeFrom`) in a closure — go through the
+  model. `table-update-dom.test.ts` drives every handler *after* a patched edit
+  and asserts both that the DOM was kept and where the write landed; a stale
+  capture fails it.
+
+CM6 does not call `destroy()` on a widget whose DOM was reused, so the hotkey
+sheet survives a patch (its button does too).
+
 ### Table Operations: Two Strategies
 
 **1. `replaceTable()` — full table replacement via `markdown-table` library**
@@ -241,8 +289,10 @@ Four things about this are load-bearing:
   inside one line but never adds or removes a line, because `encodeForCommit`
   turns newlines into `<br>`.
 - **The destination cell is found by `data-source-from`/`-to`** on the nested
-  editing host. Safe because `TableWidget.eq()` compares every cell `from`, so a
-  widget whose cells moved is rebuilt rather than reused.
+  editing host. Safe because those are never stale: a widget whose cells moved
+  is either rebuilt (`eq()` compares every cell `from`) or patched by
+  `updateDOM`, which rewrites the range of every moved cell synchronously
+  inside the commit's `dispatch`.
 - **A row with no cells is not a destination.** GFM only ends a table at a blank
   line or another block-level structure, so a bare paragraph written directly
   under a table parses as one more row of it — with no pipes and so no cells.
@@ -332,8 +382,8 @@ whatever it held before. Anything asking "is the user working in this editor"
 must therefore ask about the hosts too, and anything wanting the selected text
 must map it back through `live-render/cell-anchor.ts` (#42). The cell's source
 range rides on the host as `data-source-from` / `data-source-to`, put there by
-`makeWidgetTextSelectable`; it is safe to freeze into the DOM only because the
-widget's `eq()` compares every cell `from`.
+`makeWidgetTextSelectable`, and kept current by `TableWidget.updateDOM` (or a
+rebuild) whenever an edit moves the cell.
 
 The hover controls stay **outside** the host: a `contenteditable` ancestor would
 swallow the mousedown that starts a column drag.

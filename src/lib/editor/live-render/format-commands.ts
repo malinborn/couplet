@@ -505,10 +505,10 @@ export function isInlineFormatActiveInText(
  * same add/remove decision to it, so a cell and a paragraph cannot disagree
  * about what bold means.
  *
- * No selection travels with the transaction. The row's widget is rebuilt by the
- * change (`eq()` compares every cell position), taking the DOM selection with
- * it, and a document caret dropped into the middle of a table row would be a
- * caret the user cannot see.
+ * No selection travels with the transaction. The change re-renders the cell's
+ * text (`TableWidget.updateDOM`, or a rebuild of the whole widget), taking the
+ * DOM selection with it, and a document caret dropped into the middle of a
+ * table row would be a caret the user cannot see.
  */
 export function toggleInlineFormatAt(
   view: EditorView,
