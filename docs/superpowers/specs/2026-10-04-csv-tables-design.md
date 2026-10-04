@@ -185,10 +185,17 @@ symlink) kept its dialect under one key and was written under the other, so
 - `applyDocumentConfig`: `'csv'` → markdown language, `setCodeMode(null)`, plus
   an editor class `cm-csv-file-mode`.
 - `applyPreviewConfig`: `'csv'` always installs
-  `[livePreviewPlugin, flavourFacet.of(LIVE_PREVIEW), tableConfig.of({ maxLines: Infinity, placeholder: '' }), csvEditGuard]`
+  `[livePreviewPlugin, flavourFacet.of(LIVE_PREVIEW), tableConfig.of({ maxLines: Infinity, placeholder: '' }), previewRebuild.of({ onSelection: false, onViewport: false }), csvEditGuard]`
+  (`csvPreviewExtensions`)
   **regardless of the engine** — Cmd+E (`raw`) and the live-render engine are
   global settings, so a CSV tab ignores them rather than trying to block the
   menu.
+- `previewRebuild` (`preview/plugin.ts`) turns off the decoration rebuild on
+  selection-only and viewport-only updates: a CSV buffer is one table and a
+  table never reveals, so a caret move (every cell click parks the caret,
+  #53) or a scroll used to rebuild the whole pass to an equal set — ~60 ms per
+  click at 100k rows. Document, tree, comment, table-mode and config changes
+  still rebuild. Markdown keeps the default (both on).
 - `cm-csv-file-mode` hides the hover "+" gutter (CSS, the way
   `cm-code-file-mode` already restyles it).
 - `cm-csv-file-mode` also hides the per-table ⇔ wrap/full toggle: it would

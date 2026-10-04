@@ -5,7 +5,7 @@ import {
   type ViewUpdate,
   type EditorView,
 } from '@codemirror/view';
-import { RangeSetBuilder } from '@codemirror/state';
+import { Facet, RangeSetBuilder, combineConfig } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import { decorateHeading } from './headings';
 import {
@@ -52,6 +52,39 @@ class SortingSink implements DecoSink {
     return builder.finish();
   }
 }
+
+/**
+ * Which view changes make `livePreviewPlugin` rebuild its decorations on their
+ * own. Both default to `true` — markdown's behaviour: a reveal-on-cursor
+ * element (`flavour.ts`) changes with the selection.
+ *
+ * A document kind whose decorations depend on neither turns them off: a CSV
+ * buffer is one table, and a table never reveals (preview/CLAUDE.md, "Always
+ * Rendered"), so a caret move or a scroll there rebuilt the whole pass — a
+ * `TableContext` over every row and a `TableWidget.eq` over every cell — to
+ * produce an equal set (~60 ms per caret move at 100k rows). Everything else
+ * that feeds the pass (document, syntax tree, comments, table mode, flavour,
+ * table config) still rebuilds whatever this says. Providers combine with
+ * OR: any one asking for a rebuild gets it.
+ *
+ * A config, not a branch on the document kind — the same rule as `tableConfig`.
+ */
+export interface PreviewRebuildConfig {
+  /** Rebuild on a selection-only update. */
+  onSelection: boolean;
+  /** Rebuild when the viewport moves. */
+  onViewport: boolean;
+}
+
+export const previewRebuild = Facet.define<Partial<PreviewRebuildConfig>, PreviewRebuildConfig>({
+  combine: (values) =>
+    combineConfig<PreviewRebuildConfig>(
+      values,
+      { onSelection: true, onViewport: true },
+      { onSelection: (a: boolean, b: boolean) => a || b, onViewport: (a: boolean, b: boolean) => a || b }
+    ),
+  compare: (a, b) => a.onSelection === b.onSelection && a.onViewport === b.onViewport,
+});
 
 export function buildDecorations(view: EditorView): DecorationSet {
   const builder = new SortingSink();
@@ -180,7 +213,13 @@ export const livePreviewPlugin = ViewPlugin.fromClass(
       const commentsChanged =
         update.state.field(aiCommentField, false) !==
         update.startState.field(aiCommentField, false);
-      if (update.docChanged || update.viewportChanged || update.selectionSet || treeChanged || mermaidUpdate || tableModeUpdate || flavourChanged || tableConfigChanged || commentsChanged) {
+      // Same reason again; and `previewRebuild` itself decides what follows.
+      const rebuildConfig = update.state.facet(previewRebuild);
+      const rebuildConfigChanged = rebuildConfig !== update.startState.facet(previewRebuild);
+      const viewDriven =
+        (update.viewportChanged && rebuildConfig.onViewport) ||
+        (update.selectionSet && rebuildConfig.onSelection);
+      if (update.docChanged || viewDriven || treeChanged || mermaidUpdate || tableModeUpdate || flavourChanged || tableConfigChanged || commentsChanged || rebuildConfigChanged) {
         try {
           this.decorations = buildDecorations(update.view);
         } catch (e) {

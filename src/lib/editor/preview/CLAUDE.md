@@ -558,7 +558,15 @@ A `.csv`/`.tsv` buffer **is** a GFM table (`src/lib/csv/`: decoded on read, enco
 - `maxLines` — the row cap `buildTableContext` applies (default 500; CSV `Infinity`). `decorateTable` and `tableContextAtLine` read it from state.
 - `placeholder` — what `addRow`, `addColumn` and `newRowMarkdown` (`Mod-Shift-Enter`) put in a new cell (default `-`; CSV `''`).
 
-The default is today's markdown behaviour; CSV supplies its values through `csvPreviewExtensions`. `livePreviewPlugin` rebuilds when the facet changes. **Never branch on "is this CSV" inside `tables.ts`** — a CSV need that the facet cannot express is a new facet field with a markdown default, not an `if`. Keeping the buffer one table (no text around it, undo across a reload) is `csv-guard.ts`'s job, outside table code; the ⇔ toggle and the hover "+" gutter are hidden in a CSV tab by CSS (`cm-csv-file-mode`).
+The default is today's markdown behaviour; CSV supplies its values through `csvPreviewExtensions`. `livePreviewPlugin` rebuilds when the facet changes.
+
+The plugin has one more CSV-facing knob, outside table code — the `previewRebuild` facet (`plugin.ts`), `{ onSelection, onViewport }`, both `true` by default (markdown: a reveal-on-cursor element changes with the selection). CSV sets both to `false`: its buffer is one table, a table never reveals, so a selection- or viewport-only update can only rebuild an equal set — and in a CSV that pass is a `TableContext` over every row plus a `TableWidget.eq` over every cell, paid on every cell click (the parked caret, #53, is a selection change). Rules for it:
+
+- It only drops the *view-driven* triggers. Document, syntax tree, comment field (#62), `toggleTableMode`, flavour, `tableConfig` and the facet itself still rebuild.
+- Nothing in a CSV tab may depend on a selection-driven rebuild. What looks like it does not: the snap-out and the `select.cell` exemption are an `updateListener` (`table-selection.ts`), search hits in cells are their own plugin reading `state.selection` (`search/widget-matches.ts`), the caret in a cell is the DOM's, and `noteTableUpdate` still runs on every update (it is called before the rebuild decision). `preview-rebuild.test.ts` pins the parked caret, the snap-out and a commit under the opt-out.
+- Providers combine with OR — any one asking for a rebuild gets it. A new document kind that needs view-driven rebuilds back simply does not opt out.
+
+**Never branch on "is this CSV" inside `tables.ts`** — a CSV need that the facet cannot express is a new facet field with a markdown default, not an `if`. Keeping the buffer one table (no text around it, undo across a reload) is `csv-guard.ts`'s job, outside table code; the ⇔ toggle and the hover "+" gutter are hidden in a CSV tab by CSS (`cm-csv-file-mode`).
 
 ## Mermaid Pan/Zoom (`mermaid-viewport.ts`, `mermaid-state.ts`)
 
