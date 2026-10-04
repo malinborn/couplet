@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import { EditorState, Transaction, type Extension } from '@codemirror/state';
 import { EditorView, keymap, runScopeHandlers } from '@codemirror/view';
-import { history, historyKeymap } from '@codemirror/commands';
+import { history, historyKeymap, undo } from '@codemirror/commands';
 import { computeReplacement } from '../editor/content-diff';
 import { ensureSyntaxTree } from '@codemirror/language';
 import { markdownExtension } from '../editor/markdown-language';
@@ -120,6 +120,50 @@ describe('undo across a disk reload, through the view', () => {
       expect(view.state.doc.toString()).toContain('| 3 | 4 |\nx | y | z |');
       view.destroy();
     }
+  });
+
+  /**
+   * A redo pending across a reload: delete a row, undo it, reload. Mod-y is
+   * the redo key on every platform but macOS — this file runs on jsdom's
+   * default (empty) platform; the mac keys are in `csv-history-mac.test.ts`.
+   */
+  function redoAcrossReload(preview: Extension): { view: EditorView; disk: string } {
+    const doc = rowsToTable([['a', 'b'], ['1', '2'], ['3', '4']]);
+    const view = new EditorView({
+      state: EditorState.create({
+        doc,
+        extensions: [markdownExtension(), history(), keymap.of(historyKeymap), preview],
+      }),
+    });
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: rowsToTable([['a', 'b'], ['1', '2']]) },
+      userEvent: 'input',
+    });
+    undo(view);
+    expect(view.state.doc.toString()).toBe(doc);
+    const disk = rowsToTable([['x', 'y', 'z'], ['9', '8', '7']]);
+    const repl = computeReplacement(view.state.doc.toString(), disk);
+    if (!repl) throw new Error('no replacement');
+    view.dispatch({ changes: repl, annotations: Transaction.addToHistory.of(false) });
+    expect(view.state.doc.toString()).toBe(disk);
+    return { view, disk };
+  }
+
+  const pressModY = (view: EditorView) =>
+    runScopeHandlers(view, new KeyboardEvent('keydown', { key: 'y', metaKey: isMac, ctrlKey: !isMac }), 'editor');
+
+  it('Mod-y (redo) leaves the reloaded table alone', () => {
+    const { view, disk } = redoAcrossReload(csvPreviewExtensions);
+    expect(pressModY(view)).toBe(true);
+    expect(view.state.doc.toString()).toBe(disk);
+    view.destroy();
+  });
+
+  it('control: without the CSV bundle Mod-y glues the kept rows on', () => {
+    const { view } = redoAcrossReload(livePreviewPlugin);
+    expect(pressModY(view)).toBe(true);
+    expect(view.state.doc.toString()).toContain('| 1 | 2 |\nx | y | z |');
+    view.destroy();
   });
 
   it('Mod-z still undoes an ordinary cell edit', () => {
