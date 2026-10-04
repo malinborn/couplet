@@ -17,6 +17,7 @@ import {
 import { matchCellBinding } from './table-keys';
 import { createHotkeySheetButton, clearHotkeySheets } from './table-hotkey-sheet';
 import { toggleTableMode, getTableMode } from './table-state';
+import { tableConfig, DEFAULT_TABLE_CONFIG } from './table-config';
 import {
   encodeForCommit,
   decodeForEdit,
@@ -122,7 +123,7 @@ function addRow(view: EditorView, ctx: TableContext): void {
     changes: {
       from: lastRow.to,
       to: lastRow.to,
-      insert: '\n' + newRowMarkdown(ctx.colWidths),
+      insert: '\n' + newRowMarkdown(ctx.colWidths, view.state.facet(tableConfig).placeholder),
     },
   });
 }
@@ -139,7 +140,7 @@ function addColumn(view: EditorView, ctx: TableContext): void {
   const grid = tableToGrid(ctx);
   grid[0].push(t('editor.tables.new_column'));
   for (let i = 1; i < grid.length; i++) {
-    grid[i].push('-');
+    grid[i].push(view.state.facet(tableConfig).placeholder);
   }
   replaceTable(view, ctx, grid);
 }
@@ -886,7 +887,7 @@ function tableContextAtLine(view: EditorView, tableLine: number): TableContext |
   let node: SyntaxNode | null = tree.resolveInner(Math.min(line.from + 1, line.to), 1);
   while (node && node.name !== 'Table') node = node.parent;
   if (!node) return null;
-  return buildTableContext(doc, node.from, node.to);
+  return buildTableContext(doc, node.from, node.to, view.state.facet(tableConfig).maxLines);
 }
 
 /**
@@ -979,7 +980,7 @@ function moveAfterCommit(
     const anchor = ctx.rows[after];
     if (!anchor) return;
     view.dispatch({
-      changes: { from: anchor.to, insert: '\n' + newRowMarkdown(ctx.colWidths) },
+      changes: { from: anchor.to, insert: '\n' + newRowMarkdown(ctx.colWidths, view.state.facet(tableConfig).placeholder) },
     });
     const grown = tableContextAtLine(view, tableLine);
     if (!grown) return;
@@ -1641,13 +1642,15 @@ function buildDataRow(
 export function buildTableContext(
   doc: Text,
   nodeFrom: number,
-  nodeTo: number
+  nodeTo: number,
+  maxLines: number = DEFAULT_TABLE_CONFIG.maxLines
 ): TableContext | null {
   const startLine = doc.lineAt(nodeFrom);
   const endLine = doc.lineAt(nodeTo);
 
-  // Performance guard — bail before parsing pathological tables
-  if (endLine.number - startLine.number + 1 > 500) return null;
+  // Performance guard — bail before parsing pathological tables. A document
+  // type can lift it through the `tableConfig` facet (CSV does).
+  if (endLine.number - startLine.number + 1 > maxLines) return null;
 
   const rows: RowData[] = [];
   const colWidths: number[] = [];
@@ -1694,7 +1697,7 @@ export function decorateTable(
   // rendered as a widget, never reverting to raw markdown on cursor. The widget
   // absorbs its own events, so there is no `shouldReveal` call here by design,
   // not by omission. See preview/CLAUDE.md, "Always Rendered".
-  const ctx = buildTableContext(view.state.doc, node.from, node.to);
+  const ctx = buildTableContext(view.state.doc, node.from, node.to, view.state.facet(tableConfig).maxLines);
   if (!ctx) return;
   const rows = ctx.rows;
 

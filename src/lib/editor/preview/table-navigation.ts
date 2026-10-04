@@ -130,8 +130,8 @@ export function planTableExit(
  * row of blanks would not be part of the table at all and the widget would stop
  * drawing it. Same reason `addRow` has always done it this way.
  */
-export function newRowMarkdown(colWidths: number[]): string {
-  const cells = colWidths.map((w) => ' ' + '-'.padEnd(Math.max(w, 1)) + ' ');
+export function newRowMarkdown(colWidths: number[], placeholder: string = '-'): string {
+  const cells = colWidths.map((w) => ' ' + placeholder.padEnd(Math.max(w, 1)) + ' ');
   return '|' + cells.join('|') + '|';
 }
 

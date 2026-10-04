@@ -20,6 +20,7 @@ import { decorateHorizontalRule, decorateFencedCode } from './blocks';
 import { decorateTable } from './tables';
 import { decorateMermaidBlock, mermaidRendered } from './mermaid';
 import { toggleTableMode } from './table-state';
+import { tableConfig } from './table-config';
 import { flavourFacet } from './flavour';
 import { aiCommentField } from '../ai-comment';
 import { isRenderedLink } from './link-refs';
@@ -161,6 +162,10 @@ export const livePreviewPlugin = ViewPlugin.fromClass(
       // switch appears to do nothing until the next keystroke.
       const flavourChanged =
         update.state.facet(flavourFacet) !== update.startState.facet(flavourFacet);
+      // Same reason as the flavour: a compartment reconfigure that only swaps
+      // the table config changes neither document nor selection.
+      const tableConfigChanged =
+        update.state.facet(tableConfig) !== update.startState.facet(tableConfig);
       // A table paints the highlight of a comment anchored inside a cell
       // itself, because its own source lines are hidden (#62) — so the set of
       // anchors is an input to this pass, and the pass has to run when it
@@ -169,7 +174,7 @@ export const livePreviewPlugin = ViewPlugin.fromClass(
       const commentsChanged =
         update.state.field(aiCommentField, false) !==
         update.startState.field(aiCommentField, false);
-      if (update.docChanged || update.viewportChanged || update.selectionSet || treeChanged || mermaidUpdate || tableModeUpdate || flavourChanged || commentsChanged) {
+      if (update.docChanged || update.viewportChanged || update.selectionSet || treeChanged || mermaidUpdate || tableModeUpdate || flavourChanged || tableConfigChanged || commentsChanged) {
         try {
           this.decorations = buildDecorations(update.view);
         } catch (e) {
