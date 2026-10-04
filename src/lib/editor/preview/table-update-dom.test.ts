@@ -12,7 +12,7 @@
  * kept (so the handler really is the old one) and where the write landed.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { EditorState } from '@codemirror/state';
+import { Compartment, EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { ensureSyntaxTree } from '@codemirror/language';
 import { markdownExtension } from '../markdown-language';
@@ -37,11 +37,14 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
+/** Holds the preview plugin, so a test can take it out and back the way Cmd+E does. */
+const preview = new Compartment();
+
 function makeView(doc: string): EditorView {
   const state = EditorState.create({
     doc,
     selection: { anchor: doc.length },
-    extensions: [markdownExtension(), tableModeField, aiCommentField, livePreviewPlugin],
+    extensions: [markdownExtension(), tableModeField, aiCommentField, preview.of(livePreviewPlugin)],
   });
   ensureSyntaxTree(state, doc.length, 5000);
   const view = new EditorView({ state, parent: document.body });
@@ -569,5 +572,104 @@ describe('caret parking and drags after a patch', () => {
     expect(lines[0]).toMatch(/^\| h2 +\| h1 /);
     expect(lines[2]).toMatch(/^\| a much longer cell \| a1 /);
     expect(view.state.doc.toString().endsWith('\n\nafter the table')).toBe(true);
+  });
+});
+
+describe('structural buttons with the overlay open commit the typing first', () => {
+  /** Open a1, type into it, and leave the field open — the way "+" is reached. */
+  function typeIntoA1(view: EditorView, value: string): void {
+    dblclick(textEl(view, 'a1'));
+    overlay().value = value;
+  }
+
+  it('+ add column keeps what was typed', () => {
+    const view = makeView(docWithTable());
+    typeIntoA1(view, 'ADDCOL');
+
+    mousedown(wrapEl(view).querySelector('.cm-md-table-btn-add-col')!);
+
+    const lines = tableLines(view);
+    expect(lines[2]).toMatch(/^\| ADDCOL +\| a2 +\| a3 +\|/);
+    expect(lines[0].split('|')).toHaveLength(6);
+    expect(document.querySelector('.cm-md-table-editor')).toBeNull();
+  });
+
+  it('− delete row keeps what was typed', () => {
+    const view = makeView(docWithTable());
+    typeIntoA1(view, 'DELROW');
+
+    const rows = wrapEl(view).querySelectorAll('.cm-md-table-row-data');
+    mousedown(rows[1].querySelector('.cm-md-table-btn-del-row-left')!);
+
+    const lines = tableLines(view);
+    expect(lines).toHaveLength(3);
+    expect(lines[2]).toMatch(/^\| DELROW +\| a2 +\| a3 +\|/);
+  });
+
+  it('− delete column keeps what was typed', () => {
+    const view = makeView(docWithTable());
+    typeIntoA1(view, 'DELCOL');
+
+    cellOf(textEl(view, 'h2')).dispatchEvent(new MouseEvent('mouseenter'));
+    mousedown(wrapEl(view).querySelector('.cm-md-table-col-ctrl .cm-md-table-btn-del')!);
+
+    const lines = tableLines(view);
+    expect(lines[0]).not.toContain('h2');
+    expect(lines[2]).toMatch(/^\| DELCOL +\| a3 +\|/);
+  });
+
+  it('a row drag keeps what was typed', () => {
+    const view = makeView(docWithTable());
+    typeIntoA1(view, 'DRAGGED');
+
+    const rows = wrapEl(view).querySelectorAll('.cm-md-table-row-data');
+    mousedown(rows[1].querySelector('.cm-md-table-btn-drag-row')!);
+    document.dispatchEvent(new MouseEvent('mousemove', { clientY: -1, bubbles: true }));
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+
+    const lines = tableLines(view);
+    expect(lines[2]).toMatch(/^\| b1 /);
+    expect(lines[3]).toMatch(/^\| DRAGGED +\| a2 /);
+  });
+
+  it('a column drag keeps what was typed', () => {
+    const view = makeView(docWithTable());
+    typeIntoA1(view, 'COLDRAG');
+
+    cellOf(textEl(view, 'h2')).dispatchEvent(new MouseEvent('mouseenter'));
+    mousedown(wrapEl(view).querySelector('.cm-md-table-col-ctrl .cm-md-table-btn-drag-col')!);
+    document.dispatchEvent(new MouseEvent('mousemove', { clientX: -1, bubbles: true }));
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+
+    expect(tableLines(view)[2]).toMatch(/^\| a2 +\| COLDRAG +\| a3 +\|/);
+  });
+});
+
+describe('the overlay across a preview round trip, and a deleted sibling table', () => {
+  it('raw mode and back with the overlay open: ⌘↩ still writes (the document never changed)', () => {
+    const view = makeView(docWithTable());
+    dblclick(textEl(view, 'a2'));
+    overlay().value = 'kept';
+
+    view.dispatch({ effects: preview.reconfigure([]) });
+    view.dispatch({ effects: preview.reconfigure(livePreviewPlugin) });
+    press(overlay(), 'Enter', { meta: true });
+
+    expect(tableLines(view)[2]).toBe('| a1 | kept | a3 |');
+  });
+
+  it('deleting the whole table above: the table below keeps its own DOM', () => {
+    const view = makeView(TWO_TABLES);
+    const oldB = wrapOf(view, 'hc');
+    const doc = view.state.doc.toString();
+    const aFrom = doc.indexOf('| ha');
+    const bFrom = doc.indexOf('| hc');
+
+    // [A.from, B.from): A's start maps exactly onto B's — position alone
+    // cannot tell them apart, only that A's first character was deleted.
+    view.dispatch({ changes: { from: aFrom, to: bFrom } });
+
+    expect(wrapOf(view, 'hc')).toBe(oldB);
+    expectRangesMatchDoc(view);
   });
 });

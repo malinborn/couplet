@@ -1,7 +1,7 @@
 import { Decoration, WidgetType } from '@codemirror/view';
 import type { EditorView, ViewUpdate } from '@codemirror/view';
 import { MapMode } from '@codemirror/state';
-import type { ChangeDesc, EditorState, Text } from '@codemirror/state';
+import type { ChangeDesc, Text } from '@codemirror/state';
 import { ensureSyntaxTree, syntaxTree } from '@codemirror/language';
 import type { SyntaxNode } from '@lezer/common';
 import type { DecoSink } from './utils';
@@ -27,6 +27,7 @@ import {
 } from './table-encoding';
 import { docPosForCaretIn, placeCaretFromPoint, visibleOffsetIn } from './cell-caret';
 import {
+  activeCellEditSession,
   applyTextareaEdit,
   endCellEditSession,
   setCellEditSession,
@@ -119,16 +120,23 @@ const pendingChanges = new WeakMap<EditorView, ChangeDesc>();
  * lands, so it tracks its cell's range itself.
  *
  * `lost` means the range can no longer be trusted: the cell was deleted (an end
- * swallowed by a deletion — the row or the whole table went), or an update
- * slipped past unseen (the preview plugin was out of the editor, e.g. raw
- * mode), leaving a gap in the mapping. A lost overlay refuses to commit.
+ * swallowed by a deletion — the row or the whole table went), or the document
+ * changed in an update this mapping never saw, leaving a gap in it. A lost
+ * overlay refuses to commit.
+ *
+ * "Never saw" is judged by **document identity**, not state identity. The
+ * preview plugin leaves the editor in raw mode (Cmd+E) and misses every update
+ * until it comes back — but a transaction that changes nothing keeps the very
+ * same `Text`, so a round trip through raw mode without typing loses nothing.
+ * A tab swap (`setState`) brings a different `Text` and is still refused. It
+ * also keeps this from pinning a whole `EditorState` in memory.
  */
 interface OverlayRange {
   view: EditorView;
   from: number;
   to: number;
-  /** The state this range is expressed in; an update not starting from it was missed. */
-  state: EditorState;
+  /** The document this range is expressed in; a change not starting from it was missed. */
+  doc: Text;
   lost: boolean;
 }
 
@@ -148,7 +156,7 @@ export function noteTableUpdate(update: ViewUpdate): void {
   pendingChanges.set(update.view, update.changes);
   for (const range of openOverlayRanges) {
     if (range.view !== update.view || range.lost) continue;
-    if (range.state !== update.startState) {
+    if (range.doc !== update.startState.doc) {
       range.lost = true;
       continue;
     }
@@ -164,7 +172,7 @@ export function noteTableUpdate(update: ViewUpdate): void {
       range.from = from;
       range.to = to;
     }
-    range.state = update.state;
+    range.doc = update.state.doc;
   }
 }
 
@@ -677,11 +685,18 @@ class TableWidget extends WidgetType {
     // positions by definition, which is all that is compared here.
     if (from.ctx.nodeFrom !== model.ctx.nodeFrom) return false;
     // Identity: the table this DOM showed, carried through this update's
-    // changes, must start where this widget's table starts — which another
-    // table never does. No recorded changes means the preview plugin was
-    // created in this very update, and everything is drawn fresh anyway.
+    // changes, must start where this widget's table starts. `TrackAfter`
+    // answers `null` once the table's first character is deleted — without it,
+    // deleting [A.from, B.from) maps A's start exactly onto B's and B adopts
+    // A's DOM. (It also sends `replaceTable`, which rewrites the node from its
+    // first character, to a rebuild; that already happened with plain mapping.)
+    // No recorded changes means the preview plugin was created in this very
+    // update, and everything is drawn fresh anyway.
     const changes = pendingChanges.get(view);
-    if (!changes || changes.mapPos(from.ctx.nodeFrom, 1) !== this.ctx.nodeFrom) return false;
+    if (!changes) return false;
+    if (changes.mapPos(from.ctx.nodeFrom, 1, MapMode.TrackAfter) !== this.ctx.nodeFrom) {
+      return false;
+    }
     const prev = model.ctx;
     const next = this.ctx;
     if (!sameTableShape(prev, next)) return false;
@@ -1019,6 +1034,23 @@ function renderCellContent(
   }
 }
 
+/**
+ * A table control button. Every one of them commits an open cell edit first.
+ *
+ * `preventDefault` on the mousedown is what keeps CM6 out of the click — and it
+ * also keeps the overlay focused, so its blur-commit never fires. The
+ * structural operations then rewrite the whole table node (`replaceTable`),
+ * which deletes the overlay's range: the commit is refused and the typing is
+ * gone. Committing here, before the operation reads anything, puts the text in
+ * the document, and the operation then reads it from a model the commit has
+ * already patched (CM6 writes the DOM synchronously in `dispatch`).
+ *
+ * The drag handles are buttons too, so a drag starts from the committed table:
+ * this listener is registered before the one that starts the drag and runs
+ * first. If the commit did rebuild the table instead of patching it, this
+ * button and its listeners belong to a dead DOM with a stale model; nothing
+ * further runs then — the press simply does nothing.
+ */
 function mkBtn(text: string, className: string, onClick: () => void): HTMLElement {
   const btn = document.createElement('button');
   btn.className = `cm-md-table-btn ${className}`;
@@ -1026,6 +1058,14 @@ function mkBtn(text: string, className: string, onClick: () => void): HTMLElemen
   btn.addEventListener('mousedown', (e) => {
     e.preventDefault();
     e.stopPropagation();
+    const session = activeCellEditSession();
+    if (session) {
+      session.commit();
+      if (!btn.isConnected) {
+        e.stopImmediatePropagation();
+        return;
+      }
+    }
     onClick();
   });
   return btn;
@@ -1305,13 +1345,13 @@ function showCellEditor(
     view,
     from: cell.from,
     to: cell.to,
-    state: view.state,
+    doc: view.state.doc,
     lost: false,
   };
   openOverlayRanges.add(range);
   /** The range to write to, or `null` when it can no longer be trusted. */
   const target = (): { from: number; to: number } | null =>
-    range.lost || range.state !== view.state || range.to > view.state.doc.length
+    range.lost || range.doc !== view.state.doc || range.to > view.state.doc.length
       ? null
       : { from: range.from, to: range.to };
 

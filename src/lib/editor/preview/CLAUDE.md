@@ -170,8 +170,11 @@ one-cell commit, and 30–40 ms per keystroke above a 300-row markdown table.
   there. Matched on shape alone, table B adopted table A's old DOM (with an
   open overlay's cell, its editing class and a drag in progress). So
   `updateDOM` takes CM6's third argument (`from`, the widget that last owned
-  the DOM), carries `from.ctx.nodeFrom` through this update's changes and
-  refuses unless it lands on this widget's `nodeFrom`. The changes come from
+  the DOM), carries `from.ctx.nodeFrom` through this update's changes with
+  `MapMode.TrackAfter` and refuses unless it lands on this widget's
+  `nodeFrom`. `TrackAfter` is load-bearing: deleting `[A.from, B.from)` maps
+  A's start exactly onto B's, and only "A's first character was deleted"
+  tells them apart. The changes come from
   `noteTableUpdate`, which `livePreviewPlugin.update` calls first thing: CM6
   runs `updatePlugins(update)` right before every `docView.update(update)`, in
   a transaction and in a measure-phase update alike.
@@ -180,8 +183,10 @@ one-cell commit, and 30–40 ms per keystroke above a 300-row markdown table.
   one data row, column − only past one column), so anything else returns
   `false` and CM6 calls `toDOM`. **Add/delete row/column rebuilds** — fine for
   now; a row-level patch would be the next step for huge CSVs. A same-shape
-  reorder (row/column drag, an AI edit swapping lines) is patched like any text
-  change.
+  edit that leaves the table's first character alone (an AI edit swapping two
+  data lines) is patched like any text change. Row/column **drag rebuilds**:
+  it goes through `replaceTable`, which rewrites the node from its first
+  character, so the identity check above cannot tell it from a new table.
 - **Patched**: every cell whose text changed or whose comment highlights
   changed (re-rendered through `renderCellContent`, so #62 highlights stay one
   code path), and `data-source-from`/`-to` of every cell that moved. Nothing is
@@ -204,11 +209,23 @@ one-cell commit, and 30–40 ms per keystroke above a 300-row markdown table.
   `noteTableUpdate` maps it through every update (outward on both ends,
   `MapMode.TrackDel`). Policy: an untouched field writes nothing; a touched
   one writes into the mapped range even if someone rewrote the cell meanwhile
-  (last writer wins); a cell whose row or table was deleted — or an update the
-  mapping missed, e.g. the preview plugin left the editor — refuses the commit
-  with no write, and `commitAndMap` returns `null`. Tab/Enter re-derive table
-  line, row and column from the mapped range (`cellPlaceAt`), not from the
-  `place` it opened with.
+  (last writer wins); a cell whose row or table was deleted — or a document
+  change the mapping missed — refuses the commit with no write, and
+  `commitAndMap` returns `null`. "Missed" is judged by **document identity**
+  (`range.doc !== update.startState.doc`), not state identity: in raw mode
+  (Cmd+E) the plugin sees no updates at all, but a transaction that changes
+  nothing keeps the same `Text`, so a round trip through raw mode loses
+  nothing, while a tab swap (`setState`) is still refused. Tab/Enter
+  re-derive table line, row and column from the mapped range (`cellPlaceAt`),
+  not from the `place` it opened with.
+- **Every table button commits the open overlay first** (`mkBtn`).
+  `preventDefault` on its mousedown keeps the overlay focused, so its
+  blur-commit never fires, and the structural operations rewrite the whole
+  node — which deletes the overlay's range, so the typing would be refused and
+  lost. Committing first puts it in the document; the operation then reads a
+  model the commit has already patched. The drag handles are `mkBtn`s too, and
+  `mkBtn`'s listener is registered before the drag's, so a drag starts from the
+  committed table.
 - **When adding a handler to the widget:** never capture a position-bearing
   value (`cell`, `ctx`, `row.from`, `nodeFrom`) in a closure — go through the
   model. `table-update-dom.test.ts` covers the existing handlers after a
