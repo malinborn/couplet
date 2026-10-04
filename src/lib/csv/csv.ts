@@ -157,11 +157,6 @@ function sniffDelimiter(text: string): CsvDelimiter {
   return best;
 }
 
-/**
- * The rules that turn text into a dialect, once: `lenient` reads to the end
- * even inside an unterminated quote (the dialect of a file that no longer
- * parses), otherwise that is a failure and the answer is `null`.
- */
 /** The BOM split off and the delimiter chosen: the first step of every read. */
 function prepare(
   text: string,
@@ -172,6 +167,11 @@ function prepare(
   return { bom, body, delimiter: hint?.delimiter ?? sniffDelimiter(body) };
 }
 
+/**
+ * The rules that turn text into a dialect, once: `lenient` reads to the end
+ * even inside an unterminated quote (the dialect of a file that no longer
+ * parses), otherwise that is a failure and the answer is `null`.
+ */
 function analyse(
   text: string,
   hint: { delimiter?: CsvDelimiter } | undefined,

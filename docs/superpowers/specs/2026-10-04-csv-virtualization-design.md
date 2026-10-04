@@ -8,7 +8,8 @@
 ## Goal
 
 Open, scroll and edit a CSV of 100k rows in WKWebView as fluidly as one of
-500, and lift `CSV_TABLE_MAX_ROWS` (20 000, being added now as a stopgap) to
+1 000 (the markdown table default), and lift `CSV_TABLE_MAX_ROWS` (20 000, the
+stopgap: above it a CSV opens as read-only text) to
 the largest size the design actually supports. Every table feature that works
 on a CSV today keeps working, including on rows that are not on screen.
 
@@ -74,7 +75,7 @@ so the decoration has to come from state.
 ```ts
 // table-config.ts — one new field, markdown default
 type TableConfig = { maxLines: number; placeholder: string; layout: 'flow' | 'windowed' };
-DEFAULT_TABLE_CONFIG = { maxLines: 500, placeholder: '-', layout: 'flow' };
+DEFAULT_TABLE_CONFIG = { maxLines: 1002, placeholder: '-', layout: 'flow' }; // 1000 data rows
 // csvPreviewExtensions: tableConfig.of({ maxLines: Infinity, placeholder: '', layout: 'windowed' })
 ```
 
