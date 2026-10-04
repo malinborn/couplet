@@ -1263,7 +1263,7 @@ Root `CLAUDE.md`, Gotchas — one entry:
 
 `src/lib/editor/preview/CLAUDE.md` — add a section "CSV documents": the `tableConfig` facet is the only CSV-facing hook in table code (`maxLines`, `placeholder`); the default is today's behaviour; CSV supplies `Infinity` and `''`; never branch on "is CSV" inside `tables.ts`.
 
-Root `CLAUDE.md` gotcha "Lezer GFM tables exclude whitespace-only rows" and the matching lines in `preview/CLAUDE.md` (add-row strategy, "whitespace-only cells get excluded"): append a dated correction without changing markdown behaviour — "Re-measured 2026-10-04 with `@lezer/markdown` 1.6.3: an all-empty row `|   |   |` IS kept in the `Table` node and drawn by the widget (middle, end, no trailing newline, empty header). Markdown still inserts `-` as a visible prompt; CSV inserts empty cells." Fix the matching comment in `tables.ts` `addRow` the same way (comment only).
+Root `CLAUDE.md` gotcha "Lezer GFM tables exclude whitespace-only rows" and the matching lines in `preview/CLAUDE.md` (add-row strategy, "whitespace-only cells get excluded"): append a dated correction without changing markdown behaviour — "Re-measured 2026-10-04 with `@lezer/markdown` 1.6.3: an all-empty row `|   |   |` IS kept in the `Table` node and drawn by the widget (middle, end, no trailing newline, empty header). Markdown still inserts `-` as a visible prompt; CSV inserts empty cells." Fix the matching comments in `tables.ts` `addRow` and above `newRowMarkdown` in `table-navigation.ts` ("`-` rather than a space … load-bearing: Lezer excludes whitespace-only rows") the same way (comments only).
 
 - [ ] **Step 4: Full verification**
 
