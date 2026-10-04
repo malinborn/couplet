@@ -47,7 +47,9 @@ implementation.
 ### 1. `src/lib/csv/csv.ts` — CSV parse / serialize (pure, no deps)
 
 ```ts
-type CsvDialect = { delimiter: ',' | ';' | '\t'; bom: boolean; eol: '\n' | '\r\n' };
+type CsvDialect = {
+  delimiter: ',' | ';' | '\t'; bom: boolean; eol: '\n' | '\r\n'; trailingNewline: boolean;
+};
 parseCsv(text: string, hint?: { delimiter?: CsvDialect['delimiter'] }):
   { ok: true; rows: string[][]; dialect: CsvDialect } | { ok: false; error: string }
 serializeCsv(rows: string[][], dialect: CsvDialect): string
@@ -61,9 +63,8 @@ serializeCsv(rows: string[][], dialect: CsvDialect): string
 - `bom`: leading U+FEFF is stripped on parse and restored on serialize.
 - `eol`: the record separator of the first record. Newlines inside quoted
   fields are kept as they were read.
-- Serialize quotes a field only if it contains the delimiter, `"`, `\r`, `\n`,
-  or has leading/trailing spaces. The trailing newline of the file is kept iff
-  the input had one.
+- Serialize quotes a field only if it contains the delimiter, `"`, `\r` or
+  `\n`. The trailing newline of the file is kept iff the input had one.
 - A file with no records (empty file) is valid: zero rows.
 
 ### 2. `src/lib/csv/csv-table.ts` — rows ↔ GFM table text
@@ -80,12 +81,19 @@ tableToRows(md: string): { ok: true; rows: string[][] } | { ok: false; error: st
   (`preview/table-encoding.ts`): newline ↔ `<br>`, `|` ↔ `\|`. Known, tested
   limitation: a literal `<br>` or `\|` in a CSV cell comes back as a newline /
   `|`.
-- **Empty-row placeholder.** Lezer drops a whitespace-only row from the `Table`
+- **Empty-row mark.** Lezer drops a whitespace-only row from the `Table`
   node, which would end the table there. A row whose cells are all empty gets
-  `EMPTY_ROW_MARK` (U+200B ZERO WIDTH SPACE) as its first cell; `tableToRows`
-  maps a cell equal to `EMPTY_ROW_MARK` back to `''`. First implementation step
-  verifies Lezer counts U+200B as content; if not, pick another invisible
-  non-whitespace mark and keep the same contract.
+  `EMPTY_CELL_MARK` (U+200B ZERO WIDTH SPACE) in its first cell. Verified:
+  Lezer GFM keeps such a row as a `TableRow`, and JS `trim()` does not strip
+  U+200B. `tableToRows` removes **every** U+200B from cell values, so the mark
+  never reaches the file wherever the caret was when the user typed into such
+  a cell. Cost: a U+200B that was genuinely in the CSV data is dropped on save.
+- Cells are read back with the table code's own `parseCellsWithPositions`, so
+  the codec sees exactly the cells the widget shows. That function trims cells,
+  hence a known limitation: leading/trailing spaces of a CSV value
+  (`a, b, c`) are not preserved once the file is saved. Changing that would mean
+  changing cell parsing for markdown tables, which this feature does not do.
+- CRLF inside a quoted field comes back as LF.
 - Output is canonical (same padding as `replaceTable`'s
   `markdownTable(…, { align: null, padding: true })`), so
   `rowsToTable(tableToRows(rowsToTable(r))) === rowsToTable(r)`.
@@ -140,16 +148,16 @@ external-change reload, agent background edit).
 ### 5. `tableConfig` facet — the two hooks in table code
 
 ```ts
-type TableConfig = { maxLines: number; emptyRowPlaceholder: string };
-// default { maxLines: 500, emptyRowPlaceholder: '-' }  — today's behaviour
-// CSV     { maxLines: Infinity, emptyRowPlaceholder: EMPTY_ROW_MARK }
+type TableConfig = { maxLines: number; placeholder: string };
+// default { maxLines: 500, placeholder: '-' }  — today's behaviour
+// CSV     { maxLines: Infinity, placeholder: EMPTY_CELL_MARK }
 ```
 
 - `buildTableContext(doc, from, to, maxLines = 500)`; `decorateTable` and
   `tableContextAtLine` read the facet from state and pass it in.
-- `addRow` and `newRowMarkdown` (`table-navigation.ts`, used by
-  `Mod-Shift-Enter`) take the placeholder from the facet: in a CSV a new row is
-  invisible-empty, not `-,-,-` in the file.
+- `addRow`, `newRowMarkdown` (`table-navigation.ts`, used by
+  `Mod-Shift-Enter`) and `addColumn` take the placeholder from the facet: in a
+  CSV a new row or column is invisible-empty, not `-` in the file.
 - `livePreviewPlugin` rebuilds on a change of this facet, like `flavourFacet`.
 
 ### 6. `csvEditGuard` — the window holds exactly one table
@@ -164,7 +172,7 @@ A `transactionFilter` installed only for CSV:
 - **Repair instead of reject** for one case: a cell commit that empties every
   cell of a row would make Lezer drop the row. The filter detects whitespace-only
   table rows in changed lines and returns the same change plus
-  `EMPTY_ROW_MARK` inserted in that row's first cell.
+  `EMPTY_CELL_MARK` inserted in that row's first cell.
 
 The check is O(document) per edit — same order as the widget rebuild already
 paid on every commit.
