@@ -139,8 +139,9 @@ function deleteRow(view: EditorView, ctx: TableContext, dataRowIndex: number): v
 function addColumn(view: EditorView, ctx: TableContext): void {
   const grid = tableToGrid(ctx);
   grid[0].push(t('editor.tables.new_column'));
+  const { placeholder } = view.state.facet(tableConfig);
   for (let i = 1; i < grid.length; i++) {
-    grid[i].push(view.state.facet(tableConfig).placeholder);
+    grid[i].push(placeholder);
   }
   replaceTable(view, ctx, grid);
 }
@@ -979,8 +980,9 @@ function moveAfterCommit(
     const after = rowInsertAfter(rows, place.row);
     const anchor = ctx.rows[after];
     if (!anchor) return;
+    const { placeholder } = view.state.facet(tableConfig);
     view.dispatch({
-      changes: { from: anchor.to, insert: '\n' + newRowMarkdown(ctx.colWidths, view.state.facet(tableConfig).placeholder) },
+      changes: { from: anchor.to, insert: '\n' + newRowMarkdown(ctx.colWidths, placeholder) },
     });
     const grown = tableContextAtLine(view, tableLine);
     if (!grown) return;

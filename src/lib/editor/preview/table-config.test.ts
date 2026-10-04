@@ -17,6 +17,10 @@ describe('tableConfig facet', () => {
     expect(DEFAULT_TABLE_CONFIG).toEqual({ maxLines: 500, placeholder: '-' });
   });
 
+  it('freezes the default, so no caller can change markdown tables by mutating it', () => {
+    expect(Object.isFrozen(DEFAULT_TABLE_CONFIG)).toBe(true);
+  });
+
   it('takes the last provided value', () => {
     const state = EditorState.create({
       extensions: [tableConfig.of({ maxLines: 1, placeholder: 'a' }), tableConfig.of({ maxLines: 2, placeholder: 'b' })],

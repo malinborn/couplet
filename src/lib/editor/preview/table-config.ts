@@ -17,8 +17,8 @@ export interface TableConfig {
   placeholder: string;
 }
 
-export const DEFAULT_TABLE_CONFIG: TableConfig = { maxLines: 500, placeholder: '-' };
+export const DEFAULT_TABLE_CONFIG: Readonly<TableConfig> = Object.freeze({ maxLines: 500, placeholder: '-' });
 
-export const tableConfig: Facet<TableConfig, TableConfig> = Facet.define({
+export const tableConfig: Facet<Readonly<TableConfig>, Readonly<TableConfig>> = Facet.define({
   combine: (values) => (values.length ? values[values.length - 1] : DEFAULT_TABLE_CONFIG),
 });
