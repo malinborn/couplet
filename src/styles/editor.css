@@ -1505,6 +1505,13 @@
   background: rgba(196, 167, 231, 0.08);
 }
 
+/* A CSV tab holds exactly one table: the block "+" menu has nothing to add.
+   CM6's base theme sets `.ͼ1 .cm-gutter { display: flex !important }` (two
+   classes), so this needs `!important` and a third class to win. */
+.cm-editor.cm-csv-file-mode .cm-hover-gutter {
+  display: none !important;
+}
+
 /* ===== .env file preview ===== */
 .cm-env-comment {
   color: var(--color-list-marker);

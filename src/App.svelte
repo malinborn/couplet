@@ -98,6 +98,8 @@
   import { envPreviewPlugin } from './lib/editor/preview/env';
   import { shellSecretsPlugin } from './lib/editor/preview/shell-secrets';
   import { findCodeLanguage, previewKindFor, type PreviewKind } from './lib/editor/file-language';
+  import { documentPreviewKind } from './lib/csv/csv-codec';
+  import { csvPreviewExtensions } from './lib/csv/csv-extensions';
   import { reinitializeTheme } from './lib/editor/preview/mermaid';
   import { resolveExternalChange } from './lib/external-change';
   import { createAutoSaveScheduler } from './lib/autosave';
@@ -432,7 +434,7 @@
     const content = editorHandle?.view?.state.doc.toString() ?? '';
     const lineEnding = fileState.lineEnding;
     try {
-      await writeDocument(path, content, lineEnding);
+      const written = await writeDocument(path, content, lineEnding);
       // A window can switch to a different file (Cmd+O) while this write is
       // in flight; the bookkeeping below belongs to `path`, not to whatever
       // file the window holds by the time the write resolves.
@@ -445,9 +447,12 @@
           fileState.isDirty = false;
         }
         fileState.lastSavedAt = Date.now();
+        // What the next read of the file returns — for a CSV the canonical
+        // table, not the buffer as typed; with the buffer here our own
+        // save's echo would read as an external change.
+        diskBaseline = written;
         // A landed save supersedes any earlier "No" — the disk state the user
         // declined no longer exists.
-        diskBaseline = content;
         dismissedDisk = null;
         // A previous failure is over the moment a save lands.
         toasts.dismissKind('save-error');
@@ -669,12 +674,16 @@
    * they were left.
    */
   function applyDocumentConfig(path: string | null): void {
-    const kind = previewKindFor(path);
+    const kind = documentPreviewKind(path, editorHandle?.view?.state.doc.toString() ?? '');
+    // The kind of a CSV file depends on its buffer (a table, or the text of a
+    // file that did not parse), so it is settled here, after the swap.
+    activePreview = kind;
+    editorHandle?.view?.dom.classList.toggle('cm-csv-file-mode', kind === 'csv');
     const basename = path?.split('/').pop()?.toLowerCase() ?? '';
     const ext = path?.split('.').pop()?.toLowerCase() ?? '';
     if (kind === 'env') {
       editorHandle?.setEnvMode(true);
-    } else if (kind === 'markdown') {
+    } else if (kind === 'markdown' || kind === 'csv') {
       editorHandle?.setEnvMode(false);
       void editorHandle?.setCodeMode(null);
     } else {
@@ -1231,6 +1240,14 @@
     markDiskUnreadable(path, err);
   }
 
+  /**
+   * A buffer replaced from disk can change the document's kind: a CSV broken
+   * by another program turns the table into plain text, a fixed one back.
+   */
+  function reapplyKindAfterReload(path: string, text: string): void {
+    if (documentPreviewKind(path, text) !== activePreview) applyDocumentConfig(path);
+  }
+
   async function handleExternalChange(path: string): Promise<void> {
     if (path !== fileState.filePath) return;
 
@@ -1296,6 +1313,7 @@
         editorHandle?.updateContent(disk);
         diskBaseline = disk;
         fileState.isDirty = false;
+        reapplyKindAfterReload(path, disk);
         return;
       case 'conflict': {
         // FSEvents can fire more than once for one external write; coalesce
@@ -1321,6 +1339,7 @@
               fileState.lineEnding = latest.lineEnding;
               fileState.isDirty = false;
               dismissedDisk = null;
+              reapplyKindAfterReload(path, latest.text);
             } catch (err) {
               if (path === fileState.filePath) await handleReloadFailure(path, err);
             }
@@ -2953,6 +2972,18 @@
     const e = engine.value;
     const v = editorHandle?.view;
     if (!v) return;
+
+    // A CSV tab is a table whatever the engine: Raw would expose a markdown
+    // table the file does not contain, and the engine is a window-wide
+    // setting a tab cannot veto.
+    if (activePreview === 'csv') {
+      // Preview is on here, so the state must not keep a Raw stash — same as
+      // the non-raw path below. The stash lives on this tab's own state, so
+      // this never touches another tab's; a no-op when nothing is stashed.
+      restoreStashedFolds(v);
+      v.dispatch({ effects: previewCompartment.reconfigure(csvPreviewExtensions) });
+      return;
+    }
 
     // Folds are a preview-mode affordance: their only indicator is the
     // heading line decoration, which the reconfigure below removes. Left
