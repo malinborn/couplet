@@ -55,60 +55,104 @@ describe('document read/write boundary', () => {
     await expect(writeDocument('/x.md', 'a\nb\n', 'crlf')).resolves.toBe('a\nb\n');
     expect(invoke).toHaveBeenCalledTimes(1);
   });
+});
 
-  it('WriteDocument_Csv_TakesTheDialectFromTheFileItReplaces', async () => {
-    invoke.mockResolvedValueOnce('\uFEFFa;b\r\n1;2\r\n'); // read_file of the current file
-    invoke.mockResolvedValueOnce(undefined); // write_file
-    await writeDocument('/t/write.csv', '| a | b |\n| - | - |\n| 1 |3|\n', 'lf');
-    expect(invoke).toHaveBeenNthCalledWith(1, 'read_file', { path: '/t/write.csv' });
-    expect(invoke).toHaveBeenNthCalledWith(2, 'write_file', {
-      path: '/t/write.csv',
-      content: '\uFEFFa;b\r\n1;3\r\n',
-    });
+/**
+ * A disk behind `invoke`: `file_exists`, `read_file`, `write_file` on a plain
+ * record. `unreadable` paths exist but fail to read.
+ */
+function fakeDisk(files: Record<string, string>, unreadable: string[] = []): Record<string, string> {
+  invoke.mockImplementation(async (cmd: string, args: { path: string; content?: string }) => {
+    if (cmd === 'file_exists') return args.path in files || unreadable.includes(args.path);
+    if (cmd === 'read_file') {
+      if (unreadable.includes(args.path)) throw 'Cannot open: file is not valid text.';
+      if (!(args.path in files)) throw 'No such file';
+      return files[args.path];
+    }
+    if (cmd === 'write_file') {
+      files[args.path] = args.content ?? '';
+      return undefined;
+    }
+    throw new Error(`unexpected command ${cmd}`);
+  });
+  return files;
+}
+
+const commands = () => invoke.mock.calls.map((c) => c[0] as string);
+
+describe('writeDocument on a CSV path', () => {
+  // A block body: an arrow returning the spy would hand vitest a cleanup hook, and it would call `invoke()`.
+  beforeEach(() => {
+    invoke.mockReset();
   });
 
-  it('WriteDocument_Csv_NoFileYet_UsesTheDefault_AndAnUntouchedNewFileSavesEmpty', async () => {
-    invoke.mockRejectedValueOnce('No such file');
-    invoke.mockResolvedValueOnce(undefined);
+  it('TakesTheDialectFromTheFileItReplaces_AndReturnsTheCanonicalTable', async () => {
+    const disk = fakeDisk({ '/t/w.csv': '\uFEFFa;b\r\n1;2\r\n' });
+    const baseline = await writeDocument('/t/w.csv', '| a | b |\n| - | - |\n| 1 |3|\n', 'lf');
+    expect(disk['/t/w.csv']).toBe('\uFEFFa;b\r\n1;3\r\n');
+    expect(baseline).toBe('| a | b |\n| - | - |\n| 1 | 3 |\n');
+  });
+
+  it('AMissingFileGetsTheDefaultDialect_AndAnUntouchedNewFileSavesEmpty', async () => {
+    const disk = fakeDisk({});
     await writeDocument('/t/new.csv', '| a |\n| - |\n| 1 |\n', 'lf');
-    expect(invoke).toHaveBeenLastCalledWith('write_file', { path: '/t/new.csv', content: 'a\n1\n' });
+    expect(disk['/t/new.csv']).toBe('a\n1\n');
+    expect(commands()).not.toContain('read_file');
 
-    invoke.mockRejectedValueOnce('No such file');
-    invoke.mockResolvedValueOnce(undefined);
-    await expect(writeDocument('/t/new.csv', newFileText('/t/new.csv'), 'lf')).resolves.toBe(
-      newFileText('/t/new.csv')
+    await expect(writeDocument('/t/new2.csv', newFileText('/t/new2.csv'), 'lf')).resolves.toBe(
+      newFileText('/t/new2.csv')
     );
-    expect(invoke).toHaveBeenLastCalledWith('write_file', { path: '/t/new.csv', content: '' });
+    expect(disk['/t/new2.csv']).toBe('');
   });
 
-  it('WriteDocument_Csv_ReturnsWhatTheNextReadReturns_SoItsOwnEchoIsIgnored', async () => {
+  it('AnExistingFileThatCannotBeRead_RejectsAndWritesNothing', async () => {
+    fakeDisk({}, ['/t/locked.csv']);
+    await expect(writeDocument('/t/locked.csv', '| a |\n| - |\n| 1 |\n', 'lf')).rejects.toBe(
+      'Cannot open: file is not valid text.'
+    );
+    expect(commands()).not.toContain('write_file');
+  });
+
+  it('TableBuffer_ReturnsWhatTheNextReadReturns_SoItsOwnEchoIsIgnored', async () => {
     const path = '/t/echo.csv';
-    invoke.mockResolvedValueOnce('a,b\n1,2\n');
+    const disk = fakeDisk({ [path]: 'a,b\n1,2\n' });
     const buffer = (await readDocument(path)).text.replace('| 2 |', '|xyz|'); // a cell commit leaves it unpadded
-    invoke.mockResolvedValueOnce('a,b\n1,2\n');
-    invoke.mockResolvedValueOnce(undefined);
     const baseline = await writeDocument(path, buffer, 'lf');
-    const written = invoke.mock.calls[invoke.mock.calls.length - 1][1] as { content: string };
 
     // The watcher fires on our own write and re-reads the file.
-    invoke.mockResolvedValueOnce(written.content);
-    const disk = (await readDocument(path)).text;
-    expect(baseline).toBe(decodeFromDisk(path, written.content, 'lf').text);
-    expect(baseline).toBe(disk);
-    expect(disk).not.toBe(buffer);
+    const echo = (await readDocument(path)).text;
+    expect(baseline).toBe(decodeFromDisk(path, disk[path], 'lf').text);
+    expect(baseline).toBe(echo);
+    expect(echo).not.toBe(buffer);
 
-    expect(resolveExternalChange({ disk, buffer, baseline, dismissedDisk: null })).toBe('ignore');
+    expect(resolveExternalChange({ disk: echo, buffer, baseline, dismissedDisk: null })).toBe('ignore');
     // With the buffer itself as the baseline the echo would be taken for an
     // external change: the buffer "never diverged", so it would be reloaded.
-    expect(resolveExternalChange({ disk, buffer, baseline: buffer, dismissedDisk: null })).not.toBe(
+    expect(resolveExternalChange({ disk: echo, buffer, baseline: buffer, dismissedDisk: null })).not.toBe(
       'ignore'
     );
   });
 
-  it('WriteDocument_Csv_NotATable_WritesItAsIs', async () => {
-    invoke.mockResolvedValueOnce('a,"open\r\n');
-    invoke.mockResolvedValueOnce(undefined);
+  it('RawButParseableBuffer_IsWrittenAsIs_ReturnsTheBuffer_AndItsEchoReloadsIntoATable', async () => {
+    // A markdown note Save-As'd to .csv: not a table, but almost any text parses as CSV.
+    const path = '/t/note.csv';
+    const disk = fakeDisk({}, [path]); // exists but unreadable: a raw save must not even read it
+    const buffer = '# Title\nsome text, more\n';
+    const baseline = await writeDocument(path, buffer, 'lf');
+    expect(baseline).toBe(buffer);
+    expect(disk[path]).toBe(buffer);
+    expect(commands()).not.toContain('read_file');
+
+    const echo = decodeFromDisk(path, disk[path], 'lf').text;
+    expect(echo).not.toBe(buffer); // it reads back as a table
+    // Buffer === baseline: the echo takes the normal silent-reload path, and
+    // the tab becomes the table the file now reads as.
+    expect(resolveExternalChange({ disk: echo, buffer, baseline, dismissedDisk: null })).toBe('reload');
+  });
+
+  it('BrokenCsvText_IsWrittenAsIsInItsLineEnding_ReturnsTheBuffer', async () => {
+    const disk = fakeDisk({ '/t/raw.csv': 'a,"open\r\n' });
     await expect(writeDocument('/t/raw.csv', 'a,"open\nmore\n', 'crlf')).resolves.toBe('a,"open\nmore\n');
-    expect(invoke).toHaveBeenLastCalledWith('write_file', { path: '/t/raw.csv', content: 'a,"open\r\nmore\r\n' });
+    expect(disk['/t/raw.csv']).toBe('a,"open\r\nmore\r\n');
   });
 });

@@ -1404,7 +1404,7 @@ export function createTabController(deps: TabControllerDeps) {
       console.error('Failed to open file:', err);
       return { kind: 'failed' };
     }
-    const text = disk?.text ?? '';
+    const text = disk?.text ?? newFileText(path);
     let answer = await deps.rust.open(path);
     if (answer.kind === 'this-window' && !findById(list, answer.tabId)) {
       // Left over from an operation that failed after claiming.

@@ -5,7 +5,7 @@ import type { EditorEngine } from '../stores.svelte';
 import type { CommentThread } from '../comment-format';
 import type { InboxItem } from '../tabs/agent-inbox';
 import type { DiskDocument, LineEnding } from '../line-endings';
-import { decodeFromDisk, encodeForDisk, isCsvPath } from '../csv/csv-codec';
+import { decodeFromDisk, encodeForDisk, isTableBuffer } from '../csv/csv-codec';
 
 /**
  * Read a document from disk, normalized to LF for the editor.
@@ -28,15 +28,22 @@ export async function readDocument(path: string, fallback: LineEnding = 'lf'): P
  * file it replaces (read at the same path, just before) — see
  * `csv/csv-codec.ts`.
  *
- * Returns what the next read of `path` will return — the save baseline. For a
- * CSV that is the decoded written bytes, not the buffer: a cell commit leaves
- * the table unpadded and the file comes back canonical, so the buffer as the
- * baseline would make the echo of this very write look like an external change.
+ * Returns the save baseline. For a buffer written as CSV that is the decoded
+ * written bytes — what the next read returns — not the buffer: a cell commit
+ * leaves the table unpadded and the file comes back canonical, so the buffer
+ * as the baseline would make the echo of this very write look like an
+ * external change. For anything written as is (any other file, or plain text
+ * on a CSV path) it is the buffer: almost any text parses as CSV, so a decoded
+ * baseline there would never equal the buffer again, while the buffer lets the
+ * echo take the ordinary reload path and turn the tab into the table it reads as.
+ *
+ * Only a missing file falls back to the default dialect; an existing file that
+ * cannot be read fails the save (rejects, writes nothing) rather than being
+ * rewritten in a dialect it does not use.
  */
 export async function writeDocument(path: string, text: string, lineEnding: LineEnding): Promise<string> {
-  const csv = isCsvPath(path);
-  // No readable file there (a new one) → the extension's default dialect.
-  const current = csv ? await invoke<string>('read_file', { path }).catch(() => null) : null;
+  const csv = isTableBuffer(path, text);
+  const current = csv && (await fileExists(path)) ? await invoke<string>('read_file', { path }) : null;
   const content = encodeForDisk(path, text, lineEnding, current);
   await invoke('write_file', { path, content });
   return csv ? decodeFromDisk(path, content, lineEnding).text : text;

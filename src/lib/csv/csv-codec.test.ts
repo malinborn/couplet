@@ -1,18 +1,39 @@
 import { describe, it, expect } from 'vitest';
-import { isCsvPath, decodeFromDisk, encodeForDisk, documentPreviewKind, newFileText } from './csv-codec';
+import {
+  isCsvPath,
+  isTableBuffer,
+  decodeFromDisk,
+  encodeForDisk,
+  documentPreviewKind,
+  newFileText,
+} from './csv-codec';
 import { rowsToTable } from './csv-table';
 
 const TABLE = '| a | b |\n| - | - |\n| 1 | 2 |\n';
 
 describe('isCsvPath', () => {
+  it('is re-exported from csv-path', () => {
+    expect(isCsvPath('/a/b.csv')).toBe(true);
+    expect(isCsvPath('/a/.csv')).toBe(false);
+  });
+});
+
+describe('isTableBuffer', () => {
   it.each([
-    ['/a/b.csv', true],
-    ['/a/b.TSV', true],
-    ['/a/b.md', false],
-    ['/a/csv', false],
-    [null, false],
-  ])('%s → %s', (path, expected) => {
-    expect(isCsvPath(path)).toBe(expected);
+    ['/x.csv', TABLE, true],
+    ['/x.tsv', TABLE, true],
+    ['/x.csv', '# note\nsome text, more\n', false],
+    ['/x.csv', 'a,"open\n', false],
+    ['/x.md', TABLE, false],
+  ])('%s with %j → %s', (path, text, expected) => {
+    expect(isTableBuffer(path, text)).toBe(expected);
+  });
+
+  it('is exactly the rule encodeForDisk encodes by', () => {
+    for (const text of [TABLE, '# note\nsome text, more\n', 'a,"open\n']) {
+      const encoded = encodeForDisk('/x.csv', text, 'lf', null) !== text;
+      expect(encoded).toBe(isTableBuffer('/x.csv', text));
+    }
   });
 });
 
@@ -41,13 +62,13 @@ describe('encodeForDisk', () => {
   });
 
   it('round-trips a CSV byte-identical through the file it replaces', () => {
-    const raw = '﻿name;city\r\nIvan;"Moscow; RU"\r\n';
+    const raw = '\uFEFFname;city\r\nIvan;"Moscow; RU"\r\n';
     const doc = decodeFromDisk('/x.csv', raw, 'lf');
     expect(encodeForDisk('/x.csv', doc.text, doc.lineEnding, raw)).toBe(raw);
   });
 
   it('takes the dialect from `current`: `;` + BOM + CRLF', () => {
-    expect(encodeForDisk('/x.csv', TABLE, 'lf', '﻿x;y\r\n')).toBe('﻿a;b\r\n1;2\r\n');
+    expect(encodeForDisk('/x.csv', TABLE, 'lf', '\uFEFFx;y\r\n')).toBe('\uFEFFa;b\r\n1;2\r\n');
   });
 
   it('takes the dialect from a `current` that no longer parses', () => {
@@ -87,7 +108,7 @@ describe('no state', () => {
   });
 
   it('two spellings of one path encode identically', () => {
-    const raw = '﻿a;b\r\n1;2\r\n';
+    const raw = '\uFEFFa;b\r\n1;2\r\n';
     decodeFromDisk('/tmp/x.csv', raw, 'lf');
     const a = encodeForDisk('/tmp/x.csv', TABLE, 'lf', raw);
     const b = encodeForDisk('/private/tmp/x.csv', TABLE, 'lf', raw);

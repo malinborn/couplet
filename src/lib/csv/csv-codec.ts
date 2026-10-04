@@ -2,6 +2,7 @@ import { applyLineEnding, fromDisk, type DiskDocument, type LineEnding } from '.
 import { previewKindFor, type PreviewKind } from '../editor/file-language';
 import { parseCsv, serializeCsv, sniffDialect, type CsvDelimiter, type CsvDialect } from './csv';
 import { rowsToTable, tableToRows } from './csv-table';
+import { extOf, isCsvPath } from './csv-path';
 
 /**
  * CSV at the disk boundary. A CSV document's buffer is a GFM table; this is
@@ -15,16 +16,16 @@ import { rowsToTable, tableToRows } from './csv-table';
  * by the file being replaced, read at the same path just before the write.
  */
 
-function extOf(path: string): string {
-  const base = path.split('/').pop() ?? '';
-  const dot = base.lastIndexOf('.');
-  return dot > 0 ? base.slice(dot + 1).toLowerCase() : '';
-}
+export { isCsvPath };
 
-export function isCsvPath(path: string | null | undefined): boolean {
-  if (!path) return false;
-  const ext = extOf(path);
-  return ext === 'csv' || ext === 'tsv';
+/**
+ * Will `encodeForDisk` write this buffer as CSV? A CSV path whose buffer is
+ * exactly one table — the same rule `encodeForDisk` applies. Anything else is
+ * written as is, and that write's baseline is the buffer itself (see
+ * `writeDocument`).
+ */
+export function isTableBuffer(path: string, text: string): boolean {
+  return isCsvPath(path) && tableToRows(text).ok;
 }
 
 /** A `.tsv` is tab-separated by name; a `.csv` has its delimiter sniffed. */

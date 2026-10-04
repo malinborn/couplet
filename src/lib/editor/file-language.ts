@@ -1,5 +1,6 @@
 import { languages } from '@codemirror/language-data';
 import type { LanguageDescription } from '@codemirror/language';
+import { isCsvPath } from '../csv/csv-path';
 
 // Extensionless config dotfiles → language name as it appears in @codemirror/language-data.
 export const FILENAME_LANGUAGE: Record<string, string> = {
@@ -89,7 +90,7 @@ export function previewKindFor(path: string | null): PreviewKind {
   const basename = path.split('/').pop()?.toLowerCase() ?? '';
   const ext = path.split('.').pop()?.toLowerCase() ?? '';
   if (basename.startsWith('.env') || ext === 'env') return 'env';
-  if (ext === 'csv' || ext === 'tsv') return 'csv';
+  if (isCsvPath(path)) return 'csv';
   if (MARKDOWN_EXTENSIONS.has(ext)) return 'markdown';
   return isShellConfig(basename) ? 'shell' : 'code';
 }

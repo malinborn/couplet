@@ -1220,6 +1220,20 @@ describe('agent operations', () => {
   const exclusive = <T>(h: Harness, fn: () => Promise<T>) => h.controller.runExclusive(fn);
   const prependX = (s: EditorState) => ({ state: s.update({ changes: { from: 0, insert: 'X' } }).state, result: 'done' });
 
+  it('OpenBackground_AMissingCsvIsAnEmptyTable_AMissingMdIsEmpty', async () => {
+    const h = await started(files, [fileTab('a', '/a.md')]);
+    expect(await exclusive(h, () => h.controller.openBackgroundNow('/new.csv'))).toEqual({
+      kind: 'opened',
+      tabId: 't1',
+      text: rowsToTable([]),
+    });
+    expect(await exclusive(h, () => h.controller.openBackgroundNow('/new.md'))).toEqual({
+      kind: 'opened',
+      tabId: 't2',
+      text: '',
+    });
+  });
+
   it('OpenBackgroundAddsATabWithoutSwitching', async () => {
     const h = await started(files, [fileTab('a', '/a.md')]);
     const opened = await exclusive(h, () => h.controller.openBackgroundNow('/b.md'));

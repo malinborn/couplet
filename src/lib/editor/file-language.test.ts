@@ -283,6 +283,11 @@ describe('previewKindFor', () => {
     expect(isMarkdownBuffer('/data/a.csv')).toBe(false);
   });
 
+  it('ADotfileNamedCsvIsNotCsv_AsTheCodecSees_It', () => {
+    expect(previewKindFor('/data/.csv')).not.toBe('csv');
+    expect(previewKindFor('/data/.tsv')).not.toBe('csv');
+  });
+
   it('AgreesWithIsMarkdownBuffer', () => {
     for (const p of [null, '/a.md', '/.env', '/x.py', '/Users/me/.bashrc', '/n.txt']) {
       expect(previewKindFor(p) === 'markdown').toBe(isMarkdownBuffer(p));
