@@ -325,7 +325,7 @@
   let dismissedDisk: string | null = null;
   // The in-flight save, if any. External-change handling awaits it first, so
   // it always compares against the disk state the save actually produced.
-  let currentSave: Promise<void> | null = null;
+  let currentSave: Promise<boolean> | null = null;
   // Bumped at the start of every `doSave`, so a reader can tell whether a save
   // landed while it was mid-await (e.g. mid-`readDocument`) even though by the
   // time it checks `currentSave` is already back to null.
@@ -405,11 +405,14 @@
     // it is asking about) and not while the file is unreadable (the unread
     // version would be overwritten) — see `canAutoSave`.
     shouldSave: () => canAutoSave(saveGate()),
-    save: performSave,
+    save: async () => {
+      await performSave();
+    },
   });
 
-  async function performSave(): Promise<void> {
-    if (!fileState.filePath) return;
+  /** `true` when the write landed — Save As re-derives the document kind only then. */
+  async function performSave(): Promise<boolean> {
+    if (!fileState.filePath) return false;
     // Serialize saves: two overlapping atomic writes can land in either order,
     // which would desync the baseline from what disk actually ends up holding.
     // A loop, not a single await — another save can start between the await
@@ -420,13 +423,13 @@
     const save = doSave(fileState.filePath);
     currentSave = save;
     try {
-      await save;
+      return await save;
     } finally {
       if (currentSave === save) currentSave = null;
     }
   }
 
-  async function doSave(path: string): Promise<void> {
+  async function doSave(path: string): Promise<boolean> {
     saveGeneration += 1;
     // `content` stays LF: it is what the buffer holds, so it is also what the
     // dirty check and the disk baseline below compare against. Only the bytes
@@ -463,6 +466,7 @@
       }
       // Clean up recovery file on successful save
       await invoke('delete_recovery', { path }).catch(() => {});
+      return true;
     } catch (err) {
       // `isDirty` deliberately stays true: the document is still unsaved, so
       // the next keystroke reschedules a save and the recovery snapshot keeps
@@ -475,6 +479,7 @@
         fileName: path.split('/').pop() ?? path,
         message: err instanceof Error ? err.message : String(err),
       });
+      return false;
     }
   }
 
@@ -532,7 +537,12 @@
       }
       fileState.filePath = step.path;
       tabs.renameActive(step.path);
-      await performSave();
+      const landed = await performSave();
+      // The kind follows the new name and the buffer: a CSV saved as `.md` is
+      // a markdown document from here on (no one-table guard, the engine
+      // back), a one-table note saved as `.csv` a CSV table. Only once the
+      // file exists in that form — a failed write keeps the old config.
+      if (landed && fileState.filePath === step.path) applyDocumentConfig(step.path);
       // Read as the save left it: a failed write keeps the tab dirty.
       const report = savedAsReport(oldPath, step.path, { path: fileState.filePath, dirty: fileState.isDirty });
       // The claim pointed the watcher at the path before the save created it,
