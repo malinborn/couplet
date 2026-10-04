@@ -94,6 +94,16 @@
         "ext": ["sh", "bash", "zsh"],
         "mimeType": "text/x-shellscript",
         "description": "Shell Script"
+      },
+      {
+        "ext": ["csv"],
+        "mimeType": "text/csv",
+        "description": "CSV Document"
+      },
+      {
+        "ext": ["tsv"],
+        "mimeType": "text/tab-separated-values",
+        "description": "TSV Document"
       }
     ]
   },

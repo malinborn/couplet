@@ -117,9 +117,9 @@ export function syncTransientMenu(policy: 'keep' | 'close'): void {
 }
 
 const FILE_FILTERS = [
-  { name: 'All Supported', extensions: ['md', 'markdown', 'txt', 'csv', 'json', 'yml', 'yaml', 'toml', 'py', 'rs', 'ts', 'js', 'sh', 'env'] },
+  { name: 'All Supported', extensions: ['md', 'markdown', 'txt', 'csv', 'tsv', 'json', 'yml', 'yaml', 'toml', 'py', 'rs', 'ts', 'js', 'sh', 'env'] },
   { name: 'Markdown', extensions: ['md', 'markdown', 'txt'] },
-  { name: 'Data', extensions: ['csv', 'json', 'yml', 'yaml', 'toml'] },
+  { name: 'Data', extensions: ['csv', 'tsv', 'json', 'yml', 'yaml', 'toml'] },
   { name: 'Code', extensions: ['py', 'rs', 'ts', 'js', 'sh'] },
   { name: 'All Files', extensions: ['*'] },
 ];

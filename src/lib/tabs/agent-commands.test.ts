@@ -464,6 +464,18 @@ describe('focus (spec §5)', () => {
     expect(w.log).toEqual(['respond 1']);
     expect(w.list().activeId).toBe('a');
   });
+
+  it('AnEditOfACsvFileIsRefusedBeforeAnyTabMoves', async () => {
+    const w = makeWorld(['a', 'b'], 'a');
+    await w.send(payload({ id: 1, cmd: 'edit', path: '/d/data.csv', content: 'x,y', show: true, focus: true }));
+    expect(w.response(1)).toEqual({ ok: false, error: AGENT_ERRORS.csvEdit });
+    // By extension, whatever the spelling — a TSV and an upper-case name too.
+    await w.send(payload({ id: 2, cmd: 'edit', path: '/d/DATA.TSV', content: 'x\ty' }));
+    expect(w.response(2)).toEqual({ ok: false, error: AGENT_ERRORS.csvEdit });
+    expect(w.log).toEqual(['respond 1', 'respond 2']);
+    expect(w.list().activeId).toBe('a');
+    expect(w.list().tabs.map((t) => t.id)).toEqual(['a', 'b']);
+  });
 });
 
 describe('background edit and show (spec §5)', () => {

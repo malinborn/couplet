@@ -4,6 +4,7 @@ import { applyAiEditToState, resolveShowTarget } from '../ai-commands';
 import { decideLanding } from './agent-landing';
 import { createAgentInbox, deliverable, type InboxItem } from './agent-inbox';
 import type { QuickLookOrigin, TabController } from './controller';
+import { isCsvPath } from '../csv/csv-path';
 
 /** The answer an agent gets — `AiResponse` in src-tauri/src/ai_socket.rs; Rust adds `window`. */
 export interface AgentResponse {
@@ -41,6 +42,7 @@ export const AGENT_ERRORS = {
   targetNotFound: 'target not found',
   editorNotReady: 'editor not ready',
   pendingUnknown: 'could not confirm the request is still pending',
+  csvEdit: 'couplet edit does not support CSV files yet',
 } as const;
 
 /** Drop the records whose deadline has come: nobody waits for them any more. */
@@ -391,6 +393,15 @@ export function createAgentCommands(deps: AgentCommandDeps) {
       // guessed at (it must not fall through to another verb's branch).
       if (!VERBS.has(payload.cmd)) {
         await respond(payload, { ok: false, error: `unsupported command: ${payload.cmd}` });
+        return;
+      }
+      // A CSV tab's buffer is a markdown table; an agent's CSV text diffed
+      // into it would be saved as table rows. Refused until edit learns the
+      // codec — before anything moves, like an unknown verb. By extension, so
+      // it holds for every spelling of the path and for the live and the
+      // background-tab branch alike.
+      if (payload.cmd === 'edit' && isCsvPath(payload.path)) {
+        await respond(payload, { ok: false, error: AGENT_ERRORS.csvEdit });
         return;
       }
       await deps.tabs.runExclusive(async () => {
