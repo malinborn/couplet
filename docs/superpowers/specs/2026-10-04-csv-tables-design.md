@@ -197,8 +197,18 @@ type TableConfig = { maxLines: number; placeholder: string };
 
 A `transactionFilter` installed only for CSV:
 
-- Undo/redo pass through (`tr.isUserEvent('undo' | 'redo')`), as do
-  transactions without `docChanged`.
+- Transactions without `docChanged` pass.
+- **Undo/redo are guarded at the command, not in the filter.** After an
+  `addToHistory: false` reload CM6 maps the stored undo events through the
+  replacement, and the inverse of an old deletion can land as an insertion at
+  the edge of the replaced span: a non-table that autosave would write into the
+  `.csv`. A filter cannot stop it — CM6 history dispatches undo/redo with
+  `filter: false`. So the CSV bundle adds `csvUndo`/`csvRedo` at
+  `Prec.highest` (the history keys, the selection-history keys, and
+  `beforeinput` `historyUndo`/`historyRedo`, which is how the native Edit menu
+  arrives): they run the history command into a capturing dispatch and apply
+  the result only if it is still one table. An undo that crosses a disk reload
+  and would break the table does nothing.
 - A buffer replaced from disk passes too (`addToHistory: false`, the mark
   `human-edit.ts` already uses for a disk reload): the file is the truth, and
   if it no longer holds a table the document kind becomes `'code'` (§4).
@@ -229,6 +239,22 @@ paid on every commit.
 | Save As a markdown note to `.csv` | A note that is one table is exported as CSV; any other note is written as is. |
 | Save As a CSV to `.md` | Writes the markdown table — an export. |
 | Save As a CSV to a new `.csv` | The default dialect (there is no file to sniff); over an existing `.csv`, that file's dialect. |
+
+## Known limitations (accepted)
+
+- Leading/trailing spaces of a CSV value are trimmed once the file is saved;
+  a literal `<br>` in a value comes back as a newline; CRLF inside a quoted
+  field comes back as LF; a U+FEFF/BOM is kept, a file containing exactly `""`
+  saves as empty.
+- Cmd+Z across an external reload of a CSV tab does nothing (see §6).
+- A keystroke landing in the few milliseconds between saving a plain-text CSV
+  and its watcher echo shows the conflict dialog for the user's own save (the
+  echo decodes to a table, the baseline is the plain text). Only on the
+  plain text → table transition; fixing it means changing the shared
+  external-change resolution.
+- Enter on the last row leaves the table onto the empty line below it, where
+  typing is dropped; Cmd+Shift+Enter adds a row.
+- Every CSV save reads the current file once more (to sniff its dialect).
 
 ## Out of scope
 

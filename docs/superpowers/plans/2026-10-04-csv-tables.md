@@ -1033,7 +1033,8 @@ import { tableToRows } from './csv-table';
  */
 export const csvEditGuard = EditorState.transactionFilter.of((tr) => {
   if (!tr.docChanged) return tr;
-  if (tr.isUserEvent('undo') || tr.isUserEvent('redo')) return tr;
+  // No undo/redo exemption — see spec §6 (an undo mapped across a disk reload
+  // can produce a non-table). Removed after the Task 5–6 review.
   if (tr.annotation(Transaction.addToHistory) === false) return tr;
   return tableToRows(tr.newDoc.toString()).ok ? tr : [];
 });
