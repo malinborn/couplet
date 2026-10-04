@@ -43,6 +43,7 @@ export const AGENT_ERRORS = {
   editorNotReady: 'editor not ready',
   pendingUnknown: 'could not confirm the request is still pending',
   csvEdit: 'couplet edit does not support CSV files yet',
+  readOnly: 'the document is open read-only',
 } as const;
 
 /** Drop the records whose deadline has come: nobody waits for them any more. */

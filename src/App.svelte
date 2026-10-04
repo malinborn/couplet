@@ -1982,7 +1982,9 @@
     insertIntoText: (id, text) => {
       const view = editorHandle?.view;
       const at = commentWidgetPos(id);
-      if (!view || at === null) return;
+      // A read-only tab (a CSV too large for the table view) drops the edit in
+      // its filter; say nothing happened rather than pretend it did.
+      if (!view || at === null || view.state.readOnly) return;
       // A normal, undoable edit: the answer is content the user chose to
       // accept, and Cmd+Z is how they take it back.
       //
@@ -2227,6 +2229,9 @@
   function liveEdit(payload: AiCommandPayload, keepCaret: boolean): AgentResponse {
     const view = editorHandle?.view;
     if (!view) return { ok: false, error: AGENT_ERRORS.editorNotReady };
+    // The read-only filter would drop the change; report it instead of
+    // answering ok with changed_lines for an edit that never landed.
+    if (view.state.readOnly) return { ok: false, error: AGENT_ERRORS.readOnly };
     const edit = buildAiEdit(view.state, payload.content ?? '');
     if (!edit) return { ok: true, changed_lines: [] };
     // With `show` the user is being led to the change — the caret and the
