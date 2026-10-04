@@ -11,10 +11,10 @@ function table(dataRows: number): string {
 }
 
 describe('tableConfig facet', () => {
-  it('defaults to today: 500 lines, "-" placeholder', () => {
+  it('defaults to 1000 data rows (1002 lines) and a "-" placeholder', () => {
     const state = EditorState.create({ doc: '' });
-    expect(state.facet(tableConfig)).toEqual({ maxLines: 500, placeholder: '-' });
-    expect(DEFAULT_TABLE_CONFIG).toEqual({ maxLines: 500, placeholder: '-' });
+    expect(state.facet(tableConfig)).toEqual({ maxLines: 1002, placeholder: '-' });
+    expect(DEFAULT_TABLE_CONFIG).toEqual({ maxLines: 1002, placeholder: '-' });
   });
 
   it('freezes the default, so no caller can change markdown tables by mutating it', () => {
@@ -30,13 +30,18 @@ describe('tableConfig facet', () => {
 });
 
 describe('buildTableContext cap', () => {
-  it('keeps the 500-line cap by default', () => {
-    const doc = Text.of(table(499).split('\n')); // 501 lines
+  it('draws a table of exactly 1000 data rows by default', () => {
+    const doc = Text.of(table(1000).split('\n')); // 1002 lines
+    expect(buildTableContext(doc, 0, doc.length)).not.toBeNull();
+  });
+
+  it('keeps a table of 1001 data rows raw by default', () => {
+    const doc = Text.of(table(1001).split('\n')); // 1003 lines
     expect(buildTableContext(doc, 0, doc.length)).toBeNull();
   });
 
-  it('draws a 501-line table when the cap is raised', () => {
-    const doc = Text.of(table(499).split('\n'));
+  it('draws a 1003-line table when the cap is raised', () => {
+    const doc = Text.of(table(1001).split('\n'));
     expect(buildTableContext(doc, 0, doc.length, Infinity)).not.toBeNull();
   });
 });

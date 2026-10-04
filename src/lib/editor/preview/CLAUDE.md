@@ -555,7 +555,7 @@ text wrapping). If styles were on the line, they'd extend to viewport width.
 
 A `.csv`/`.tsv` buffer **is** a GFM table (`src/lib/csv/`: decoded on read, encoded on write), so every table operation here works on it unchanged. Table code has exactly one CSV-facing hook — the `tableConfig` facet (`table-config.ts`):
 
-- `maxLines` — the row cap `buildTableContext` applies (default 500; CSV `Infinity`). `decorateTable` and `tableContextAtLine` read it from state.
+- `maxLines` — the row cap `buildTableContext` applies (default 1002 lines = 1000 data rows, measured in `table-config.ts`; CSV `Infinity`). `decorateTable` and `tableContextAtLine` read it from state.
 - `placeholder` — what `addRow`, `addColumn` and `newRowMarkdown` (`Mod-Shift-Enter`) put in a new cell (default `-`; CSV `''`).
 
 The default is today's markdown behaviour; CSV supplies its values through `csvPreviewExtensions`. `livePreviewPlugin` rebuilds when the facet changes.

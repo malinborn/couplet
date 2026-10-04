@@ -26,13 +26,14 @@ function table(lines: number): string {
 
 describe('tableConfig through the view', () => {
   it('a reconfigure that lifts the cap draws a table the default left raw', () => {
-    const doc = table(501);
+    // One line past the markdown default, so the default leaves it raw.
+    const doc = table(DEFAULT_TABLE_CONFIG.maxLines + 1);
     const config = new Compartment();
     const state = EditorState.create({
       doc,
       extensions: [markdownExtension(), config.of(tableConfig.of(DEFAULT_TABLE_CONFIG)), livePreviewPlugin],
     });
-    // The parse budget would otherwise stop short of a 501-line table, and a
+    // The parse budget would otherwise stop short of a table past the default cap, and a
     // partial Table node is shorter than the cap — the test would pass for the
     // wrong reason.
     expect(ensureSyntaxTree(state, doc.length, 5000)).not.toBeNull();

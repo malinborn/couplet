@@ -32,7 +32,7 @@ Rejected alternatives:
 | View or edit? | Edit, and autosave writes CSV back to the same file. |
 | Content outside the table | Not allowed: the window holds exactly one table. Edits that would break that are rejected. |
 | Header | The first CSV record is always the header row. |
-| Size cap | `CSV_TABLE_MAX_ROWS = 20_000` data rows (header excluded), applied at the disk boundary: a larger CSV opens as plain text, like one that does not parse (§3). Inside the table code there is no cap for CSV; markdown tables keep their 500-line cap. |
+| Size cap | `CSV_TABLE_MAX_ROWS = 20_000` data rows (header excluded), applied at the disk boundary: a larger CSV opens as plain text, like one that does not parse (§3). Inside the table code there is no cap for CSV; markdown tables keep their own cap (1000 data rows since the perf work; was 500). |
 | Extensions | `.csv` (delimiter sniffed), `.tsv` (always Tab). |
 
 Measured cost, Chrome, 6 columns, markdown table below the cap: open 23–36 ms
@@ -237,11 +237,11 @@ symlink) kept its dialect under one key and was written under the other, so
 
 ```ts
 type TableConfig = { maxLines: number; placeholder: string };
-// default { maxLines: 500, placeholder: '-' }  — today's behaviour
+// default { maxLines: 1002, placeholder: '-' }  — markdown (1000 data rows; was 500)
 // CSV     { maxLines: Infinity, placeholder: '' }
 ```
 
-- `buildTableContext(doc, from, to, maxLines = 500)`; `decorateTable` and
+- `buildTableContext(doc, from, to, maxLines = DEFAULT_TABLE_CONFIG.maxLines)`; `decorateTable` and
   `tableContextAtLine` read the facet from state and pass it in.
 - `addRow`, `newRowMarkdown` (`table-navigation.ts`, used by
   `Mod-Shift-Enter`) and `addColumn` take the placeholder from the facet: in a
@@ -386,7 +386,7 @@ Measured (WebKit, 100k rows): the guard's share of a one-cell commit went from
   digit grouping.
 - **Vitest, guard:** typing outside the table rejected; cell edit, add/delete
   row and column, undo, an emptied row pass.
-- **Vitest, tables:** default `tableConfig` keeps the 500 cap and `-`
+- **Vitest, tables:** default `tableConfig` keeps the markdown cap and `-`
   placeholder (no regression in markdown).
 - **Browser (`npm run dev`):** CSV injected through the codec — table renders,
   edits, add row shows no `-`.

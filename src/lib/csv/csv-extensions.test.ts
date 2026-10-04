@@ -13,7 +13,11 @@ import { ensureSyntaxTree } from '@codemirror/language';
 import { markdownExtension } from '../editor/markdown-language';
 import { livePreviewPlugin } from '../editor/preview/plugin';
 import { csvPreviewExtensions } from './csv-extensions';
+import { DEFAULT_TABLE_CONFIG } from '../editor/preview/table-config';
 import { rowsToTable } from './csv-table';
+
+/** Rows past the markdown table cap, so only the CSV bundle draws them. */
+const PAST_MD_CAP = DEFAULT_TABLE_CONFIG.maxLines + 100;
 
 /** A canonical CSV buffer of `rows` rows: a header plus `rows - 1` data rows. */
 function csvTable(rows: number): string {
@@ -23,11 +27,11 @@ function csvTable(rows: number): string {
 }
 
 describe('csvPreviewExtensions through the view', () => {
-  it('renders a 600-row CSV as a widget and drops text typed after it', () => {
-    const doc = csvTable(600);
+  it('renders a CSV past the markdown cap as a widget and drops text typed after it', () => {
+    const doc = csvTable(PAST_MD_CAP);
     const state = EditorState.create({ doc, extensions: [markdownExtension(), csvPreviewExtensions] });
     // Finish the parse up front: a partial Table node would be shorter than the
-    // default 500-line cap and render for the wrong reason.
+    // default markdown cap and render for the wrong reason.
     expect(ensureSyntaxTree(state, doc.length, 5000)).not.toBeNull();
     const view = new EditorView({ state });
     // Spend the tree-completion rebuild on an empty transaction, so nothing
@@ -43,7 +47,7 @@ describe('csvPreviewExtensions through the view', () => {
   });
 
   it('control: the bare markdown preview leaves the same table raw and lets the text in', () => {
-    const doc = csvTable(600);
+    const doc = csvTable(PAST_MD_CAP);
     const state = EditorState.create({ doc, extensions: [markdownExtension(), livePreviewPlugin] });
     expect(ensureSyntaxTree(state, doc.length, 5000)).not.toBeNull();
     const view = new EditorView({ state });

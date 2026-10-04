@@ -7,7 +7,7 @@ import { csvEditGuard } from './csv-guard';
 
 /**
  * What a CSV tab puts in the preview compartment, whatever the engine: the
- * table preview, no 500-line table cap (the size limit for CSV is applied
+ * table preview, no markdown table cap (the size limit for CSV is applied
  * earlier, at the disk boundary: `CSV_TABLE_MAX_ROWS` in `csv-codec.ts`),
  * empty (not `-`) new cells, and the one-table guard. One stable array — a compartment reconfigure with the same
  * value is a no-op.
