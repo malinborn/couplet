@@ -1,6 +1,7 @@
 import { Decoration, WidgetType } from '@codemirror/view';
-import type { EditorView } from '@codemirror/view';
-import type { Text } from '@codemirror/state';
+import type { EditorView, ViewUpdate } from '@codemirror/view';
+import { MapMode } from '@codemirror/state';
+import type { ChangeDesc, EditorState, Text } from '@codemirror/state';
 import { ensureSyntaxTree, syntaxTree } from '@codemirror/language';
 import type { SyntaxNode } from '@lezer/common';
 import type { DecoSink } from './utils';
@@ -94,10 +95,82 @@ interface TableDomModel {
 /** Widget root (`.cm-md-table-wrap`) → its model. */
 const tableModels = new WeakMap<HTMLElement, TableDomModel>();
 
-/** The model of the table `el` sits in, for code that only holds a cell element. */
-function tableModelOf(el: HTMLElement): TableDomModel | undefined {
-  const wrap = el.closest<HTMLElement>('.cm-md-table-wrap');
-  return wrap ? tableModels.get(wrap) : undefined;
+/**
+ * The changes of the view update now being drawn, per view.
+ *
+ * `TableWidget.updateDOM` needs them to tell its own old DOM from another
+ * table's (see there). `livePreviewPlugin` records them through
+ * {@link noteTableUpdate}: CM6 runs `updatePlugins(update)` immediately before
+ * every `docView.update(update)` — in a transaction and in a measure-phase
+ * viewport update alike — so this holds the changes of exactly the update whose
+ * tiles are being reconciled. A measure-phase update records an empty set,
+ * which maps nothing, which is right: nothing moved.
+ */
+const pendingChanges = new WeakMap<EditorView, ChangeDesc>();
+
+/**
+ * Where an open cell edit overlay writes, kept in document coordinates and
+ * mapped through every update — owned by the overlay, never read off the DOM.
+ *
+ * The overlay is one textarea in `document.body`, and the table under it can be
+ * patched in place, rebuilt, or (before `updateDOM` checked identity) handed to
+ * another table while it is open: a click on "+" keeps the textarea focused,
+ * and an AI edit does not close it. None of that may decide where its text
+ * lands, so it tracks its cell's range itself.
+ *
+ * `lost` means the range can no longer be trusted: the cell was deleted (an end
+ * swallowed by a deletion — the row or the whole table went), or an update
+ * slipped past unseen (the preview plugin was out of the editor, e.g. raw
+ * mode), leaving a gap in the mapping. A lost overlay refuses to commit.
+ */
+interface OverlayRange {
+  view: EditorView;
+  from: number;
+  to: number;
+  /** The state this range is expressed in; an update not starting from it was missed. */
+  state: EditorState;
+  lost: boolean;
+}
+
+/**
+ * A set, not one slot: double-clicking a second cell removes the first field
+ * at once, but its blur-triggered commit is still 50ms out and must write by a
+ * range that kept being mapped until then.
+ */
+const openOverlayRanges = new Set<OverlayRange>();
+
+/**
+ * Called by `livePreviewPlugin` at the start of every update, before the
+ * document view reconciles its widgets. Records the update's changes for
+ * `updateDOM` and maps the open overlay's range through them.
+ */
+export function noteTableUpdate(update: ViewUpdate): void {
+  pendingChanges.set(update.view, update.changes);
+  for (const range of openOverlayRanges) {
+    if (range.view !== update.view || range.lost) continue;
+    if (range.state !== update.startState) {
+      range.lost = true;
+      continue;
+    }
+    if (update.docChanged) {
+      // Outward on both ends: text someone else inserts at the cell's edge is
+      // cell text, and the overlay's commit replaces it (last writer wins).
+      const from = update.changes.mapPos(range.from, -1, MapMode.TrackDel);
+      const to = update.changes.mapPos(range.to, 1, MapMode.TrackDel);
+      if (from === null || to === null) {
+        range.lost = true;
+        continue;
+      }
+      range.from = from;
+      range.to = to;
+    }
+    range.state = update.state;
+  }
+}
+
+/** A fresh plugin instance has seen no update yet: drop what an old one left. */
+export function forgetTableUpdates(view: EditorView): void {
+  pendingChanges.delete(view);
 }
 
 /** The cell at (row, col) as the document has it now — never a copy taken at build time. */
@@ -566,7 +639,8 @@ class TableWidget extends WidgetType {
    * cost a whole table of DOM per edit: measured at 10k rows, ~220k nodes and
    * 1.7 s in WebKit for a one-cell commit.
    *
-   * Compatible means the same `mode` and the same shape — row count and every
+   * Compatible means the same table (see `from`), the same `mode` and the same
+   * shape — row count and every
    * row's cell count (which fixes `colCount`, the header and the delimiter). The
    * shape decides which controls exist at all (− on rows only past one data
    * row, − on columns only past one column), so a different shape is a rebuild.
@@ -579,13 +653,35 @@ class TableWidget extends WidgetType {
    * and keyboard navigation read off the DOM. Handlers need nothing: they read
    * positions from {@link TableDomModel} at event time, swapped below.
    *
-   * Nothing is mutated before the shape check passes — CM6 offers the DOM of any
-   * cached table widget here, and a refused candidate must come back untouched.
+   * Nothing is mutated before every check passes — CM6 tries cached candidates
+   * one after another, and a refused one must come back untouched.
    */
-  updateDOM(dom: HTMLElement, view: EditorView): boolean {
+  updateDOM(
+    dom: HTMLElement,
+    view: EditorView,
+    /**
+     * The widget that last owned `dom` — **not necessarily this table's**.
+     * CM6's tile cache (`TileCache.findWidget`) offers the DOM of any cached
+     * widget of this class, oldest first, and a sibling table that changed
+     * shape in the same update leaves its old tile in that cache. Matched on
+     * shape alone, table B would adopt table A's old DOM — and with it an open
+     * overlay's cell, its editing class and any drag in progress.
+     */
+    from: TableWidget
+  ): boolean {
     const model = tableModels.get(dom);
     if (!model) return false;
     if (model.mode !== this.mode) return false;
+    // `from` and the model both describe `dom`. They are the same ctx except
+    // after an `eq`-true reuse, where CM6 swaps in an equal widget — same
+    // positions by definition, which is all that is compared here.
+    if (from.ctx.nodeFrom !== model.ctx.nodeFrom) return false;
+    // Identity: the table this DOM showed, carried through this update's
+    // changes, must start where this widget's table starts — which another
+    // table never does. No recorded changes means the preview plugin was
+    // created in this very update, and everything is drawn fresh anyway.
+    const changes = pendingChanges.get(view);
+    if (!changes || changes.mapPos(from.ctx.nodeFrom, 1) !== this.ctx.nodeFrom) return false;
     const prev = model.ctx;
     const next = this.ctx;
     if (!sameTableShape(prev, next)) return false;
@@ -1041,6 +1137,37 @@ function tableContextAtLine(view: EditorView, tableLine: number): TableContext |
 }
 
 /**
+ * Which table, row and column the cell holding `pos` belongs to, read from the
+ * document as it is now.
+ *
+ * What the overlay navigates from. Its `place` was right when it opened, but a
+ * row inserted above it while it was open would shift every row index below;
+ * the range it writes to is mapped, so asking the document where that range
+ * sits is what stays true. Cheap on purpose — one tree walk up and one line
+ * parse, no full table context.
+ */
+function cellPlaceAt(
+  view: EditorView,
+  pos: number
+): { tableLine: number; place: CellPlace } | null {
+  const doc = view.state.doc;
+  if (pos > doc.length) return null;
+  const line = doc.lineAt(pos);
+  const tree =
+    ensureSyntaxTree(view.state, Math.min(doc.length, line.to + 1), 200) ??
+    syntaxTree(view.state);
+  let node: SyntaxNode | null = tree.resolveInner(Math.min(line.from + 1, line.to), 1);
+  while (node && node.name !== 'Table') node = node.parent;
+  if (!node) return null;
+  const col = parseCellsWithPositions(line.text, line.from).findIndex(
+    (c) => c.from <= pos && pos <= c.to
+  );
+  if (col < 0) return null;
+  const tableLine = doc.lineAt(node.from).number;
+  return { tableLine, place: { row: line.number - tableLine, col } };
+}
+
+/**
  * Open the edit overlay on one cell of a freshly re-read table.
  *
  * The cell is found by the source range written onto its nested editing host by
@@ -1169,15 +1296,24 @@ function showCellEditor(
   document.querySelector('.cm-md-table-editor')?.remove();
 
   /**
-   * The cell as the document has it *now*. `cell` is what the field opened
-   * with; while it is open the table can be patched in place under it
-   * (`TableWidget.updateDOM` — another edit, an AI edit, a reload), so every
-   * write resolves the range through the table's model by the cell's (row,
-   * col). Without a `place` there is nothing to resolve by, and `cell` stands.
+   * Where the field writes: the cell's range as it opened, mapped through every
+   * update since by `noteTableUpdate`. Deliberately not read from the table's
+   * DOM or its model — see {@link OverlayRange}. `cell` stays what the field
+   * opened with: its text decides "unchanged", nothing else.
    */
-  const model = place ? tableModelOf(cellEl) : undefined;
-  const current = (): CellInfo =>
-    (model && place ? liveCell(model, place.row, place.col) : undefined) ?? cell;
+  const range: OverlayRange = {
+    view,
+    from: cell.from,
+    to: cell.to,
+    state: view.state,
+    lost: false,
+  };
+  openOverlayRanges.add(range);
+  /** The range to write to, or `null` when it can no longer be trusted. */
+  const target = (): { from: number; to: number } | null =>
+    range.lost || range.state !== view.state || range.to > view.state.doc.length
+      ? null
+      : { from: range.from, to: range.to };
 
   const rect = cellEl.getBoundingClientRect();
   const cellStyle = getComputedStyle(cellEl);
@@ -1241,6 +1377,7 @@ function showCellEditor(
   let committed = false;
 
   const destroy = (): void => {
+    openOverlayRanges.delete(range);
     ta.removeEventListener('input', reflow);
     endCellEditSession(ta);
     ta.remove();
@@ -1255,14 +1392,24 @@ function showCellEditor(
     if (committed) return;
     committed = true;
     const newText = encodeForCommit(ta.value);
-    // "Unchanged" is against what the field opened with — an untouched field
-    // must not overwrite a cell that changed underneath it — but the write goes
-    // to where the cell is now.
+    // "Unchanged" is judged against what the field opened with, so an untouched
+    // field never overwrites a cell someone else changed underneath it.
+    //
+    // A *touched* field wins: if an AI edit or another writer rewrote this cell
+    // while it was open, the range has mapped onto their text and the user's
+    // replaces it — last writer wins, the same as typing over it would.
+    //
+    // A cell that is gone (its row or table deleted, or an update the mapping
+    // missed) gets no write at all. Writing the text "somewhere near" would
+    // corrupt whatever now sits there — the next row, or the delimiter of the
+    // table below — which is worse than losing one cell's typing.
     if (newText !== cell.text) {
-      const at = current();
-      view.dispatch({
-        changes: { from: at.from, to: at.to, insert: newText },
-      });
+      const at = target();
+      if (at) {
+        view.dispatch({
+          changes: { from: at.from, to: at.to, insert: newText },
+        });
+      }
     }
     destroy();
   };
@@ -1272,24 +1419,17 @@ function showCellEditor(
    *
    * The order is the point: the text being left is committed into the cell it
    * was typed in, never dropped, and the move is computed from the document the
-   * commit produced. Both line numbers are read *before* the commit — the commit
-   * can move positions inside the line but cannot add or remove lines, so they
-   * still name the same rows afterwards.
+   * commit produced. Where the cell sits is read *before* the commit — the
+   * commit can move positions inside the line but cannot add or remove lines,
+   * so it still names the same row afterwards — and it is read from the
+   * document, not from `place`: a row added above this one while the field was
+   * open would leave `place.row` pointing one row short.
    */
   const commitAndMove = (move: CellMove): void => {
-    if (!place) {
-      commit();
-      return;
-    }
-    const doc = view.state.doc;
-    const at = current();
-    if (at.from > doc.length) {
-      commit();
-      return;
-    }
-    const tableLine = doc.lineAt(at.from).number - place.row;
+    const at = target();
+    const where = place && at ? cellPlaceAt(view, at.from) : null;
     commit();
-    moveAfterCommit(view, tableLine, place, move);
+    if (where) moveAfterCommit(view, where.tableLine, where.place, move);
   };
 
   /**
@@ -1373,8 +1513,11 @@ function showCellEditor(
       // Снимок до коммита: `commit()` разрушает поле, а `ta.value` после
       // `remove()` читать уже нечестно.
       const value = ta.value;
-      const base = current().from;
+      // A cell that is gone has nowhere to anchor a comment either.
+      const at = target();
       commit();
+      if (!at) return null;
+      const base = at.from;
       return {
         from: base + encodedOffset(value, from),
         to: base + encodedOffset(value, to),

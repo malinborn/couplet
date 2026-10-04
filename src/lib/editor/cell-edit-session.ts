@@ -34,8 +34,12 @@ export interface CellEditSession {
    * anchors to a document range: while the overlay is open the document still
    * holds the cell's previous text, so an anchor made without committing would
    * point at characters that are not in the file.
+   *
+   * `null` when the cell is gone — its row or table was deleted while the
+   * overlay was open. The commit is refused then (see `showCellEditor`), and
+   * there is no range to anchor to.
    */
-  commitAndMap(from: number, to: number): { from: number; to: number };
+  commitAndMap(from: number, to: number): { from: number; to: number } | null;
   /**
    * Commit the overlay into the document now and close it — what Cmd+Enter
    * does.

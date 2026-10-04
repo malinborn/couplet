@@ -17,7 +17,7 @@ import {
 } from './inline';
 import { decorateListItem, decorateBlockquote, insideBlockquote } from './lists';
 import { decorateHorizontalRule, decorateFencedCode } from './blocks';
-import { decorateTable } from './tables';
+import { decorateTable, noteTableUpdate, forgetTableUpdates } from './tables';
 import { decorateMermaidBlock, mermaidRendered } from './mermaid';
 import { toggleTableMode } from './table-state';
 import { tableConfig } from './table-config';
@@ -139,6 +139,7 @@ export const livePreviewPlugin = ViewPlugin.fromClass(
     decorations: DecorationSet;
 
     constructor(view: EditorView) {
+      forgetTableUpdates(view);
       try {
         this.decorations = buildDecorations(view);
       } catch (e) {
@@ -148,6 +149,11 @@ export const livePreviewPlugin = ViewPlugin.fromClass(
     }
 
     update(update: ViewUpdate) {
+      // First, and on every update: CM6 reconciles widgets right after the
+      // plugins update, and `TableWidget.updateDOM` needs this update's changes
+      // to know which old DOM belongs to which table. Also keeps an open cell
+      // overlay's write range mapped. See `noteTableUpdate`.
+      noteTableUpdate(update);
       const treeChanged = syntaxTree(update.state) !== syntaxTree(update.startState);
       const mermaidUpdate = update.transactions.some((tr) =>
         tr.effects.some((e) => e.is(mermaidRendered))

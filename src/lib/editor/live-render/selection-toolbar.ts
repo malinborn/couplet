@@ -455,7 +455,8 @@ function buildPopup(view: EditorView, kind: ToolbarKind): HTMLElement {
       if (target?.kind === 'cell-edit' && target.session) {
         const range = target.session.commitAndMap(target.from, target.to);
         hidePopup();
-        onCommentRef?.(range);
+        // `null`: the cell was deleted under the overlay — nothing to anchor to.
+        if (range) onCommentRef?.(range);
         return;
       }
       // A widget selection is invisible to `view.state.selection`, so the

@@ -20,6 +20,7 @@ import { livePreviewPlugin } from './plugin';
 import { tableModeField, getTableMode } from './table-state';
 import { CELL_TEXT_CLASS } from './tables';
 import { addAiComment, aiCommentField, removeAiComment, type CommentActions } from '../ai-comment';
+import { activeCellEditSession } from '../cell-edit-session';
 
 const TABLE = [
   '| h1 | h2 | h3 |',
@@ -360,6 +361,213 @@ describe('TableWidget.updateDOM — patched, not rebuilt', () => {
     const lines = tableLines(view);
     expect(lines.some((l) => l.includes('h2'))).toBe(false);
     expect(lines[2]).toContain('also wider than before');
+    expect(view.state.doc.toString().endsWith('\n\nafter the table')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Two tables of one shape, and the open overlay
+// ---------------------------------------------------------------------------
+
+const TABLE_A = ['| ha | hb |', '| --- | --- |', '| a1 | a2 |'].join('\n');
+const TABLE_B = ['| hc | hd |', '| --- | --- |', '| b1 | b2 |'].join('\n');
+const TWO_TABLES = `x\n\n${TABLE_A}\n\ny\n\n${TABLE_B}\n\nz`;
+
+/** The `.cm-md-table-wrap` of the table whose header reads `header`. */
+function wrapOf(view: EditorView, header: string): HTMLElement {
+  const wrap = textEl(view, header).closest<HTMLElement>('.cm-md-table-wrap');
+  if (!wrap) throw new Error(`no table with header ${header}`);
+  return wrap;
+}
+
+/** Append a data row after `lastRow`, the way an AI edit would — overlay left open. */
+function appendRowAfter(view: EditorView, lastRow: string, row: string): void {
+  const at = view.state.doc.toString().indexOf(lastRow) + lastRow.length;
+  view.dispatch({ changes: { from: at, insert: `\n${row}` } });
+}
+
+describe('updateDOM only reuses its own table, and the overlay maps its own range', () => {
+  it('a row added to table A while a1 is open: ⌘↩ writes a1, not b1 of the same-shape table B', () => {
+    // CM6's tile cache hands updateDOM the DOM of *any* cached widget of the
+    // class — here A's old DOM, which B's new widget matches in shape.
+    const view = makeView(TWO_TABLES);
+    const oldA = wrapOf(view, 'ha');
+    const oldB = wrapOf(view, 'hc');
+    dblclick(textEl(view, 'a1'));
+    overlay().value = 'EDITED';
+
+    appendRowAfter(view, '| a1 | a2 |', '| a3 | a4 |');
+
+    // A changed shape and was rebuilt; B moved and kept its *own* DOM. Had B
+    // adopted A's old DOM, the editing class would now sit on b1.
+    expect(oldA.isConnected).toBe(false);
+    expect(wrapOf(view, 'hc')).toBe(oldB);
+    expect(view.dom.querySelector('.cm-md-table-cell-editing')).toBeNull();
+
+    press(overlay(), 'Enter', { meta: true });
+
+    const text = view.state.doc.toString();
+    expect(text).toContain('| EDITED | a2 |');
+    expect(text).toContain(TABLE_B);
+    expect(text).not.toContain('a1');
+  });
+
+  it('b1 open while a row is added to table A: the commit leaves B intact', () => {
+    const view = makeView(TWO_TABLES);
+    dblclick(textEl(view, 'b1'));
+    overlay().value = 'B ONE';
+
+    appendRowAfter(view, '| a1 | a2 |', '| a3 | a4 |');
+    press(overlay(), 'Enter', { meta: true });
+
+    expect(view.state.doc.toString()).toBe(
+      `x\n\n${TABLE_A}\n| a3 | a4 |\n\ny\n\n${TABLE_B.replace('b1', 'B ONE')}\n\nz`
+    );
+  });
+
+  it('typing between two same-shape tables keeps each table on its own DOM', () => {
+    const view = makeView(TWO_TABLES);
+    const a = wrapOf(view, 'ha');
+    const b = wrapOf(view, 'hc');
+
+    const at = view.state.doc.toString().indexOf('y');
+    view.dispatch({ changes: { from: at, insert: 'typing ' } });
+
+    expect(wrapOf(view, 'ha')).toBe(a);
+    expect(wrapOf(view, 'hc')).toBe(b);
+    expectRangesMatchDoc(view);
+  });
+});
+
+describe('the overlay, opened before an edit above the table', () => {
+  it('⌘↩ writes at the cell’s new place', () => {
+    const view = makeView(docWithTable());
+    dblclick(textEl(view, 'a2'));
+    overlay().value = 'NEW';
+    view.dispatch({ changes: { from: 0, insert: 'typed while the overlay was open ' } });
+
+    press(overlay(), 'Enter', { meta: true });
+
+    expect(tableLines(view)[2]).toBe('| a1 | NEW | a3 |');
+  });
+
+  it('Tab commits at the new place and moves to the next cell', () => {
+    const view = makeView(docWithTable());
+    dblclick(textEl(view, 'a2'));
+    overlay().value = 'NEW';
+    view.dispatch({ changes: { from: 0, insert: 'line one\nline two\n' } });
+
+    press(overlay(), 'Tab');
+
+    expect(tableLines(view)[2]).toBe('| a1 | NEW | a3 |');
+    expect(overlay().value).toBe('a3');
+    press(overlay(), 'Escape');
+  });
+
+  it('💬 (commitAndMap) maps onto the committed text at its new place', () => {
+    const view = makeView(docWithTable());
+    dblclick(textEl(view, 'a2'));
+    overlay().value = 'commented';
+    view.dispatch({ changes: { from: 0, insert: 'shift ' } });
+
+    const session = activeCellEditSession();
+    if (!session) throw new Error('no published session');
+    const range = session.commitAndMap(0, 'commented'.length);
+
+    expect(range).not.toBeNull();
+    expect(tableLines(view)[2]).toBe('| a1 | commented | a3 |');
+    expect(range?.from).toBe(view.state.doc.toString().indexOf('commented'));
+    expect(view.state.sliceDoc(range?.from ?? 0, range?.to ?? 0)).toBe('commented');
+  });
+
+  it('a row added inside the table above the open cell: Enter still walks from the right row', () => {
+    const view = makeView(docWithTable());
+    dblclick(textEl(view, 'a1'));
+    overlay().value = 'A!';
+    // A data row slipped in between the delimiter and the open row.
+    const at = view.state.doc.toString().indexOf('| a1');
+    view.dispatch({ changes: { from: at, insert: '| n1 | n2 | n3 |\n' } });
+
+    press(overlay(), 'Enter');
+
+    expect(tableLines(view)[3]).toBe('| A! | a2 | a3 |');
+    expect(overlay().value).toBe('b1');
+    press(overlay(), 'Escape');
+  });
+
+  it('the open cell’s row deleted under it: the commit is refused, nothing is written', () => {
+    const view = makeView(docWithTable());
+    dblclick(textEl(view, 'a2'));
+    overlay().value = 'lost';
+    const row = '| a1 | a2 | a3 |\n';
+    const at = view.state.doc.toString().indexOf(row);
+    view.dispatch({ changes: { from: at, to: at + row.length } });
+    const before = view.state.doc.toString();
+
+    press(overlay(), 'Enter', { meta: true });
+
+    expect(view.state.doc.toString()).toBe(before);
+    expect(document.querySelector('.cm-md-table-editor')).toBeNull();
+  });
+
+  it('the cell rewritten by someone else: last writer wins, into the rewritten range', () => {
+    const view = makeView(docWithTable());
+    dblclick(textEl(view, 'a2'));
+    overlay().value = 'mine';
+    const at = view.state.doc.toString().indexOf('a2');
+    view.dispatch({ changes: { from: at, to: at + 2, insert: 'theirs, longer' } });
+
+    press(overlay(), 'Enter', { meta: true });
+
+    expect(tableLines(view)[2]).toBe('| a1 | mine | a3 |');
+  });
+});
+
+describe('caret parking and drags after a patch', () => {
+  it('mousedown → mouseup on a cell puts the document caret at the cell’s new position', () => {
+    const view = makeView(docWithTable());
+    const b2 = textEl(view, 'b2');
+    view.dispatch({ changes: { from: 0, insert: 'moved ' } });
+    expect(textEl(view, 'b2')).toBe(b2);
+
+    b2.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+    const text = b2.firstChild;
+    if (!text) throw new Error('empty cell');
+    document.getSelection()?.collapse(text, 1);
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+
+    expect(view.state.selection.main.head).toBe(view.state.doc.toString().indexOf('b2') + 1);
+  });
+
+  it('row drag after a patched commit reorders the current rows', () => {
+    const view = makeView(docWithTable());
+    editCell(view, 'a1', 'a much longer cell');
+    const rows = wrapEl(view).querySelectorAll('.cm-md-table-row-data');
+
+    // jsdom has no layout: every rect is 0×0, so clientY -1 drops before row 0.
+    mousedown(rows[1].querySelector('.cm-md-table-btn-drag-row')!);
+    document.dispatchEvent(new MouseEvent('mousemove', { clientY: -1, bubbles: true }));
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+
+    const lines = tableLines(view);
+    expect(lines[2]).toMatch(/^\| b1 /);
+    expect(lines[3]).toMatch(/^\| a much longer cell /);
+    expect(view.state.doc.toString().endsWith('\n\nafter the table')).toBe(true);
+  });
+
+  it('column drag after a patched commit reorders the current columns', () => {
+    const view = makeView(docWithTable());
+    editCell(view, 'a2', 'a much longer cell');
+    const wrap = wrapEl(view);
+
+    cellOf(textEl(view, 'h2')).dispatchEvent(new MouseEvent('mouseenter'));
+    mousedown(wrap.querySelector('.cm-md-table-col-ctrl .cm-md-table-btn-drag-col')!);
+    document.dispatchEvent(new MouseEvent('mousemove', { clientX: -1, bubbles: true }));
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+
+    const lines = tableLines(view);
+    expect(lines[0]).toMatch(/^\| h2 +\| h1 /);
+    expect(lines[2]).toMatch(/^\| a much longer cell \| a1 /);
     expect(view.state.doc.toString().endsWith('\n\nafter the table')).toBe(true);
   });
 });

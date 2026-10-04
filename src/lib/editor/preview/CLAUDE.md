@@ -164,7 +164,18 @@ one-cell commit, and 30–40 ms per keystroke above a 300-row markdown table.
 `TableWidget.updateDOM` patches the existing DOM instead (10k rows: 1 node,
 0.26 s; typing above: DOM kept, ~4 ms dispatch).
 
-- **Compatible = same `mode` and same shape**: row count and every row's cell
+- **Same table first.** CM6's tile cache (`TileCache.findWidget`) offers
+  `updateDOM` the DOM of *any* cached widget of the class, oldest first — and
+  a sibling table that changed shape in the same update leaves its old tile
+  there. Matched on shape alone, table B adopted table A's old DOM (with an
+  open overlay's cell, its editing class and a drag in progress). So
+  `updateDOM` takes CM6's third argument (`from`, the widget that last owned
+  the DOM), carries `from.ctx.nodeFrom` through this update's changes and
+  refuses unless it lands on this widget's `nodeFrom`. The changes come from
+  `noteTableUpdate`, which `livePreviewPlugin.update` calls first thing: CM6
+  runs `updatePlugins(update)` right before every `docView.update(update)`, in
+  a transaction and in a measure-phase update alike.
+- **Compatible = same table, same `mode` and same shape**: row count and every row's cell
   count (`sameTableShape`). Shape decides which controls exist (row − only past
   one data row, column − only past one column), so anything else returns
   `false` and CM6 calls `toDOM`. **Add/delete row/column rebuilds** — fine for
@@ -187,15 +198,23 @@ one-cell commit, and 30–40 ms per keystroke above a 300-row markdown table.
   dblclick, mousedown/mouseup caret parking, the `beforeinput` replay, the ⇔
   toggle (`model.ctx.nodeFrom`), row −/drag, column −/drag, add row/column.
   Only *shape* (`colCount > 1`, `dataCount > 1`) is read at build time.
-- **The overlay resolves too.** `showCellEditor` takes the model from
-  `cellEl` and re-reads its cell by `place` on commit, Tab/Enter and 💬, so an
-  edit patched in while it is open does not misdirect the write. "Unchanged"
-  is still judged against the text it opened with.
+- **The overlay does not read the DOM at all.** It is a textarea in
+  `document.body` that stays open across edits (a click on "+" keeps it
+  focused; an AI edit does not close it), so it owns its cell's range and
+  `noteTableUpdate` maps it through every update (outward on both ends,
+  `MapMode.TrackDel`). Policy: an untouched field writes nothing; a touched
+  one writes into the mapped range even if someone rewrote the cell meanwhile
+  (last writer wins); a cell whose row or table was deleted — or an update the
+  mapping missed, e.g. the preview plugin left the editor — refuses the commit
+  with no write, and `commitAndMap` returns `null`. Tab/Enter re-derive table
+  line, row and column from the mapped range (`cellPlaceAt`), not from the
+  `place` it opened with.
 - **When adding a handler to the widget:** never capture a position-bearing
   value (`cell`, `ctx`, `row.from`, `nodeFrom`) in a closure — go through the
-  model. `table-update-dom.test.ts` drives every handler *after* a patched edit
-  and asserts both that the DOM was kept and where the write landed; a stale
-  capture fails it.
+  model. `table-update-dom.test.ts` covers the existing handlers after a
+  patched edit (DOM kept + where the write landed) and two same-shape tables;
+  a new handler needs its own case there — the suite does not find it by
+  itself.
 
 CM6 does not call `destroy()` on a widget whose DOM was reused, so the hotkey
 sheet survives a patch (its button does too).
