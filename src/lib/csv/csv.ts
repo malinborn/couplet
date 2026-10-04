@@ -35,7 +35,7 @@ interface Records {
   trailingBlank: number;
 }
 
-const BOM = '﻿';
+const BOM = '\uFEFF';
 const CANDIDATES: readonly CsvDelimiter[] = [',', ';', '\t'];
 const SNIFF_CHARS = 65536;
 const SNIFF_ROWS = 20;

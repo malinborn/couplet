@@ -1,6 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import { parser, GFM } from '@lezer/markdown';
 import { rowsToTable, tableToRows } from './csv-table';
+import { parseCsv, serializeCsv } from './csv';
+
+/** Disk → buffer → disk, the way a CSV document is opened and saved. */
+function cycle(raw: string): string {
+  const p = parseCsv(raw);
+  if (!p.ok) throw new Error(p.error);
+  const t = tableToRows(rowsToTable(p.rows));
+  if (!t.ok) throw new Error(t.error);
+  return serializeCsv(t.rows, p.dialect);
+}
 
 function lezerCells(md: string): string[] {
   const cells: string[] = [];
@@ -53,8 +63,9 @@ describe('rowsToTable', () => {
   });
 
   it('turns zero rows into a one-cell empty header', () => {
-    const md = rowsToTable([]);
-    expect(rows(md)).toEqual([['']]);
+    // So a new .csv opens as an editable table. Read back, it is zero rows
+    // again (see the full-cycle tests).
+    expect(rowsToTable([])).toBe('|   |\n| - |\n');
   });
 
   it('is canonical: re-rendering its own output is a no-op', () => {
@@ -63,7 +74,25 @@ describe('rowsToTable', () => {
   });
 });
 
+describe('full cycle: parseCsv → rowsToTable → tableToRows → serializeCsv', () => {
+  it.each(['', '﻿', '\n', '\n\n', 'a,b\n1,2\n', 'a\n""\n', 'a,b\n1,2\n\n'])(
+    'saves %j byte-identical',
+    (raw) => {
+      expect(cycle(raw)).toBe(raw);
+    }
+  );
+
+  it('reads a table of one empty header cell as zero rows', () => {
+    expect(rows(rowsToTable([]))).toEqual([]);
+  });
+});
+
 describe('documented limitations', () => {
+  it('saves a file holding exactly `""` as an empty file', () => {
+    // The price of reading the one-empty-header table as zero rows.
+    expect(cycle('""')).toBe('');
+  });
+
   it('trims leading and trailing spaces of a value', () => {
     expect(rows(rowsToTable([['h'], [' a ']]))).toEqual([['h'], ['a']]);
   });

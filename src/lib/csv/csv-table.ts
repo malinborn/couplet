@@ -66,5 +66,8 @@ export function tableToRows(md: string): TableRows {
     }
     rows.push(cells.map((c) => decodeForEdit(c.text)));
   }
+  // Inverse of rowsToTable's [] → [['']]: one empty header cell and no data is
+  // an empty file. Cost: a file holding exactly `""` saves as empty.
+  if (rows.length === 1 && rows[0].length === 1 && rows[0][0] === '') return { ok: true, rows: [] };
   return { ok: true, rows };
 }
