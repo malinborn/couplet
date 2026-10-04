@@ -35,6 +35,19 @@ export interface SaveGate {
  *
  * An explicit ⌘S is not gated: it is the user choosing their version.
  */
+/**
+ * Does an explicit ⌘S write the buffer? Always — it is the user choosing
+ * their version — except for a clean read-only document: nothing can have
+ * been changed, and a write is not free. A CSV opened read-only because it is
+ * too large for the table view is plain text written through the file's line
+ * ending, which turns every LF inside its quoted cells into CRLF (an Excel
+ * file: CRLF records, LF in cells). A read-only document that is dirty all
+ * the same is written: whatever made it dirty is not lost.
+ */
+export function explicitSaveWrites(doc: { isDirty: boolean; readOnly: boolean }): boolean {
+  return doc.isDirty || !doc.readOnly;
+}
+
 export function canAutoSave(gate: SaveGate): boolean {
   return gate.isDirty && gate.filePath !== null && !gate.conflictDialogOpen && !gate.diskUnreadable;
 }

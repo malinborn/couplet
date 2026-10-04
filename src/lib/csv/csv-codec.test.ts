@@ -6,6 +6,7 @@ import {
   documentPreviewKind,
   newFileText,
   csvTableRefusal,
+  csvOpensReadOnly,
   CSV_TABLE_MAX_ROWS,
 } from './csv-codec';
 import { rowsToTable } from './csv-table';
@@ -164,6 +165,37 @@ describe('CSV_TABLE_MAX_ROWS', () => {
     for (let i = 0; i < CSV_TABLE_MAX_ROWS; i++) lines.push(`${i},"two\nlines"`);
     const raw = lines.join('\n') + '\n\n\n';
     expect(documentPreviewKind('/x.csv', decodeFromDisk('/x.csv', raw, 'lf').text)).toBe('csv');
+  });
+});
+
+describe('a table buffer above the cap', () => {
+  /** A table buffer with `dataRows` data rows. */
+  const tableWith = (dataRows: number) =>
+    rowsToTable([['id', 'name'], ...Array.from({ length: dataRows }, (_, i) => [String(i), `n ${i}`])]);
+
+  it('is shown as plain text: the table code would draw every row', () => {
+    expect(documentPreviewKind('/x.csv', tableWith(CSV_TABLE_MAX_ROWS))).toBe('csv');
+    expect(documentPreviewKind('/x.csv', tableWith(CSV_TABLE_MAX_ROWS + 1))).toBe('code');
+    expect(documentPreviewKind('/x.csv', tableWith(CSV_TABLE_MAX_ROWS) + '\n\n')).toBe('csv');
+  });
+
+  it('a .csv whose content is itself a pipe table over the cap opens as read-only text', () => {
+    // Its raw fallback text IS a table — without the size check it would be
+    // drawn whole, the hang the cap exists to prevent.
+    const raw = tableWith(CSV_TABLE_MAX_ROWS + 1);
+    const doc = decodeFromDisk('/x.csv', raw, 'lf');
+    expect(doc.text).toBe(raw);
+    expect(documentPreviewKind('/x.csv', doc.text)).toBe('code');
+    expect(csvTableRefusal('/x.csv', doc.text)?.reason).toBe('too-large');
+    expect(csvOpensReadOnly(csvTableRefusal('/x.csv', doc.text))).toBe(true);
+  });
+});
+
+describe('csvOpensReadOnly', () => {
+  it('only a CSV refused as too large is read-only; an unparseable one stays editable', () => {
+    expect(csvOpensReadOnly({ reason: 'too-large', rows: CSV_TABLE_MAX_ROWS + 1 })).toBe(true);
+    expect(csvOpensReadOnly({ reason: 'unparseable' })).toBe(false);
+    expect(csvOpensReadOnly(null)).toBe(false);
   });
 });
 

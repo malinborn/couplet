@@ -65,12 +65,13 @@ export type ToastPayload =
   /**
    * A `.csv`/`.tsv` opened as plain text instead of a table: it does not
    * parse, or it has more data rows than `CSV_TABLE_MAX_ROWS` (the table has
-   * no row virtualization yet, and a 100k-row one hung the window). Without
-   * it the same extension sometimes opens as a table and sometimes as raw
-   * text, with nothing saying why. Shown once per open tab, not on every
-   * switch back to it (App keeps the paths it has told about).
+   * no row virtualization yet, and a 100k-row one hung the window) — then it
+   * is also read-only. Without it the same extension sometimes opens as a
+   * table and sometimes as raw text, with nothing saying why. Shown once per
+   * open tab (`csv/csv-notice.ts`); taken down when its tab leaves the screen
+   * and when `path` reads as a table again.
    */
-  | { kind: 'csv-as-text'; fileName: string; refusal: CsvTableRefusal }
+  | { kind: 'csv-as-text'; path: string; fileName: string; refusal: CsvTableRefusal }
   /**
    * "To new windows" (spec §6) left some tabs where they were: their window
    * did not open, or this window still held the file. Not `open-error` —

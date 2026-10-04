@@ -51,7 +51,7 @@
     return n.toLocaleString(activeLanguage());
   }
 
-  const BREW_CMD ='brew update && brew upgrade --cask couplet';
+  const BREW_CMD = 'brew update && brew upgrade --cask couplet';
 
   let copied = $state(false);
 
@@ -171,7 +171,11 @@
         {:else if toast.payload.kind === 'csv-as-text'}
           {@const refusal = toast.payload.refusal}
           <span class="md-toast-text">
-            <strong>{t('toast.csv_as_text.headline', { fileName: toast.payload.fileName })}</strong>
+            <strong
+              >{t(refusal.reason === 'too-large' ? 'toast.csv_as_text.headline_read_only' : 'toast.csv_as_text.headline', {
+                fileName: toast.payload.fileName,
+              })}</strong
+            >
           </span>
           <span class="md-toast-dim"
             >{refusal.reason === 'too-large'

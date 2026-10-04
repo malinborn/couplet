@@ -31,6 +31,7 @@ import { aiCommentAttention, aiCommentField } from './ai-comment';
 import { jsonFormatKeymap, jsonOfferField } from './json-paste';
 import { findPanel } from './search/panel';
 import { searchSpotlight } from './search/spotlight';
+import { readOnlyCompartment } from './read-only';
 
 export const previewCompartment = new Compartment();
 export const languageCompartment = new Compartment();
@@ -85,6 +86,7 @@ export function createExtensions(deps: EditorDeps = {}): Extension[] {
     jsonOfferField,
     jsonFormatKeymap,
     lineGlowCompartment.of([]),
+    readOnlyCompartment.of([]),
     drawSelection(),
     // Prec.highest, and it has to sit outside previewCompartment: the two-Enter
     // exit from a fenced code block applies to every engine (#52).

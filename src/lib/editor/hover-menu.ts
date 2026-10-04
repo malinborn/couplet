@@ -144,11 +144,13 @@ class BlockMenuMarker extends GutterMarker {
 export function hoverBlockMenu(): Extension {
   return gutter({
     class: 'cm-hover-gutter',
+    // No "+" on a read-only document: it would offer an insert that the
+    // read-only filter then drops.
     lineMarker(view: EditorView, line: BlockInfo): GutterMarker | null {
-      return new BlockMenuMarker(line.from);
+      return view.state.readOnly ? null : new BlockMenuMarker(line.from);
     },
-    lineMarkerChange(): boolean {
-      return false;
+    lineMarkerChange(update): boolean {
+      return update.startState.readOnly !== update.state.readOnly;
     },
     renderEmptyElements: true,
   });

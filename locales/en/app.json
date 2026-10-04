@@ -20,6 +20,7 @@
   "toast.save_as_blocked.tab_gone": "The tab it was chosen for is closed — nothing was written",
   "toast.save_as_blocked.unavailable": "This tab could not take that name — nothing was written",
   "toast.csv_as_text.headline": "{fileName} opened as text",
+  "toast.csv_as_text.headline_read_only": "{fileName} opened as text, read-only",
   "toast.csv_as_text.too_large.one": "Too large for the table view ({rows} row, limit {limit})",
   "toast.csv_as_text.too_large.few": "Too large for the table view ({rows} rows, limit {limit})",
   "toast.csv_as_text.too_large.many": "Too large for the table view ({rows} rows, limit {limit})",

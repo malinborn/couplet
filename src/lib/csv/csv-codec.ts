@@ -77,13 +77,29 @@ function refusalOf(path: string, text: string): CsvTableRefusal | null {
 
 /**
  * Why the buffer of a CSV document is plain text and not a table — for
- * telling the human. `null` for a non-CSV path, for a table buffer, and for a
+ * telling the human, and for opening it read-only (`csvOpensReadOnly`).
+ * `null` for a non-CSV path, for a buffer shown as a table, and for a
  * plain-text buffer that would read as a table now (edited since it was
  * opened: it becomes one on the next read, nothing to explain).
+ *
+ * A buffer that is a table over the cap — a `.csv` whose content is itself a
+ * pipe table — counts as too large: read as CSV its lines are records, so
+ * `rows` is its line count minus one (the delimiter row included).
  */
 export function csvTableRefusal(path: string | null, text: string): CsvTableRefusal | null {
-  if (path === null || !isCsvPath(path) || tableToRows(text).ok) return null;
+  if (path === null || !isCsvPath(path) || documentPreviewKind(path, text) === 'csv') return null;
   return refusalOf(path, text);
+}
+
+/**
+ * A CSV refused as too large opens read-only until the table can render only
+ * what is on screen (row virtualization). As plain text a save would go
+ * through `applyLineEnding`, which turns every LF inside a quoted cell of a
+ * CRLF file (Excel's own output) into CRLF — even ⌘S with no edits. An
+ * unparseable CSV stays editable: the human has to be able to fix it.
+ */
+export function csvOpensReadOnly(refusal: CsvTableRefusal | null): boolean {
+  return refusal?.reason === 'too-large';
 }
 
 /**
@@ -127,7 +143,26 @@ export function encodeForDisk(
 export function documentPreviewKind(path: string | null, text: string): PreviewKind {
   const kind = previewKindFor(path);
   if (kind !== 'csv') return kind;
+  // Before the full check, and cheap: a table buffer has one line per row, so
+  // this is exact for a table and an upper bound for anything else. Over the
+  // cap the table code would draw every row — the hang the cap prevents. It
+  // happens for a `.csv` whose content is itself a pipe table: its raw
+  // fallback text IS a table.
+  if (tableDataRowsBound(text) > CSV_TABLE_MAX_ROWS) return 'code';
   return tableToRows(text).ok ? 'csv' : 'code';
+}
+
+/**
+ * The data rows `text` would have as a table: its lines up to the last
+ * non-blank one, minus the header and the delimiter row.
+ */
+function tableDataRowsBound(text: string): number {
+  let end = text.length;
+  while (end > 0 && /\s/.test(text[end - 1])) end--;
+  if (end === 0) return 0;
+  let lines = 1;
+  for (let at = text.indexOf('\n'); at !== -1 && at < end; at = text.indexOf('\n', at + 1)) lines++;
+  return Math.max(0, lines - 2);
 }
 
 /**

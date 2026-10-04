@@ -20,6 +20,7 @@
   "toast.save_as_blocked.tab_gone": "L’onglet pour lequel ce nom a été choisi est fermé — rien n’a été écrit",
   "toast.save_as_blocked.unavailable": "Cet onglet n’a pas pu prendre ce nom — rien n’a été écrit",
   "toast.csv_as_text.headline": "{fileName} ouvert en texte",
+  "toast.csv_as_text.headline_read_only": "{fileName} ouvert en texte, en lecture seule",
   "toast.csv_as_text.too_large.one": "Trop volumineux pour la vue tableau ({rows} ligne, limite {limit})",
   "toast.csv_as_text.too_large.few": "Trop volumineux pour la vue tableau ({rows} lignes, limite {limit})",
   "toast.csv_as_text.too_large.many": "Trop volumineux pour la vue tableau ({rows} lignes, limite {limit})",

@@ -98,14 +98,16 @@
   import { envPreviewPlugin } from './lib/editor/preview/env';
   import { shellSecretsPlugin } from './lib/editor/preview/shell-secrets';
   import { findCodeLanguage, previewKindFor, type PreviewKind } from './lib/editor/file-language';
-  import { documentPreviewKind, csvTableRefusal } from './lib/csv/csv-codec';
+  import { documentPreviewKind, csvTableRefusal, csvOpensReadOnly } from './lib/csv/csv-codec';
+  import { createCsvNotices } from './lib/csv/csv-notice';
+  import { readOnlyCompartment, readOnlyDocument } from './lib/editor/read-only';
   import { csvPreviewExtensions } from './lib/csv/csv-extensions';
   import { reinitializeTheme } from './lib/editor/preview/mermaid';
   import { resolveExternalChange } from './lib/external-change';
   import { createAutoSaveScheduler } from './lib/autosave';
   import { resolveShowTarget, buildAiEdit, aiEditTransaction } from './lib/ai-commands';
   import { normalizeLineEndings, type LineEnding } from './lib/line-endings';
-  import { canAutoSave, lineEndingAfterExternalChange, reloadRetryDelay } from './lib/document-sync';
+  import { canAutoSave, explicitSaveWrites, lineEndingAfterExternalChange, reloadRetryDelay } from './lib/document-sync';
   import {
     setAiHighlights,
     pulseAiLine,
@@ -483,6 +485,10 @@
       await handleSaveAs();
       return;
     }
+    // A clean read-only document (a too-large CSV) has nothing to write, and
+    // writing it as is would still change its bytes — see `explicitSaveWrites`.
+    const readOnly = editorHandle?.view?.state.readOnly ?? false;
+    if (!explicitSaveWrites({ isDirty: fileState.isDirty, readOnly })) return;
     await performSave();
   }
 
@@ -678,30 +684,32 @@
     activePreview = previewKindFor(path);
   }
 
-  /**
-   * CSV paths whose `csv-as-text` toast this window has shown. Once per open
-   * tab, not per switch: a path leaves the set when its tab is no longer open
-   * (so reopening the file says it again) or when it shows as a table again
-   * (so a later break of the same file is reported). Not reactive — nothing
-   * renders from it.
-   */
-  const csvAsTextTold = new Set<string>();
+  /** When this window says why a CSV is on screen as plain text — `csv/csv-notice.ts`. */
+  const csvNotices = createCsvNotices();
 
-  /** Say why a CSV document is on screen as plain text — once, see `csvAsTextTold`. */
-  function tellCsvAsText(path: string | null, kind: PreviewKind, text: string): void {
-    const open = new Set(tabList.tabs.map((tab) => tab.path));
-    for (const told of csvAsTextTold) if (!open.has(told)) csvAsTextTold.delete(told);
-    if (path === null) return;
-    if (kind !== 'code') {
-      csvAsTextTold.delete(path);
-      return;
+  /**
+   * The CSV-only part of settling a document: why it is plain text (if it
+   * is), whether it is read-only, and the toast that says so. Read-only is
+   * decided here for the state just swapped in and lives in that state's own
+   * compartment, so every swap gives each tab its own answer and nothing
+   * carries over to the next one.
+   */
+  function settleCsvText(path: string | null, kind: PreviewKind, text: string): void {
+    // Null for every non-CSV path: an extension check before any scan.
+    const refusal = kind === 'code' ? csvTableRefusal(path, text) : null;
+    const view = editorHandle?.view;
+    const readOnly = csvOpensReadOnly(refusal);
+    if (view && view.state.readOnly !== readOnly) {
+      view.dispatch({ effects: readOnlyCompartment.reconfigure(readOnly ? readOnlyDocument : []) });
     }
-    if (csvAsTextTold.has(path)) return;
-    // Null for every non-CSV path: a cheap extension check before any scan.
-    const refusal = csvTableRefusal(path, text);
-    if (refusal === null) return;
-    csvAsTextTold.add(path);
-    toasts.push({ kind: 'csv-as-text', fileName: path.split('/').pop() ?? path, refusal });
+    const step = csvNotices.settle(path, refusal, tabList.tabs.map((tab) => tab.path));
+    if (step.do === 'tell' && path !== null) {
+      toasts.push({ kind: 'csv-as-text', path, fileName: path.split('/').pop() ?? path, refusal: step.refusal });
+    } else if (step.do === 'withdraw') {
+      // It reads as a table again: a standing "opened as text" would be a lie.
+      const standing = toasts.toasts.find((e) => e.payload.kind === 'csv-as-text' && e.payload.path === path);
+      if (standing) toasts.dismiss(standing.id);
+    }
   }
 
   /**
@@ -715,7 +723,7 @@
     // The kind of a CSV file depends on its buffer (a table, or the text of a
     // file that did not parse or is too large), so it is settled here, after the swap.
     activePreview = kind;
-    tellCsvAsText(path, kind, text);
+    settleCsvText(path, kind, text);
     // `cm-csv-file-mode` rides on `csvPreviewExtensions` (editorAttributes):
     // a classList toggle here was wiped by CM6 on the next focus change.
     const basename = path?.split('/').pop()?.toLowerCase() ?? '';
@@ -764,6 +772,8 @@
     }
     hideHoverMenu();
     toasts.dismissKind('json-offer');
+    // About the document that is leaving; coming back does not repeat it.
+    toasts.dismissKind('csv-as-text');
     showRecentFiles = false;
   }
 
@@ -1282,9 +1292,15 @@
   /**
    * A buffer replaced from disk can change the document's kind: a CSV broken
    * by another program turns the table into plain text, a fixed one back.
+   * So can its read-only state with the kind unchanged: a too-large CSV
+   * (read-only text) broken elsewhere is unparseable (editable text).
    */
   function reapplyKindAfterReload(path: string, text: string): void {
-    if (documentPreviewKind(path, text) !== activePreview) applyDocumentConfig(path);
+    const kind = documentPreviewKind(path, text);
+    const readOnly = kind === 'code' && csvOpensReadOnly(csvTableRefusal(path, text));
+    if (kind !== activePreview || readOnly !== (editorHandle?.view?.state.readOnly ?? false)) {
+      applyDocumentConfig(path);
+    }
   }
 
   async function handleExternalChange(path: string): Promise<void> {

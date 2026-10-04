@@ -20,6 +20,7 @@
   "toast.save_as_blocked.tab_gone": "Вкладка, для которой выбрано имя, закрыта — ничего не записано",
   "toast.save_as_blocked.unavailable": "Эта вкладка не смогла взять это имя — ничего не записано",
   "toast.csv_as_text.headline": "{fileName} открыт как текст",
+  "toast.csv_as_text.headline_read_only": "{fileName} открыт как текст, только для чтения",
   "toast.csv_as_text.too_large.one": "Слишком большой для таблицы ({rows} строка, лимит {limit})",
   "toast.csv_as_text.too_large.few": "Слишком большой для таблицы ({rows} строки, лимит {limit})",
   "toast.csv_as_text.too_large.many": "Слишком большой для таблицы ({rows} строк, лимит {limit})",

@@ -20,6 +20,7 @@
   "toast.save_as_blocked.tab_gone": "La pestaña para la que se eligió el nombre está cerrada; no se escribió nada",
   "toast.save_as_blocked.unavailable": "Esta pestaña no pudo tomar ese nombre; no se escribió nada",
   "toast.csv_as_text.headline": "{fileName} se abrió como texto",
+  "toast.csv_as_text.headline_read_only": "{fileName} se abrió como texto, solo lectura",
   "toast.csv_as_text.too_large.one": "Demasiado grande para la vista de tabla ({rows} fila, límite {limit})",
   "toast.csv_as_text.too_large.few": "Demasiado grande para la vista de tabla ({rows} filas, límite {limit})",
   "toast.csv_as_text.too_large.many": "Demasiado grande para la vista de tabla ({rows} filas, límite {limit})",

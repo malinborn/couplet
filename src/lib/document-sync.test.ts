@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   canAutoSave,
+  explicitSaveWrites,
   lineEndingAfterExternalChange,
   reloadRetryDelay,
   type SaveGate,
@@ -12,6 +13,22 @@ const open: SaveGate = {
   conflictDialogOpen: false,
   diskUnreadable: false,
 };
+
+describe('explicitSaveWrites', () => {
+  it('⌘S writes an editable document, clean or dirty', () => {
+    expect(explicitSaveWrites({ isDirty: false, readOnly: false })).toBe(true);
+    expect(explicitSaveWrites({ isDirty: true, readOnly: false })).toBe(true);
+  });
+
+  it('⌘S on a clean read-only document writes nothing', () => {
+    // A too-large CSV: a write would put CRLF into every LF inside its quoted cells.
+    expect(explicitSaveWrites({ isDirty: false, readOnly: true })).toBe(false);
+  });
+
+  it('a read-only document that is somehow dirty is still written', () => {
+    expect(explicitSaveWrites({ isDirty: true, readOnly: true })).toBe(true);
+  });
+});
 
 describe('canAutoSave', () => {
   it('DirtyFileWithNothingInTheWay_Saves', () => {
