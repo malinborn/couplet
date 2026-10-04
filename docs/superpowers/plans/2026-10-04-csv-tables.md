@@ -24,7 +24,7 @@
 | File | Status | Responsibility |
 |---|---|---|
 | `src/lib/csv/csv.ts` | new | RFC 4180 parse/serialize, delimiter sniffing, dialect |
-| `src/lib/csv/csv-table.ts` | new | rows ↔ canonical GFM table text, empty-cell mark |
+| `src/lib/csv/csv-table.ts` | new | rows ↔ canonical GFM table text |
 | `src/lib/csv/csv-codec.ts` | new | per-path codec state, disk decode/encode, baseline round trip, preview kind |
 | `src/lib/csv/csv-guard.ts` | new | transaction filter: the buffer stays one table; repairs emptied rows |
 | `src/lib/csv/csv-extensions.ts` | new | the stable extension array a CSV tab installs |
@@ -784,7 +784,13 @@ export function isCsvDocument(path: string | null | undefined): boolean {
 }
 
 function defaultDialect(path: string): CsvDialect {
-  return { delimiter: extOf(path) === 'tsv' ? '\t' : ',', bom: false, eol: '\n', trailingNewline: true };
+  return {
+    delimiter: extOf(path) === 'tsv' ? '\t' : ',',
+    bom: false,
+    eol: '\n',
+    trailingNewline: true,
+    trailingBlankLines: 0,
+  };
 }
 
 function parseFor(path: string, raw: string) {

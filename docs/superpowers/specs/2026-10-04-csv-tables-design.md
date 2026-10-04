@@ -48,7 +48,8 @@ implementation.
 
 ```ts
 type CsvDialect = {
-  delimiter: ',' | ';' | '\t'; bom: boolean; eol: '\n' | '\r\n'; trailingNewline: boolean;
+  delimiter: ',' | ';' | '\t'; bom: boolean; eol: '\n' | '\r\n' | '\r';
+  trailingNewline: boolean; trailingBlankLines: number;
 };
 parseCsv(text: string, hint?: { delimiter?: CsvDialect['delimiter'] }):
   { ok: true; rows: string[][]; dialect: CsvDialect } | { ok: false; error: string }
@@ -61,8 +62,11 @@ serializeCsv(rows: string[][], dialect: CsvDialect): string
   most consistent non-trivial field count over the first ~20 records (quotes
   respected); ties → `,`. `.tsv` passes `hint.delimiter = '\t'`.
 - `bom`: leading U+FEFF is stripped on parse and restored on serialize.
-- `eol`: the record separator of the first record. Newlines inside quoted
-  fields are kept as they were read.
+- `eol`: the first record separator outside quotes (LF, CRLF or CR).
+  Newlines inside quoted fields are kept as they were read.
+- `trailingBlankLines`: empty lines after the last record are not rows; their
+  count is kept and written back, so an edit does not turn them into `,` lines.
+  Empty lines in the middle stay as (all-empty) rows.
 - Serialize quotes a field only if it contains the delimiter, `"`, `\r` or
   `\n`. The trailing newline of the file is kept iff the input had one.
 - A file with no records (empty file) is valid: zero rows.
@@ -77,10 +81,11 @@ tableToRows(md: string): { ok: true; rows: string[][] } | { ok: false; error: st
 - Header = first row. Ragged rows are padded with empty cells to the widest
   row. An empty file becomes a one-column table with an empty header (so a new
   `.csv` opens as an editable table).
-- Cell text goes through the existing `encodeForCommit` / `decodeForEdit`
-  (`preview/table-encoding.ts`): newline ↔ `<br>`, `|` ↔ `\|`. Known, tested
-  limitation: a literal `<br>` or `\|` in a CSV cell comes back as a newline /
-  `|`.
+- Cell text is encoded with the same rules as `encodeForCommit` (newline →
+  `<br>`, `|` → `\|`) but without its trailing-newline strip, which would lose
+  data for a value like `"a\n"`; it is decoded with `decodeForEdit`. Known,
+  tested limitation: a literal `<br>` in a CSV value comes back as a newline;
+  the exact behaviour for a literal `\|` is pinned by a test.
 - **No empty-row mark.** The project notes claimed Lezer GFM drops a
   whitespace-only row from the `Table` node. Measured 2026-10-04
   (`@lezer/markdown` 1.6.3, Lezer and the rendered widget): an all-empty row is
@@ -97,7 +102,10 @@ tableToRows(md: string): { ok: true; rows: string[][] } | { ok: false; error: st
   `markdownTable(…, { align: null, padding: true })`), so
   `rowsToTable(tableToRows(rowsToTable(r))) === rowsToTable(r)`.
 - `tableToRows` fails if the text is anything other than one table optionally
-  followed by blank lines.
+  followed by blank lines — strictly what Lezer and the widget draw as one
+  table: every line starts with `|` and ends with an unescaped `|`, the
+  delimiter row has as many cells as the header, and no row is wider than the
+  header (GFM would drop the extra cells, a silent loss on save).
 
 ### 3. Document codec at the disk boundary
 
