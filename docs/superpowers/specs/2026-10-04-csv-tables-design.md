@@ -233,8 +233,35 @@ A `transactionFilter` installed only for CSV:
   (`return []`). This covers typing outside the table, slash commands, hover
   inserts, pasted text, and a second table.
 
-The check is O(document) per edit — same order as the widget rebuild already
-paid on every commit.
+**The check is incremental, with exactly `tableToRows`'s verdict**
+(`oneTableAfter` / `stillOneTable` in `csv-guard.ts`). A full `tableToRows`
+per edit cost 8 ms at 10k rows and ~110 ms at 100k (WebKit), so:
+
+- `tableToRows` stays the single source of the rules. It is built from
+  exported per-line pieces (`isBlankLine`, `isClosedRow`, `tableHead`,
+  `bodyRowCells`, and `isTableBodyLine` = the whole rule for a line below the
+  delimiter row), and the incremental check validates lines with those same
+  functions — the two cannot drift.
+- Verdicts are cached per document in a `WeakMap<Text, boolean>` (a `Text` is
+  immutable, so a verdict never goes stale). An edit whose start document is a
+  known table checks only: every line its changes touch in the new document
+  (`iterChangedRanges`, widened to whole lines; a change ending at a line start
+  counts that line too), up to the last non-blank line; plus every line from
+  the image of the end of the old last non-blank line down to the new last
+  non-blank line — which catches old trailing blank lines that a new row typed
+  below them would strand in the middle. Untouched lines are copies of lines
+  that already passed at the same width, so nothing else can fail.
+- Full check instead when the start document is not a known table (the first
+  edit after a load or a disk reload) and whenever a change touches line 1 or
+  2 — the header or delimiter row, i.e. the width every row is checked against.
+- `csv-guard-incremental.test.ts` compares incremental and full verdicts over
+  seeded random transactions (multi-change, line deletes/blanks, pipes,
+  escapes, newlines, trailing blank lines, narrow rows) and along random edit
+  walks through a real guarded state; mutating the tail scan or the head check
+  fails it.
+
+Measured (WebKit, 100k rows): the guard's share of a one-cell commit went from
+~110 ms to ~1 ms; the first edit after opening still pays one full check.
 
 ### 7. Wiring outside the editor
 
