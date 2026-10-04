@@ -5,8 +5,10 @@
  * runs on transactions dispatched through the view.
  */
 import { describe, it, expect } from 'vitest';
-import { EditorState } from '@codemirror/state';
-import { EditorView } from '@codemirror/view';
+import { EditorState, Transaction, type Extension } from '@codemirror/state';
+import { EditorView, keymap, runScopeHandlers } from '@codemirror/view';
+import { history, historyKeymap } from '@codemirror/commands';
+import { computeReplacement } from '../editor/content-diff';
 import { ensureSyntaxTree } from '@codemirror/language';
 import { markdownExtension } from '../editor/markdown-language';
 import { livePreviewPlugin } from '../editor/preview/plugin';
@@ -52,6 +54,86 @@ describe('csvPreviewExtensions through the view', () => {
     view.dispatch({ changes: { from: view.state.doc.length, insert: 'hello' }, userEvent: 'input.type' });
 
     expect(view.state.doc.toString()).toBe(doc + 'hello');
+    view.destroy();
+  });
+});
+
+/**
+ * CM6 dispatches undo/redo with `filter: false`, so the one-table filter never
+ * sees them; the CSV bundle guards every way into the history instead. Each
+ * case: delete a row (whole-table replace), reload a different file silently
+ * and single-span like `updateContent`, then undo — whose mapped inverse
+ * would glue the deleted rows onto the new table.
+ */
+describe('undo across a disk reload, through the view', () => {
+  const isMac = /Mac/.test(navigator.platform);
+
+  function viewAfterReload(preview: Extension): { view: EditorView; disk: string } {
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: rowsToTable([['a', 'b'], ['1', '2'], ['3', '4']]),
+        // The order setup.ts uses: history + its keymap at default precedence.
+        extensions: [markdownExtension(), history(), keymap.of(historyKeymap), preview],
+      }),
+    });
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: rowsToTable([['a', 'b'], ['1', '2']]) },
+      userEvent: 'input',
+    });
+    const disk = rowsToTable([['x', 'y', 'z'], ['9', '8', '7']]);
+    const repl = computeReplacement(view.state.doc.toString(), disk);
+    if (!repl) throw new Error('no replacement');
+    view.dispatch({ changes: repl, annotations: Transaction.addToHistory.of(false) });
+    expect(view.state.doc.toString()).toBe(disk);
+    return { view, disk };
+  }
+
+  function pressUndo(view: EditorView): void {
+    const event = new KeyboardEvent('keydown', { key: 'z', metaKey: isMac, ctrlKey: !isMac });
+    runScopeHandlers(view, event, 'editor');
+  }
+
+  function menuUndo(view: EditorView): void {
+    view.contentDOM.dispatchEvent(
+      new InputEvent('beforeinput', { inputType: 'historyUndo', bubbles: true, cancelable: true })
+    );
+  }
+
+  it('Mod-z leaves the reloaded table alone', () => {
+    const { view, disk } = viewAfterReload(csvPreviewExtensions);
+    pressUndo(view);
+    expect(view.state.doc.toString()).toBe(disk);
+    view.destroy();
+  });
+
+  it('a historyUndo input event (the native Edit menu) leaves it alone too', () => {
+    const { view, disk } = viewAfterReload(csvPreviewExtensions);
+    menuUndo(view);
+    expect(view.state.doc.toString()).toBe(disk);
+    view.destroy();
+  });
+
+  it('control: without the CSV bundle both paths glue the old rows on', () => {
+    for (const run of [pressUndo, menuUndo]) {
+      const { view } = viewAfterReload(livePreviewPlugin);
+      run(view);
+      expect(view.state.doc.toString()).toContain('| 3 | 4 |\nx | y | z |');
+      view.destroy();
+    }
+  });
+
+  it('Mod-z still undoes an ordinary cell edit', () => {
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: rowsToTable([['a', 'b'], ['1', '2']]),
+        extensions: [markdownExtension(), history(), keymap.of(historyKeymap), csvPreviewExtensions],
+      }),
+    });
+    const before = view.state.doc.toString();
+    const at = before.indexOf('1');
+    view.dispatch({ changes: { from: at, to: at + 1, insert: 'one' }, userEvent: 'input' });
+    pressUndo(view);
+    expect(view.state.doc.toString()).toBe(before);
     view.destroy();
   });
 });
