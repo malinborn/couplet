@@ -47,7 +47,7 @@
 - Create: `src/lib/csv/csv.ts`
 - Test: `src/lib/csv/csv.test.ts`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 // src/lib/csv/csv.test.ts
@@ -143,12 +143,12 @@ describe('serializeCsv', () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npx vitest run src/lib/csv/csv.test.ts`
 Expected: FAIL — `Failed to resolve import "./csv"`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```ts
 // src/lib/csv/csv.ts
@@ -288,12 +288,12 @@ export function serializeCsv(rows: string[][], dialect: CsvDialect): string {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `npx vitest run src/lib/csv/csv.test.ts`
 Expected: PASS (all).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/csv/csv.ts src/lib/csv/csv.test.ts
@@ -310,7 +310,7 @@ git commit -m "feat(csv): RFC 4180 parse/serialize with dialect sniffing"
 
 Context: `parseCellsWithPositions(text, lineFrom)` is exported from `src/lib/editor/preview/tables.ts`; it returns trimmed cell text (still encoded: `<br>`, `\|`). `decodeForEdit` (from `src/lib/editor/preview/table-encoding.ts`) turns `<br>` into `\n` and `\|` into `|`. The table widget's own whole-table rewrite uses `markdownTable(grid, { align: null, padding: true })`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 // src/lib/csv/csv-table.test.ts
@@ -388,12 +388,12 @@ describe('tableToRows', () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npx vitest run src/lib/csv/csv-table.test.ts`
 Expected: FAIL — `Failed to resolve import "./csv-table"`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```ts
 // src/lib/csv/csv-table.ts
@@ -451,12 +451,12 @@ export function tableToRows(md: string): TableRows {
 
 Note on "second table": the blank line between the two tables is not a trailing blank line, and `''.trimStart().startsWith('|')` is false → rejected. That is the intended behaviour.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `npx vitest run src/lib/csv/csv-table.test.ts`
 Expected: PASS. If `rowsToTable` padding in the first test differs from `markdown-table`'s actual output, fix the **expected string** to the library's output (the canonical form is whatever `markdownTable(…, {align:null, padding:true})` produces); never hand-format the table.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/csv/csv-table.ts src/lib/csv/csv-table.test.ts
@@ -474,7 +474,7 @@ git commit -m "feat(csv): convert CSV rows to and from a canonical GFM table"
 - Modify: `src/lib/editor/preview/plugin.ts` (~line 148, `update`)
 - Test: `src/lib/editor/preview/table-config.test.ts`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 // src/lib/editor/preview/table-config.test.ts
@@ -529,12 +529,12 @@ describe('newRowMarkdown placeholder', () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npx vitest run src/lib/editor/preview/table-config.test.ts`
 Expected: FAIL — `Failed to resolve import "./table-config"`.
 
-- [ ] **Step 3: Create the facet**
+- [x] **Step 3: Create the facet**
 
 ```ts
 // src/lib/editor/preview/table-config.ts
@@ -564,7 +564,7 @@ export const tableConfig: Facet<TableConfig, TableConfig> = Facet.define({
 });
 ```
 
-- [ ] **Step 4: Wire it into table code**
+- [x] **Step 4: Wire it into table code**
 
 `src/lib/editor/preview/table-navigation.ts` — replace `newRowMarkdown`:
 
@@ -628,12 +628,12 @@ export function newRowMarkdown(colWidths: number[], placeholder: string = '-'): 
 
 and add `|| tableConfigChanged` to the big `if (...)` condition.
 
-- [ ] **Step 5: Run the new tests and the whole table suite**
+- [x] **Step 5: Run the new tests and the whole table suite**
 
 Run: `npx vitest run src/lib/editor/preview`
 Expected: PASS, no regressions in `tables.test.ts`, `table-navigation.test.ts`, `table-keys.test.ts`, `table-state.test.ts`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/lib/editor/preview/table-config.ts src/lib/editor/preview/table-config.test.ts src/lib/editor/preview/tables.ts src/lib/editor/preview/table-navigation.ts src/lib/editor/preview/plugin.ts
@@ -653,7 +653,7 @@ git commit -m "feat(tables): tableConfig facet for row cap and new-cell placehol
 
 Context: `readDocument`/`writeDocument` are the one read/write boundary for document text (open, tab switch, session restore, external-change reload, agent edits). `fromDisk(raw, fallback)` and `applyLineEnding(text, ending)` are in `src/lib/line-endings.ts`. `resolveExternalChange` in `src/lib/external-change.ts` compares `disk` (decoded) with `baseline` by string equality — an own-save echo must compare equal.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 // src/lib/csv/csv-codec.test.ts
@@ -745,12 +745,12 @@ describe('codecRoundTrip', () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npx vitest run src/lib/csv/csv-codec.test.ts`
 Expected: FAIL — `Failed to resolve import "./csv-codec"`.
 
-- [ ] **Step 3: Implement the codec**
+- [x] **Step 3: Implement the codec**
 
 ```ts
 // src/lib/csv/csv-codec.ts
@@ -844,7 +844,7 @@ export function resetCsvCodec(): void {
 }
 ```
 
-- [ ] **Step 4: Route the disk boundary through the codec**
+- [x] **Step 4: Route the disk boundary through the codec**
 
 In `src/lib/tauri/commands.ts` add `import { decodeFromDisk, encodeForDisk } from '../csv/csv-codec';`, drop `applyLineEnding, fromDisk` from the `line-endings` import if they become unused (keep `type DiskDocument, type LineEnding`), and replace the two bodies:
 
@@ -860,12 +860,12 @@ export async function writeDocument(path: string, text: string, lineEnding: Line
 
 Extend both doc comments with one sentence: "A `.csv`/`.tsv` path is decoded to / encoded from a GFM table here — see `csv/csv-codec.ts`."
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run: `npx vitest run src/lib/csv src/lib/tauri`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/lib/csv/csv-codec.ts src/lib/csv/csv-codec.test.ts src/lib/tauri/commands.ts
@@ -935,12 +935,14 @@ Every existing caller that ignores the return value keeps working; check them al
 
 ### Task 5: Edit guard + CSV extension bundle
 
+> **Superseded in part by 8aca83c** (history guard). CM6 history dispatches undo/redo with `filter: false`, so no transaction filter ever sees them, and an undo mapped across an `addToHistory: false` reload could glue old rows onto the new table. `csvEditGuard` is now `[oneTableFilter, csvHistoryGuard]`: undo/redo are checked at the command (`csvUndo` / `csvRedo` on every history key and on `historyUndo` / `historyRedo` input events, at `Prec.highest`), dispatched only when they leave one table. The code below is the filter as first built, with its doc comment corrected. Kept as the record of what was built first.
+
 **Files:**
 - Create: `src/lib/csv/csv-guard.ts`
 - Create: `src/lib/csv/csv-extensions.ts`
 - Test: `src/lib/csv/csv-guard.test.ts`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 // src/lib/csv/csv-guard.test.ts
@@ -1009,12 +1011,12 @@ describe('csvEditGuard', () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npx vitest run src/lib/csv/csv-guard.test.ts`
 Expected: FAIL — `Failed to resolve import "./csv-guard"`.
 
-- [ ] **Step 3: Implement the guard**
+- [x] **Step 3: Implement the guard**
 
 ```ts
 // src/lib/csv/csv-guard.ts
@@ -1026,10 +1028,13 @@ import { tableToRows } from './csv-table';
  * file can hold. Any edit that would leave something else — text above or
  * below, a second table, a pasted paragraph — is dropped.
  *
- * Undo/redo pass untouched: they replay states this filter already accepted.
- * So does a buffer replaced from disk (`addToHistory: false`, the mark
- * `human-edit.ts` uses for a reload): the file is the truth, and when it no
- * longer holds a table the document kind becomes 'code' (spec §4).
+ * A buffer replaced from disk (`addToHistory: false`, the mark
+ * `human-edit.ts` uses for a reload) passes untouched: the file is the truth,
+ * and when it no longer holds a table the document kind becomes 'code'
+ * (spec §4).
+ *
+ * Undo/redo never reach this filter: CM6 history dispatches them with
+ * `filter: false`. They are guarded at the command instead (8aca83c).
  */
 export const csvEditGuard = EditorState.transactionFilter.of((tr) => {
   if (!tr.docChanged) return tr;
@@ -1040,7 +1045,7 @@ export const csvEditGuard = EditorState.transactionFilter.of((tr) => {
 });
 ```
 
-- [ ] **Step 4: Implement the extension bundle**
+- [x] **Step 4: Implement the extension bundle**
 
 ```ts
 // src/lib/csv/csv-extensions.ts
@@ -1066,12 +1071,12 @@ export const csvPreviewExtensions: Extension = [
 
 Check the actual export name of the live-preview plugin in `src/lib/editor/preview/plugin.ts` and where `App.svelte` imports it from; use the same import. If it is exported from another module, import from there.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run: `npx vitest run src/lib/csv`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/lib/csv/csv-guard.ts src/lib/csv/csv-guard.test.ts src/lib/csv/csv-extensions.ts
@@ -1088,7 +1093,7 @@ git commit -m "feat(csv): keep a CSV buffer to exactly one table"
 - Modify: `src/App.svelte` (`applyDocumentConfig`, `doSave`, `applyPreviewConfig`, the external-change reload path in `handleExternalChange`)
 - Modify: `src/styles/editor.css` (next to the `.cm-code-file-mode` block)
 
-- [ ] **Step 1: Kind from the buffer**
+- [x] **Step 1: Kind from the buffer**
 
 `src/App.svelte` — import `{ documentPreviewKind }` from `./lib/csv/csv-codec` and `{ csvPreviewExtensions }` from `./lib/csv/csv-extensions`.
 
@@ -1103,7 +1108,7 @@ git commit -m "feat(csv): keep a CSV buffer to exactly one table"
   and the branch `else if (kind === 'markdown')` becomes `else if (kind === 'markdown' || kind === 'csv')` (body unchanged). `setActiveDocument` keeps `previewKindFor(path)`; `applyDocumentConfig` always follows it.
 - External-change reload: after the buffer is replaced from disk (`editorHandle.updateContent(...)` in `handleExternalChange`), if `documentPreviewKind(path, newText) !== activePreview`, call `applyDocumentConfig(path)` — a file broken elsewhere turns the table into plain text, a fixed one back.
 
-- [ ] **Step 2: Baseline from the write**
+- [x] **Step 2: Baseline from the write**
 
 In `doSave`, `await writeDocument(path, content, lineEnding)` becomes `const written = await writeDocument(path, content, lineEnding);` and `diskBaseline = content;` becomes:
 ```ts
@@ -1114,7 +1119,7 @@ In `doSave`, `await writeDocument(path, content, lineEnding)` becomes `const wri
 ```
 The dirty check (`doc.toString() === content`) is unchanged.
 
-- [ ] **Step 3: Preview config**
+- [x] **Step 3: Preview config**
 
 `applyPreviewConfig`: right after `if (!v) return;` insert:
 ```ts
@@ -1136,11 +1141,11 @@ The dirty check (`doc.toString() === content`) is unchanged.
 }
 ```
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 `npm run check` → 0 errors; `npx vitest run --dir src` → all pass (nothing previously green may fail). Where `App.svelte` logic is unit-testable through existing helpers (e.g. `external-change.ts`), add a test; the rest is verified live in Task 8.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/App.svelte src/styles/editor.css
@@ -1160,7 +1165,7 @@ git commit -m "feat(csv): open .csv/.tsv as a table document"
 - Modify: `src-tauri/tauri.conf.json` (`bundle.fileAssociations`, line ~47)
 - Modify: `src/lib/tauri/commands.ts` (`FILE_FILTERS`, lines ~98-100)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 In `agent-commands.test.ts`, follow the file's existing harness for an `edit` command (find a test that sends `cmd: 'edit'` and reuse its setup). Add:
 
@@ -1176,12 +1181,12 @@ it('refuses edit on a CSV file before any tab moves', async () => {
 
 Adapt names (`handler`, `editPayload`, `lastResponse`) to what the test file actually uses; keep the two assertions: the error response, and that no tab moved.
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `npx vitest run src/lib/tabs/agent-commands.test.ts`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `AGENT_ERRORS` gains:
 
@@ -1203,7 +1208,7 @@ In `handle`, right after the `VERBS` check:
 
 with `import { isCsvPath } from '../csv/csv-codec';`.
 
-- [ ] **Step 4: Associations and filters**
+- [x] **Step 4: Associations and filters**
 
 `src-tauri/tauri.conf.json`, append to `bundle.fileAssociations`:
 
@@ -1222,12 +1227,12 @@ with `import { isCsvPath } from '../csv/csv-codec';`.
 
 `src/lib/tauri/commands.ts` `FILE_FILTERS`: add `'tsv'` right after `'csv'` in both the "All Supported" and "Data" entries.
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 Run: `npx vitest run src/lib/tabs/agent-commands.test.ts` → PASS.
 Run: `cd src-tauri && cargo test` → PASS (config still valid).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/lib/tabs/agent-commands.ts src/lib/tabs/agent-commands.test.ts src-tauri/tauri.conf.json src/lib/tauri/commands.ts
@@ -1242,7 +1247,7 @@ git commit -m "feat(csv): refuse agent edits on CSV files; register csv/tsv"
 - Modify: `CLAUDE.md` (Architecture tree + one Gotchas entry)
 - Modify: `src/lib/editor/preview/CLAUDE.md` (short "CSV documents" section)
 
-- [ ] **Step 1: Browser check (`npm run dev`, Playwright with `chromium.launch({ channel: 'chrome' })` or the Playwright MCP)**
+- [x] **Step 1: Browser check (`npm run dev`, Playwright with `chromium.launch({ channel: 'chrome' })` or the Playwright MCP)**
 
 At `http://localhost:1420`, reach the view with `document.querySelector('.cm-content').cmTile.root.view`. There is no Tauri I/O in the browser, so drive the pieces directly via `import()` of `/src/lib/csv/csv-codec.ts` and `/src/lib/csv/csv-extensions.ts` from the page (Vite serves source modules):
 - install `csvPreviewExtensions` through `previewCompartment` (import `/src/lib/editor/setup.ts`), set the doc to `decodeFromDisk('/t.csv', '<csv>', 'lf').text`;
@@ -1250,7 +1255,7 @@ At `http://localhost:1420`, reach the view with `document.querySelector('.cm-con
 - 1 200-row CSV renders (above the markdown 500-line cap).
 Screenshot to `$CLAUDE_JOB_DIR/tmp/`. Stop the dev server afterwards.
 
-- [ ] **Step 2: Real app check (`npm run dev:app -- --features mcp-bridge` if the bridge is needed; otherwise plain `npm run dev:app`)**
+- [x] **Step 2: Real app check (`npm run dev:app -- --features mcp-bridge` if the bridge is needed; otherwise plain `npm run dev:app`)**
 
 Never `npm run tauri dev`. Window title `csv · local`. Use a scratch dir under `$CLAUDE_JOB_DIR/tmp/csv-check/`:
 - `sample.csv`: `;`-delimited, CRLF, BOM, one quoted field with an embedded newline, one empty row.
@@ -1260,7 +1265,7 @@ Never `npm run tauri dev`. Window title `csv · local`. Use a scratch dir under 
 - Generate 2 000 and 10 000-row files; time a cell commit (performance.now around the commit via the bridge's eval pattern from the root CLAUDE.md). Record the numbers.
 Kill the dev app with `pkill -f "debug/md-mini"` when done.
 
-- [ ] **Step 3: Docs**
+- [x] **Step 3: Docs**
 
 Root `CLAUDE.md`, Architecture tree under `src/lib/`:
 
@@ -1283,11 +1288,11 @@ Root `CLAUDE.md`, Gotchas — one entry:
 
 Root `CLAUDE.md` gotcha "Lezer GFM tables exclude whitespace-only rows" and the matching lines in `preview/CLAUDE.md` (add-row strategy, "whitespace-only cells get excluded"): append a dated correction without changing markdown behaviour — "Re-measured 2026-10-04 with `@lezer/markdown` 1.6.3: an all-empty row `|   |   |` IS kept in the `Table` node and drawn by the widget (middle, end, no trailing newline, empty header). Markdown still inserts `-` as a visible prompt; CSV inserts empty cells." Fix the matching comments in `tables.ts` `addRow` and above `newRowMarkdown` in `table-navigation.ts` ("`-` rather than a space … load-bearing: Lezer excludes whitespace-only rows") the same way (comments only).
 
-- [ ] **Step 4: Full verification**
+- [x] **Step 4: Full verification**
 
 Run: `npx vitest run --dir src`, `npm run check`, `cd src-tauri && cargo test`, `cargo clippy --manifest-path src-tauri/Cargo.toml`. All green.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add CLAUDE.md src/lib/editor/preview/CLAUDE.md

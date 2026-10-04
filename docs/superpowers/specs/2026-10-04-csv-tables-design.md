@@ -185,12 +185,15 @@ symlink) kept its dialect under one key and was written under the other, so
 - `applyDocumentConfig`: `'csv'` → markdown language, `setCodeMode(null)`, plus
   an editor class `cm-csv-file-mode`.
 - `applyPreviewConfig`: `'csv'` always installs
-  `[livePreviewPlugin, flavourFacet.of(LIVE_PREVIEW), tableConfig.of(CSV_TABLE_CONFIG), csvEditGuard]`
+  `[livePreviewPlugin, flavourFacet.of(LIVE_PREVIEW), tableConfig.of({ maxLines: Infinity, placeholder: '' }), csvEditGuard]`
   **regardless of the engine** — Cmd+E (`raw`) and the live-render engine are
   global settings, so a CSV tab ignores them rather than trying to block the
   menu.
 - `cm-csv-file-mode` hides the hover "+" gutter (CSS, the way
   `cm-code-file-mode` already restyles it).
+- `cm-csv-file-mode` also hides the per-table ⇔ wrap/full toggle: it would
+  expose the markdown source, which the file does not contain and where the
+  one-table guard drops edits.
 
 ### 5. `tableConfig` facet — the two hooks in table code
 
