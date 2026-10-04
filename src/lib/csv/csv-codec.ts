@@ -1,16 +1,19 @@
 import { applyLineEnding, fromDisk, type DiskDocument, type LineEnding } from '../line-endings';
-import { parseCsv, serializeCsv, type CsvDialect } from './csv';
+import { previewKindFor, type PreviewKind } from '../editor/file-language';
+import { parseCsv, serializeCsv, sniffDialect, type CsvDelimiter, type CsvDialect } from './csv';
 import { rowsToTable, tableToRows } from './csv-table';
 
 /**
  * CSV at the disk boundary. A CSV document's buffer is a GFM table; this is
  * the only place that knows the file on disk is CSV.
  *
- * Per-path state: the dialect the file was read in, or `'raw'` when it did not
- * parse — such a file is shown and saved as plain text. A path with no entry
- * (a new file) is a CSV document with the extension's default dialect.
+ * Stateless on purpose (spec §3, "No state"). A per-path memory of the dialect
+ * or of a failed parse was found to corrupt files: any read — a drawer
+ * preview, an agent, an external-change check — rewrote it, and two spellings
+ * of one path split the read from the write. So what to write is decided by
+ * the buffer (exactly one table → CSV, anything else as is), and the dialect
+ * by the file being replaced, read at the same path just before the write.
  */
-const state = new Map<string, CsvDialect | 'raw'>();
 
 function extOf(path: string): string {
   const base = path.split('/').pop() ?? '';
@@ -24,9 +27,9 @@ export function isCsvPath(path: string | null | undefined): boolean {
   return ext === 'csv' || ext === 'tsv';
 }
 
-/** Is this path edited as a table (as opposed to a CSV that failed to parse)? */
-export function isCsvDocument(path: string | null | undefined): boolean {
-  return isCsvPath(path) && state.get(path as string) !== 'raw';
+/** A `.tsv` is tab-separated by name; a `.csv` has its delimiter sniffed. */
+function hintFor(path: string): { delimiter: CsvDelimiter } | undefined {
+  return extOf(path) === 'tsv' ? { delimiter: '\t' } : undefined;
 }
 
 function defaultDialect(path: string): CsvDialect {
@@ -39,50 +42,49 @@ function defaultDialect(path: string): CsvDialect {
   };
 }
 
-function parseFor(path: string, raw: string) {
-  return parseCsv(raw, extOf(path) === 'tsv' ? { delimiter: '\t' } : undefined);
-}
-
+/** Disk bytes → buffer. CSV path: the table if it parses, else the text as any file. */
 export function decodeFromDisk(path: string, raw: string, fallback: LineEnding): DiskDocument {
   if (!isCsvPath(path)) return fromDisk(raw, fallback);
-  const parsed = parseFor(path, raw);
-  if (!parsed.ok) {
-    state.set(path, 'raw');
-    return fromDisk(raw, fallback);
-  }
-  state.set(path, parsed.dialect);
+  const parsed = parseCsv(raw, hintFor(path));
+  if (!parsed.ok) return fromDisk(raw, fallback);
   // CSV owns its line endings (the dialect); the buffer is LF table text.
   return { text: rowsToTable(parsed.rows), lineEnding: 'lf' };
 }
 
-export function encodeForDisk(path: string, text: string, lineEnding: LineEnding): string {
-  if (!isCsvDocument(path)) return applyLineEnding(text, lineEnding);
+/**
+ * Buffer → bytes. CSV path + a buffer that is exactly one table → CSV in the
+ * dialect sniffed from `current` (the file being replaced), or the extension's
+ * default when `current` is null. Any other buffer → `applyLineEnding`, as for
+ * any file.
+ */
+export function encodeForDisk(
+  path: string,
+  text: string,
+  lineEnding: LineEnding,
+  current: string | null
+): string {
+  if (!isCsvPath(path)) return applyLineEnding(text, lineEnding);
   const table = tableToRows(text);
-  if (!table.ok) throw new Error(`Cannot save as CSV: ${table.error}`);
-  const entry = state.get(path);
-  const dialect = entry && entry !== 'raw' ? entry : defaultDialect(path);
+  if (!table.ok) return applyLineEnding(text, lineEnding);
+  const dialect = current === null ? defaultDialect(path) : sniffDialect(current, hintFor(path));
   return serializeCsv(table.rows, dialect);
 }
 
 /**
- * What the next read of `path` returns after `text` is saved to it — the
- * value a save must store as the disk baseline. A cell commit leaves the
- * table unpadded, the file comes back canonical, and with the buffer as the
- * baseline our own save's echo would read as an external change.
+ * The kind a document gets: `'csv'` only when the buffer is one table — a CSV
+ * path whose file did not parse is shown as `'code'`, plain text.
  */
-export function codecRoundTrip(path: string | null, text: string): string {
-  if (!path || !isCsvDocument(path)) return text;
-  let written: string;
-  try {
-    written = encodeForDisk(path, text, 'lf');
-  } catch {
-    return text;
-  }
-  const parsed = parseFor(path, written);
-  return parsed.ok ? rowsToTable(parsed.rows) : text;
+export function documentPreviewKind(path: string | null, text: string): PreviewKind {
+  const kind = previewKindFor(path);
+  if (kind !== 'csv') return kind;
+  return tableToRows(text).ok ? 'csv' : 'code';
 }
 
-/** TEST-ONLY: forget every path's state. Never call from app code. */
-export function resetCsvCodec(): void {
-  state.clear();
+/**
+ * The buffer of a path that does not exist yet: for a CSV path the empty
+ * one-column table (editable as a table, saves as an empty file until
+ * something is typed), for anything else empty text.
+ */
+export function newFileText(path: string): string {
+  return isCsvPath(path) ? rowsToTable([]) : '';
 }

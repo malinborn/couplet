@@ -5,7 +5,7 @@ import type { EditorEngine } from '../stores.svelte';
 import type { CommentThread } from '../comment-format';
 import type { InboxItem } from '../tabs/agent-inbox';
 import type { DiskDocument, LineEnding } from '../line-endings';
-import { decodeFromDisk, encodeForDisk } from '../csv/csv-codec';
+import { decodeFromDisk, encodeForDisk, isCsvPath } from '../csv/csv-codec';
 
 /**
  * Read a document from disk, normalized to LF for the editor.
@@ -24,10 +24,22 @@ export async function readDocument(path: string, fallback: LineEnding = 'lf'): P
 /**
  * Write editor (LF) text to disk in the file's own line ending — the mirror of
  * `readDocument`, and the one write boundary for document text. A `.csv`/`.tsv`
- * path is encoded from a GFM table here — see `csv/csv-codec.ts`.
+ * path whose buffer is one table is encoded as CSV here, in the dialect of the
+ * file it replaces (read at the same path, just before) — see
+ * `csv/csv-codec.ts`.
+ *
+ * Returns what the next read of `path` will return — the save baseline. For a
+ * CSV that is the decoded written bytes, not the buffer: a cell commit leaves
+ * the table unpadded and the file comes back canonical, so the buffer as the
+ * baseline would make the echo of this very write look like an external change.
  */
-export async function writeDocument(path: string, text: string, lineEnding: LineEnding): Promise<void> {
-  return invoke('write_file', { path, content: encodeForDisk(path, text, lineEnding) });
+export async function writeDocument(path: string, text: string, lineEnding: LineEnding): Promise<string> {
+  const csv = isCsvPath(path);
+  // No readable file there (a new one) → the extension's default dialect.
+  const current = csv ? await invoke<string>('read_file', { path }).catch(() => null) : null;
+  const content = encodeForDisk(path, text, lineEnding, current);
+  await invoke('write_file', { path, content });
+  return csv ? decodeFromDisk(path, content, lineEnding).text : text;
 }
 
 export async function fileExists(path: string): Promise<boolean> {

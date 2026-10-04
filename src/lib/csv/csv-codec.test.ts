@@ -1,15 +1,8 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import {
-  isCsvPath,
-  isCsvDocument,
-  decodeFromDisk,
-  encodeForDisk,
-  codecRoundTrip,
-  resetCsvCodec,
-} from './csv-codec';
-import { resolveExternalChange } from '../external-change';
+import { describe, it, expect } from 'vitest';
+import { isCsvPath, decodeFromDisk, encodeForDisk, documentPreviewKind, newFileText } from './csv-codec';
+import { rowsToTable } from './csv-table';
 
-beforeEach(() => resetCsvCodec());
+const TABLE = '| a | b |\n| - | - |\n| 1 | 2 |\n';
 
 describe('isCsvPath', () => {
   it.each([
@@ -23,92 +16,106 @@ describe('isCsvPath', () => {
   });
 });
 
-describe('decode / encode', () => {
+describe('decodeFromDisk', () => {
   it('passes non-CSV files through the line-ending path', () => {
     expect(decodeFromDisk('/x.md', 'a\r\nb', 'lf')).toEqual({ text: 'a\nb', lineEnding: 'crlf' });
-    expect(encodeForDisk('/x.md', 'a\nb', 'crlf')).toBe('a\r\nb');
   });
 
-  it('decodes CSV to a table and writes it back byte-identical', () => {
-    const raw = '﻿name;city\r\nIvan;"Moscow; RU"\r\n';
-    const doc = decodeFromDisk('/x.csv', raw, 'lf');
-    expect(doc.text.startsWith('| name')).toBe(true);
-    expect(doc.lineEnding).toBe('lf');
-    expect(encodeForDisk('/x.csv', doc.text, doc.lineEnding)).toBe(raw);
+  it('decodes CSV to a table, LF', () => {
+    const doc = decodeFromDisk('/x.csv', 'a;b\r\n1;2\r\n', 'lf');
+    expect(doc).toEqual({ text: TABLE, lineEnding: 'lf' });
   });
 
-  it('writes an edited table in the remembered dialect', () => {
-    const doc = decodeFromDisk('/x.csv', 'a;b\n1;2\n', 'lf');
-    const edited = doc.text.replace('| 2 |', '| 2;3 |');
-    expect(encodeForDisk('/x.csv', edited, 'lf')).toBe('a;b\n1;"2;3"\n');
+  it('a CSV that does not parse comes back as its text, like any file', () => {
+    expect(decodeFromDisk('/x.csv', 'a,"open\r\n', 'lf')).toEqual({ text: 'a,"open\n', lineEnding: 'crlf' });
   });
 
   it('uses a tab delimiter for .tsv', () => {
-    const doc = decodeFromDisk('/x.tsv', 'a,b\tc\n', 'lf');
-    expect(encodeForDisk('/x.tsv', doc.text, 'lf')).toBe('a,b\tc\n');
-  });
-
-  it('falls back to raw text when the CSV does not parse', () => {
-    const doc = decodeFromDisk('/x.csv', 'a,"open\n', 'lf');
-    expect(doc.text).toBe('a,"open\n');
-    expect(isCsvDocument('/x.csv')).toBe(false);
-    expect(encodeForDisk('/x.csv', 'anything\n', 'lf')).toBe('anything\n');
-  });
-
-  it('a later successful read turns the file back into a CSV document', () => {
-    decodeFromDisk('/x.csv', 'a,"open\n', 'lf');
-    decodeFromDisk('/x.csv', 'a,b\n', 'lf');
-    expect(isCsvDocument('/x.csv')).toBe(true);
-  });
-
-  it('treats a never-read CSV path (new file) as a CSV document with the default dialect', () => {
-    expect(isCsvDocument('/new.csv')).toBe(true);
-    expect(encodeForDisk('/new.csv', '| a | b |\n| - | - |\n| 1 | 2 |\n', 'lf')).toBe('a,b\n1,2\n');
-  });
-
-  it('refuses to write a CSV buffer that is not one table', () => {
-    expect(() => encodeForDisk('/new.csv', '# heading\n', 'lf')).toThrow(/CSV/);
-  });
-
-  it('an empty file decodes to a table and saves back as empty', () => {
-    const doc = decodeFromDisk('/empty.csv', '', 'lf');
-    expect(isCsvDocument('/empty.csv')).toBe(true);
-    expect(doc.text.startsWith('|')).toBe(true);
-    expect(encodeForDisk('/empty.csv', doc.text, doc.lineEnding)).toBe('');
+    expect(decodeFromDisk('/x.tsv', 'a,b\tc\n', 'lf').text).toBe(rowsToTable([['a,b', 'c']]));
   });
 });
 
-describe('codecRoundTrip', () => {
-  it('is identity for non-CSV paths', () => {
-    expect(codecRoundTrip('/x.md', '| a |\n|-|\n')).toBe('| a |\n|-|\n');
+describe('encodeForDisk', () => {
+  it('passes non-CSV files through the line-ending path', () => {
+    expect(encodeForDisk('/x.md', 'a\nb', 'crlf', null)).toBe('a\r\nb');
   });
 
-  it('is identity for a CSV path that did not parse', () => {
-    decodeFromDisk('/x.csv', 'a,"open\n', 'lf');
-    expect(codecRoundTrip('/x.csv', 'a,"open\n')).toBe('a,"open\n');
+  it('round-trips a CSV byte-identical through the file it replaces', () => {
+    const raw = '﻿name;city\r\nIvan;"Moscow; RU"\r\n';
+    const doc = decodeFromDisk('/x.csv', raw, 'lf');
+    expect(encodeForDisk('/x.csv', doc.text, doc.lineEnding, raw)).toBe(raw);
   });
 
-  it('equals what the next read of the saved file returns', () => {
-    const doc = decodeFromDisk('/x.csv', 'a,b\n1,2\n', 'lf');
-    const edited = doc.text.replace('| 2 |', '|xyz|'); // non-canonical, as a cell commit leaves it
-    const written = encodeForDisk('/x.csv', edited, 'lf');
-    const echo = decodeFromDisk('/x.csv', written, 'lf').text;
-    expect(codecRoundTrip('/x.csv', edited)).toBe(echo);
-    expect(echo).not.toBe(edited);
+  it('takes the dialect from `current`: `;` + BOM + CRLF', () => {
+    expect(encodeForDisk('/x.csv', TABLE, 'lf', '﻿x;y\r\n')).toBe('﻿a;b\r\n1;2\r\n');
   });
 
-  it('makes the echo of our own save resolve to ignore — the raw buffer as baseline would not', () => {
-    const doc = decodeFromDisk('/x.csv', 'a,b\n1,2\n', 'lf');
-    const buffer = doc.text.replace('| 2 |', '|xyz|'); // non-canonical, as a cell commit leaves it
-    const baseline = codecRoundTrip('/x.csv', buffer); // what a save stores
-    const written = encodeForDisk('/x.csv', buffer, 'lf');
-    const disk = decodeFromDisk('/x.csv', written, 'lf').text; // the watcher re-reads the file
+  it('takes the dialect from a `current` that no longer parses', () => {
+    expect(encodeForDisk('/x.csv', TABLE, 'lf', 'a;b\r\n"open')).toBe('a;b\r\n1;2');
+  });
 
-    expect(resolveExternalChange({ disk, buffer, baseline, dismissedDisk: null })).toBe('ignore');
-    // With the buffer itself as the baseline the echo is taken for an external
-    // change: the buffer "never diverged", so it would be silently reloaded.
-    expect(
-      resolveExternalChange({ disk, buffer, baseline: buffer, dismissedDisk: null })
-    ).not.toBe('ignore');
+  it('no current file → the extension default', () => {
+    expect(encodeForDisk('/x.csv', TABLE, 'lf', null)).toBe('a,b\n1,2\n');
+    expect(encodeForDisk('/x.tsv', TABLE, 'lf', null)).toBe('a\tb\n1\t2\n');
+  });
+
+  it('a .tsv keeps the tab delimiter whatever the current file sniffs as', () => {
+    expect(encodeForDisk('/x.tsv', TABLE, 'lf', 'p,q\tr\n')).toBe('a\tb\n1\t2\n');
+  });
+
+  it('writes an edited table in the dialect of the file it replaces', () => {
+    const raw = 'a;b\n1;2\n';
+    const edited = decodeFromDisk('/x.csv', raw, 'lf').text.replace('| 2 |', '| 2;3 |');
+    expect(encodeForDisk('/x.csv', edited, 'lf', raw)).toBe('a;b\n1;"2;3"\n');
+  });
+
+  it('a buffer that is not one table is written as is, in its line ending', () => {
+    expect(encodeForDisk('/x.csv', 'a,"open\n', 'crlf', 'a,"open\r\n')).toBe('a,"open\r\n');
+    expect(encodeForDisk('/x.csv', '# heading\n', 'lf', null)).toBe('# heading\n');
+  });
+
+  it('an empty table saves as an empty file', () => {
+    expect(encodeForDisk('/new.csv', rowsToTable([]), 'lf', null)).toBe('');
+    expect(encodeForDisk('/x.csv', decodeFromDisk('/x.csv', '', 'lf').text, 'lf', '')).toBe('');
+  });
+});
+
+describe('no state', () => {
+  it('a read never changes how a later write behaves', () => {
+    decodeFromDisk('/x.csv', 'a,"open\n', 'lf'); // fails to parse
+    expect(encodeForDisk('/x.csv', TABLE, 'lf', null)).toBe('a,b\n1,2\n');
+  });
+
+  it('two spellings of one path encode identically', () => {
+    const raw = '﻿a;b\r\n1;2\r\n';
+    decodeFromDisk('/tmp/x.csv', raw, 'lf');
+    const a = encodeForDisk('/tmp/x.csv', TABLE, 'lf', raw);
+    const b = encodeForDisk('/private/tmp/x.csv', TABLE, 'lf', raw);
+    expect(b).toBe(a);
+    expect(b).toBe(raw);
+  });
+});
+
+describe('documentPreviewKind', () => {
+  it.each([
+    ['/x.csv', TABLE, 'csv'],
+    ['/x.tsv', TABLE, 'csv'],
+    ['/x.csv', 'a,"open\n', 'code'],
+    ['/x.md', TABLE, 'markdown'],
+    [null, TABLE, 'markdown'],
+    ['/x.rs', 'fn main() {}', 'code'],
+  ] as const)('%s with %j → %s', (path, text, expected) => {
+    expect(documentPreviewKind(path, text)).toBe(expected);
+  });
+});
+
+describe('newFileText', () => {
+  it('a CSV path that does not exist yet opens as an empty table', () => {
+    expect(newFileText('/new.csv')).toBe(rowsToTable([]));
+    expect(documentPreviewKind('/new.csv', newFileText('/new.csv'))).toBe('csv');
+  });
+
+  it('any other path opens empty, as before', () => {
+    expect(newFileText('/new.md')).toBe('');
   });
 });

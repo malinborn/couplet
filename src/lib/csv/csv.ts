@@ -137,25 +137,52 @@ function sniffDelimiter(text: string): CsvDelimiter {
   return best;
 }
 
-export function parseCsv(text: string, hint?: { delimiter?: CsvDelimiter }): CsvParse {
+/**
+ * The rules that turn text into a dialect, once: `lenient` reads to the end
+ * even inside an unterminated quote (the dialect of a file that no longer
+ * parses), otherwise that is a failure and the answer is `null`.
+ */
+function analyse(
+  text: string,
+  hint: { delimiter?: CsvDelimiter } | undefined,
+  lenient: boolean
+): { rows: string[][]; dialect: CsvDialect } | null {
   const bom = text.startsWith(BOM);
   const body = bom ? text.slice(1) : text;
   const delimiter = hint?.delimiter ?? sniffDelimiter(body);
-  const records = parseWith(body, delimiter, false);
-  if (records === null) return { ok: false, error: 'unterminated quoted field' };
+  const records = parseWith(body, delimiter, lenient);
+  if (records === null) return null;
   const { eol, trailingBlank } = records;
   const rows = records.rows.slice(0, records.rows.length - trailingBlank);
   const trailingNewline = body.endsWith('\n') || body.endsWith('\r');
   return {
-    ok: true,
     rows,
     dialect: { delimiter, bom, eol: eol ?? '\n', trailingNewline, trailingBlankLines: trailingBlank },
   };
 }
 
-function quoteField(field: string, delimiter: string): string {
+/**
+ * The dialect `text` is written in — the same answer `parseCsv` gives, also
+ * for text that does not parse. Never fails: a save takes the dialect of the
+ * file it replaces, whatever state that file is in.
+ */
+export function sniffDialect(text: string, hint?: { delimiter?: CsvDelimiter }): CsvDialect {
+  // A lenient parse never answers null.
+  return (analyse(text, hint, true) as { dialect: CsvDialect }).dialect;
+}
+
+export function parseCsv(text: string, hint?: { delimiter?: CsvDelimiter }): CsvParse {
+  const result = analyse(text, hint, false);
+  if (result === null) return { ok: false, error: 'unterminated quoted field' };
+  return { ok: true, rows: result.rows, dialect: result.dialect };
+}
+
+function quoteField(field: string, separators: readonly string[]): string {
   const needs =
-    field.includes(delimiter) || field.includes('"') || field.includes('\n') || field.includes('\r');
+    separators.some((d) => field.includes(d)) ||
+    field.includes('"') ||
+    field.includes('\n') ||
+    field.includes('\r');
   return needs ? '"' + field.replace(/"/g, '""') + '"' : field;
 }
 
@@ -169,11 +196,15 @@ export function serializeCsv(rows: string[][], dialect: CsvDialect): string {
   const isLoneEmpty = (row: string[]) => row.length === 1 && row[0] === '';
   let firstTrailingEmpty = rows.length;
   while (firstTrailingEmpty > 0 && isLoneEmpty(rows[firstTrailingEmpty - 1])) firstTrailingEmpty--;
+  // One column has no delimiter in it for the re-read to sniff, so the file
+  // comes back as `,`: a bare `Moscow, RU` would split into two columns. Quote
+  // every candidate delimiter, and the re-read stays one column whatever it sniffs.
+  const separators = rows[0].length === 1 ? CANDIDATES : [dialect.delimiter];
   const body = rows
     .map((row, r) =>
       r >= firstTrailingEmpty
         ? '""'
-        : row.map((f) => quoteField(f, dialect.delimiter)).join(dialect.delimiter)
+        : row.map((f) => quoteField(f, separators)).join(dialect.delimiter)
     )
     .join(dialect.eol);
   return bom + body + (dialect.trailingNewline ? dialect.eol : '') + blank;

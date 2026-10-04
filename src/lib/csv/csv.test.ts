@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseCsv, serializeCsv, type CsvDialect } from './csv';
+import { parseCsv, serializeCsv, sniffDialect, type CsvDialect } from './csv';
 
 function ok(text: string, hint?: Parameters<typeof parseCsv>[1]) {
   const r = parseCsv(text, hint);
@@ -149,5 +149,60 @@ describe('serializeCsv', () => {
   ])('round-trips canonical input %j', (text) => {
     const r = ok(text);
     expect(serializeCsv(r.rows, r.dialect)).toBe(text);
+  });
+});
+
+describe('sniffDialect', () => {
+  it('agrees with parseCsv on a file that parses', () => {
+    for (const raw of [
+      '\uFEFFname;city\r\nIvan;"Moscow; RU"\r\n',
+      'a,b\n1,2',
+      'a\tb\r1\t2\r\r\r',
+      'a,b\n1,2\n\n\n',
+      '',
+    ]) {
+      expect(sniffDialect(raw)).toEqual(ok(raw).dialect);
+    }
+  });
+
+  it('honours the delimiter hint', () => {
+    expect(sniffDialect('a,b\tc\n', { delimiter: '\t' }).delimiter).toBe('\t');
+  });
+
+  it('never fails: a file that does not parse still gives its dialect', () => {
+    expect(parseCsv('\uFEFFa;b\r\n1;"open').ok).toBe(false);
+    expect(sniffDialect('\uFEFFa;b\r\n1;"open')).toEqual({
+      delimiter: ';',
+      bom: true,
+      eol: '\r\n',
+      trailingNewline: false,
+      trailingBlankLines: 0,
+    });
+  });
+});
+
+describe('serializeCsv — one column', () => {
+  const semi: CsvDialect = {
+    delimiter: ';',
+    bom: false,
+    eol: '\n',
+    trailingNewline: true,
+    trailingBlankLines: 0,
+  };
+
+  it('quotes every value holding a candidate delimiter, so the re-read stays one column', () => {
+    const rows = [['city'], ['Moscow, RU'], ['a;b'], ['x\ty'], ['plain']];
+    const written = serializeCsv(rows, semi);
+    expect(written).toBe('city\n"Moscow, RU"\n"a;b"\n"x\ty"\nplain\n');
+    expect(ok(written).rows).toEqual(rows);
+  });
+
+  it('a header with a comma is quoted too', () => {
+    const rows = [['a, b'], ['1']];
+    expect(ok(serializeCsv(rows, semi)).rows).toEqual(rows);
+  });
+
+  it('with two columns only the dialect delimiter forces quotes', () => {
+    expect(serializeCsv([['a', 'b'], ['1,5', '2']], semi)).toBe('a;b\n1,5;2\n');
   });
 });

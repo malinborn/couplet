@@ -277,6 +277,12 @@ describe('previewKindFor', () => {
     expect(previewKindFor('/src/main.rs')).toBe('code');
   });
 
+  it('CsvAndTsv', () => {
+    expect(previewKindFor('/data/a.csv')).toBe('csv');
+    expect(previewKindFor('/data/A.TSV')).toBe('csv');
+    expect(isMarkdownBuffer('/data/a.csv')).toBe(false);
+  });
+
   it('AgreesWithIsMarkdownBuffer', () => {
     for (const p of [null, '/a.md', '/.env', '/x.py', '/Users/me/.bashrc', '/n.txt']) {
       expect(previewKindFor(p) === 'markdown').toBe(isMarkdownBuffer(p));

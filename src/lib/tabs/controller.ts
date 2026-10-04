@@ -24,6 +24,7 @@ import {
 import type { InboxItem } from './agent-inbox';
 import type { MoveTarget } from './carousel';
 import type { DiskDocument, LineEnding } from '../line-endings';
+import { newFileText } from '../csv/csv-codec';
 import { isBlankText } from '../stash/note-title';
 import { decideSaveAs } from './save-as';
 import type { TabClaim } from '../tauri/commands';
@@ -757,7 +758,7 @@ export function createTabController(deps: TabControllerDeps) {
         return { kind: 'cached', state: cached.state, baseline: null, lineEnding: known };
       }
       const disk = exists ? await deps.disk.read(tab.path, { fallback: known }) : null;
-      const content = disk?.text ?? '';
+      const content = disk?.text ?? newFileText(tab.path);
       // The disk's ending either way: a clean tab follows a change that only
       // touched the endings, as the active tab does.
       const lineEnding = disk?.lineEnding ?? known;
@@ -956,7 +957,7 @@ export function createTabController(deps: TabControllerDeps) {
     replace: boolean,
     quiet: boolean
   ): Promise<OpenPathResult> {
-    let ready: Ready = EMPTY;
+    let ready: Ready = { kind: 'fresh', content: newFileText(path), exists: false, lineEnding: 'lf' };
     try {
       const disk = (await deps.disk.exists(path, { quiet })) ? await deps.disk.read(path, { quiet }) : null;
       if (disk) ready = { kind: 'fresh', content: disk.text, exists: true, lineEnding: disk.lineEnding };

@@ -75,18 +75,21 @@ export function isMarkdownBuffer(path: string | null | undefined): boolean {
   return MARKDOWN_EXTENSIONS.has(ext);
 }
 
-export type PreviewKind = 'markdown' | 'env' | 'code' | 'shell';
+export type PreviewKind = 'markdown' | 'env' | 'code' | 'shell' | 'csv';
 
 /**
  * Which preview a file gets — the same rules, in the same order, as
  * `isMarkdownBuffer`: env files first, then the markdown extensions, then
- * shell configs among the rest. `null` (untitled) is markdown.
+ * shell configs among the rest. `null` (untitled) is markdown. `.csv`/`.tsv`
+ * is `'csv'` by name; whether a document really gets it depends on its buffer
+ * — see `documentPreviewKind` in `csv/csv-codec.ts`.
  */
 export function previewKindFor(path: string | null): PreviewKind {
   if (!path) return 'markdown';
   const basename = path.split('/').pop()?.toLowerCase() ?? '';
   const ext = path.split('.').pop()?.toLowerCase() ?? '';
   if (basename.startsWith('.env') || ext === 'env') return 'env';
+  if (ext === 'csv' || ext === 'tsv') return 'csv';
   if (MARKDOWN_EXTENSIONS.has(ext)) return 'markdown';
   return isShellConfig(basename) ? 'shell' : 'code';
 }

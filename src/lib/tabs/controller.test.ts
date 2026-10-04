@@ -21,6 +21,7 @@ import type { TabClaim } from '../tauri/commands';
 import type { InboxItem } from './agent-inbox';
 import type { MoveTarget } from './carousel';
 import { applyLineEnding, fromDisk, type LineEnding } from '../line-endings';
+import { rowsToTable } from '../csv/csv-table';
 
 const fileTab = (tabId: string, path: string): InitTab => ({
   tabId,
@@ -314,6 +315,25 @@ describe('init', () => {
 });
 
 describe('openPath', () => {
+  it('AMissingCsvOpensAsAnEmptyTable_AMissingMdAsEmpty', async () => {
+    const h = await started({ '/a.md': 'AAAA' }, [fileTab('a', '/a.md')]);
+
+    await h.controller.openPath('/new.csv');
+    expect(h.live().doc.toString()).toBe(rowsToTable([]));
+    expect(h.doc.dirty).toBe(false);
+    expect(h.doc.baseline).toBe(null);
+
+    await h.controller.openPath('/new.md');
+    expect(h.live().doc.toString()).toBe('');
+  });
+
+  it('AMissingCsvRestoredFromTheSessionOpensAsAnEmptyTable', async () => {
+    const h = makeHarness({});
+    await h.controller.init([fileTab('c', '/gone.csv')], 'c');
+    expect(h.live().doc.toString()).toBe(rowsToTable([]));
+    expect(h.doc.dirty).toBe(false);
+  });
+
   it('OpensANewTabAfterTheActiveOneAndCachesTheLeavingState', async () => {
     const h = await started({ '/a.md': 'AAAA', '/b.md': 'BBBB' }, [fileTab('a', '/a.md')]);
     const stateA = h.live();

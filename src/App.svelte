@@ -97,7 +97,7 @@
   import { liveRenderExtensions } from './lib/editor/live-render';
   import { envPreviewPlugin } from './lib/editor/preview/env';
   import { shellSecretsPlugin } from './lib/editor/preview/shell-secrets';
-  import { findCodeLanguage, previewKindFor } from './lib/editor/file-language';
+  import { findCodeLanguage, previewKindFor, type PreviewKind } from './lib/editor/file-language';
   import { reinitializeTheme } from './lib/editor/preview/mermaid';
   import { resolveExternalChange } from './lib/external-change';
   import { createAutoSaveScheduler } from './lib/autosave';
@@ -228,7 +228,7 @@
   const toasts = createToastStore();
 
   let showRecentFiles = $state(false);
-  let activePreview: 'markdown' | 'env' | 'code' | 'shell' = $state('markdown');
+  let activePreview: PreviewKind = $state('markdown');
   // This window's tabs, for the drawer. The controller owns the truth; this
   // is its last published copy.
   let tabList = $state<TabListState>(emptyTabList());
@@ -810,7 +810,9 @@
       // No line break on disk says nothing about the file's convention, so
       // the tab's known ending is the fallback (see `detectLineEnding`).
       read: (path, opts) => diskCall(path, opts, () => readDocument(path, opts?.fallback)),
-      write: (path, content, lineEnding) => writeDocument(path, content, lineEnding),
+      write: async (path, content, lineEnding) => {
+        await writeDocument(path, content, lineEnding);
+      },
     },
     rust: {
       owner: (path) =>
