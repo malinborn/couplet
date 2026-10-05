@@ -53,7 +53,7 @@
     "url": "https://couplet.pro/",
     "downloadUrl": "https://github.com/malinborn/couplet/releases",
     "sameAs": ["https://github.com/malinborn/couplet"],
-    "softwareVersion": "2.2.0",
+    "softwareVersion": "2.3.0",
     "license": "https://opensource.org/licenses/GPL-3.0"
   }
   </script>
@@ -457,6 +457,23 @@
       <div class="changelog-list">
 
         <details class="changelog-entry" open>
+          <summary class="changelog-summary">
+            <span class="changelog-version">v2.3.0</span>
+            <span class="changelog-date">2026-10-05</span>
+            <span class="changelog-tag feature">feature</span>
+            <span class="changelog-title">CSV opens as a table</span>
+          </summary>
+          <ul class="changelog-body-list">
+            <li><strong><code>.csv</code> and <code>.tsv</code> are tables now</strong> &mdash; open one and the window holds the same table widget markdown gets: edit cells, add and drag rows and columns, and the file is saved back as CSV. The delimiter (<code>,</code> <code>;</code> or Tab), a BOM and the line endings are read from the file on every save, so an Excel export stays an Excel export. couplet also shows up in Finder&rsquo;s &ldquo;Open With&rdquo; for both. <code>couplet edit</code> refuses CSV files for now; <code>show</code> works</li>
+            <li><strong>Huge CSVs open as text</strong> &mdash; above 20,000 rows a CSV opens read-only, with a note saying why. 100,000 rows as a table meant about 1.6 million DOM nodes and a frozen window; a scrolling table that draws only what is on screen is the next step</li>
+            <li><strong>Big tables got fast</strong> &mdash; the striped rows used <code>:nth-child(even of &hellip;)</code>, which WebKit recomputes from scratch for every row: quadratic, 4.6&nbsp;s of style work on 20,000 rows, now 0.5&nbsp;s. A cell edit rebuilt the whole table; it now patches the cells that changed, and a commit in a 10,000-row table went from 1.7&nbsp;s to under 0.3&nbsp;s. Markdown tables render up to 1,000 rows (was 500)</li>
+            <li><strong>The header stays put</strong> &mdash; scroll down a long table and its header row sticks to the top of the window until the table ends. It never could: the table clipped its rounded corners with <code>overflow: hidden</code>, which quietly made it the box a sticky header sticks to</li>
+            <li><strong>Code files, two fixes</strong> &mdash; a <code>.py</code> (or any code file) opened inside a grey box that vanished on the first click: its style hung on a class the editor rewrites on every focus change. The box is gone for good. And Enter after <code>def f():</code> indented by two spaces, because nothing ever set an indent unit. couplet now reads it from the file (four spaces, two, or tabs), or uses the language&rsquo;s convention when the file has none</li>
+            <li><strong>Smaller table fixes</strong> &mdash; Enter off the last visible row no longer opens the next cell&rsquo;s field below the window&rsquo;s edge, and a markdown table too long to render keeps its caret and its search hits instead of throwing the caret out</li>
+          </ul>
+        </details>
+
+        <details class="changelog-entry">
           <summary class="changelog-summary">
             <span class="changelog-version">v2.2.0</span>
             <span class="changelog-date">2026-10-03</span>
