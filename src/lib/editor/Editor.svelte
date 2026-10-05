@@ -10,6 +10,8 @@
   import { languages } from '@codemirror/language-data';
   import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
   import { findCodeLanguage } from './file-language';
+  import { DETECT_LINES, indentUnitFor } from './code-indent';
+  import { indentUnit } from '@codemirror/language';
   import { Strikethrough, Table } from '@lezer/markdown';
   import { livePreviewPlugin } from './preview/plugin';
   import { envPreviewPlugin } from './preview/env';
@@ -198,8 +200,12 @@
         return lang.load().then(
           (langSupport) => {
             if (!view || !isCurrent()) return false;
+            // The file's own indent, read once as the mode lands: CM6's default
+            // is two spaces, which opened a Python block at +2 (code-indent.ts).
+            const doc = view.state.doc;
+            const unit = indentUnitFor(doc.iterLines(1, Math.min(doc.lines, DETECT_LINES) + 1), lang.name);
             view.dispatch({
-              effects: languageCompartment.reconfigure([langSupport, codeFileModeAttr]),
+              effects: languageCompartment.reconfigure([langSupport, codeFileModeAttr, indentUnit.of(unit)]),
             });
             return true;
           },
