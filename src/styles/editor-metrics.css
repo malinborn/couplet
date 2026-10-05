@@ -4,7 +4,11 @@
    that component (the marketing site's demos) silently rendered with no content
    padding and the host page's font metrics. */
 .md-editor-host .cm-scroller {
-  padding: 2rem;
+  /* Named because a sticky table header (editor.css) sticks this far ABOVE the
+     scroller's content box, i.e. flush with its top edge: sticky offsets are
+     measured inside the scroll container's padding. */
+  --editor-padding: 2rem;
+  padding: var(--editor-padding);
   font-size: 16px;
   line-height: 1.6;
 }

@@ -1316,6 +1316,28 @@ function moveAfterCommit(
   openCellEditorAt(view, ctx, next, clampColumn(place.col, rows[next].cellCount));
 }
 
+/**
+ * Scroll the editor so `cellEl` is whole on screen before a field opens over it.
+ *
+ * The field is `position: fixed` at the cell's rect and z-index 1000, so a cell
+ * half under the table's sticky header (editor.css) would get a field drawn
+ * over the header, and a cell below the window's edge — Enter or ↓ off the last
+ * visible row — one nobody can see. The header's own cells never hide under it.
+ * Only the scroller moves; nothing is dispatched.
+ */
+function revealCellBelowHeader(view: EditorView, cellEl: HTMLElement): void {
+  const scroller = view.scrollDOM;
+  const box = scroller.getBoundingClientRect();
+  const cell = cellEl.getBoundingClientRect();
+  const header = cellEl.closest('.cm-md-table')?.querySelector('.cm-md-table-row-header');
+  const top = header && !header.contains(cellEl)
+    ? Math.max(box.top, header.getBoundingClientRect().bottom)
+    : box.top;
+  if (cell.top < top) scroller.scrollTop -= top - cell.top;
+  // A cell taller than the room left keeps its top in view, not its bottom.
+  else if (cell.bottom > box.bottom) scroller.scrollTop += Math.min(cell.bottom - box.bottom, cell.top - top);
+}
+
 function showCellEditor(
   view: EditorView,
   cellEl: HTMLElement,
@@ -1355,6 +1377,7 @@ function showCellEditor(
       ? null
       : { from: range.from, to: range.to };
 
+  revealCellBelowHeader(view, cellEl);
   const rect = cellEl.getBoundingClientRect();
   const cellStyle = getComputedStyle(cellEl);
   const lineEl = cellEl.closest('.cm-md-table-line');

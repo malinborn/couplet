@@ -551,12 +551,45 @@ flex` to prevent wide tables from expanding `.cm-content` (which breaks
 text wrapping). If styles were on the line, they'd extend to viewport width.
 
 - Header gradient: `.cm-md-table .cm-md-table-row-header`
-- Even row bg: `.cm-md-table .cm-md-table-row-data:nth-child(even of .cm-md-table-row-data)`
+- Even row bg: `.cm-md-table .cm-md-table-row-data:nth-child(odd)` (the header
+  is always the first child; `of S` is quadratic in WebKit)
 - Last-row border removal: `.cm-md-table .cm-md-table-row:last-child .cm-md-table-cell`
-- Table border-radius: `.cm-md-table` (with `overflow: hidden` to clip
-  corner cells)
+- Table border-radius: `.cm-md-table` (with `overflow: clip` to clip corner
+  cells — never `hidden`, see the sticky header below)
 - Right-side buttons (add-col, add-row): `position: absolute` against
   `.cm-md-table-wrap`, so they don't affect column layout
+
+### Sticky Header
+
+The header row is `position: sticky`, in markdown and CSV alike: it stays at
+the top of the window while any of its table is on screen, and the table's last
+row takes it away. Three things make it work, and each one silently breaks it:
+
+- **`overflow: clip` on `.cm-md-table`, not `hidden`.** `hidden` makes the
+  table a scroll container (one that never scrolls), and sticky sticks to the
+  nearest scroll container — so the header would stick to the table itself,
+  i.e. never. `clip` clips the same, rounded corners included, without being a
+  container. Measured in WebKit and Chrome: with `hidden` neither the row nor
+  the cells stick. Any future ancestor between the row and `.cm-scroller` with
+  `overflow: hidden/auto` breaks it the same way.
+- **`top: calc(-1 * var(--editor-padding))`.** Sticky offsets count from the
+  scroller's padding box edge minus its padding, so `top: 0` parks the header
+  2rem below the window's edge with rows scrolling visibly above it.
+  `--editor-padding` is declared in `editor-metrics.css`.
+- **The row is sticky, not the cells.** The gradient lives on the row and paints
+  in one piece; per-cell backgrounds would restart it in every cell. Both
+  engines stick a `display: table-row`. `z-index: 2` keeps it over the data
+  cells (`position: relative`) and «+ строка» (z 1).
+
+The cell field is `position: fixed` at z 1000, so it would draw over the header.
+`showCellEditor` first calls `revealCellBelowHeader`, which scrolls the cell out
+from under the header (or up from below the window's edge — Enter off the last
+visible row used to open a field nobody could see). The column controls live in
+the strip *above* the header's natural place, so while the header is stuck they
+are off screen; hover the header in place to use them.
+
+Known gap, older than the sticky header: ⌘F does not scroll to a match inside
+a rendered table — CM6 scrolls to the widget, not the cell.
 
 ### CSV documents
 
