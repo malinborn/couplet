@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { EditorView, type ViewUpdate } from '@codemirror/view';
   import { ChangeSet, EditorState, Transaction, type Extension, type StateEffect } from '@codemirror/state';
-  import { languageCompartment, previewCompartment } from './setup';
+  import { codeFileModeAttr, languageCompartment, previewCompartment } from './setup';
   import { createDocumentState } from './state-factory';
   import { latestOnly } from './latest-only';
   import { themePickerField, type ThemeControl } from './slash-theme';
@@ -189,7 +189,6 @@
               previewCompartment.reconfigure(livePreviewPlugin),
             ],
           });
-          view.dom.classList.remove('cm-code-file-mode');
           return Promise.resolve(true);
         }
         // Find language by basename (extensionless dotfiles) or extension
@@ -199,8 +198,9 @@
         return lang.load().then(
           (langSupport) => {
             if (!view || !isCurrent()) return false;
-            view.dispatch({ effects: languageCompartment.reconfigure(langSupport) });
-            view.dom.classList.add('cm-code-file-mode');
+            view.dispatch({
+              effects: languageCompartment.reconfigure([langSupport, codeFileModeAttr]),
+            });
             return true;
           },
           (err: unknown) => {
@@ -223,7 +223,6 @@
               previewCompartment.reconfigure(envPreviewPlugin),
             ],
           });
-          view.dom.classList.remove('cm-code-file-mode');
         } else {
           // Revert handled by setCodeMode(null) — no extra work needed
         }

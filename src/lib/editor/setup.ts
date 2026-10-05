@@ -35,6 +35,15 @@ import { readOnlyCompartment } from './read-only';
 
 export const previewCompartment = new Compartment();
 export const languageCompartment = new Compartment();
+
+/**
+ * Marks a code file (`.py`, `.json`, …) for CSS — the `.tok-link` colours.
+ * Installed into `languageCompartment` with the language, so it belongs to the
+ * state and leaves with it. Not a `classList` toggle: CM6 rebuilds the editor's
+ * `class` attribute on every focus change, and the first click wiped a class
+ * added that way (the grey box that vanished on click).
+ */
+export const codeFileModeAttr = EditorView.editorAttributes.of({ class: 'cm-code-file-mode' });
 export const lineGlowCompartment = new Compartment();
 
 /**

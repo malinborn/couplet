@@ -97,7 +97,7 @@
   import { liveRenderExtensions } from './lib/editor/live-render';
   import { envPreviewPlugin } from './lib/editor/preview/env';
   import { shellSecretsPlugin } from './lib/editor/preview/shell-secrets';
-  import { findCodeLanguage, previewKindFor, type PreviewKind } from './lib/editor/file-language';
+  import { previewKindFor, type PreviewKind } from './lib/editor/file-language';
   import { documentPreviewKind, csvTableRefusal, csvOpensReadOnly } from './lib/csv/csv-codec';
   import { createCsvNotices } from './lib/csv/csv-notice';
   import { readOnlyCompartment, readOnlyDocument } from './lib/editor/read-only';
@@ -740,11 +740,6 @@
         // swap or mode is dropped, and so is this.
         if (applied) applyPreviewConfig();
       });
-      // `setCodeMode` adds the class only once its language has loaded; a
-      // tab coming back from the background would otherwise flash unstyled.
-      if (findCodeLanguage(basename, ext)) {
-        editorHandle?.view?.dom.classList.add('cm-code-file-mode');
-      }
     }
     // `setCodeMode(null)` and `setEnvMode(true)` reconfigure the preview
     // compartment themselves, with no flavour facet and no live-render
