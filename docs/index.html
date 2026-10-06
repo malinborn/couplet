@@ -53,7 +53,7 @@
     "url": "https://couplet.pro/",
     "downloadUrl": "https://github.com/malinborn/couplet/releases",
     "sameAs": ["https://github.com/malinborn/couplet"],
-    "softwareVersion": "2.3.0",
+    "softwareVersion": "2.3.1",
     "license": "https://opensource.org/licenses/GPL-3.0"
   }
   </script>
@@ -62,7 +62,7 @@
   <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 
-  <script type="module" crossorigin src="/assets/index-BC2fTiXZ.js"></script>
+  <script type="module" crossorigin src="/assets/index-C7B5Xxll.js"></script>
   <link rel="stylesheet" crossorigin href="/assets/index-ChipolQS.css">
 </head>
 <body>
@@ -458,6 +458,19 @@
       <div class="changelog-list">
 
         <details class="changelog-entry" open>
+          <summary class="changelog-summary">
+            <span class="changelog-version">v2.3.1</span>
+            <span class="changelog-date">2026-10-06</span>
+            <span class="changelog-tag fix">fix</span>
+            <span class="changelog-title">Short rows reach the edge</span>
+          </summary>
+          <ul class="changelog-body-list">
+            <li><strong>Empty cells are drawn</strong> &mdash; a table row with fewer cells than the widest one stopped at its last cell, background, border and stripe included, so a sparse table read as a staircase. Short rows are now padded with empty cells to the full width, the way GitHub renders them. Double-click one in a data row and couplet writes the missing cells into the row and opens it for editing. The header&rsquo;s padding stays read-only: in GFM the header must have as many cells as the <code>|---|</code> line under it</li>
+            <li><strong>Rows without outer pipes keep their text</strong> &mdash; GFM lets a row leave off its leading or closing <code>|</code>, but couplet&rsquo;s cell reader ignored whatever sat outside them: <code>| R-091</code> drew an empty row, and <code>a | b |</code> lost <code>a</code>. Both ends are read now, the same way the markdown parser reads them</li>
+          </ul>
+        </details>
+
+        <details class="changelog-entry">
           <summary class="changelog-summary">
             <span class="changelog-version">v2.3.0</span>
             <span class="changelog-date">2026-10-05</span>
