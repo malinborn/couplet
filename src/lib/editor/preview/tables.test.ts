@@ -52,6 +52,32 @@ function makeCtx(rows: RowData[]): TableContext {
 // ---------------------------------------------------------------------------
 
 describe('parseCellsWithPositions', () => {
+  // -- Optional outer pipes (GFM) ------------------------------------------
+
+  it('NoClosingPipe_LastCellKept', () => {
+    const text = '| R-091 | open';
+    const cells = parseCellsWithPositions(text, 10);
+
+    expect(cells.map((c) => c.text)).toEqual(['R-091', 'open']);
+    expect(text.slice(cells[1].from - 10, cells[1].to - 10)).toBe('open');
+  });
+
+  it('NoLeadingPipe_FirstCellKept', () => {
+    const text = 'a | b |';
+    const cells = parseCellsWithPositions(text, 0);
+
+    expect(cells.map((c) => c.text)).toEqual(['a', 'b']);
+    expect(text.slice(cells[0].from, cells[0].to)).toBe('a');
+  });
+
+  it('NoOuterPipes_BothCellsKept', () => {
+    expect(parseCellsWithPositions('a | b', 0).map((c) => c.text)).toEqual(['a', 'b']);
+  });
+
+  it('ClosingPipeThenSpaces_NoExtraCell', () => {
+    expect(parseCellsWithPositions('| a | b |   ', 0).map((c) => c.text)).toEqual(['a', 'b']);
+  });
+
   // -- Normal row -----------------------------------------------------------
 
   it('NormalRow_ThreeCells_ReturnsThreeCells', () => {

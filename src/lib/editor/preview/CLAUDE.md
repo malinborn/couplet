@@ -264,6 +264,26 @@ const midpoint = lineFrom + cellStart + Math.floor(raw.length / 2);
 cells.push({ text: '', from: midpoint, to: midpoint });
 ```
 
+Both outer pipes are optional, as in GFM and Lezer: `| a | b`, `a | b |` and
+`a | b` are two cells each. Until 2.3.x `parseCellsWithPositions` dropped an
+unpiped first cell and an unpiped last one, so `| R-091` drew an empty row.
+
+### Ragged Rows Get Padding Cells
+
+A row with fewer cells than `colCount` (the widest row) is padded in the DOM
+with `.cm-md-table-cell-missing` spans (`buildMissingCell`), so its background,
+border and stripe run the full width — GitHub renders a short row the same way.
+Padding has no source range, no editing host and no `textEls` entry; how many a
+row gets is shape (`sameTableShape`), so `updateDOM` never touches them.
+`getHeaderCells` skips them — a column drag counts real header cells only.
+
+Double-click on a data row's padding (`fillMissingCells`) appends `   |` per
+missing cell up to the clicked one — empty, not the placeholder — re-reads the
+table and opens the field there. Escape keeps the appended empty cells: they
+look exactly like the padding did. The header's padding is inert, because GFM
+requires the header and the delimiter row to have the same cell count; a header
+that grew alone would stop being a table.
+
 ### Cell Editing Overlay
 
 A `position: fixed` `<textarea>` over the cell, opened by a double-click or by

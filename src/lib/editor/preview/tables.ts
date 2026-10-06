@@ -186,30 +186,42 @@ function liveCell(model: TableDomModel, row: number, col: number): CellInfo | un
   return model.ctx.rows[row]?.cells[col];
 }
 
+/**
+ * A table row's cells with their source ranges.
+ *
+ * Both outer pipes are optional, as in GFM (and in Lezer, which decides what is
+ * a table at all): `| a | b |`, `a | b` and `| a | b` are the same two cells.
+ * Text after the last pipe is a cell when it is not blank — a blank tail is the
+ * space after a closing pipe. This used to drop both ends unless they were
+ * piped, so `| R-091` drew an empty row and `a | b |` lost its first cell.
+ */
 export function parseCellsWithPositions(text: string, lineFrom: number): CellInfo[] {
   const cells: CellInfo[] = [];
+  const push = (start: number, end: number): void => {
+    const raw = text.slice(start, end);
+    const trimmed = raw.trim();
+    if (trimmed.length > 0) {
+      const leadSpaces = raw.length - raw.trimStart().length;
+      const from = lineFrom + start + leadSpaces;
+      cells.push({ text: trimmed, from, to: from + trimmed.length });
+    } else {
+      // Empty cell — point to the space between pipes for insertion
+      const midpoint = lineFrom + start + Math.floor(raw.length / 2);
+      cells.push({ text: '', from: midpoint, to: midpoint });
+    }
+  };
   let i = 0;
-  while (i < text.length && text[i] !== '|') i++;
-  if (i < text.length) i++;
+  while (i < text.length && (text[i] === ' ' || text[i] === '\t')) i++;
+  if (text[i] === '|') i++;
   let cellStart = i;
   while (i < text.length) {
     if (text[i] === '|' && (i === 0 || text[i - 1] !== '\\')) {
-      const raw = text.slice(cellStart, i);
-      const trimmed = raw.trim();
-      if (trimmed.length > 0) {
-        const leadSpaces = raw.length - raw.trimStart().length;
-        const from = lineFrom + cellStart + leadSpaces;
-        const to = from + trimmed.length;
-        cells.push({ text: trimmed, from, to });
-      } else {
-        // Empty cell — point to the space between pipes for insertion
-        const midpoint = lineFrom + cellStart + Math.floor(raw.length / 2);
-        cells.push({ text: '', from: midpoint, to: midpoint });
-      }
+      push(cellStart, i);
       cellStart = i + 1;
     }
     i++;
   }
+  if (text.slice(cellStart).trim().length > 0) push(cellStart, text.length);
   return cells;
 }
 
@@ -320,9 +332,12 @@ function getHeaderCells(anyTableEl: HTMLElement | null): HTMLElement[] {
   if (!table) return [];
   const header = table.querySelector('.cm-md-table-row-header');
   if (!header) return [];
-  // Skip the leading ctrl-cell (first child)
+  // Skip the leading ctrl-cell (first child) and the padding a short header
+  // gets (`buildMissingCell`): a column drag counts real header cells only.
   return Array.from(
-    header.querySelectorAll('.cm-md-table-cell:not(.cm-md-table-row-ctrl)')
+    header.querySelectorAll(
+      '.cm-md-table-cell:not(.cm-md-table-row-ctrl):not(.cm-md-table-cell-missing)'
+    )
   ) as HTMLElement[];
 }
 
@@ -1813,6 +1828,78 @@ function buildCell(
 }
 
 /**
+ * An empty cell for a column this row does not have.
+ *
+ * A ragged row — fewer cells than the widest row — used to end at its last
+ * real cell, taking its background and border with it, so a sparse table read
+ * as a staircase. GitHub pads such a row with empty cells; so does this. The
+ * padding is DOM only: no source range, no editing host, no `textEls` entry.
+ * How many a row gets is shape — `sameTableShape` compares every row's cell
+ * count and `colCount` — so `updateDOM` never adds or drops one.
+ *
+ * Double-click on a data row's padding writes the missing cells into the row
+ * and opens the field on the clicked one. The header's padding stays inert: GFM
+ * requires the header and the delimiter row to have the same number of cells,
+ * and a header that grew alone would stop being a table.
+ */
+function buildMissingCell(
+  view: EditorView,
+  model: TableDomModel,
+  rowIndex: number,
+  colIndex: number,
+  isHeader: boolean
+): HTMLElement {
+  const cellEl = document.createElement('span');
+  cellEl.className = 'cm-md-table-cell cm-md-table-cell-missing';
+  if (isHeader) {
+    cellEl.classList.add('cm-md-table-cell-header');
+    return cellEl;
+  }
+  cellEl.addEventListener('dblclick', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    fillMissingCells(view, model, rowIndex, colIndex);
+  });
+  return cellEl;
+}
+
+/**
+ * Give the row at `rowIndex` real cells up to `colIndex`, then edit that one.
+ *
+ * Appends `   |` per missing cell after the row's closing pipe (adding the pipe
+ * first when the row has none — GFM allows leaving it off). Empty, not the
+ * placeholder: they were drawn empty and should stay so. The table is re-read
+ * from the document afterwards, the way {@link moveAfterCommit} does after it
+ * grows one; a refused change (a read-only tab) leaves the row short and opens
+ * nothing.
+ */
+function fillMissingCells(
+  view: EditorView,
+  model: TableDomModel,
+  rowIndex: number,
+  colIndex: number
+): void {
+  const row = model.ctx.rows[rowIndex];
+  if (!row || row.isHeader || row.isDelimiter) return;
+  const missing = colIndex + 1 - row.cells.length;
+  if (missing <= 0) return;
+  const doc = view.state.doc;
+  const tableLine = doc.lineAt(model.ctx.nodeFrom).number;
+  const line = doc.lineAt(row.from);
+  const body = line.text.trimEnd();
+  const closed = body.endsWith('|') && !body.endsWith('\\|');
+  view.dispatch({
+    changes: {
+      from: line.from + body.length,
+      to: line.to,
+      insert: (closed ? '' : ' |') + '   |'.repeat(missing),
+    },
+  });
+  const grown = tableContextAtLine(view, tableLine);
+  if (grown) openCellEditorAt(view, grown, rowIndex, colIndex);
+}
+
+/**
  * Панель кнопок колонки — одна на таблицу, лежит в `.cm-md-table-wrap`.
  *
  * Почему не по кнопке в каждой ячейке заголовка, как было: у `.cm-md-table`
@@ -1979,6 +2066,9 @@ function buildHeaderRow(
   row.cells.forEach((cell, i) => {
     tr.appendChild(buildCell(cell, i, true, model, view, rowIndex, colCtrl));
   });
+  for (let i = row.cells.length; i < model.ctx.colCount; i++) {
+    tr.appendChild(buildMissingCell(view, model, rowIndex, i, true));
+  }
 
   tr.addEventListener('mouseleave', colCtrl.scheduleHide);
 
@@ -2009,6 +2099,9 @@ function buildDataRow(
   row.cells.forEach((cell, i) => {
     tr.appendChild(buildCell(cell, i, false, model, view, rowIndex));
   });
+  for (let i = row.cells.length; i < model.ctx.colCount; i++) {
+    tr.appendChild(buildMissingCell(view, model, rowIndex, i, false));
+  }
 
   return tr;
 }
