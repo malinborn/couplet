@@ -33,6 +33,7 @@
 | P5 | `navigateToHeading` falls back to a fully parsed tree when the slug index misses. | A file opened by `plan.md#risks` is a fresh state whose index was built from a partial parse; without the fallback every heading below the parsed part is unreachable. |
 | P6 | No capability change for the two commands. | App commands are not ACL-gated here: `src-tauri/build.rs` calls plain `tauri_build::build()` (no `AppManifest`), so every `generate_handler!` command is invokable — like the existing `file_exists`, `tab_*`, `stash_*`. |
 | P7 | Missing-link styling is not drawn inside table cells (cells get the hover title only). | A table widget's `eq()` does not see the existence cache; adding it would rebuild every table on every answer. |
+| P8 | Known limitation (review M7): a table cell's link title is computed when the widget is built, so after Save As moves the document it can name the old relative target until the table is rebuilt (an edit in it, a tab switch). The ⌘-click itself is resolved at click time and is correct. | Same `eq()` reason as P7: putting the document path into the table widget's `eq()` would rebuild every table on every path change for a tooltip. |
 
 ## File map
 
