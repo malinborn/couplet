@@ -232,6 +232,60 @@
   font-size: 0;
 }
 
+/* Explicit lists (View → Explicit Lists, `preview/explicit-lists.ts`).
+ *
+ * The geometry of every list line is an inline style the layout pass writes —
+ * padding to the item's text column, a negative `text-indent` on the marker
+ * line so a wrapped line hangs under the text, and one background strip per
+ * guide. Only the knobs live here. `text-indent` is inherited, so every inline
+ * block on such a line (the marker box, the bullet, widgets) resets it. */
+.cm-content {
+  --xl-base: 6px;
+  --xl-gap: 0.45em;
+  --xl-bullet-w: 1em;
+  --xl-task-w: 16px;
+  --xl-dot-w: 0.45ch;
+  --xl-guide-w: 1px;
+  --xl-guide-start: 1lh;
+  --xl-guide-alpha: 40%;
+  --xl-guide-color: color-mix(in oklab, var(--color-list-marker) var(--xl-guide-alpha), transparent);
+  --xl-guide: linear-gradient(var(--xl-guide-color), var(--xl-guide-color));
+}
+.cm-line.cm-md-xl-line {
+  background-repeat: no-repeat;
+}
+.cm-line.cm-md-xl-line * {
+  text-indent: 0;
+}
+.cm-xl .cm-md-xl-box {
+  display: inline-block;
+  margin-right: var(--xl-gap);
+  font-variant-numeric: tabular-nums;
+}
+/* Numbers right aligned, so `9.` and `10.` share a text column. A bullet —
+ * the widget, or the `-` revealed under the caret — centred in its box. */
+.cm-xl .cm-md-xl-ordered {
+  text-align: right;
+}
+.cm-xl .cm-md-xl-bullet {
+  text-align: center;
+}
+/* The bullet widget replaces the marker's range, so the box mark does not
+ * wrap it — it is the box itself, width and gap included. */
+.cm-xl .cm-md-bullet.cm-md-xl-box {
+  width: var(--xl-bullet-w);
+}
+/* `font-size: inherit`: an <input> has the UA's 13.3px, and the `em` of the
+ * gap would be measured in it — the text then misses the hanging column. */
+.cm-xl .cm-md-checkbox {
+  font-size: inherit;
+  margin-left: 0;
+  margin-right: var(--xl-gap);
+  box-sizing: border-box;
+  width: var(--xl-task-w);
+  height: var(--xl-task-w);
+}
+
 /* The marker column. Fixed width per list (`listMarkColumns`) and right
  * aligned, the way an <ol> lays its numbers out, so `9.` and `10.` — and a
  * revealed `-` and its bullet widget — all leave their text on one column. */

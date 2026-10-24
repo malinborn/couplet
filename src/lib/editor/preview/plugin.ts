@@ -15,7 +15,8 @@ import {
   decorateInlineCode,
   decorateLink,
 } from './inline';
-import { decorateListItem, decorateBlockquote, insideBlockquote } from './lists';
+import { decorateListItem, decorateBlockquote, insideBlockquote, listMarkColumns } from './lists';
+import { isExplicitLists, layoutExplicitList, listStyleFacet } from './explicit-lists';
 import { decorateHorizontalRule, decorateFencedCode } from './blocks';
 import { decorateTable, noteTableUpdate, forgetTableUpdates } from './tables';
 import { decorateMermaidBlock, mermaidRendered } from './mermaid';
@@ -88,6 +89,8 @@ export const previewRebuild = Facet.define<Partial<PreviewRebuildConfig>, Previe
 
 export function buildDecorations(view: EditorView): DecorationSet {
   const builder = new SortingSink();
+  const explicitLists = isExplicitLists(view.state);
+  const doc = view.state.doc;
 
   syntaxTree(view.state).iterate({
     enter(node) {
@@ -150,6 +153,19 @@ export function buildDecorations(view: EditorView): DecorationSet {
         case 'HorizontalRule':
           decorateHorizontalRule(view, node.node, builder);
           return false;
+        case 'BulletList':
+        case 'OrderedList':
+          // Explicit lists lay out a whole tree from its outermost list; a
+          // nested list is part of that pass. Lists in quotes keep the classic
+          // layout — their lines carry the quote's bars as a background.
+          if (
+            explicitLists &&
+            node.node.parent?.name !== 'ListItem' &&
+            !insideBlockquote(node.node)
+          ) {
+            layoutExplicitList(doc, node.node, (item) => listMarkColumns(item, doc), builder);
+          }
+          break;
         case 'ListItem':
           decorateListItem(view, node.node, builder);
           break;
@@ -200,7 +216,8 @@ export const livePreviewPlugin = ViewPlugin.fromClass(
       // neither the document nor the selection — without this check the mode
       // switch appears to do nothing until the next keystroke.
       const flavourChanged =
-        update.state.facet(flavourFacet) !== update.startState.facet(flavourFacet);
+        update.state.facet(flavourFacet) !== update.startState.facet(flavourFacet) ||
+        update.state.facet(listStyleFacet) !== update.startState.facet(listStyleFacet);
       // Same reason as the flavour: a compartment reconfigure that only swaps
       // the table config changes neither document nor selection.
       const tableConfigChanged =

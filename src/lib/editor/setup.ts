@@ -1,3 +1,4 @@
+import { listStyleExtension } from './preview/explicit-lists';
 import { keymap, drawSelection, highlightActiveLine, ViewPlugin } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
@@ -45,6 +46,8 @@ export const languageCompartment = new Compartment();
  */
 export const codeFileModeAttr = EditorView.editorAttributes.of({ class: 'cm-code-file-mode' });
 export const lineGlowCompartment = new Compartment();
+/** View → Explicit Lists: `listStyleExtension('classic' | 'explicit')`. */
+export const listStyleCompartment = new Compartment();
 
 /**
  * Opens a rendered link. Uses the Tauri shell plugin in the app; falls back to
@@ -139,6 +142,7 @@ export function createExtensions(deps: EditorDeps = {}): Extension[] {
     headingFoldStatePlugin,
     syntaxHighlighting(classHighlighter),
     previewCompartment.of(livePreviewPlugin),
+    listStyleCompartment.of(listStyleExtension('classic')),
     tableSelectionSnapOut,
     hoverBlockMenu(),
     // Hide gutter when scrolled horizontally (buttons overlap content)

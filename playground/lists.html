@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Explicit lists · песочница</title>
+  </head>
+  <body>
+    <aside class="pg-panel">
+      <h1>Explicit lists</h1>
+
+      <label class="pg-row">Раскладка
+        <span class="pg-seg" data-key="mode">
+          <button data-v="classic">classic</button><button data-v="explicit">explicit</button>
+        </span>
+      </label>
+
+      <label class="pg-row">Движок
+        <span class="pg-seg" data-key="engine">
+          <button data-v="live-preview">preview</button><button data-v="live-render">render</button>
+        </span>
+      </label>
+
+      <label class="pg-row">Тема
+        <select id="theme"></select>
+      </label>
+
+      <h2>Линии</h2>
+      <label class="pg-row">Вид
+        <span class="pg-seg" data-key="guide">
+          <button data-v="solid">—</button><button data-v="dashed">- -</button><button data-v="dotted">···</button><button data-v="none">нет</button>
+        </span>
+      </label>
+      <label class="pg-row">Толщина <output></output>
+        <input type="range" data-var="--xl-guide-w" min="0.5" max="3" step="0.5" value="1" data-unit="px" />
+      </label>
+      <label class="pg-row">Яркость <output></output>
+        <input type="range" data-var="--xl-guide-alpha" min="10" max="100" step="5" value="40" data-unit="%" />
+      </label>
+      <label class="pg-row">Старт под маркером <output></output>
+        <input type="range" data-var="--xl-guide-start" min="0.5" max="1.2" step="0.05" value="1" data-unit="lh" />
+      </label>
+
+      <h2>Отступы</h2>
+      <label class="pg-row">Зазор после маркера <output></output>
+        <input type="range" data-var="--xl-gap" min="0.15" max="1.2" step="0.05" value="0.45" data-unit="em" />
+      </label>
+      <label class="pg-row">Ширина буллета <output></output>
+        <input type="range" data-var="--xl-bullet-w" min="0.5" max="2" step="0.05" value="1" data-unit="em" />
+      </label>
+
+      <h2>Холст</h2>
+      <label class="pg-row">Ширина колонки <output></output>
+        <input type="range" id="width" min="320" max="1100" step="10" value="640" data-unit="px" />
+      </label>
+
+      <button id="reset" class="pg-reset">Вернуть исходный текст</button>
+      <p class="pg-hint">Текст редактируемый: Tab/Shift+Tab, Enter в списке — всё как в приложении. Настройки запоминаются в этом браузере.</p>
+    </aside>
+
+    <main class="pg-stage">
+      <div id="editor" class="pg-editor"></div>
+    </main>
+
+    <script type="module" src="./lists.ts"></script>
+  </body>
+</html>

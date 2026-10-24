@@ -1,0 +1,108 @@
+html,
+body {
+  height: auto;
+  min-height: 100%;
+  overflow: auto;
+  margin: 0;
+  background: var(--bg-base);
+  color: var(--text-primary);
+}
+body {
+  display: flex;
+  gap: 0;
+  font-family: Inter, system-ui, sans-serif;
+}
+.pg-panel {
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
+  overflow: auto;
+  box-sizing: border-box;
+  width: 270px;
+  flex: none;
+  padding: 18px 18px 24px;
+  border-right: 1px solid var(--color-border);
+  background: var(--bg-surface);
+  font-size: 13px;
+}
+.pg-panel h1 {
+  font-size: 15px;
+  margin: 0 0 14px;
+}
+.pg-panel h2 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-subtle);
+  margin: 18px 0 8px;
+}
+.pg-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+.pg-row input[type='range'] {
+  width: 100%;
+}
+.pg-row output {
+  margin-left: auto;
+  color: var(--text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+.pg-seg {
+  display: inline-flex;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.pg-seg button,
+.pg-reset,
+.pg-panel select {
+  font: inherit;
+  color: inherit;
+  background: var(--bg-base);
+  border: 0;
+  padding: 4px 9px;
+  cursor: pointer;
+}
+.pg-seg button + button {
+  border-left: 1px solid var(--color-border);
+}
+.pg-seg button.on {
+  background: var(--color-link);
+  color: var(--bg-base);
+}
+.pg-panel select {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+.pg-reset {
+  margin-top: 14px;
+  width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 6px;
+}
+.pg-hint {
+  color: var(--text-subtle);
+  line-height: 1.45;
+}
+.pg-stage {
+  flex: 1;
+  min-width: 0;
+  padding: 32px 24px 80px;
+}
+.pg-editor {
+  width: var(--pg-width, 640px);
+  max-width: 100%;
+  margin: 0 auto;
+  outline: 1px dashed color-mix(in oklab, var(--color-border) 60%, transparent);
+  outline-offset: 8px;
+}
+.pg-editor .cm-editor {
+  height: auto;
+}
