@@ -124,6 +124,37 @@ describe('evaluate', () => {
     expect(result?.style).toEqual({ decimalComma: true, thousandsSpace: true });
   });
 
+  it('percent is calculator-relative only as the direct right operand of + / -', () => {
+    expect(valueOf('100 + (10%)')).toBeCloseTo(100.1, 9);
+    expect(valueOf('200 + 10% * 2')).toBeCloseTo(200.2, 9);
+  });
+
+  it('reads a no-break space and a narrow no-break space as thousands separators', () => {
+    const nbsp = evaluate('1 500 + 1');
+    expect(nbsp?.value).toBe(1501);
+    expect(nbsp?.style).toEqual({ decimalComma: false, thousandsSpace: true });
+    const narrow = evaluate('1 500 000 / 12');
+    expect(narrow?.value).toBe(125000);
+    expect(narrow?.style.thousandsSpace).toBe(true);
+    expect(evaluate('1 5000 + 1')).toBeNull();
+  });
+
+  it('groups thousands only after a leading group of 1–3 digits', () => {
+    expect(evaluate('12345 678 + 1')).toBeNull();
+    expect(evaluate('1234 567 + 1')).toBeNull();
+    expect(valueOf('1 500 + 1')).toBe(1501);
+    expect(valueOf('123 456 + 1')).toBe(123457);
+  });
+
+  it('refuses a number literal with more than 15 significant digits', () => {
+    expect(evaluate('9007199254740993 - 9007199254740992')).toBeNull();
+    expect(evaluate('1.0000000000000001 + 1')).toBeNull();
+    expect(valueOf('123456789012345 + 1')).toBe(123456789012346);
+    // Leading zeros and trailing fraction zeros are not significant.
+    expect(valueOf('000000000000000001 + 1')).toBe(2);
+    expect(valueOf('1.500000000000000000 + 1')).toBe(2.5);
+  });
+
   it('plain input has a plain style', () => {
     expect(evaluate('2 + 2')?.style).toEqual({ decimalComma: false, thousandsSpace: false });
   });
@@ -193,6 +224,12 @@ Expected: FAIL — `Failed to resolve import "./evaluate"`.
  *   power   := postfix ('^' unary)?      right-associative; -2^2 = -4
  *   postfix := primary '%'?
  *   primary := number | '(' expr ')'
+ *   number  := d{1,3} (SP ddd)* ([.,] d+)?  |  d+ ([.,] d+)?
+ *
+ * SP is a space, a no-break space (U+00A0) or a narrow no-break space
+ * (U+202F); all three are also ignored between tokens. A literal with more
+ * than `MAX_SIGNIFICANT_DIGITS` significant digits is refused: a double
+ * cannot hold it exactly, and the answer would be silently wrong.
  */
 
 /** How the input wrote its numbers — the answer is written the same way. */
@@ -209,6 +246,8 @@ export interface MathResult {
 export const MAX_EXPRESSION_LENGTH = 200;
 /** Recursion through `unary`: one unit per unary minus and per paren level. */
 export const MAX_DEPTH = 32;
+/** Per number literal; leading zeros and trailing fraction zeros do not count. */
+export const MAX_SIGNIFICANT_DIGITS = 15;
 
 type Op = '+' | '-' | '*' | '/' | '^' | '%' | '(' | ')';
 type Token = { kind: 'num'; value: number } | { kind: 'op'; op: Op };
@@ -226,37 +265,46 @@ function isDigit(ch: string | undefined): boolean {
   return ch !== undefined && ch >= '0' && ch <= '9';
 }
 
+/** A space, a no-break space or a narrow no-break space. */
+export function isSpace(ch: string | undefined): boolean {
+  return ch === ' ' || ch === ' ' || ch === ' ';
+}
+
 /**
- * A number from `start`: digits, then groups of " ddd" (a space followed by
- * exactly three digits and no fourth), then an optional `.`/`,` fraction.
+ * A number from `start`: digits, then — only after a leading group of one to
+ * three digits — groups of SP + exactly three digits and no fourth, then an
+ * optional `.`/`,` fraction. `null` when it has too many significant digits.
  */
 function readNumber(
   src: string,
   start: number,
   style: NumberStyle
-): { value: number; end: number } {
+): { value: number; end: number } | null {
   let i = start;
-  let digits = '';
-  while (isDigit(src[i])) digits += src[i++];
-  while (
-    src[i] === ' ' &&
-    isDigit(src[i + 1]) &&
-    isDigit(src[i + 2]) &&
-    isDigit(src[i + 3]) &&
-    !isDigit(src[i + 4])
-  ) {
-    digits += src.slice(i + 1, i + 4);
-    style.thousandsSpace = true;
-    i += 4;
+  let integer = '';
+  while (isDigit(src[i])) integer += src[i++];
+  if (integer.length <= 3) {
+    while (
+      isSpace(src[i]) &&
+      isDigit(src[i + 1]) &&
+      isDigit(src[i + 2]) &&
+      isDigit(src[i + 3]) &&
+      !isDigit(src[i + 4])
+    ) {
+      integer += src.slice(i + 1, i + 4);
+      style.thousandsSpace = true;
+      i += 4;
+    }
   }
+  let fraction = '';
   if ((src[i] === '.' || src[i] === ',') && isDigit(src[i + 1])) {
     if (src[i] === ',') style.decimalComma = true;
     i++;
-    let fraction = '';
     while (isDigit(src[i])) fraction += src[i++];
-    digits += '.' + fraction;
   }
-  return { value: Number(digits), end: i };
+  const significant = (integer + fraction.replace(/0+$/, '')).replace(/^0+/, '');
+  if (significant.length > MAX_SIGNIFICANT_DIGITS) return null;
+  return { value: Number(fraction ? integer + '.' + fraction : integer), end: i };
 }
 
 function tokenize(src: string, style: NumberStyle): Token[] | null {
@@ -264,13 +312,14 @@ function tokenize(src: string, style: NumberStyle): Token[] | null {
   let i = 0;
   while (i < src.length) {
     const ch = SYNONYMS[src[i]] ?? src[i];
-    if (ch === ' ') {
+    if (isSpace(ch)) {
       i++;
     } else if (OPERATORS.includes(ch)) {
       tokens.push({ kind: 'op', op: ch as Op });
       i++;
     } else if (isDigit(ch)) {
       const read = readNumber(src, i, style);
+      if (!read) return null;
       tokens.push({ kind: 'num', value: read.value });
       i = read.end;
     } else {
@@ -448,7 +497,11 @@ describe('formatResult', () => {
     [-3.5, '-3.5'],
     [-0, '0'],
     [0, '0'],
-    [123456789012, '123456789000'],
+    [123456789012, '123456789012'],
+    [1234567890124, '1234567890124'],
+    [999999999999999, '999999999999999'],
+    [-123456789012345, '-123456789012345'],
+    [12345.678901234, '12345.6789'],
     [0.0001, '0.0001'],
     [1e-7, '0.0000001'],
     [1e-10, '0.0000000001'],
@@ -463,8 +516,8 @@ describe('formatResult', () => {
     [NaN],
     [1e15],
     [-1e15],
-    [999999999999999],
     [1e-11],
+    [999999999999999.9],
   ])('refuses %d', (value) => {
     expect(formatResult(value, PLAIN)).toBeNull();
   });
@@ -502,7 +555,11 @@ Expected: FAIL — `Failed to resolve import "./format"`.
 ```ts
 import type { NumberStyle } from './evaluate';
 
-/** Significant digits kept: enough for money, few enough to hide float noise. */
+/**
+ * The fraction is rounded so the answer has at most this many significant
+ * digits — enough for money, few enough to hide float noise. The integer part
+ * is never rounded: `1234567890123 + 1` is `1234567890124`.
+ */
 export const SIGNIFICANT_DIGITS = 10;
 /** At or above this the answer would need an exponent — none is shown. */
 export const MAX_ABS = 1e15;
@@ -510,29 +567,32 @@ export const MAX_ABS = 1e15;
 export const MIN_ABS = 1e-10;
 
 /**
- * The answer as the human would have written it: rounded to
- * `SIGNIFICANT_DIGITS`, no trailing zeros, the input's decimal separator and
- * thousands spaces. `null` when there is nothing honest to show — ±∞ (division
- * by zero), NaN, or a magnitude that would need exponent notation.
+ * The answer as the human would have written it: the integer part exact, the
+ * fraction rounded to `SIGNIFICANT_DIGITS` overall, no trailing zeros, the
+ * input's decimal separator and thousands spaces. `null` when there is nothing
+ * honest to show — ±∞ (division by zero), NaN, or a magnitude that would need
+ * exponent notation.
  */
 export function formatResult(value: number, style: NumberStyle): string | null {
   if (!Number.isFinite(value)) return null;
-  const rounded = Number(value.toPrecision(SIGNIFICANT_DIGITS));
-  if (rounded === 0) return '0';
-  const abs = Math.abs(rounded);
+  const abs = Math.abs(value);
+  if (abs === 0) return '0';
   if (abs >= MAX_ABS || abs < MIN_ABS) return null;
 
   const magnitude = Math.floor(Math.log10(abs));
   const decimals = Math.min(20, Math.max(0, SIGNIFICANT_DIGITS - 1 - magnitude));
   let text = abs.toFixed(decimals);
   if (text.includes('.')) text = text.replace(/0+$/, '').replace(/\.$/, '');
+  if (/^0*$/.test(text.replace('.', ''))) return '0';
+  // A fraction rounded up can carry the integer part to 1e15 (999999999999999.9).
+  if (Number(text) >= MAX_ABS) return null;
 
   const dot = text.indexOf('.');
   let integer = dot === -1 ? text : text.slice(0, dot);
   const fraction = dot === -1 ? '' : text.slice(dot + 1);
   if (style.thousandsSpace) integer = integer.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
   const separator = style.decimalComma ? ',' : '.';
-  const sign = rounded < 0 ? '-' : '';
+  const sign = value < 0 ? '-' : '';
   return sign + integer + (fraction ? separator + fraction : '');
 }
 ```
@@ -564,7 +624,9 @@ git commit -m "feat(math): format the answer in the input's number style"
 ```ts
 import { describe, it, expect } from 'vitest';
 import { EditorState } from '@codemirror/state';
+import { languages } from '@codemirror/language-data';
 import { markdownExtension } from '../markdown-language';
+import { MAX_EXPRESSION_LENGTH } from './evaluate';
 import { findExpression } from './trigger';
 
 /**
@@ -649,6 +711,56 @@ describe('findExpression', () => {
   ])('nothing for %j (%s)', (doc) => {
     expect(at(doc)).toBeNull();
   });
+
+  it('refuses a run of expression characters longer than the limit, never truncates it', () => {
+    const doc = '1000+'.repeat(50) + '1000 =|';
+    expect(doc.length - 3).toBeGreaterThan(MAX_EXPRESSION_LENGTH);
+    expect(at(doc)).toBeNull();
+    // Exactly at the limit is fine.
+    const atLimit = '1+'.repeat(99) + '11';
+    expect(atLimit.length).toBe(MAX_EXPRESSION_LENGTH);
+    expect(at('итого ' + atLimit + ' =|')?.answer).toBe('110');
+    // Same length budget, but text stops the run: the tail is short enough.
+    expect(at('1000+'.repeat(50) + 'итого 1000 + 1 =|')?.answer).toBe('1001');
+  });
+
+  it.each([
+    ['.5 + 1 =|', 'starts inside a number after `.`'],
+    ['1e5 + 1 =|', 'exponent'],
+    ['0x10 + 1 =|', 'hex'],
+    ['1 5000 + 1 =|', 'not a thousands group'],
+    ['12 34 + 1 =|', 'two adjacent numbers'],
+    ['12345 678 + 1 =|', 'leading group longer than three digits'],
+    ['1,5,5 + 1 =|', 'two commas'],
+    ['1,500 000 + 1 =|', 'comma then a group'],
+    ['v1.2.3 + 1 =|', 'version string'],
+    ['1 5000 + 1 =|', 'not a group after a no-break space'],
+    ['9007199254740993 - 9007199254740992 =|', 'more than 15 significant digits'],
+    ['шаг 2 (3+4) =|', 'right after a number, only spaces between'],
+  ])('starts only at a token boundary: nothing for %j (%s)', (doc) => {
+    expect(at(doc)).toBeNull();
+  });
+
+  it.each([
+    ['шаг 2) (3+4) =|', '7'],
+    ['Итого: 338 * 1.3 =|', '439.4'],
+    ['x = 5 + 3 =|', '8'],
+    ['Например, 5 + 3 =|', '8'],
+    ['1 500 + 1 =|', '1 501'],
+    ['1 500 + 1 =|', '1 501'],
+  ])('still finds %j → %s', (doc, answer) => {
+    expect(at(doc)?.answer).toBe(answer);
+  });
+
+  it('only in markdown documents', async () => {
+    expect(at('5 + 3 =|')?.answer).toBe('8');
+    const plain = EditorState.create({ doc: '5 + 3 =' });
+    expect(findExpression(plain, 7)).toBeNull();
+    const description = languages.find((l) => l.name === 'JSON');
+    if (!description) throw new Error('JSON missing from @codemirror/language-data');
+    const code = EditorState.create({ doc: '5 + 3 =', extensions: [await description.load()] });
+    expect(findExpression(code, 7)).toBeNull();
+  });
 });
 ```
 
@@ -663,9 +775,9 @@ Expected: FAIL — `Failed to resolve import "./trigger"`.
 
 ```ts
 import type { EditorState } from '@codemirror/state';
-import { ensureSyntaxTree, syntaxTree } from '@codemirror/language';
+import { ensureSyntaxTree, language, syntaxTree } from '@codemirror/language';
 import type { SyntaxNode } from '@lezer/common';
-import { evaluate, MAX_EXPRESSION_LENGTH } from './evaluate';
+import { evaluate, isSpace, MAX_EXPRESSION_LENGTH, type MathResult } from './evaluate';
 import { formatResult } from './format';
 
 /** An answer to offer: what Tab replaces (`eq`..`pos`) and with what. */
@@ -689,8 +801,11 @@ const COMPARISON_BEFORE = /[=<>!]$/;
  */
 const BLOCK_PREFIX =
   /^[ \t]*(?:>[ \t]?)*[ \t]*(?:#{1,6}[ \t]+|(?:[-*+]|\d{1,9}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?)?/;
-/** Characters an expression may contain — the scan back stops at the first other one. */
-const EXPRESSION_CHAR = /[0-9 .,+\-*/^%()×·÷−–]/;
+/**
+ * Characters an expression may contain — the scan back stops at the first
+ * other one. U+00A0 / U+202F are thousands separators (`evaluate`).
+ */
+const EXPRESSION_CHAR = /[0-9   .,+\-*/^%()×·÷−–]/;
 /** Syntax nodes inside which `=` is never a question. */
 const EXCLUDED_NODES = new Set(['FencedCode', 'CodeBlock', 'InlineCode', 'Table']);
 /** Parse budget for the caret's line, ms — a typing-time call. */
@@ -706,16 +821,41 @@ function insideExcludedNode(state: EditorState, pos: number, lineTo: number): bo
 }
 
 /**
- * The longest suffix of `text` made of expression characters that evaluates,
- * shrunk from the left until it does (`шаг 2) (3+4)` → `(3+4)`).
+ * May an expression start at `from`? Not inside a word or a number: the
+ * character before must not be a digit, `.`, `,`, a letter or a non-ASCII
+ * space (`1e5`, `0x10`, `v1.2.3`, `.5`, `1 5000` all stay unanswered rather
+ * than answered for their tail). And not right after a number with only
+ * spaces between (`12 34 + 1`, `1 5000 + 1`): that is two adjacent numbers,
+ * which `evaluate` already refused as a whole.
  */
-function longestExpression(text: string) {
-  let start = text.length;
-  while (start > 0 && EXPRESSION_CHAR.test(text[start - 1])) start--;
-  start = Math.max(start, text.length - MAX_EXPRESSION_LENGTH);
-  for (let from = start; from < text.length; from++) {
-    if (text[from] === ' ') continue;
-    const result = evaluate(text.slice(from).trim());
+function atTokenBoundary(text: string, from: number): boolean {
+  const before = text[from - 1];
+  if (before === undefined) return true;
+  if (/[0-9.,\p{L}]/u.test(before)) return false;
+  if (before > '\u007f' && /\s/.test(before)) return false;
+  let i = from - 1;
+  while (i >= 0 && isSpace(text[i])) i--;
+  return !/[0-9]/.test(text[i] ?? '');
+}
+
+/**
+ * The longest suffix of `text` made of expression characters that evaluates,
+ * shrunk from the left until it does (`шаг 2) (3+4)` → `(3+4)`), trying only
+ * starts at a token boundary. A run longer than `MAX_EXPRESSION_LENGTH` (not
+ * counting spaces at its ends) is no answer at all, never its last part — and
+ * the scan back stops there, so a huge line costs no more than a short one.
+ */
+function longestExpression(text: string): MathResult | null {
+  let end = text.length;
+  while (end > 0 && isSpace(text[end - 1])) end--;
+  let start = end;
+  while (start > 0 && EXPRESSION_CHAR.test(text[start - 1])) {
+    start--;
+    if (!isSpace(text[start]) && end - start > MAX_EXPRESSION_LENGTH) return null;
+  }
+  for (let from = start; from < end; from++) {
+    if (isSpace(text[from]) || !atTokenBoundary(text, from)) continue;
+    const result = evaluate(text.slice(from, end));
     if (result) return result;
   }
   return null;
@@ -723,10 +863,11 @@ function longestExpression(text: string) {
 
 /**
  * Is there a question `expr =` ending at `pos` (spaces after `=` allowed),
- * with nothing to its right on the line, outside code and tables? The rules
- * are the spec's "When the ghost appears", 1–6.
+ * with nothing to its right on the line, outside code and tables, in a
+ * markdown document? The rules are the spec's "When the ghost appears".
  */
 export function findExpression(state: EditorState, pos: number): Candidate | null {
+  if (state.facet(language)?.name !== 'markdown') return null;
   const line = state.doc.lineAt(pos);
   if (line.text.slice(pos - line.from).trim() !== '') return null;
 
