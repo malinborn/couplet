@@ -215,8 +215,44 @@ caret around the widget.
   a space after `=` brings it back; an `aiEditTransaction` never shows a ghost.
 - Visual check in `npm run dev` (both preview modes, a light and a dark theme).
 
+## Computed table cells (agreed 2026-10-24)
+
+The ghost is never shown inside a table: a cell is edited in its own overlay
+(`showCellEditor`), not at a CodeMirror caret, and a raw table row is
+markdown syntax. Tables get their own form instead — a computed cell.
+
+| Question | Decision |
+|----------|----------|
+| What is stored | The expression, as typed: `| Итого | 338 * 1.3 = |` |
+| What the view shows | The answer with a small muted marker (`439.4 ƒ`); the expression as the cell's tooltip |
+| Editing | The cell editor opens the stored text (`338 * 1.3 =`), as for any cell; the answer follows the commit |
+| References | None: a cell computes only its own text (no `B2`, no `sum`) |
+| Where | Markdown tables and CSV documents (one widget) |
+
+- **When a cell computes:** its whole trimmed text is `<expr> =` (spaces
+  allowed after `=`), and `evaluate(<expr>)` + `formatResult` give an answer.
+  Strict on purpose — no prose, no block prefix, no longest-suffix search:
+  `Итого 5 + 3 =` in a cell stays text. Comparisons (`==`, `>=`, …) and
+  anything `evaluate` refuses stay text. The language gate (markdown only) does
+  not apply: a CSV document's buffer is a table in the same widget.
+- **One rendering path:** `renderCellContent` (`preview/tables.ts`) is the only
+  place a cell's view is drawn; it asks the pure `computeCell(text)` and, on an
+  answer, renders the answer (`textContent`) + the marker, with the expression
+  in `title`. Search highlights for that cell are skipped while it shows an
+  answer (they index the source).
+- **No leading `=`:** Excel-style `=A1+B1` is a CSV formula (and a known
+  injection vector); the trailing `=` keeps one syntax across text and tables.
+- **Known limits:** ⌘F searches the source (`338`, not `439`); copying a table
+  copies the source; sorting by such a column (if ever added) sorts the source.
+- **Security hardening:** the operator synonym table becomes a `Map` (no
+  prototype lookup at all).
+- **Tests:** `computeCell` table (valid, refused, comparisons, prose, spaces
+  after `=`, CSV-style values); widget DOM: a computed cell shows answer +
+  marker + `title`, a plain cell is unchanged, the editor opens the source;
+  browser check on a markdown table and a CSV file.
+
 ## Out of scope
 
 Variables (`x = 5`), units/currencies, functions (`sqrt`), multi-line sums,
-a settings toggle. Each can come later without changing the parser's
-contract.
+cell references, a settings toggle. Each can come later without changing the
+parser's contract.
