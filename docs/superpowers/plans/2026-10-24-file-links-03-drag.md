@@ -1428,7 +1428,7 @@ Use `/tmp/fl` from plans 01–02; open `index.md` and `docs/plan.md` as tabs; ha
 - [ ] **Step 4: Live check (Max, manual — no OS-level drags from an agent)**
 
 - [ ] Drag `/tmp/fl/docs/plan.md` from Finder into the window without ⌥: it opens as a tab (unchanged).
-- [ ] Same with ⌥ held through the release, over the text: `[plan](docs/plan.md)` lands at the line under the pointer (within one character). If it lands consistently one title-bar height too low, the drop position is window-relative, not webview-relative: subtract the title-bar height (`(outerSize − innerSize).height / scale`) in `finderDropAsLink` and add a test for it.
+- [ ] Same with ⌥ held through the release, over the text, on the built-in Retina screen: `[plan](docs/plan.md)` lands at the line under the pointer (within one character). The position is points relative to the webview (wry `draggingLocation()`, unscaled — see `dropPointToClient`), divided by page zoom only. If it lands at about half the pointer's coordinates (up and left), something divides by the scale factor again. If it lands consistently one title-bar height off, the webview does not fill the window's content view: compare `frame.size.height` in wry's `perform_drag_operation` with `window.innerHeight`. Repeat once on a 1× external display if one is at hand.
 - [ ] Two files ⌥-dropped: two links, `, ` between them.
 - [ ] At page zoom 125 % (⌘+ twice) the ⌥-drop still lands under the pointer.
 - [ ] ⌥-drop with ⌥ released a hair after the mouse button: note whether it still links (R6 — known limit; report, do not fix here).
