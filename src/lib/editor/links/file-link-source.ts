@@ -106,13 +106,25 @@ function optionFor(control: LinkControl, data: LinkCandidates, item: PickerItem,
   }
 }
 
-function resultFor(control: LinkControl, data: LinkCandidates, q: LinkQuery): CompletionResult {
+/**
+ * `currentDoc` is the document's path now. It can differ from the one the
+ * candidates were fetched for: an untitled tab becomes a stash note on its
+ * first character — usually the `[` of `[[` — and the stash then lists the
+ * new note. The document is never offered a link to itself.
+ */
+function resultFor(
+  control: LinkControl,
+  data: LinkCandidates,
+  q: LinkQuery,
+  currentDoc: string | null
+): CompletionResult {
   const home = control.home();
+  const shown = currentDoc ? { ...data, candidates: data.candidates.filter((c) => c.path !== currentDoc) } : data;
   return {
     from: q.from,
     to: q.to,
     filter: false,
-    options: pickerItems(data, q.query).map((item) => optionFor(control, data, item, home)),
+    options: pickerItems(shown, q.query).map((item) => optionFor(control, data, item, home)),
   };
 }
 
@@ -163,9 +175,9 @@ export function createFileLinkSource(control: LinkControl): FileLinkSource {
   const source: CompletionSource = (context) => {
     const q = linkQueryAt(context.state, context.pos);
     if (!q) return null;
-    if (snapshot) return resultFor(control, snapshot, q);
     const docPath = context.state.field(documentPathField, false) ?? null;
-    return candidates(docPath).then((data) => resultFor(control, data, q));
+    if (snapshot) return resultFor(control, snapshot, q, docPath);
+    return candidates(docPath).then((data) => resultFor(control, data, q, docPath));
   };
 
   const data = [{ autocomplete: source }];

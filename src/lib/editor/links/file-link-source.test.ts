@@ -115,6 +115,19 @@ describe('the source', () => {
     expect(r.options[0].detail).toBe('#3 · r/docs');
   });
 
+  it('never offers the document itself, even when it got its path after the fetch', async () => {
+    // An untitled tab becomes a stash note on its first character — the
+    // candidates were asked for with no path, and list the new note.
+    const data: LinkCandidates = {
+      ...DATA,
+      docPath: null,
+      candidates: [...DATA.candidates, { path: '/r/docs/a.md', group: 'stash', title: '[[', window: null }],
+    };
+    const { source, state } = setup('[[', 2, {}, data);
+    const r = (await source(new CompletionContext(state, 2, false))) as CompletionResult;
+    expect(r.options.map((o) => o.label)).toEqual(['plan', 'ideas', 'Ideas board', 'Choose file…']);
+  });
+
   it('a failed fetch still offers Choose file', async () => {
     const { source, state } = setup('[[x', 3, { candidates: () => Promise.reject(new Error('down')) });
     const r = (await source(new CompletionContext(state, 3, false))) as CompletionResult;
