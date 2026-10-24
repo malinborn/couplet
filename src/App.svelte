@@ -90,7 +90,7 @@
   import type { LinkControl } from './lib/editor/links/open-link';
   import { refreshLinkTargets } from './lib/editor/links/link-existence';
   import { navigateToHeading } from './lib/editor/heading-slugs';
-  import { pathKinds, revealInFinder } from './lib/links/ipc';
+  import { linkCandidates, linkProject, pathKinds, revealInFinder } from './lib/links/ipc';
   import { opensAsDocument } from './lib/links/link-kind';
   import { basename } from './lib/links/link-target';
   import { shouldShowHint, nextCheckDelay } from './lib/ai-hint';
@@ -2215,6 +2215,9 @@
       toasts.push({ kind: 'link-missing', path, fileName: basename(path), canCreate: opensAsDocument(path) }),
     unresolvable: (url, reason) =>
       toasts.push({ kind: 'link-missing', path: null, reason, fileName: url, canCreate: false }),
+    candidates: (docPath) => linkCandidates(docPath),
+    project: (docPath) => linkProject(docPath),
+    chooseFile: () => showOpenDialog(),
   };
 
   function liveAskShown(): boolean {

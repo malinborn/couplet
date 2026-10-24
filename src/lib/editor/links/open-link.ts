@@ -4,7 +4,7 @@ import { documentPathField } from '../json-fence';
 import { navigateToHeading } from '../heading-slugs';
 import { resolveLinkTarget, type ResolvedLink, type UnresolvableReason } from '../../links/link-target';
 import { opensAsDocument } from '../../links/link-kind';
-import type { PathKind } from '../../links/types';
+import type { LinkCandidates, LinkProject, PathKind } from '../../links/types';
 import { t } from '../../i18n';
 
 /**
@@ -13,7 +13,7 @@ import { t } from '../../i18n';
  * the couplet.pro landing's demo cards, which get no control and keep the old
  * external-only behaviour. Pass ONE object per window.
  *
- * Plan 02 adds `candidates`, `project` and `chooseFile` for the picker.
+ * The last three members serve the `[[` picker and drops (plans 02, 03).
  */
 export interface LinkControl {
   /** The home folder for `~/` links; `null` while unknown (or outside Tauri). */
@@ -39,6 +39,12 @@ export interface LinkControl {
    * empty destination never gets here: a click on it does nothing.
    */
   unresolvable(url: string, reason: Exclude<UnresolvableReason, 'empty'>): void;
+  /** Picker candidates for the document at `docPath` (`null`: untitled) — `link_candidates`. Rejects when the IPC fails. */
+  candidates(docPath: string | null): Promise<LinkCandidates>;
+  /** What a link written into `docPath` is relative to — `link_project` (a dropped link, plan 03). */
+  project(docPath: string | null): Promise<LinkProject>;
+  /** The system open dialog (`FILE_FILTERS`); `null` when cancelled. */
+  chooseFile(): Promise<string | null>;
 }
 
 export const linkControlFacet = Facet.define<LinkControl, LinkControl | null>({

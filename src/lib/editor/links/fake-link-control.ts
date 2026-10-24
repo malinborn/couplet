@@ -37,6 +37,18 @@ export function fakeLinkControl(overrides: Partial<LinkControl> = {}): FakeLinkC
     unresolvable: (url, reason) => {
       calls.push(`unresolvable:${url}:${reason}`);
     },
+    candidates: async (docPath) => {
+      calls.push(`candidates:${docPath ?? ''}`);
+      return { candidates: [], truncated: false, projectRoot: null, docPath };
+    },
+    project: async (docPath) => {
+      calls.push(`project:${docPath ?? ''}`);
+      return { projectRoot: null, docPath };
+    },
+    chooseFile: async () => {
+      calls.push('chooseFile');
+      return null;
+    },
   };
   return Object.assign(base, overrides, { calls, kinds, held });
 }
