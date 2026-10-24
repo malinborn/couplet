@@ -32,6 +32,8 @@ import { tableConfig } from './table-config';
 import { flavourFacet } from './flavour';
 import { aiCommentField } from '../ai-comment';
 import { isRenderedLink } from './link-refs';
+import { linkExistenceField } from '../links/link-existence';
+import { documentPathField } from '../json-fence';
 import type { DecoSink } from './utils';
 
 /**
@@ -255,13 +257,18 @@ export const livePreviewPlugin = ViewPlugin.fromClass(
       const commentsChanged =
         update.state.field(aiCommentField, false) !==
         update.startState.field(aiCommentField, false);
+      // File links (D4): a missing-file answer restyles a link, and a new
+      // document path re-resolves every relative one (title, missing state).
+      const linksChanged =
+        update.state.field(linkExistenceField, false) !== update.startState.field(linkExistenceField, false) ||
+        update.state.field(documentPathField, false) !== update.startState.field(documentPathField, false);
       // Same reason again; and `previewRebuild` itself decides what follows.
       const rebuildConfig = update.state.facet(previewRebuild);
       const rebuildConfigChanged = rebuildConfig !== update.startState.facet(previewRebuild);
       const viewDriven =
         (update.viewportChanged && rebuildConfig.onViewport) ||
         (update.selectionSet && rebuildConfig.onSelection);
-      if (update.docChanged || viewDriven || treeChanged || mermaidUpdate || tableModeUpdate || flavourChanged || tableConfigChanged || commentsChanged || rebuildConfigChanged) {
+      if (update.docChanged || viewDriven || treeChanged || mermaidUpdate || tableModeUpdate || flavourChanged || tableConfigChanged || commentsChanged || rebuildConfigChanged || linksChanged) {
         try {
           this.decorations = buildDecorations(update.view);
         } catch (e) {

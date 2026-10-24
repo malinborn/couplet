@@ -4,16 +4,7 @@ import type { RangeSetBuilder } from '@codemirror/state';
 import type { SyntaxNode } from '@lezer/common';
 import { shouldReveal } from './flavour';
 import { isRenderedLink } from './link-refs';
-import { isMacPlatform } from '../hotkey-label';
-
-/** Tooltip on every rendered link — computed once, it cannot change at runtime. */
-let openHint: string | null = null;
-function linkOpenHint(): string {
-  if (openHint === null) {
-    openHint = isMacPlatform() ? '⌘-click to open link' : 'Ctrl+click to open link';
-  }
-  return openHint;
-}
+import { linkPresentation } from '../links/link-presentation';
 import type { DecoSink } from './utils';
 
 /**
@@ -143,10 +134,16 @@ export function decorateLink(
   // place the app ever says how to open a link: since #32 a plain click puts
   // the caret in the text and ⌘/Ctrl-click opens the URL (`../setup.ts`), and a
   // gesture nobody can discover is the same as no gesture.
+  // The title says where the link goes (file-links D4), and a file link whose
+  // target is known not to exist is drawn dashed and muted.
+  const look = linkPresentation(view.state, url ? view.state.doc.sliceString(url.from, url.to) : '');
   builder.add(
     node.from,
     node.to,
-    Decoration.mark({ class: 'cm-md-link', attributes: { title: linkOpenHint() } })
+    Decoration.mark({
+      class: look.missing ? 'cm-md-link cm-md-link-missing' : 'cm-md-link',
+      attributes: { title: look.title },
+    })
   );
 
   // 3. Single replace for everything from ] to end of node: ](url)
