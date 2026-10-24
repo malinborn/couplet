@@ -39,13 +39,14 @@ type Op = '+' | '-' | '*' | '/' | '^' | '%' | '(' | ')';
 type Token = { kind: 'num'; value: number } | { kind: 'op'; op: Op };
 
 const OPERATORS = '+-*/^%()';
-const SYNONYMS: Readonly<Record<string, string>> = {
-  '×': '*',
-  '·': '*',
-  '÷': '/',
-  '−': '-',
-  '–': '-',
-};
+/** A `Map`, not an object: a lookup never reaches `Object.prototype`. */
+const SYNONYMS: ReadonlyMap<string, string> = new Map([
+  ['×', '*'],
+  ['·', '*'],
+  ['÷', '/'],
+  ['−', '-'],
+  ['–', '-'],
+]);
 
 function isDigit(ch: string | undefined): boolean {
   return ch !== undefined && ch >= '0' && ch <= '9';
@@ -97,7 +98,7 @@ function tokenize(src: string, style: NumberStyle): Token[] | null {
   const tokens: Token[] = [];
   let i = 0;
   while (i < src.length) {
-    const ch = SYNONYMS[src[i]] ?? src[i];
+    const ch = SYNONYMS.get(src[i]) ?? src[i];
     if (isSpace(ch)) {
       i++;
     } else if (OPERATORS.includes(ch)) {

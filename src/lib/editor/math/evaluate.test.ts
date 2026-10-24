@@ -148,4 +148,10 @@ describe('evaluate', () => {
     // One depth unit per paren level: 30 levels are within MAX_DEPTH (32).
     expect(valueOf('('.repeat(30) + '1' + ')'.repeat(30) + '+1')).toBe(2);
   });
+
+  it('refuses prototype names: the synonym table is a Map, never an object lookup', () => {
+    expect(evaluate('1 + constructor')).toBeNull();
+    expect(evaluate('__proto__ + 1')).toBeNull();
+    expect(evaluate('1 + toString')).toBeNull();
+  });
 });
