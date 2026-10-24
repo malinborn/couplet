@@ -5,7 +5,6 @@ import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/
 import { searchKeymap } from '@codemirror/search';
 import { Compartment, EditorState, type Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
-import { syntaxTree } from '@codemirror/language';
 import { codeFolding, foldKeymap, syntaxHighlighting } from '@codemirror/language';
 import { classHighlighter } from '@lezer/highlight';
 import { editorTheme } from '../theme/editor-theme';
@@ -26,7 +25,7 @@ import { hoverBlockMenu } from './hover-menu';
 import { markdownFoldService, headingFoldClick, headingFoldStatePlugin } from './folding';
 import { foldMemory } from './fold-memory';
 import { headingSlugsField } from './heading-slugs';
-import { linkControlFacet, openLink, type LinkControl } from './links/open-link';
+import { linkControlFacet, linkUrlAt, openLink, type LinkControl } from './links/open-link';
 import { linkExistence } from './links/link-existence';
 import { createFileLinkSource } from './links/file-link-source';
 import { linkAction } from './links/slash-link';
@@ -197,25 +196,7 @@ export function createExtensions(deps: EditorDeps = {}): Extension[] {
         const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
         if (pos === null) return false;
 
-        const tree = syntaxTree(view.state);
-        let url = '';
-        tree.iterate({
-          from: Math.max(0, pos - 500),
-          to: Math.min(view.state.doc.length, pos + 500),
-          enter(node) {
-            if (node.name === 'Link' && node.from <= pos && node.to >= pos) {
-              const c = node.node.cursor();
-              if (c.firstChild()) {
-                do {
-                  if (c.name === 'URL') {
-                    url = view.state.doc.sliceString(c.from, c.to);
-                  }
-                } while (c.nextSibling());
-              }
-            }
-          },
-        });
-
+        const url = linkUrlAt(view.state, pos);
         if (url) {
           event.preventDefault();
           event.stopPropagation();

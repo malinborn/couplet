@@ -4,6 +4,7 @@ vi.mock('@tauri-apps/plugin-shell', () => ({ open: vi.fn(() => Promise.resolve()
 
 import { open as shellOpen } from '@tauri-apps/plugin-shell';
 import { EditorState } from '@codemirror/state';
+import { ensureSyntaxTree } from '@codemirror/language';
 import type { EditorView } from '@codemirror/view';
 import { markdownExtension } from '../markdown-language';
 import { headingSlugsField } from '../heading-slugs';
@@ -11,6 +12,7 @@ import { documentPathField, setDocumentPath } from '../json-fence';
 import {
   linkActionFor,
   linkControlFacet,
+  linkUrlAt,
   openButtonLabel,
   openLink,
   resolveInState,
@@ -176,5 +178,26 @@ describe('linkActionFor and openButtonLabel', () => {
     expect(openButtonLabel('open-file')).toEqual({ text: 'Open file', aria: 'Open file' });
     expect(openButtonLabel('reveal')).toEqual({ text: 'Show in Finder', aria: 'Show in Finder' });
     expect(openButtonLabel('heading')).toEqual({ text: 'Jump to heading', aria: 'Jump to the heading' });
+  });
+});
+
+describe('linkUrlAt (⌘-click)', () => {
+  const urlAt = (doc: string, pos: number) => {
+    const state = EditorState.create({ doc, extensions: [markdownExtension()] });
+    ensureSyntaxTree(state, doc.length, 5000);
+    return linkUrlAt(state, pos);
+  };
+
+  it('is the destination of the link under the pointer', () => {
+    expect(urlAt('see [plan](docs/plan.md) here', 6)).toBe('docs/plan.md');
+  });
+
+  it('agrees with the preview when the text is a URL', () => {
+    expect(urlAt('[https://a.test](https://b.test)', 3)).toBe('https://b.test');
+  });
+
+  it('is nothing for a reference whose text is a URL, or outside a link', () => {
+    expect(urlAt('[https://a.test][ref]\n\n[ref]: /x\n', 3)).toBeNull();
+    expect(urlAt('plain text', 3)).toBeNull();
   });
 });

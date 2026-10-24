@@ -1,4 +1,5 @@
 import { Facet, type EditorState } from '@codemirror/state';
+import { syntaxTree } from '@codemirror/language';
 import type { EditorView } from '@codemirror/view';
 import { documentPathField } from '../json-fence';
 import { navigateToHeading } from '../heading-slugs';
@@ -6,6 +7,7 @@ import { resolveLinkTarget, type ResolvedLink, type UnresolvableReason } from '.
 import { opensAsDocument } from '../../links/link-kind';
 import type { LinkCandidates, LinkProject, PathKind } from '../../links/types';
 import { t } from '../../i18n';
+import { linkDestinationNode } from '../preview/link-refs';
 
 /**
  * What a link needs from the app (file-links D3). Injected through
@@ -53,6 +55,24 @@ export const linkControlFacet = Facet.define<LinkControl, LinkControl | null>({
 
 export function linkControlOf(state: EditorState): LinkControl | null {
   return state.facet(linkControlFacet);
+}
+
+/**
+ * The destination of the inline link at `pos` — what a ⌘-click opens. The
+ * same `linkDestinationNode` the preview, the existence check and the
+ * inspector read, so every gesture agrees on where a link goes (a URL in the
+ * link text is not the destination). `null` off a link or for a link with no
+ * `(…)`.
+ */
+export function linkUrlAt(state: EditorState, pos: number): string | null {
+  for (let node = syntaxTree(state).resolveInner(pos, 1); ; ) {
+    if (node.name === 'Link') {
+      const dest = linkDestinationNode(node);
+      return dest ? state.sliceDoc(dest.from, dest.to) : null;
+    }
+    if (!node.parent) return null;
+    node = node.parent;
+  }
 }
 
 /** `resolveLinkTarget` against this state's document path and the control's home. */
