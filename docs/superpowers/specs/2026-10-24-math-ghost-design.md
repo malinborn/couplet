@@ -79,8 +79,8 @@ where the style records how the **input** wrote its numbers.
 
 ## Formatting the answer
 
-- `null` (no answer) for `NaN`, `±Infinity` (division by zero) and |x| ≥ 1e15:
-  no exponent notation is ever shown.
+- `null` (no answer) for `NaN`, `±Infinity` (division by zero), |x| ≥ 1e15
+  and 0 < |x| < 1e-10: no exponent notation is ever shown.
 - Round to 10 significant digits (`toPrecision(10)`), then drop trailing zeros
   and a trailing separator: `0.1 + 0.2 =` → `0.3`, `10 / 3 =` → `3.333333333`.
   `-0` prints as `0`.
