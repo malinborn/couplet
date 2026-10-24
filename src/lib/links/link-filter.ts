@@ -5,8 +5,9 @@ import { basename, dirOf } from './link-target';
 /**
  * The picker's own filtering (file-links D5; the completion result says
  * `filter: false`): case-insensitive subsequence over the label and the
- * project-relative path, ranked by group, then match quality, then the
- * source's natural order — which Rust already made the recency order.
+ * project-relative path (word starts only for a path outside the project),
+ * ranked by group, then match quality, then the source's natural order —
+ * which Rust already made the recency order.
  */
 
 export const GROUP_ORDER: readonly LinkGroup[] = ['tab', 'project', 'recent', 'stash'];
@@ -52,22 +53,30 @@ function isSubsequence(query: string, text: string): boolean {
   return i === query.length;
 }
 
-/** 3 — the label starts with it; 2 — a word of the label or a path segment does; 1 — subsequence; 0 — no match. */
-export function matchQuality(query: string, label: string, relPath: string): number {
+/**
+ * 3 — the label starts with it; 2 — a word of the label or a path segment
+ * does; 1 — subsequence; 0 — no match. `inProject: false` — `path` is an
+ * absolute path outside the project: it counts for word starts only, since
+ * nearly any query is a subsequence of a long absolute path
+ * (`pl` ⊂ `/private/tmp/fl/…`).
+ */
+export function matchQuality(query: string, label: string, path: string, inProject = true): number {
   const q = query.trim().toLowerCase();
   if (q === '') return 0;
   const l = label.toLowerCase();
-  const p = relPath.toLowerCase();
+  const p = path.toLowerCase();
   if (l.startsWith(q)) return 3;
   const startsWord = (text: string) => text.split(WORD_SPLIT).some((w) => w.startsWith(q));
   if (startsWord(l) || startsWord(p)) return 2;
   const compact = q.replace(/\s+/g, '');
-  if (isSubsequence(compact, l) || isSubsequence(compact, p)) return 1;
+  if (isSubsequence(compact, l) || (inProject && isSubsequence(compact, p))) return 1;
   return 0;
 }
 
-function relPathOf(path: string, root: string | null): string {
-  return root && isInside(root, path) ? relativePath(root, path) : path;
+function qualityOf(query: string, label: string, path: string, root: string | null): number {
+  return root && isInside(root, path)
+    ? matchQuality(query, label, relativePath(root, path))
+    : matchQuality(query, label, path, false);
 }
 
 /** The rows of the popup, top to bottom. «Choose file…» is always last. */
@@ -87,7 +96,7 @@ export function pickerItems(data: LinkCandidates, query: string): PickerItem[] {
     const scored = list
       .map((cand, index) => {
         const label = labelFor(cand);
-        return { cand, index, label, quality: matchQuality(q, label, relPathOf(cand.path, data.projectRoot)) };
+        return { cand, index, label, quality: qualityOf(q, label, cand.path, data.projectRoot) };
       })
       .filter((x) => x.quality > 0);
     scored.sort((a, b) => rank(a.cand.group) - rank(b.cand.group) || b.quality - a.quality || a.index - b.index);

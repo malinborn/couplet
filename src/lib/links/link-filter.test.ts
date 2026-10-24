@@ -45,6 +45,12 @@ describe('matchQuality', () => {
     expect(matchQuality('zzz', 'plan', 'docs/plan.md')).toBe(0);
   });
 
+  it('outside the project the path counts for word starts only', () => {
+    expect(matchQuality('pl', 'elsewhere', '/private/tmp/fl/elsewhere.md', false)).toBe(0);
+    expect(matchQuality('tmp', 'elsewhere', '/private/tmp/fl/elsewhere.md', false)).toBe(2);
+    expect(matchQuality('esw', 'elsewhere', '/private/tmp/fl/elsewhere.md', false)).toBe(1);
+  });
+
   it('is case-insensitive', () => {
     expect(matchQuality('PL', 'plan', 'plan.md')).toBe(3);
   });
@@ -67,6 +73,13 @@ describe('pickerItems', () => {
       'plan'
     );
     expect(labels(items)).toEqual(['planet', 'plan', 'x-plan', 'old-plan', 'choose']);
+  });
+
+  it('a file outside the project matches by label or a path segment, never a subsequence of its absolute path', () => {
+    const outside = [c('/Users/me/couplet/n1.md', 'stash', 'Ideas board'), c('/private/tmp/other/elsewhere.md', 'tab')];
+    expect(labels(pickerItems(data(outside), 'pl'))).toEqual(['choose']);
+    expect(labels(pickerItems(data(outside), 'couplet'))).toEqual(['Ideas board', 'choose']);
+    expect(labels(pickerItems(data(outside), 'ibd'))).toEqual(['Ideas board', 'choose']);
   });
 
   it('a URL query offers Link to URL first and Choose file last', () => {
