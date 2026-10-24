@@ -92,6 +92,14 @@ describe('detectInspectorTarget — link', () => {
     }
   });
 
+  it('stays out of a [[ picker query — the picker owns it (file-links D5)', () => {
+    // Lezer reads `[[pl]]` as a Link (shortcut reference); with the caret
+    // in the query the URL panel would cover the picker's popup.
+    expect(detectInspectorTarget(makeState('[[pl]]\n'), 4)).toBeNull();
+    expect(detectInspectorTarget(makeState('see [[]]\n'), 6)).toBeNull();
+    expect(detectInspectorTarget(makeState('[[pl]] [text](url)\n'), 9)?.kind).toBe('link');
+  });
+
   it('returns null for a position outside any link', () => {
     expect(detectInspectorTarget(makeState('plain text\n'), 3)).toBeNull();
   });

@@ -1,6 +1,7 @@
 import { syntaxTree } from '@codemirror/language';
 import type { EditorState, TransactionSpec } from '@codemirror/state';
 import type { SyntaxNode } from '@lezer/common';
+import { linkQueryAt } from '../links/link-query';
 
 /**
  * Element inspector — Phase 7 of live-render.
@@ -110,7 +111,10 @@ function fenceTargetFrom(node: SyntaxNode): FenceTarget {
  * as in live-preview.
  */
 export function detectInspectorTarget(state: EditorState, pos: number): InspectorTarget | null {
-  const link = findEnclosingAtPos(state, pos, 'Link');
+  // Lezer reads `[[query]]` as a Link (a shortcut reference). While the
+  // caret is in one the `[[` picker owns it; a URL panel would cover the
+  // popup (file-links D5).
+  const link = linkQueryAt(state, pos) ? null : findEnclosingAtPos(state, pos, 'Link');
   if (link) {
     const target = linkTargetFrom(link);
     if (target) return target;
