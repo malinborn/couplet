@@ -6,6 +6,9 @@ import { history, undo, undoDepth } from '@codemirror/commands';
 import { createDocumentState } from './state-factory';
 import { aiAskField } from './ai-ask';
 import { themePickerField } from './slash-theme';
+import { linkControlFacet } from './links/open-link';
+import { linkExistenceField } from './links/link-existence';
+import { fakeLinkControl } from './links/fake-link-control';
 
 describe('createDocumentState', () => {
   it('StartsEveryDocumentWithAnEmptyHistory', () => {
@@ -101,5 +104,18 @@ describe('the undo leak a whole-state swap closes', () => {
     expect(undo(view)).toBe(false);
     expect(view.state.doc.toString()).toBe('B');
     view.destroy();
+  });
+});
+
+describe('createDocumentState — link control', () => {
+  it('installs the facet and the existence cache only when a control is given', () => {
+    const control = fakeLinkControl();
+    const withControl = createDocumentState('x', 0, [], { linkControl: control });
+    expect(withControl.facet(linkControlFacet)).toBe(control);
+    expect(withControl.field(linkExistenceField, false)).toBeDefined();
+
+    const without = createDocumentState('x', 0, []);
+    expect(without.facet(linkControlFacet)).toBeNull();
+    expect(without.field(linkExistenceField, false)).toBeUndefined();
   });
 });

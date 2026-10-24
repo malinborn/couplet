@@ -25,7 +25,9 @@ import { tableSelectionSnapOut } from './preview/table-selection';
 import { hoverBlockMenu } from './hover-menu';
 import { markdownFoldService, headingFoldClick, headingFoldStatePlugin } from './folding';
 import { foldMemory } from './fold-memory';
-import { headingSlugsField, isAnchor, navigateToHeading } from './heading-slugs';
+import { headingSlugsField } from './heading-slugs';
+import { linkControlFacet, openLink, type LinkControl } from './links/open-link';
+import { linkExistence } from './links/link-existence';
 import { aiHighlightField, aiHighlightKeymap } from './ai-highlight';
 import { aiAskField } from './ai-ask';
 import { aiCommentAttention, aiCommentField } from './ai-comment';
@@ -49,19 +51,9 @@ export const lineGlowCompartment = new Compartment();
 /** View → Lists: `listLayoutExtension(layout)`. */
 export const listLayoutCompartment = new Compartment();
 
-/**
- * Opens a rendered link. Uses the Tauri shell plugin in the app; falls back to
- * a browser tab when that plugin has no backend (the landing page embeds this
- * same editor). The plugin call must be returned so its rejection reaches the
- * catch — otherwise the fallback never runs.
- */
-export function openExternalUrl(url: string): Promise<void> {
-  return import('@tauri-apps/plugin-shell')
-    .then(({ open }) => open(url))
-    .catch(() => {
-      window.open(url, '_blank');
-    });
-}
+// Moved to `links/open-link.ts`, where the link router lives; re-exported for
+// existing importers.
+export { openExternalUrl } from './links/open-link';
 
 /**
  * Injected rather than imported: `createExtensions()` is called by both
@@ -76,10 +68,16 @@ export interface EditorDeps {
   themeControl?: ThemeControl;
   /** Enables `/stash` (⌃T's put-away). Omitted by the landing's demo cards. */
   stashControl?: StashControl;
+  /**
+   * File links (file-links D3): ⌘-click on `[x](plan.md)` opens the file, the
+   * existence check marks missing targets. Omitted by the landing's demo
+   * cards, which keep the old external-only behaviour.
+   */
+  linkControl?: LinkControl;
 }
 
 export function createExtensions(deps: EditorDeps = {}): Extension[] {
-  const { themeControl, stashControl } = deps;
+  const { themeControl, stashControl, linkControl } = deps;
   const actions: SlashAction[] = [
     ...(themeControl ? [themeAction(themeControl), toneAction(themeControl)] : []),
     ...(stashControl ? [stashAction(stashControl)] : []),
@@ -142,6 +140,7 @@ export function createExtensions(deps: EditorDeps = {}): Extension[] {
     headingFoldStatePlugin,
     syntaxHighlighting(classHighlighter),
     previewCompartment.of(livePreviewPlugin),
+    ...(linkControl ? [linkControlFacet.of(linkControl), linkExistence] : []),
     listLayoutCompartment.of(listLayoutExtension(DEFAULT_LIST_LAYOUT)),
     tableSelectionSnapOut,
     hoverBlockMenu(),
@@ -215,11 +214,9 @@ export function createExtensions(deps: EditorDeps = {}): Extension[] {
         if (url) {
           event.preventDefault();
           event.stopPropagation();
-          if (isAnchor(url)) {
-            navigateToHeading(view, url.slice(1));
-            return true;
-          }
-          openExternalUrl(url);
+          // One router for every gesture (file-links D3): anchors, URLs,
+          // files, missing files — see `links/open-link.ts`.
+          void openLink(view, url);
           return true;
         }
         return false;
