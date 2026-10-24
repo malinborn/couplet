@@ -288,6 +288,8 @@
   "tabs.carousel.more_up": "▲ weitere Fenster",
   "tabs.carousel.more_down": "▼ weitere Fenster",
   "tabs.carousel.foot_drag": "auf einem Fenster loslassen · zurück in die Leiste — Reihenfolge · Esc — abbrechen",
+  "tabs.carousel.foot_link": "⌥ — stattdessen Link einfügen",
+  "tabs.ghost.link": "Link einfügen",
   "tabs.carousel.foot_keys": "↑↓ — wählen · Enter — verschieben · Esc — abbrechen",
 
   "stash.bar.button": "Stash",

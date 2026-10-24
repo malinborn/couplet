@@ -288,6 +288,8 @@
   "tabs.carousel.more_up": "▲ more windows",
   "tabs.carousel.more_down": "▼ more windows",
   "tabs.carousel.foot_drag": "drop on a window · back to the drawer — reorder · Esc — cancel",
+  "tabs.carousel.foot_link": "⌥ — insert a link instead",
+  "tabs.ghost.link": "Insert link",
   "tabs.carousel.foot_keys": "↑↓ — choose · Enter — move · Esc — cancel",
 
   "stash.bar.button": "Stash",

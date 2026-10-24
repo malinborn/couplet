@@ -288,6 +288,8 @@
   "tabs.carousel.more_up": "▲ más ventanas",
   "tabs.carousel.more_down": "▼ más ventanas",
   "tabs.carousel.foot_drag": "suelte sobre una ventana · de vuelta al cajón — orden · Esc — cancelar",
+  "tabs.carousel.foot_link": "⌥ — insertar un enlace en su lugar",
+  "tabs.ghost.link": "Insertar enlace",
   "tabs.carousel.foot_keys": "↑↓ — elegir · Enter — mover · Esc — cancelar",
 
   "stash.bar.button": "Stash",
