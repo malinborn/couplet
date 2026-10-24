@@ -6,6 +6,8 @@ export interface FakeLinkControl extends LinkControl {
   readonly calls: string[];
   /** What `pathKinds` answers per path; a path not listed is a regular file. */
   readonly kinds: Map<string, PathKind>;
+  /** Paths a tab holds (`holds` answers true). Not recorded in `calls`. */
+  readonly held: Set<string>;
 }
 
 /**
@@ -15,6 +17,7 @@ export interface FakeLinkControl extends LinkControl {
 export function fakeLinkControl(overrides: Partial<LinkControl> = {}): FakeLinkControl {
   const calls: string[] = [];
   const kinds = new Map<string, PathKind>();
+  const held = new Set<string>();
   const base: LinkControl = {
     home: () => '/Users/me',
     pathKinds: async (paths) => {
@@ -27,6 +30,7 @@ export function fakeLinkControl(overrides: Partial<LinkControl> = {}): FakeLinkC
     reveal: async (path) => {
       calls.push(`reveal:${path}`);
     },
+    holds: async (path) => held.has(path),
     missing: (path) => {
       calls.push(`missing:${path}`);
     },
@@ -34,5 +38,5 @@ export function fakeLinkControl(overrides: Partial<LinkControl> = {}): FakeLinkC
       calls.push(`unresolvable:${url}:${reason}`);
     },
   };
-  return Object.assign(base, overrides, { calls, kinds });
+  return Object.assign(base, overrides, { calls, kinds, held });
 }

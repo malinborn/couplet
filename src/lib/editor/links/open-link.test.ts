@@ -89,6 +89,23 @@ describe('openLink', () => {
     expect(control.calls).toEqual(['pathKinds:/r/gone.md', 'missing:/r/gone.md']);
   });
 
+  it('a missing file a tab already holds (after «Create») opens that tab', async () => {
+    const control = fakeLinkControl();
+    control.kinds.set('/r/gone.md', 'missing');
+    control.held.add('/r/gone.md');
+    const { view } = viewFor('', '/r/a.md', control);
+    await openLink(view, 'gone.md#top');
+    expect(control.calls).toEqual(['pathKinds:/r/gone.md', 'openFile:/r/gone.md#top']);
+  });
+
+  it('when asking who holds it fails, a missing file is missing', async () => {
+    const control = fakeLinkControl({ holds: () => Promise.reject(new Error('ipc down')) });
+    control.kinds.set('/r/gone.md', 'missing');
+    const { view } = viewFor('', '/r/a.md', control);
+    await openLink(view, 'gone.md');
+    expect(control.calls).toEqual(['pathKinds:/r/gone.md', 'missing:/r/gone.md']);
+  });
+
   it('a relative link in an untitled document is unresolvable', async () => {
     const control = fakeLinkControl();
     const { view } = viewFor('', null, control);

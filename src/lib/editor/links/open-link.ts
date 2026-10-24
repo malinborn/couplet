@@ -24,6 +24,13 @@ export interface LinkControl {
   openFile(path: string, fragment: string | null): Promise<void>;
   /** Select `path` in Finder. Never opens it. */
   reveal(path: string): Promise<void>;
+  /**
+   * Does a tab — in this window or another — hold `path`? A path «Create»
+   * opened is held by an unsaved tab before it exists on disk: a link to it
+   * opens that tab instead of offering «Create» again. Rejects when the IPC
+   * fails (treated as "no").
+   */
+  holds(path: string): Promise<boolean>;
   /** The link's target does not exist: the `link-missing` toast with «Create». */
   missing(path: string): void;
   /**
@@ -93,9 +100,11 @@ export function openExternalUrl(url: string): Promise<void> {
  *
  * - `#slug` → the heading in this document.
  * - a URL with a scheme → the OS (`openExternalUrl`), as before.
- * - a file → asked on disk first: missing → `control.missing`; a regular file
- *   couplet renders → `control.openFile` (with the fragment); anything else
- *   — a folder, an image, `run.command` — → `control.reveal`. Never executed.
+ * - a file → asked on disk first: missing → `control.missing`, unless a tab
+ *   already holds it (an unsaved «Create») → `control.openFile`; a regular
+ *   file couplet renders → `control.openFile` (with the fragment); anything
+ *   else — a folder, an image, `run.command` — → `control.reveal`. Never
+ *   executed.
  *
  * Without a control (the landing) a non-anchor goes to `openExternalUrl`
  * unchanged.
@@ -109,6 +118,16 @@ export async function openLink(view: EditorView, url: string): Promise<void> {
     await routeLink(view, url);
   } catch (err) {
     console.error('Opening a link failed:', err);
+  }
+}
+
+/** `control.holds`, with a failed ask read as "no". */
+export async function heldByATab(control: LinkControl, path: string): Promise<boolean> {
+  try {
+    return await control.holds(path);
+  } catch (err) {
+    console.warn('could not ask which tab holds a link target:', err);
+    return false;
   }
 }
 
@@ -139,8 +158,13 @@ async function routeLink(view: EditorView, url: string): Promise<void> {
     console.warn('path_kinds failed, opening by name:', err);
     kind = 'file';
   }
-  if (kind === 'missing') {
+  if (kind === 'missing' && !(await heldByATab(control, target.path))) {
     control.missing(target.path);
+    return;
+  }
+  if (kind === 'missing') {
+    // Not on disk yet, but a tab holds it (an unsaved «Create»): open that tab.
+    await control.openFile(target.path, target.fragment);
     return;
   }
   if (kind === 'file' && opensAsDocument(target.path)) {

@@ -67,6 +67,15 @@ describe('the checker', () => {
     expect(control.calls).toHaveLength(1);
   });
 
+  it('a missing file that a tab holds counts as existing (no dashed style)', async () => {
+    const control = fakeLinkControl();
+    control.kinds.set('/r/gone.md', 'missing');
+    control.held.add('/r/gone.md');
+    view = new EditorView({ state: stateFor(control) });
+    await vi.advanceTimersByTimeAsync(LINK_CHECK_DELAY_MS + 1);
+    expect(view.state.field(linkExistenceField).get('/r/gone.md')).toBe(true);
+  });
+
   it('a failed ask leaves the links unknown and is retried on the next change', async () => {
     let fail = true;
     const control = fakeLinkControl();

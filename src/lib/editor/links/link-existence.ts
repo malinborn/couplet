@@ -3,7 +3,8 @@ import { ViewPlugin, type EditorView, type ViewUpdate } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import { documentPathField } from '../json-fence';
 import { isRenderedLink } from '../preview/link-refs';
-import { linkControlOf, resolveInState } from './open-link';
+import { heldByATab, linkControlOf, resolveInState, type LinkControl } from './open-link';
+import type { PathKind } from '../../links/types';
 import { PATH_KINDS_MAX } from '../../links/types';
 
 /**
@@ -59,6 +60,30 @@ export function fileLinkPaths(state: EditorState, from: number, to: number): str
     },
   });
   return [...out];
+}
+
+/**
+ * `pathKinds`' answers as the cache stores them. A path missing on disk that a
+ * tab holds — the unsaved tab «Create» opened — counts as existing: a ⌘-click
+ * opens that tab, so it is not drawn as missing. Only missing paths are asked
+ * about, and those are few.
+ */
+async function existenceOf(
+  control: LinkControl,
+  paths: readonly string[],
+  kinds: readonly PathKind[]
+): Promise<Map<string, boolean>> {
+  const answers = new Map<string, boolean>();
+  const missing: string[] = [];
+  paths.forEach((p, i) => {
+    const kind = kinds[i];
+    if (kind === undefined) return;
+    if (kind === 'missing') missing.push(p);
+    else answers.set(p, true);
+  });
+  const held = await Promise.all(missing.map((p) => heldByATab(control, p)));
+  missing.forEach((p, i) => answers.set(p, held[i] ?? false));
+  return answers;
 }
 
 /** Trailing quiet period before asking: typing a path does not ask per keystroke. */
@@ -119,13 +144,8 @@ class LinkExistenceChecker {
     const batch = unknown.slice(0, PATH_KINDS_MAX);
     for (const p of batch) this.pending.add(p);
     try {
-      const kinds = await control.pathKinds(batch);
+      const answers = await existenceOf(control, batch, await control.pathKinds(batch));
       if (this.destroyed) return;
-      const answers = new Map<string, boolean>();
-      batch.forEach((p, i) => {
-        const kind = kinds[i];
-        if (kind !== undefined) answers.set(p, kind !== 'missing');
-      });
       this.view.dispatch({ effects: setLinkExistence.of(answers) });
     } catch (err) {
       // Unknown stays unknown (an ordinary link); the next change asks again.
@@ -144,13 +164,8 @@ class LinkExistenceChecker {
     const paths = [...new Set([...known.keys(), ...this.visiblePaths()])].slice(0, PATH_KINDS_MAX);
     if (paths.length === 0) return;
     try {
-      const kinds = await control.pathKinds(paths);
+      const fresh = await existenceOf(control, paths, await control.pathKinds(paths));
       if (this.destroyed) return;
-      const fresh = new Map<string, boolean>();
-      paths.forEach((p, i) => {
-        const kind = kinds[i];
-        if (kind !== undefined) fresh.set(p, kind !== 'missing');
-      });
       this.view.dispatch({ effects: replaceLinkExistence.of(fresh) });
     } catch (err) {
       console.warn('link existence re-check failed:', err);

@@ -2204,6 +2204,12 @@
       revealInFinder(path).catch((err: unknown) => {
         reportOpenError(path, err);
       }),
+    async holds(path) {
+      if (tabs.findByPath(path)) return true;
+      // Another window's tab: the registry knows every window's paths.
+      const owner = await invoke<TabOwner>('tab_owner', { path });
+      return owner.kind !== 'none';
+    },
     missing: (path) =>
       toasts.push({ kind: 'link-missing', path, fileName: basename(path), canCreate: opensAsDocument(path) }),
     unresolvable: (url, reason) =>
