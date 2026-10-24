@@ -106,6 +106,19 @@ describe('detectInspectorTarget — link', () => {
     expect(detectInspectorTarget(makeState('[[pl]] [text](url)\n'), 9)?.kind).toBe('link');
   });
 
+  it('a bracket pair with no (…) is not an inline link — no inverted URL range', () => {
+    // `closeParen` used to fall back to the `]`, so the URL range ran
+    // backwards and setLinkUrl threw `RangeError: Invalid change range`.
+    expect(detectInspectorTarget(makeState('see [1] here\n'), 5)).toBeNull();
+    expect(detectInspectorTarget(makeState('[1]\n'), 1)).toBeNull();
+    // `[[x]|]`: past the query's own `]`, so not a picker query any more.
+    expect(detectInspectorTarget(makeState('[[x]]\n'), 4)).toBeNull();
+  });
+
+  it('a reference link is not an inline link either', () => {
+    expect(detectInspectorTarget(makeState('[a][ref]\n\n[ref]: /x\n'), 1)).toBeNull();
+  });
+
   it('returns null for a position outside any link', () => {
     expect(detectInspectorTarget(makeState('plain text\n'), 3)).toBeNull();
   });
