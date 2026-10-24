@@ -1,6 +1,6 @@
 # File Links 03 — Drag to Insert a Link Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Drag a stash card onto the text, a tab card with ⌥ held, or a Finder file with ⌥ held, and a markdown link to it lands where it was dropped — with a drop caret showing where.
 
@@ -58,7 +58,7 @@
 **Files:**
 - Modify: `locales/{en,ru,de,es,fr,zh}/app.json`
 
-- [ ] **Step 1: Insert the keys**
+- [x] **Step 1: Insert the keys**
 
 ```bash
 node --input-type=module <<'EOF'
@@ -90,12 +90,12 @@ EOF
 
 Expected output: `ok`.
 
-- [ ] **Step 2: Run the completeness test**
+- [x] **Step 2: Run the completeness test**
 
 Run: `npx vitest run src/lib/i18n.test.ts`
 Expected: PASS.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add locales/en/app.json locales/ru/app.json locales/de/app.json locales/es/app.json locales/fr/app.json locales/zh/app.json
@@ -113,7 +113,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Modify: `src/lib/editor/setup.ts` (the `linkControl` extensions line)
 - Test: `src/lib/editor/links/link-drop.test.ts`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 // src/lib/editor/links/link-drop.test.ts
@@ -292,12 +292,12 @@ describe('createLinkDropTarget', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run src/lib/editor/links/link-drop.test.ts`
 Expected: FAIL — `Failed to resolve import "./link-drop"`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```ts
 // src/lib/editor/links/link-drop.ts
@@ -480,7 +480,7 @@ export function createLinkDropTarget(currentView: () => EditorView | undefined):
 }
 ```
 
-- [ ] **Step 4: Install the caret**
+- [x] **Step 4: Install the caret**
 
 In `src/lib/editor/setup.ts`, add the import after `import { linkAction } from './links/slash-link';`:
 
@@ -500,12 +500,12 @@ with
     ...(linkControl ? [linkControlFacet.of(linkControl), linkExistence, linkDropCaret] : []),
 ```
 
-- [ ] **Step 5: Run to verify it passes**
+- [x] **Step 5: Run to verify it passes**
 
 Run: `npx vitest run src/lib/editor/links/link-drop.test.ts`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/lib/editor/links/link-drop.ts src/lib/editor/links/link-drop.test.ts src/lib/editor/setup.ts
@@ -522,7 +522,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Modify: `src/lib/stash/drop-target.ts`
 - Test: `src/lib/stash/drop-target.test.ts` (append)
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append inside `describe('resolveDrop', …)` in `src/lib/stash/drop-target.test.ts`:
 
@@ -541,12 +541,12 @@ Append inside `describe('resolveDrop', …)` in `src/lib/stash/drop-target.test.
   });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run src/lib/stash/drop-target.test.ts`
 Expected: FAIL — `'none'` received where `'text'` expected (and a TS complaint about `text` in `DropHits`, which vitest does not enforce).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Replace the whole body of `src/lib/stash/drop-target.ts` below its doc comment with:
 
@@ -593,12 +593,12 @@ and add to the module's doc comment, after "Stash cards: anywhere on the tabs dr
  * inserts a link there ('text').
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `npx vitest run src/lib/stash/drop-target.test.ts`
 Expected: PASS (old cases unchanged).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/stash/drop-target.ts src/lib/stash/drop-target.test.ts
@@ -615,7 +615,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Create: `src/lib/tabs/link-items.ts`
 - Test: `src/lib/tabs/link-items.test.ts`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // src/lib/tabs/link-items.test.ts
@@ -656,12 +656,12 @@ describe('linkItemsForTabs', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run src/lib/tabs/link-items.test.ts`
 Expected: FAIL — `Failed to resolve import "./link-items"`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```ts
 // src/lib/tabs/link-items.ts
@@ -690,12 +690,12 @@ export function linkItemsForTabs(
 }
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `npx vitest run src/lib/tabs/link-items.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/tabs/link-items.ts src/lib/tabs/link-items.test.ts
@@ -712,7 +712,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Modify: `src/lib/tabs/WindowCarousel.svelte` (props, `.car-foot`, styles)
 - Test: `src/lib/tabs/WindowCarousel.svelte.test.ts` (extend `show` + one test)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 In `src/lib/tabs/WindowCarousel.svelte.test.ts`, change the `show` signature's `extra` type to
 
@@ -745,12 +745,12 @@ Then append inside `describe('WindowCarousel', …)`:
   });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run src/lib/tabs/WindowCarousel.svelte.test.ts`
 Expected: FAIL — `.car-foot-link` not found.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `src/lib/tabs/WindowCarousel.svelte`, add `linkHint = false,` to the props destructuring after `pointer,`, and to its type after `pointer: { x: number; y: number } | null;`:
 
@@ -784,12 +784,12 @@ In `<style>`, after the `.car-foot { … }` rule add:
   }
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `npx vitest run src/lib/tabs/WindowCarousel.svelte.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/tabs/WindowCarousel.svelte src/lib/tabs/WindowCarousel.svelte.test.ts
@@ -806,7 +806,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Modify: `src/lib/tabs/TabDrawer.svelte` (imports, props, `dropTargetAt`, `dragAt`, `dragMove`, `onKeyDown`, `onKeyUp`, `finishDrag`, ghost markup, root classes, styles)
 - Test: existing `src/lib/tabs/TabDrawer.svelte.test.ts` must stay green; behaviour is covered by Tasks 2–4 (pure) and the live check.
 
-- [ ] **Step 1: Imports and prop**
+- [x] **Step 1: Imports and prop**
 
 After `import { resolveDrop, type DropTarget } from '../stash/drop-target';` add:
 
@@ -825,7 +825,7 @@ In the props destructuring, after `onstashtag,` add `linkDrop,`; in its type, af
     linkDrop?: LinkDropTarget;
 ```
 
-- [ ] **Step 2: ⌥ state and the drop target**
+- [x] **Step 2: ⌥ state and the drop target**
 
 Right after `let inWrap = false;` add:
 
@@ -957,7 +957,7 @@ with:
     if (d.src === 'tabs') followCarousel(ev.clientX, ev.clientY, next.target === 'page');
 ```
 
-- [ ] **Step 3: Keys during a drag**
+- [x] **Step 3: Keys during a drag**
 
 In `onKeyDown`, replace the drag branch:
 
@@ -999,7 +999,7 @@ with:
   }
 ```
 
-- [ ] **Step 4: The drop**
+- [x] **Step 4: The drop**
 
 In `finishDrag`, right before the line `if (d?.src === 'stash') {`, insert:
 
@@ -1016,7 +1016,7 @@ In `finishDrag`, right before the line `if (d?.src === 'stash') {`, insert:
     }
 ```
 
-- [ ] **Step 5: Ghost and scrim**
+- [x] **Step 5: Ghost and scrim**
 
 In the ghost block, after `{@const toOpen = drag.src === 'stash' && drag.target === 'tabs-drawer'}` add:
 
@@ -1071,7 +1071,7 @@ and after the `.ghost.as-open { … }` rule add:
   }
 ```
 
-- [ ] **Step 6: Type check and the drawer tests**
+- [x] **Step 6: Type check and the drawer tests**
 
 Run: `npm run check`
 Expected: 0 errors.
@@ -1079,7 +1079,7 @@ Expected: 0 errors.
 Run: `npx vitest run src/lib/tabs src/lib/stash`
 Expected: PASS (no `linkDrop` given in the existing tests: no link drops, behaviour unchanged).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/lib/tabs/TabDrawer.svelte
@@ -1098,7 +1098,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Modify: `src/lib/links/types.ts`, `src/lib/links/ipc.ts`
 - Test: `reveal::tests` (append), `src/lib/links/ipc.test.ts` (append)
 
-- [ ] **Step 1: Write the failing Rust test**
+- [x] **Step 1: Write the failing Rust test**
 
 Append inside `mod tests` of `src-tauri/src/reveal.rs`:
 
@@ -1122,12 +1122,12 @@ Append inside `mod tests` of `src-tauri/src/reveal.rs`:
     }
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml reveal::tests`
 Expected: FAIL to compile — `cannot find function modifiers_from_flags`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `src-tauri/src/reveal.rs`, add `use serde::Serialize;` after `use std::path::{Path, PathBuf};`, and change the module doc's "Plan 03 adds `current_modifiers` here" sentence to "`current_modifiers` (plan 03) lives here too".
 
@@ -1200,7 +1200,7 @@ In `src-tauri/src/lib.rs` `generate_handler!`, after `reveal::reveal_in_finder,`
             reveal::current_modifiers,
 ```
 
-- [ ] **Step 4: Run the Rust tests, clippy and the Intel guard**
+- [x] **Step 4: Run the Rust tests, clippy and the Intel guard**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml reveal::tests`
 Expected: PASS — 4 tests.
@@ -1211,7 +1211,7 @@ Expected: no new warnings.
 Run: `npm run check:x86`
 Expected: `Finished`.
 
-- [ ] **Step 5: Frontend wrapper — failing test first**
+- [x] **Step 5: Frontend wrapper — failing test first**
 
 Append to `src/lib/links/ipc.test.ts`:
 
@@ -1230,7 +1230,7 @@ describe('modifiers ipc', () => {
 Run: `npx vitest run src/lib/links/ipc.test.ts`
 Expected: FAIL — `currentModifiers` is not exported.
 
-- [ ] **Step 6: Implement the wrapper**
+- [x] **Step 6: Implement the wrapper**
 
 Append to `src/lib/links/types.ts`:
 
@@ -1256,7 +1256,7 @@ export function currentModifiers(): Promise<Modifiers> {
 Run: `npx vitest run src/lib/links/ipc.test.ts`
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src-tauri/src/reveal.rs src-tauri/src/lib.rs src/lib/links/types.ts src/lib/links/ipc.ts src/lib/links/ipc.test.ts
@@ -1272,7 +1272,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 **Files:**
 - Modify: `src/App.svelte` (imports, `linkDrop` next to `linkControl`, `finderDropAsLink`, `onDragDropEvent` ~2759, `<TabDrawer>`)
 
-- [ ] **Step 1: Imports**
+- [x] **Step 1: Imports**
 
 Replace
 
@@ -1287,7 +1287,7 @@ with
   import { createLinkDropTarget, dropPointToClient } from './lib/editor/links/link-drop';
 ```
 
-- [ ] **Step 2: The drop target and the Finder helper**
+- [x] **Step 2: The drop target and the Finder helper**
 
 Right after the closing `};` of `const linkControl: LinkControl = { … };` add:
 
@@ -1318,7 +1318,7 @@ Right after the closing `};` of `const linkControl: LinkControl = { … };` add:
   }
 ```
 
-- [ ] **Step 3: Route Finder drops**
+- [x] **Step 3: Route Finder drops**
 
 Replace
 
@@ -1353,7 +1353,7 @@ with
     );
 ```
 
-- [ ] **Step 4: Give the drawer the target**
+- [x] **Step 4: Give the drawer the target**
 
 In `<TabDrawer …>`, after `onstashtag={(entry, change) => void tagStashEntry(entry, change)}` add:
 
@@ -1361,7 +1361,7 @@ In `<TabDrawer …>`, after `onstashtag={(entry, change) => void tagStashEntry(e
   {linkDrop}
 ```
 
-- [ ] **Step 5: Type check and the suite**
+- [x] **Step 5: Type check and the suite**
 
 Run: `npm run check`
 Expected: 0 errors.
@@ -1369,7 +1369,7 @@ Expected: 0 errors.
 Run: `npx vitest run --dir src`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/App.svelte
@@ -1382,9 +1382,11 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 
 ### Task 9: Verification
 
+**Executed 2026-10-24.** Deviations from the steps above: in link mode the ghost shrinks to 240 px and sits below-right of the pointer (it covered the drop caret at the grab offset); App's page blur (`oncarousel`) lifts in link mode too, not only the scrim; `linkItemsFor` skips a trashed stash entry; the drawer gained six `TabDrawer.svelte.test.ts` cases for the link drop. Step 3's agent checks passed live on a `couplet-filelinks` dev build (synthetic pointer/key events, CSV not re-checked live — unit-tested). Step 4 is left to Max.
+
 **Files:** none changed (fix-forward commits only if a check fails).
 
-- [ ] **Step 1: Frontend**
+- [x] **Step 1: Frontend**
 
 Run: `npx vitest run --dir src`
 Expected: all green.
@@ -1395,7 +1397,7 @@ Expected: 0 errors, no new warnings.
 Run: `npx vite build --config vite.config.site.ts --outDir /tmp/couplet-site-check --emptyOutDir`
 Expected: `✓ built`; `git status --short docs/` prints nothing.
 
-- [ ] **Step 2: Rust**
+- [x] **Step 2: Rust**
 
 Run: `cd src-tauri && cargo test`
 Expected: all green.
@@ -1406,7 +1408,7 @@ Expected: no new warnings.
 Run: `npm run check:x86`
 Expected: `Finished`.
 
-- [ ] **Step 3: Live check (agent part)**
+- [x] **Step 3: Live check (agent part)**
 
 ```bash
 lsof -ti:1420 | xargs kill -9 2>/dev/null; npm run dev:app -- --features mcp-bridge \
@@ -1415,13 +1417,13 @@ lsof -ti:1420 | xargs kill -9 2>/dev/null; npm run dev:app -- --features mcp-bri
 
 Use `/tmp/fl` from plans 01–02; open `index.md` and `docs/plan.md` as tabs; have a note and a file reference in the stash. With the bridge, synthetic pointer events dispatched on the drawer's card and `window` drive the drag machine (see CLAUDE.md "MCP dev bridge": dispatch on elements, read state from the DOM, not from animation end states):
 
-- [ ] ⌘J, drag the `plan.md` card over the text (no ⌥): the carousel opens as before; the band's foot reads «⌥ — insert a link instead».
-- [ ] Same drag with `altKey: true` on the pointer events: the carousel closes, the scrim lightens, a drop caret (`.cm-md-link-drop .cm-dropCursor`) follows the pointer; the ghost bar says «Insert link».
-- [ ] Toggle ⌥ with a synthetic `keydown`/`keyup` (`key: 'Alt', altKey: true/false`, dispatched on `document.body`) without moving: link mode switches on and off, the carousel comes back on release.
-- [ ] Release with ⌥: `[plan](docs/plan.md)` appears at the caret position; the drawer closes; ⌘Z removes it in one step.
-- [ ] Open the stash (⌃S), drag the note card onto the text (no ⌥ needed): `[<note title>](/Users/…/couplet/….md)` at the drop point; a file-reference card: `[name](relative or absolute path)`.
-- [ ] Dragging onto a `.py` tab's text or a CSV tab: no caret, nothing inserted, the card behaves as before.
-- [ ] Two selected tab cards (⇧-click) ⌥-dropped: two links separated by `, `.
+- [x] ⌘J, drag the `plan.md` card over the text (no ⌥): the carousel opens as before; the band's foot reads «⌥ — insert a link instead».
+- [x] Same drag with `altKey: true` on the pointer events: the carousel closes, the scrim lightens, a drop caret (`.cm-md-link-drop .cm-dropCursor`) follows the pointer; the ghost bar says «Insert link».
+- [x] Toggle ⌥ with a synthetic `keydown`/`keyup` (`key: 'Alt', altKey: true/false`, dispatched on `document.body`) without moving: link mode switches on and off, the carousel comes back on release.
+- [x] Release with ⌥: `[plan](docs/plan.md)` appears at the caret position; the drawer closes; ⌘Z removes it in one step.
+- [x] Open the stash (⌃S), drag the note card onto the text (no ⌥ needed): `[<note title>](/Users/…/couplet/….md)` at the drop point; a file-reference card: `[name](relative or absolute path)`.
+- [x] Dragging onto a `.py` tab's text or a CSV tab: no caret, nothing inserted, the card behaves as before.
+- [x] Two selected tab cards (⇧-click) ⌥-dropped: two links separated by `, `.
 
 - [ ] **Step 4: Live check (Max, manual — no OS-level drags from an agent)**
 
@@ -1431,6 +1433,6 @@ Use `/tmp/fl` from plans 01–02; open `index.md` and `docs/plan.md` as tabs; ha
 - [ ] At page zoom 125 % (⌘+ twice) the ⌥-drop still lands under the pointer.
 - [ ] ⌥-drop with ⌥ released a hair after the mouse button: note whether it still links (R6 — known limit; report, do not fix here).
 
-- [ ] **Step 5: Commit any fixes**
+- [x] **Step 5: Commit any fixes**
 
 If a live check needed a fix, commit it with explicit paths (`fix(links): …` + the `Co-Authored-By` line). Otherwise nothing to commit.
