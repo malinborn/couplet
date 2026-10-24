@@ -173,6 +173,8 @@ pub fn run() {
             commands::write_file,
             commands::file_exists,
             links::path_kinds,
+            links::link_candidates,
+            links::link_project,
             reveal::reveal_in_finder,
             commands::comment_threads,
             commands::comment_reply,
