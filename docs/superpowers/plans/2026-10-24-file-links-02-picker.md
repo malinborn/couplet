@@ -66,7 +66,7 @@
 - Modify: `locales/{en,ru,de,es,fr,zh}/app.json`
 - Test: `src/lib/i18n.test.ts` (existing)
 
-- [ ] **Step 1: Insert the keys**
+- [x] **Step 1: Insert the keys**
 
 ```bash
 node --input-type=module <<'EOF'
@@ -164,12 +164,12 @@ EOF
 
 Expected output: `ok`. (The stash is «Stash» in every non-Russian catalog today — `stash.drawer.title` — so the section follows it.)
 
-- [ ] **Step 2: Run the completeness test**
+- [x] **Step 2: Run the completeness test**
 
 Run: `npx vitest run src/lib/i18n.test.ts`
 Expected: PASS.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add locales/en/app.json locales/ru/app.json locales/de/app.json locales/es/app.json locales/fr/app.json locales/zh/app.json
@@ -186,7 +186,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Create: `src-tauri/src/link_walk.rs`
 - Modify: `src-tauri/src/lib.rs` (module list)
 
-- [ ] **Step 1: Write the module with its failing tests**
+- [x] **Step 1: Write the module with its failing tests**
 
 ```rust
 // src-tauri/src/link_walk.rs
@@ -477,7 +477,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Register the module**
+- [x] **Step 2: Register the module**
 
 In `src-tauri/src/lib.rs`, in the module list, insert `mod link_walk;` between `mod i18n;` and `mod links;`:
 
@@ -487,12 +487,12 @@ mod link_walk;
 mod links;
 ```
 
-- [ ] **Step 3: Run the tests**
+- [x] **Step 3: Run the tests**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml link_walk::tests`
 Expected: PASS — 8 tests. (Before Step 2 the module is not compiled and `cargo test` reports `0 tests` for the filter — that is the "failing" state.)
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src-tauri/src/link_walk.rs src-tauri/src/lib.rs
@@ -509,7 +509,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Modify: `src-tauri/src/links.rs`
 - Modify: `src-tauri/src/lib.rs` (`generate_handler!`)
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append inside `mod tests` of `src-tauri/src/links.rs`:
 
@@ -587,12 +587,12 @@ Append inside `mod tests` of `src-tauri/src/links.rs`:
     }
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml links::tests`
 Expected: FAIL to compile — `cannot find function tab_paths`, `cannot find type CandidateSources`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `src-tauri/src/links.rs`, replace the head
 
@@ -848,7 +848,7 @@ In `src-tauri/src/lib.rs` `generate_handler!`, after `links::path_kinds,` add:
             links::link_project,
 ```
 
-- [ ] **Step 4: Run the tests and the linters**
+- [x] **Step 4: Run the tests and the linters**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml links::tests`
 Expected: PASS — 8 tests (4 from plan 01, 4 new).
@@ -856,7 +856,7 @@ Expected: PASS — 8 tests (4 from plan 01, 4 new).
 Run: `cargo clippy --manifest-path src-tauri/Cargo.toml`
 Expected: no new warnings.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src-tauri/src/links.rs src-tauri/src/lib.rs
@@ -874,7 +874,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Modify: `src/lib/links/ipc.ts`
 - Test: `src/lib/links/ipc.test.ts` (append)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `src/lib/links/ipc.test.ts`:
 
@@ -894,12 +894,12 @@ describe('picker ipc', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run src/lib/links/ipc.test.ts`
 Expected: FAIL — `linkCandidates is not a function` / missing export.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Append to `src/lib/links/types.ts`:
 
@@ -947,12 +947,12 @@ export function linkProject(docPath: string | null): Promise<LinkProject> {
 }
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `npx vitest run src/lib/links/ipc.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/links/types.ts src/lib/links/ipc.ts src/lib/links/ipc.test.ts
@@ -969,7 +969,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Create: `src/lib/links/link-destination.ts`
 - Test: `src/lib/links/link-destination.test.ts`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 // src/lib/links/link-destination.test.ts
@@ -1064,12 +1064,12 @@ describe('formatPathDestination and wrapDestination', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run src/lib/links/link-destination.test.ts`
 Expected: FAIL — `Failed to resolve import "./link-destination"`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```ts
 // src/lib/links/link-destination.ts
@@ -1147,12 +1147,12 @@ export function linkMarkdownFor(
 }
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `npx vitest run src/lib/links/link-destination.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/links/link-destination.ts src/lib/links/link-destination.test.ts
@@ -1169,7 +1169,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Create: `src/lib/links/link-filter.ts`
 - Test: `src/lib/links/link-filter.test.ts`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 // src/lib/links/link-filter.test.ts
@@ -1273,12 +1273,12 @@ describe('displayDir', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run src/lib/links/link-filter.test.ts`
 Expected: FAIL — `Failed to resolve import "./link-filter"`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```ts
 // src/lib/links/link-filter.ts
@@ -1393,12 +1393,12 @@ export function displayDir(path: string, root: string | null, home: string | nul
 }
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `npx vitest run src/lib/links/link-filter.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/links/link-filter.ts src/lib/links/link-filter.test.ts
@@ -1418,7 +1418,7 @@ This is the only change to the interface plan 01 defined. After it, `LinkControl
 - Modify: `src/lib/editor/links/fake-link-control.ts`
 - Modify: `src/App.svelte` (imports, `linkControl`)
 
-- [ ] **Step 1: Extend the interface**
+- [x] **Step 1: Extend the interface**
 
 In `src/lib/editor/links/open-link.ts`, extend the type import:
 
@@ -1449,7 +1449,7 @@ and add after `unresolvable(url: string): void;`:
   chooseFile(): Promise<string | null>;
 ```
 
-- [ ] **Step 2: Extend the fake**
+- [x] **Step 2: Extend the fake**
 
 In `src/lib/editor/links/fake-link-control.ts`, inside `base` after `unresolvable`, add:
 
@@ -1468,7 +1468,7 @@ In `src/lib/editor/links/fake-link-control.ts`, inside `base` after `unresolvabl
     },
 ```
 
-- [ ] **Step 3: Extend the app's control**
+- [x] **Step 3: Extend the app's control**
 
 In `src/App.svelte`, replace
 
@@ -1492,7 +1492,7 @@ and inside `const linkControl: LinkControl = { … }`, after the `unresolvable` 
 
 (`showOpenDialog` is already imported from `./lib/tauri/commands`.)
 
-- [ ] **Step 4: Type check and tests**
+- [x] **Step 4: Type check and tests**
 
 Run: `npm run check`
 Expected: 0 errors.
@@ -1500,7 +1500,7 @@ Expected: 0 errors.
 Run: `npx vitest run src/lib/editor/links`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/editor/links/open-link.ts src/lib/editor/links/fake-link-control.ts src/App.svelte
@@ -1517,7 +1517,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Create: `src/lib/editor/links/file-link-source.ts`
 - Test: `src/lib/editor/links/file-link-source.test.ts`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 // src/lib/editor/links/file-link-source.test.ts
@@ -1729,12 +1729,12 @@ describe('applying a pick', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run src/lib/editor/links/file-link-source.test.ts`
 Expected: FAIL — `Failed to resolve import "./file-link-source"`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```ts
 // src/lib/editor/links/file-link-source.ts
@@ -1961,17 +1961,17 @@ export function createFileLinkSource(control: LinkControl): FileLinkSource {
 }
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `npx vitest run src/lib/editor/links/file-link-source.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Type check**
+- [x] **Step 5: Type check**
 
 Run: `npm run check`
 Expected: 0 errors.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/lib/editor/links/file-link-source.ts src/lib/editor/links/file-link-source.test.ts
@@ -1989,7 +1989,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Modify: `src/lib/editor/setup.ts`
 - Test: `src/lib/editor/links/slash-link.test.ts`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 // src/lib/editor/links/slash-link.test.ts
@@ -2052,12 +2052,12 @@ describe('/link', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run src/lib/editor/links/slash-link.test.ts`
 Expected: FAIL — `Failed to resolve import "./slash-link"`.
 
-- [ ] **Step 3: Implement the action**
+- [x] **Step 3: Implement the action**
 
 ```ts
 // src/lib/editor/links/slash-link.ts
@@ -2091,7 +2091,7 @@ export function linkAction(): SlashAction {
 }
 ```
 
-- [ ] **Step 4: Install both in `setup.ts`**
+- [x] **Step 4: Install both in `setup.ts`**
 
 Add imports after `import { linkExistence } from './links/link-existence';`:
 
@@ -2126,7 +2126,7 @@ Right after the line `slashCommands(actions),` add:
     ...(linkControl ? [createFileLinkSource(linkControl).extension] : []),
 ```
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `npx vitest run src/lib/editor/links src/lib/editor/slash-commands.test.ts src/lib/editor/state-factory.test.ts`
 Expected: PASS.
@@ -2134,7 +2134,7 @@ Expected: PASS.
 Run: `npm run check`
 Expected: 0 errors.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/lib/editor/links/slash-link.ts src/lib/editor/links/slash-link.test.ts src/lib/editor/setup.ts
@@ -2152,7 +2152,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Modify: `docs/ai-interface.md` (~407, ~440)
 - Test: `ai_socket::tests::the_docs_carry_both_snippets_verbatim` and `onboarding::tests::connect_doc_carries_both_snippets_verbatim` (existing)
 
-- [ ] **Step 1: Make the docs change first (the sync test then fails)**
+- [x] **Step 1: Make the docs change first (the sync test then fails)**
 
 In `docs/ai-interface.md`, replace the line
 
@@ -2180,12 +2180,12 @@ with
 - When a document refers to another file, write a relative markdown link — `[plan](docs/plan.md)`, relative to that document. couplet opens it on ⌘-click (`plan.md#risks` jumps to that heading).
 ```
 
-- [ ] **Step 2: Run the sync test to verify it fails**
+- [x] **Step 2: Run the sync test to verify it fails**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml the_docs_carry_both_snippets_verbatim`
 Expected: FAIL — `docs/ai-interface.md is out of sync with AGENT_SNIPPET`.
 
-- [ ] **Step 3: Make the same change in the constants**
+- [x] **Step 3: Make the same change in the constants**
 
 In `src-tauri/src/ai_socket.rs`, inside `AGENT_SNIPPET`, after the line
 
@@ -2211,12 +2211,12 @@ add the line
 - When a document refers to another file, write a relative markdown link — `[plan](docs/plan.md)`, relative to that document. couplet opens it on ⌘-click (`plan.md#risks` jumps to that heading).
 ```
 
-- [ ] **Step 4: Run the snippet tests**
+- [x] **Step 4: Run the snippet tests**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml snippet`
 Expected: PASS — includes `the_docs_carry_both_snippets_verbatim`, `connect_doc_carries_both_snippets_verbatim`, and the MCP-snippet "no CLI syntax" check.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src-tauri/src/ai_socket.rs docs/ai-interface.md
@@ -2231,7 +2231,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 
 **Files:** none changed (fix-forward commits only if a check fails).
 
-- [ ] **Step 1: Frontend**
+- [x] **Step 1: Frontend**
 
 Run: `npx vitest run --dir src`
 Expected: all green.
@@ -2242,7 +2242,7 @@ Expected: 0 errors, no new warnings.
 Run: `npx vite build --config vite.config.site.ts --outDir /tmp/couplet-site-check --emptyOutDir`
 Expected: `✓ built`; `git status --short docs/` prints nothing.
 
-- [ ] **Step 2: Rust**
+- [x] **Step 2: Rust**
 
 Run: `cd src-tauri && cargo test`
 Expected: all green.
@@ -2253,7 +2253,7 @@ Expected: no new warnings.
 Run: `npm run check:x86`
 Expected: `Finished`.
 
-- [ ] **Step 3: Live check**
+- [x] **Step 3: Live check**
 
 ```bash
 lsof -ti:1420 | xargs kill -9 2>/dev/null; npm run dev:app -- --features mcp-bridge \
@@ -2262,17 +2262,17 @@ lsof -ti:1420 | xargs kill -9 2>/dev/null; npm run dev:app -- --features mcp-bri
 
 Use the `/tmp/fl` folder from plan 01 (a git repo with `index.md`, `docs/plan.md`); add `mkdir -p /tmp/fl/node_modules/x && echo x > /tmp/fl/node_modules/x/skip.md`. Open `index.md` and `docs/plan.md` in window #1, any file from another folder in window #2; put one note in the stash (⌃T on an untitled tab with text).
 
-- [ ] In `index.md`, on a new line type `[[` → `[[]]` with a popup: «Open tabs» (`plan`), the other window's tab with `#2 · …`, «Project» files (no `skip.md`), «Recent», «Stash» (the note by its title), «Choose file…» last.
-- [ ] Type `pl` → `plan` first; Enter → `[plan](docs/plan.md)`; ⌘-click it opens the tab.
-- [ ] `[[` then Esc → `[[]]` stays as text.
-- [ ] `[[https://example.com` → first row «Link to https://example.com»; Enter → `[https://example.com](https://example.com)`.
-- [ ] «Choose file…» → the system dialog; pick `/tmp/fl/docs/plan.md` → `[plan](docs/plan.md)`; cancel → `[[…]]` unchanged.
-- [ ] `/link` at line start → `[[]]` and the popup.
-- [ ] Inside a fenced code block and inside `` `inline code` `` typing `[[` opens nothing; in a `.py` tab nothing.
-- [ ] An untitled tab: a pick writes an absolute path.
-- [ ] Drop 6 000 empty `.md` files into `/tmp/fl/many/` (`for i in $(seq 6000); do : > /tmp/fl/many/f$i.md; done`), wait 30 s (cache), `[[` → the Project header reads «Project — not all files listed» and the popup appears without a visible stall.
-- [ ] `couplet agent | grep "relative markdown link"` (with the dev binary: `~/.cargo/shared-target/debug/md-mini agent`) prints the new line.
+- [x] In `index.md`, on a new line type `[[` → `[[]]` with a popup: «Open tabs» (`plan`), the other window's tab with `#2 · …`, «Project» files (no `skip.md`), «Recent», «Stash» (the note by its title), «Choose file…» last.
+- [x] Type `pl` → `plan` first; Enter → `[plan](docs/plan.md)`; ⌘-click it opens the tab.
+- [x] `[[` then Esc → `[[]]` stays as text.
+- [x] `[[https://example.com` → first row «Link to https://example.com»; Enter → `[https://example.com](https://example.com)`.
+- [ ] «Choose file…» → the system dialog; pick `/tmp/fl/docs/plan.md` → `[plan](docs/plan.md)`; cancel → `[[…]]` unchanged. — *not driven live (an agent must not block on a native dialog): the option is there; insert, cancel and the `/tmp` → `/private/tmp` spelling are unit-tested.*
+- [x] `/link` at line start → `[[]]` and the popup.
+- [x] Inside a fenced code block and inside `` `inline code` `` typing `[[` opens nothing; in a `.py` tab nothing.
+- [x] An untitled tab: a pick writes an absolute path.
+- [x] Drop 6 000 empty `.md` files into `/tmp/fl/many/` (`for i in $(seq 6000); do : > /tmp/fl/many/f$i.md; done`), wait 30 s (cache), `[[` → the Project header reads «Project — not all files listed» and the popup appears without a visible stall.
+- [x] `couplet agent | grep "relative markdown link"` (with the dev binary: `<target>/debug/md-mini ai agent` — the bare binary has no `agent` verb and opens a file named `agent`) prints the new line.
 
-- [ ] **Step 4: Commit any fixes**
+- [x] **Step 4: Commit any fixes**
 
 If a live check needed a fix, commit it with explicit paths (`fix(links): …` + the `Co-Authored-By` line). Otherwise nothing to commit.
