@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(() => Promise.resolve(null)) }));
 
@@ -19,7 +21,13 @@ describe('links ipc', () => {
     expect(invoke).toHaveBeenCalledWith('reveal_in_finder', { path: '/a.png' });
   });
 
-  it('mirrors the Rust batch limit', () => {
-    expect(PATH_KINDS_MAX).toBe(256);
+  it('mirrors the Rust batch limit (MAX_PATH_KINDS in links.rs)', () => {
+    // Read from the Rust source, like native-menu-accelerators.test.ts reads
+    // menu.rs: a limit changed on one side only fails here, not at runtime
+    // as a refused batch and links that never get their missing style.
+    const LINKS_RS = fileURLToPath(new URL('../../../src-tauri/src/links.rs', import.meta.url));
+    const match = /pub const MAX_PATH_KINDS: usize = (\d+);/.exec(readFileSync(LINKS_RS, 'utf8'));
+    expect(match, 'MAX_PATH_KINDS not found in links.rs').not.toBeNull();
+    expect(PATH_KINDS_MAX).toBe(Number(match![1]));
   });
 });
