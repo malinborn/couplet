@@ -87,6 +87,11 @@
   import { createStashMarks } from './lib/stash/stash-marks.svelte';
   import { stashKeysHandler } from './lib/stash/stash-keys';
   import type { StashControl } from './lib/editor/slash-stash';
+  import type { LinkControl } from './lib/editor/links/open-link';
+  import { navigateToHeading } from './lib/editor/heading-slugs';
+  import { pathKinds, revealInFinder } from './lib/links/ipc';
+  import { opensAsDocument } from './lib/links/link-kind';
+  import { basename } from './lib/links/link-target';
   import { shouldShowHint, nextCheckDelay } from './lib/ai-hint';
   import { previewCompartment, lineGlowCompartment, listLayoutCompartment } from './lib/editor/setup';
   import { listLayoutExtension } from './lib/editor/preview/explicit-lists';
@@ -122,7 +127,7 @@
   import { closeSearchPanel, findNext, findPrevious } from '@codemirror/search';
   import { findStepAllowed, openFind } from './lib/editor/search/panel';
   import { hideHoverMenu } from './lib/editor/hover-menu';
-  import { createTabController, type DiskOptions, type MoveDone, type OpenAnswer, type Stranded } from './lib/tabs/controller';
+  import { createTabController, type DiskOptions, type MoveDone, type OpenAnswer, type OpenPathResult, type Stranded } from './lib/tabs/controller';
   import { AGENT_ERRORS, createAgentCommands, type AgentResponse, type AskResult } from './lib/tabs/agent-commands';
   import { createTypingTracker } from './lib/tabs/typing';
   import { emptyTabList, type TabListState, type TabMeta } from './lib/tabs/tab-model';
@@ -959,7 +964,7 @@
     releaseTabSources = resolve;
   });
 
-  function openTab(path: string, position?: { cursor: number; topLine: number }): Promise<void> {
+  function openTab(path: string, position?: { cursor: number; topLine: number }): Promise<OpenPathResult | undefined> {
     return tabSourcesReady.then(() => tabs.openPath(path, position));
   }
 
@@ -1100,7 +1105,9 @@
       activate: async (tabId) => {
         await tabs.activate(tabId);
       },
-      openPath: (path, position) => tabs.openPath(path, position),
+      openPath: async (path, position) => {
+        await tabs.openPath(path, position);
+      },
       has,
       place: (path, at) => {
         const tab = tabs.findByPath(path);
@@ -2167,6 +2174,33 @@
   /** `/stash` in the slash menu. One object: the editor's completion sources are built once per state. */
   const stashControl: StashControl = { putAway: putAwayActive };
 
+  /** The home folder for `~/` links; filled once in `onMount`, `null` in the browser. */
+  let linkHome: string | null = null;
+
+  /**
+   * File links (file-links D2/D3). One object: the editor's facet holds it for
+   * every state this window shows.
+   */
+  const linkControl: LinkControl = {
+    home: () => linkHome,
+    pathKinds: (paths) => pathKinds(paths),
+    async openFile(path, fragment) {
+      const result = await openTab(path);
+      // The fragment applies only when the file is now this window's active
+      // tab; a file shown in another window loses it (spec D2).
+      if (!fragment || !result || (result.kind !== 'opened' && result.kind !== 'shown')) return;
+      const view = editorHandle?.view;
+      if (view) navigateToHeading(view, fragment);
+    },
+    reveal: (path) =>
+      revealInFinder(path).catch((err: unknown) => {
+        reportOpenError(path, err);
+      }),
+    missing: (path) =>
+      toasts.push({ kind: 'link-missing', path, fileName: basename(path), canCreate: opensAsDocument(path) }),
+    unresolvable: (url) => toasts.push({ kind: 'link-missing', path: null, fileName: url, canCreate: false }),
+  };
+
   function liveAskShown(): boolean {
     const view = editorHandle?.view;
     return view ? activeAskIds(view.state).length > 0 : false;
@@ -2786,6 +2820,14 @@
     window.addEventListener('keydown', onWindowCtrlTab, true);
     window.addEventListener('keydown', onWindowStashKeys, true);
     window.addEventListener('focus', handleWindowFocus);
+    // `~/` in a link (agents write these): the home folder, asked once. Stays
+    // `null` in the browser dev build, where such links are unresolvable.
+    import('@tauri-apps/api/path')
+      .then(({ homeDir }) => homeDir())
+      .then((home) => {
+        linkHome = home.replace(/\/+$/, '');
+      })
+      .catch(() => {});
 
     // Start recovery interval
     startRecoveryInterval();
@@ -3135,6 +3177,7 @@
     onJsonOfferWithdrawn={() => toasts.dismissKind('json-offer')}
     {themeControl}
     {stashControl}
+    {linkControl}
   />
 </main>
 
@@ -3192,6 +3235,7 @@
   store={toasts}
   right={stashStore.state.open ? stashStore.width + 16 : undefined}
   onFormatJson={() => formatJson(true)}
+  onCreateLink={(path) => void openTab(path)}
   onRevealWindow={(label) => {
     invoke('reveal_other_window', { label }).catch(logTabIpc('reveal_other_window'));
   }}

@@ -3073,3 +3073,11 @@ describe('dropPath (stash stage 06: a note is being deleted)', () => {
     expect(h.active()).toBe('a');
   });
 });
+
+describe('openPath result (file links)', () => {
+  it('ResolvesWithWhereTheFileEndedUp', async () => {
+    const h = await started({ '/a.md': 'AAAA', '/b.md': 'BBBB' }, [fileTab('a', '/a.md')]);
+    expect(await h.controller.openPath('/b.md')).toEqual({ kind: 'opened', tabId: 't1' });
+    expect(await h.controller.openPath('/b.md')).toEqual({ kind: 'shown', tabId: 't1' });
+  });
+});
