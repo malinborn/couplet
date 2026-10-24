@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { LinkCandidates, LinkProject, PathKind } from './types';
+import type { LinkCandidates, LinkProject, Modifiers, PathKind } from './types';
 
 export { PATH_KINDS_MAX } from './types';
 
@@ -21,4 +21,9 @@ export function linkCandidates(docPath: string | null): Promise<LinkCandidates> 
 /** The project root and normalized document path a new link is relative to. */
 export function linkProject(docPath: string | null): Promise<LinkProject> {
   return invoke<LinkProject>('link_project', { docPath });
+}
+
+/** The modifier keys held right now — asked at a Finder drop, which brings no key events. */
+export function currentModifiers(): Promise<Modifiers> {
+  return invoke<Modifiers>('current_modifiers');
 }

@@ -35,3 +35,11 @@ export interface LinkProject {
   projectRoot: string | null;
   docPath: string | null;
 }
+
+/** `Modifiers` in `src-tauri/src/reveal.rs`: the keys held at the moment of asking. */
+export interface Modifiers {
+  alt: boolean;
+  shift: boolean;
+  ctrl: boolean;
+  meta: boolean;
+}

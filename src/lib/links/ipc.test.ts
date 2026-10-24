@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(() => Promise.resolve(null)) }));
 
 import { invoke } from '@tauri-apps/api/core';
-import { PATH_KINDS_MAX, linkCandidates, linkProject, pathKinds, revealInFinder } from './ipc';
+import { PATH_KINDS_MAX, currentModifiers, linkCandidates, linkProject, pathKinds, revealInFinder } from './ipc';
 
 beforeEach(() => vi.mocked(invoke).mockClear());
 
@@ -41,5 +41,13 @@ describe('picker ipc', () => {
   it('linkProject passes null for an untitled document', async () => {
     await linkProject(null);
     expect(invoke).toHaveBeenCalledWith('link_project', { docPath: null });
+  });
+});
+
+describe('modifiers ipc', () => {
+  it('currentModifiers takes no arguments', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ alt: true, shift: false, ctrl: false, meta: false });
+    await expect(currentModifiers()).resolves.toEqual({ alt: true, shift: false, ctrl: false, meta: false });
+    expect(invoke).toHaveBeenCalledWith('current_modifiers');
   });
 });

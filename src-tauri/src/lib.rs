@@ -176,6 +176,7 @@ pub fn run() {
             links::link_candidates,
             links::link_project,
             reveal::reveal_in_finder,
+            reveal::current_modifiers,
             commands::comment_threads,
             commands::comment_reply,
             commands::comment_resolve,
