@@ -73,6 +73,37 @@ describe('evaluate', () => {
     expect(result?.style).toEqual({ decimalComma: true, thousandsSpace: true });
   });
 
+  it('percent is calculator-relative only as the direct right operand of + / -', () => {
+    expect(valueOf('100 + (10%)')).toBeCloseTo(100.1, 9);
+    expect(valueOf('200 + 10% * 2')).toBeCloseTo(200.2, 9);
+  });
+
+  it('reads a no-break space and a narrow no-break space as thousands separators', () => {
+    const nbsp = evaluate('1 500 + 1');
+    expect(nbsp?.value).toBe(1501);
+    expect(nbsp?.style).toEqual({ decimalComma: false, thousandsSpace: true });
+    const narrow = evaluate('1 500 000 / 12');
+    expect(narrow?.value).toBe(125000);
+    expect(narrow?.style.thousandsSpace).toBe(true);
+    expect(evaluate('1 5000 + 1')).toBeNull();
+  });
+
+  it('groups thousands only after a leading group of 1–3 digits', () => {
+    expect(evaluate('12345 678 + 1')).toBeNull();
+    expect(evaluate('1234 567 + 1')).toBeNull();
+    expect(valueOf('1 500 + 1')).toBe(1501);
+    expect(valueOf('123 456 + 1')).toBe(123457);
+  });
+
+  it('refuses a number literal with more than 15 significant digits', () => {
+    expect(evaluate('9007199254740993 - 9007199254740992')).toBeNull();
+    expect(evaluate('1.0000000000000001 + 1')).toBeNull();
+    expect(valueOf('123456789012345 + 1')).toBe(123456789012346);
+    // Leading zeros and trailing fraction zeros are not significant.
+    expect(valueOf('000000000000000001 + 1')).toBe(2);
+    expect(valueOf('1.500000000000000000 + 1')).toBe(2.5);
+  });
+
   it('plain input has a plain style', () => {
     expect(evaluate('2 + 2')?.style).toEqual({ decimalComma: false, thousandsSpace: false });
   });

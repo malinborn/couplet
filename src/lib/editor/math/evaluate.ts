@@ -10,6 +10,12 @@
  *   power   := postfix ('^' unary)?      right-associative; -2^2 = -4
  *   postfix := primary '%'?
  *   primary := number | '(' expr ')'
+ *   number  := d{1,3} (SP ddd)* ([.,] d+)?  |  d+ ([.,] d+)?
+ *
+ * SP is a space, a no-break space (U+00A0) or a narrow no-break space
+ * (U+202F); all three are also ignored between tokens. A literal with more
+ * than `MAX_SIGNIFICANT_DIGITS` significant digits is refused: a double
+ * cannot hold it exactly, and the answer would be silently wrong.
  */
 
 /** How the input wrote its numbers — the answer is written the same way. */
@@ -26,6 +32,8 @@ export interface MathResult {
 export const MAX_EXPRESSION_LENGTH = 200;
 /** Recursion through `unary`: one unit per unary minus and per paren level. */
 export const MAX_DEPTH = 32;
+/** Per number literal; leading zeros and trailing fraction zeros do not count. */
+export const MAX_SIGNIFICANT_DIGITS = 15;
 
 type Op = '+' | '-' | '*' | '/' | '^' | '%' | '(' | ')';
 type Token = { kind: 'num'; value: number } | { kind: 'op'; op: Op };
@@ -43,37 +51,46 @@ function isDigit(ch: string | undefined): boolean {
   return ch !== undefined && ch >= '0' && ch <= '9';
 }
 
+/** A space, a no-break space or a narrow no-break space. */
+export function isSpace(ch: string | undefined): boolean {
+  return ch === ' ' || ch === ' ' || ch === ' ';
+}
+
 /**
- * A number from `start`: digits, then groups of " ddd" (a space followed by
- * exactly three digits and no fourth), then an optional `.`/`,` fraction.
+ * A number from `start`: digits, then — only after a leading group of one to
+ * three digits — groups of SP + exactly three digits and no fourth, then an
+ * optional `.`/`,` fraction. `null` when it has too many significant digits.
  */
 function readNumber(
   src: string,
   start: number,
   style: NumberStyle
-): { value: number; end: number } {
+): { value: number; end: number } | null {
   let i = start;
-  let digits = '';
-  while (isDigit(src[i])) digits += src[i++];
-  while (
-    src[i] === ' ' &&
-    isDigit(src[i + 1]) &&
-    isDigit(src[i + 2]) &&
-    isDigit(src[i + 3]) &&
-    !isDigit(src[i + 4])
-  ) {
-    digits += src.slice(i + 1, i + 4);
-    style.thousandsSpace = true;
-    i += 4;
+  let integer = '';
+  while (isDigit(src[i])) integer += src[i++];
+  if (integer.length <= 3) {
+    while (
+      isSpace(src[i]) &&
+      isDigit(src[i + 1]) &&
+      isDigit(src[i + 2]) &&
+      isDigit(src[i + 3]) &&
+      !isDigit(src[i + 4])
+    ) {
+      integer += src.slice(i + 1, i + 4);
+      style.thousandsSpace = true;
+      i += 4;
+    }
   }
+  let fraction = '';
   if ((src[i] === '.' || src[i] === ',') && isDigit(src[i + 1])) {
     if (src[i] === ',') style.decimalComma = true;
     i++;
-    let fraction = '';
     while (isDigit(src[i])) fraction += src[i++];
-    digits += '.' + fraction;
   }
-  return { value: Number(digits), end: i };
+  const significant = (integer + fraction.replace(/0+$/, '')).replace(/^0+/, '');
+  if (significant.length > MAX_SIGNIFICANT_DIGITS) return null;
+  return { value: Number(fraction ? integer + '.' + fraction : integer), end: i };
 }
 
 function tokenize(src: string, style: NumberStyle): Token[] | null {
@@ -81,13 +98,14 @@ function tokenize(src: string, style: NumberStyle): Token[] | null {
   let i = 0;
   while (i < src.length) {
     const ch = SYNONYMS[src[i]] ?? src[i];
-    if (ch === ' ') {
+    if (isSpace(ch)) {
       i++;
     } else if (OPERATORS.includes(ch)) {
       tokens.push({ kind: 'op', op: ch as Op });
       i++;
     } else if (isDigit(ch)) {
       const read = readNumber(src, i, style);
+      if (!read) return null;
       tokens.push({ kind: 'num', value: read.value });
       i = read.end;
     } else {
