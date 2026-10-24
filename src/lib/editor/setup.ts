@@ -29,6 +29,7 @@ import { aiHighlightField, aiHighlightKeymap } from './ai-highlight';
 import { aiAskField } from './ai-ask';
 import { aiCommentAttention, aiCommentField } from './ai-comment';
 import { jsonFormatKeymap, jsonOfferField } from './json-paste';
+import { mathGhost } from './math/ghost';
 import { findPanel } from './search/panel';
 import { searchSpotlight } from './search/spotlight';
 import { readOnlyCompartment } from './read-only';
@@ -94,6 +95,8 @@ export function createExtensions(deps: EditorDeps = {}): Extension[] {
     aiCommentAttention,
     jsonOfferField,
     jsonFormatKeymap,
+    // `338 * 1.3 =` → grey `439.4` at the caret, Tab writes it (math/ghost.ts).
+    mathGhost(),
     lineGlowCompartment.of([]),
     readOnlyCompartment.of([]),
     drawSelection(),

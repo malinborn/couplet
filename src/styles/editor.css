@@ -2320,3 +2320,11 @@
     background-image: linear-gradient(var(--ai-edit-shimmer), var(--ai-edit-shimmer));
   }
 }
+
+/* Inline arithmetic: the answer offered after `=` (editor/math/ghost.ts).
+   An existing token, so every theme already has it. */
+.cm-math-ghost {
+  color: var(--text-muted);
+  pointer-events: none;
+  user-select: none;
+}
