@@ -16,7 +16,7 @@ import {
   decorateLink,
 } from './inline';
 import { decorateListItem, decorateBlockquote, insideBlockquote, listMarkColumns } from './lists';
-import { isExplicitLists, layoutExplicitList, listStyleFacet } from './explicit-lists';
+import { layoutExplicitList, listLayoutFacet, ownsListGeometry } from './explicit-lists';
 import { decorateHorizontalRule, decorateFencedCode } from './blocks';
 import { decorateTable, noteTableUpdate, forgetTableUpdates } from './tables';
 import { decorateMermaidBlock, mermaidRendered } from './mermaid';
@@ -89,7 +89,8 @@ export const previewRebuild = Facet.define<Partial<PreviewRebuildConfig>, Previe
 
 export function buildDecorations(view: EditorView): DecorationSet {
   const builder = new SortingSink();
-  const explicitLists = isExplicitLists(view.state);
+  const listLayout = view.state.facet(listLayoutFacet);
+  const explicitLists = ownsListGeometry(listLayout);
   const doc = view.state.doc;
 
   syntaxTree(view.state).iterate({
@@ -163,7 +164,7 @@ export function buildDecorations(view: EditorView): DecorationSet {
             node.node.parent?.name !== 'ListItem' &&
             !insideBlockquote(node.node)
           ) {
-            layoutExplicitList(doc, node.node, (item) => listMarkColumns(item, doc), builder);
+            layoutExplicitList(doc, node.node, listLayout, (item) => listMarkColumns(item, doc), builder);
           }
           break;
         case 'ListItem':
@@ -217,7 +218,7 @@ export const livePreviewPlugin = ViewPlugin.fromClass(
       // switch appears to do nothing until the next keystroke.
       const flavourChanged =
         update.state.facet(flavourFacet) !== update.startState.facet(flavourFacet) ||
-        update.state.facet(listStyleFacet) !== update.startState.facet(listStyleFacet);
+        update.state.facet(listLayoutFacet) !== update.startState.facet(listLayoutFacet);
       // Same reason as the flavour: a compartment reconfigure that only swaps
       // the table config changes neither document nor selection.
       const tableConfigChanged =

@@ -232,24 +232,53 @@
   font-size: 0;
 }
 
-/* Explicit lists (View → Explicit Lists, `preview/explicit-lists.ts`).
+/* View → Lists (`preview/explicit-lists.ts`).
  *
- * The geometry of every list line is an inline style the layout pass writes —
- * padding to the item's text column, a negative `text-indent` on the marker
- * line so a wrapped line hangs under the text, and one background strip per
- * guide. Only the knobs live here. `text-indent` is inherited, so every inline
- * block on such a line (the marker box, the bullet, widgets) resets it. */
-.cm-content {
+ * With either switch on, the geometry of every list line is an inline style
+ * the layout pass writes — padding to the item's text column, a negative
+ * `text-indent` on the marker line under `strict` so a wrapped line hangs
+ * under the text, and one background strip per guide. Only the knobs live
+ * here, on `.cm-editor` because that is where `listLayoutExtension` puts its
+ * classes. `text-indent` is inherited, so every inline block on such a line
+ * (the marker box, the bullet, widgets) resets it.
+ *
+ * Density is three looks, not a slider: the marker column and the gap after
+ * it (the layout pass), and the classic step (`--list-indent-step`, which both
+ * the classic depth rules and the non-strict pass use). `standard`'s step is
+ * the classic 1.7em, so the default layout is exactly what it was. */
+.cm-editor {
   --xl-base: 6px;
-  --xl-gap: 0.45em;
-  --xl-bullet-w: 1em;
+  --xl-gap: 0.3em;
+  --xl-bullet-w: 1.15em;
   --xl-task-w: 16px;
   --xl-dot-w: 0.45ch;
   --xl-guide-w: 1px;
   --xl-guide-start: 1lh;
-  --xl-guide-alpha: 40%;
-  --xl-guide-color: color-mix(in oklab, var(--color-list-marker) var(--xl-guide-alpha), transparent);
+  --xl-guide-color: color-mix(in oklab, var(--color-list-marker) 40%, transparent);
   --xl-guide: linear-gradient(var(--xl-guide-color), var(--xl-guide-color));
+}
+.cm-editor.cm-list-compact {
+  --xl-gap: 0.2em;
+  --xl-bullet-w: 0.85em;
+}
+.cm-editor.cm-list-sparse {
+  --xl-gap: 0.5em;
+  --xl-bullet-w: 1.5em;
+}
+.cm-list-compact .cm-content {
+  --list-indent-step: 1.3em;
+}
+.cm-list-sparse .cm-content {
+  --list-indent-step: 2.2em;
+}
+/* A line restarts its background, so a dash or a dot can be cut at a line
+ * boundary — at 1px nobody sees it. */
+.cm-editor.cm-xl-guide-dashed {
+  --xl-guide: repeating-linear-gradient(to bottom, var(--xl-guide-color) 0 4px, transparent 4px 7px);
+}
+.cm-editor.cm-xl-guide-dotted {
+  --xl-guide-w: 1.5px;
+  --xl-guide: repeating-linear-gradient(to bottom, var(--xl-guide-color) 0 1.5px, transparent 1.5px 4.5px);
 }
 .cm-line.cm-md-xl-line {
   background-repeat: no-repeat;

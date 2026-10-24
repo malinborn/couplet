@@ -116,6 +116,62 @@ pub struct ViewToggleItems {
     pub dates_enabled: Toggle,
 }
 
+/// View → Lists: two presets, two switches, the guide style, the density.
+///
+/// The frontend owns the value (`localStorage`, `listLayout` in
+/// `explicit-lists.ts`) and reports it with `sync_list_menu` at start and after
+/// every click. The switches keep a `Toggle` so their events carry a value
+/// (`toggle_value` in `lib.rs`); a preset sets both switches at once, so its
+/// click updates them here too (`note_preset`) before any window has synced.
+pub struct ListMenuItems {
+    pub preset_standard: CheckMenuItem<Wry>,
+    pub preset_explicit: CheckMenuItem<Wry>,
+    pub guides: CheckMenuItem<Wry>,
+    pub guides_on: Toggle,
+    pub strict: CheckMenuItem<Wry>,
+    pub strict_on: Toggle,
+    pub styles: Vec<(&'static str, CheckMenuItem<Wry>)>,
+    pub densities: Vec<(&'static str, CheckMenuItem<Wry>)>,
+}
+
+/// `(standard, explicit)` preset checkmarks: a preset is checked only while
+/// both switches match it, so a mixed layout checks neither.
+pub fn list_preset_marks(guides: bool, strict: bool) -> (bool, bool) {
+    (!guides && !strict, guides && strict)
+}
+
+impl ListMenuItems {
+    pub fn sync(&self, guides: bool, strict: bool, style: &str, density: &str) {
+        let (standard, explicit) = list_preset_marks(guides, strict);
+        let _ = self.preset_standard.set_checked(standard);
+        let _ = self.preset_explicit.set_checked(explicit);
+        let _ = self.guides.set_checked(guides);
+        let _ = self.strict.set_checked(strict);
+        self.guides_on.set(guides);
+        self.strict_on.set(strict);
+        // The style means nothing without the lines: shown, but greyed out.
+        for (name, item) in &self.styles {
+            let _ = item.set_checked(*name == style);
+            let _ = item.set_enabled(guides);
+        }
+        for (name, item) in &self.densities {
+            let _ = item.set_checked(*name == density);
+        }
+    }
+
+    /// A preset click sets both switches, so the next switch click flips from
+    /// the right value even if no window has synced yet.
+    pub fn note_preset(&self, id: &str) {
+        let on = match id {
+            "list_preset_explicit" => true,
+            "list_preset_standard" => false,
+            _ => return,
+        };
+        self.guides_on.set(on);
+        self.strict_on.set(on);
+    }
+}
+
 /// Live handles to the two "Reopen…" items, so they follow the closed stack
 /// and the pending restore — macOS disables an accelerator along with its
 /// item, so without this Cmd+Shift+T would stay dead for the rest of the
@@ -186,6 +242,18 @@ impl ViewToggleItems {
     }
 }
 
+/// The menu and the live handles `lib.rs` manages as state, one per group
+/// whose marks the frontend syncs.
+pub struct BuiltMenu {
+    pub menu: tauri::menu::Menu<Wry>,
+    pub theme: ThemeMenuItems,
+    pub engine: EngineMenuItems,
+    pub view_toggles: ViewToggleItems,
+    pub session: SessionMenuItems,
+    pub transient: TransientMenuItems,
+    pub lists: ListMenuItems,
+}
+
 /// `explicit_language` is the stored preference (`preferences::read_language`),
 /// `None` meaning "follow system" — it decides which item in the Language
 /// radio group starts checked. There is no runtime `sync` for it like Theme
@@ -196,14 +264,7 @@ pub fn build_menu(
     app: &AppHandle,
     pending_session_count: usize,
     explicit_language: Option<&str>,
-) -> tauri::Result<(
-    tauri::menu::Menu<Wry>,
-    ThemeMenuItems,
-    EngineMenuItems,
-    ViewToggleItems,
-    SessionMenuItems,
-    TransientMenuItems,
-)> {
+) -> tauri::Result<BuiltMenu> {
     let (reopen_enabled, restore_enabled) = session_items_enabled(0, pending_session_count);
     let reopen_closed_item = MenuItemBuilder::with_id("reopen_closed", t("menu.file.reopen_closed"))
         .accelerator("CmdOrCtrl+Shift+T")
@@ -336,6 +397,45 @@ pub fn build_menu(
     let toggle_ocd_alignment =
         CheckMenuItemBuilder::with_id("toggle_ocd_alignment", t("menu.view.ocd_alignment")).build(app)?;
 
+    // View → Lists. Presets first — what most people want is one click — then
+    // the two switches the presets set, then the two looks they leave alone.
+    // Every item starts unchecked: the frontend's start-up `sync_list_menu`
+    // marks the stored layout.
+    let list_check = |id: &str, key: &str| CheckMenuItemBuilder::with_id(id, t(key)).build(app);
+    let list_items = ListMenuItems {
+        preset_standard: list_check("list_preset_standard", "menu.view.lists_standard")?,
+        preset_explicit: list_check("list_preset_explicit", "menu.view.lists_explicit")?,
+        guides: list_check("toggle_list_guides", "menu.view.lists_guides")?,
+        guides_on: Toggle::default(),
+        strict: list_check("toggle_list_strict", "menu.view.lists_strict")?,
+        strict_on: Toggle::default(),
+        styles: vec![
+            ("solid", list_check("list_guide_solid", "menu.view.lists_guide_solid")?),
+            ("dashed", list_check("list_guide_dashed", "menu.view.lists_guide_dashed")?),
+            ("dotted", list_check("list_guide_dotted", "menu.view.lists_guide_dotted")?),
+        ],
+        densities: vec![
+            ("compact", list_check("list_density_compact", "menu.view.lists_compact")?),
+            ("standard", list_check("list_density_standard", "menu.view.lists_regular")?),
+            ("sparse", list_check("list_density_sparse", "menu.view.lists_sparse")?),
+        ],
+    };
+    let mut lists_submenu = SubmenuBuilder::new(app, t("menu.view.lists_title"))
+        .item(&list_items.preset_standard)
+        .item(&list_items.preset_explicit)
+        .separator()
+        .item(&list_items.guides)
+        .item(&list_items.strict)
+        .separator();
+    for (_, item) in &list_items.styles {
+        lists_submenu = lists_submenu.item(item);
+    }
+    lists_submenu = lists_submenu.separator();
+    for (_, item) in &list_items.densities {
+        lists_submenu = lists_submenu.item(item);
+    }
+    let lists_submenu = lists_submenu.build()?;
+
     let tabs_compact =
         CheckMenuItemBuilder::with_id("toggle_tabs_compact", t("menu.view.tabs_compact")).build(app)?;
     // Checked from the start: the frontend's default is on, and its start-up
@@ -421,6 +521,7 @@ pub fn build_menu(
         .separator()
         .item(&CheckMenuItemBuilder::with_id("toggle_line_glow", t("menu.view.line_glow")).build(app)?)
         .item(&toggle_ocd_alignment)
+        .item(&lists_submenu)
         .separator()
         .item(&tabs_submenu)
         .build()?;
@@ -639,7 +740,15 @@ pub fn build_menu(
         restore_session: restore_session_item,
     };
     let transient_items = TransientMenuItems { keep: transient_keep, close: transient_close };
-    Ok((menu, theme_items, engine_items, view_toggles, session_items, transient_items))
+    Ok(BuiltMenu {
+        menu,
+        theme: theme_items,
+        engine: engine_items,
+        view_toggles,
+        session: session_items,
+        transient: transient_items,
+        lists: list_items,
+    })
 }
 
 #[cfg(test)]
@@ -666,6 +775,14 @@ mod tests {
         assert_eq!(restore_session_text_for("en", 0), "Reopen Windows from Last Session");
         assert_eq!(restore_session_text_for("ru", 2), "Открыть 2 окна прошлой сессии");
         assert_eq!(restore_session_text_for("ru", 0), "Открыть окна прошлой сессии");
+    }
+
+    #[test]
+    fn a_list_preset_is_checked_only_while_both_switches_match_it() {
+        assert_eq!(list_preset_marks(false, false), (true, false));
+        assert_eq!(list_preset_marks(true, true), (false, true));
+        assert_eq!(list_preset_marks(true, false), (false, false), "mixed: neither");
+        assert_eq!(list_preset_marks(false, true), (false, false), "mixed: neither");
     }
 
     #[test]

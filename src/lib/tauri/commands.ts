@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import type { ConcreteTheme, ThemeFamily, ThemeHalf } from '../theme-resolve';
 import type { EditorEngine } from '../stores.svelte';
+import type { ListLayout } from '../editor/preview/explicit-lists';
 import type { CommentThread } from '../comment-format';
 import type { InboxItem } from '../tabs/agent-inbox';
 import type { DiskDocument, LineEnding } from '../line-endings';
@@ -99,6 +100,16 @@ export function syncEngineMenu(engine: EditorEngine): void {
 /** Sets the "OCD Alignment" checkbox; harmless no-op outside Tauri. */
 export function syncOcdAlignmentMenu(enabled: boolean): void {
   invoke('sync_ocd_alignment_menu', { enabled }).catch(() => {});
+}
+
+/** Sets the View → Lists checkmarks; harmless no-op outside Tauri. */
+export function syncListMenu(layout: ListLayout): void {
+  invoke('sync_list_menu', {
+    guides: layout.guides,
+    strict: layout.strict,
+    guideStyle: layout.guideStyle,
+    density: layout.density,
+  }).catch(() => {});
 }
 
 /** Sets View → Tabs → Compact; harmless no-op outside Tauri. */

@@ -106,3 +106,40 @@ body {
 .pg-editor .cm-editor {
   height: auto;
 }
+.pg-menu {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-base);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 5px;
+}
+.pg-menu button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  text-align: left;
+  padding: 4px 8px 4px 24px;
+  position: relative;
+  cursor: pointer;
+}
+.pg-menu button:hover:not(:disabled) {
+  background: var(--color-link);
+  color: var(--bg-base);
+}
+.pg-menu button.on::before {
+  content: '✓';
+  position: absolute;
+  left: 8px;
+}
+.pg-menu button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.pg-menu hr {
+  border: 0;
+  border-top: 1px solid var(--color-border);
+  margin: 4px 6px;
+}

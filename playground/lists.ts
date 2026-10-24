@@ -1,13 +1,19 @@
-// Playground for View → Explicit Lists. A real app editor (createExtensions,
-// the live-preview plugin, both engines), with the layout knobs exposed as
-// CSS variables so they can be tuned by hand before anything is decided.
+// Playground for View → Lists. A real app editor (createExtensions, the
+// live-preview plugin, both engines) driven by the same menu ids the native
+// menu sends, through the same `listLayoutFromMenu` the app uses.
 import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
-import { createExtensions, listStyleCompartment, previewCompartment } from '../src/lib/editor/setup';
+import { createExtensions, listLayoutCompartment, previewCompartment } from '../src/lib/editor/setup';
 import { livePreviewPlugin } from '../src/lib/editor/preview/plugin';
 import { flavourFacet, LIVE_PREVIEW, LIVE_RENDER } from '../src/lib/editor/preview/flavour';
 import { liveRenderExtensions } from '../src/lib/editor/live-render';
-import { listStyleExtension, type ListStyle } from '../src/lib/editor/preview/explicit-lists';
+import {
+  listLayoutExtension,
+  listLayoutFromMenu,
+  listPresetOf,
+  normalizeListLayout,
+  type ListLayout,
+} from '../src/lib/editor/preview/explicit-lists';
 
 import '../src/lib/theme/dark.css';
 import '../src/lib/theme/light.css';
@@ -37,6 +43,7 @@ const SAMPLE = `# План переезда на новый кластер
         - временно, до конца миграции
         - потом снести и проверить, что ничего не отвалилось
     - Обновить правила firewall
+      - один ребёнок — одна строка под маркером, линии нет
   - Хранилище
     - Снапшоты PostgreSQL
     - Перенос бакетов
@@ -80,37 +87,26 @@ const THEMES = [
   'phosphor-light', 'phosphor-dark',
 ];
 
-const GUIDES: Record<string, string> = {
-  solid: 'linear-gradient(var(--xl-guide-color), var(--xl-guide-color))',
-  dashed:
-    'repeating-linear-gradient(to bottom, var(--xl-guide-color) 0 4px, transparent 4px 7px)',
-  dotted:
-    'repeating-linear-gradient(to bottom, var(--xl-guide-color) 0 var(--xl-guide-w), transparent var(--xl-guide-w) calc(var(--xl-guide-w) * 3.5))',
-  none: 'none',
-};
-
-const STORE = 'pg-explicit-lists';
+const STORE = 'pg-lists';
 interface Settings {
-  mode: ListStyle;
+  layout: ListLayout;
   engine: 'live-preview' | 'live-render';
   theme: string;
-  guide: string;
   width: number;
-  vars: Record<string, string>;
 }
-const defaults: Settings = {
-  mode: 'explicit',
-  engine: 'live-render',
-  theme: 'light',
-  guide: 'solid',
-  width: 640,
-  vars: {},
-};
 function load(): Settings {
+  const fallback: Settings = {
+    layout: normalizeListLayout({ guides: true, strict: true }),
+    engine: 'live-render',
+    theme: 'light',
+    width: 640,
+  };
   try {
-    return { ...defaults, ...JSON.parse(localStorage.getItem(STORE) ?? '{}') };
+    const raw = JSON.parse(localStorage.getItem(STORE) ?? 'null') as Partial<Settings> | null;
+    if (!raw) return fallback;
+    return { ...fallback, ...raw, layout: normalizeListLayout(raw.layout) };
   } catch {
-    return { ...defaults };
+    return fallback;
   }
 }
 const settings = load();
@@ -149,7 +145,7 @@ function applyEditor(): void {
   view.dispatch({
     effects: [
       previewCompartment.reconfigure(previewFor(settings.engine)),
-      listStyleCompartment.reconfigure(listStyleExtension(settings.mode)),
+      listLayoutCompartment.reconfigure(listLayoutExtension(settings.layout)),
     ],
   });
 }
@@ -157,15 +153,45 @@ function applyEditor(): void {
 function applyLook(): void {
   document.documentElement.dataset.theme = settings.theme;
   host.style.setProperty('--pg-width', `${settings.width}px`);
-  const content = view.contentDOM;
-  content.style.setProperty('--xl-guide', GUIDES[settings.guide] ?? GUIDES.solid);
-  for (const [k, v] of Object.entries(settings.vars)) content.style.setProperty(k, v);
   view.requestMeasure();
 }
 
+// The menu: what `sync_list_menu` would check, and the ids it would send.
+const menu = document.getElementById('menu')!;
+function syncMenu(): void {
+  const l = settings.layout;
+  const preset = listPresetOf(l);
+  for (const b of menu.querySelectorAll<HTMLButtonElement>('button')) {
+    const id = b.dataset.id!;
+    const on =
+      id === `list_preset_${preset}` ||
+      (id === 'toggle_list_guides' && l.guides) ||
+      (id === 'toggle_list_strict' && l.strict) ||
+      id === `list_guide_${l.guideStyle}` ||
+      id === `list_density_${l.density}`;
+    b.classList.toggle('on', on);
+    b.disabled = 'needsGuides' in b.dataset && !l.guides;
+  }
+}
+menu.addEventListener('click', (e) => {
+  const b = (e.target as HTMLElement).closest('button');
+  if (!b?.dataset.id) return;
+  // `toggle_value` in lib.rs: a switch carries its next value.
+  let id = b.dataset.id;
+  if (id === 'toggle_list_guides') id += settings.layout.guides ? ':off' : ':on';
+  if (id === 'toggle_list_strict') id += settings.layout.strict ? ':off' : ':on';
+  const next = listLayoutFromMenu(settings.layout, id);
+  if (!next) return;
+  settings.layout = next;
+  save();
+  syncMenu();
+  applyEditor();
+});
+syncMenu();
+
 // Segmented buttons
 for (const seg of document.querySelectorAll<HTMLElement>('.pg-seg')) {
-  const key = seg.dataset.key as 'mode' | 'engine' | 'guide';
+  const key = seg.dataset.key as 'engine';
   const sync = () => {
     for (const b of seg.querySelectorAll<HTMLButtonElement>('button')) {
       b.classList.toggle('on', b.dataset.v === settings[key]);
@@ -178,8 +204,7 @@ for (const seg of document.querySelectorAll<HTMLElement>('.pg-seg')) {
     (settings as unknown as Record<string, string>)[key] = b.dataset.v;
     sync();
     save();
-    if (key === 'guide') applyLook();
-    else applyEditor();
+    applyEditor();
   });
   sync();
 }
@@ -198,16 +223,13 @@ themeSelect.addEventListener('change', () => {
 for (const input of document.querySelectorAll<HTMLInputElement>('input[type=range]')) {
   const out = input.parentElement?.querySelector('output');
   const unit = input.dataset.unit ?? '';
-  const name = input.dataset.var;
-  if (name && settings.vars[name]) input.value = String(parseFloat(settings.vars[name]));
-  if (input.id === 'width') input.value = String(settings.width);
+  input.value = String(settings.width);
   const sync = () => {
     if (out) out.textContent = `${input.value}${unit}`;
   };
   input.addEventListener('input', () => {
     sync();
-    if (name) settings.vars[name] = `${input.value}${unit}`;
-    else settings.width = Number(input.value);
+    settings.width = Number(input.value);
     save();
     applyLook();
   });
