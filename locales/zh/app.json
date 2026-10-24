@@ -31,6 +31,7 @@
   "toast.link_missing.headline": "没有文件 {fileName}",
   "toast.link_missing.create": "创建",
   "toast.link_unresolvable.headline": "请先保存文档 — {fileName} 是相对于它的路径",
+  "toast.link_no_home.headline": "无法打开 {fileName} — 尚不知道个人文件夹",
 
   "toast.reload_error.headline": "无法重新加载 {fileName}",
   "toast.reload_error.instruction": "在文件可以重新读取之前，自动保存已暂停。要保留你的版本，请按",

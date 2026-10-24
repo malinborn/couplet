@@ -93,7 +93,22 @@ describe('openLink', () => {
     const control = fakeLinkControl();
     const { view } = viewFor('', null, control);
     await openLink(view, 'plan.md');
-    expect(control.calls).toEqual(['unresolvable:plan.md']);
+    expect(control.calls).toEqual(['unresolvable:plan.md:untitled']);
+  });
+
+  it('a ~/ link before the home folder is known says so, not "save first"', async () => {
+    const control = fakeLinkControl({ home: () => null });
+    const { view } = viewFor('', '/r/a.md', control);
+    await openLink(view, '~/b.md');
+    expect(control.calls).toEqual(['unresolvable:~/b.md:no-home']);
+  });
+
+  it('an empty destination does nothing at all', async () => {
+    const control = fakeLinkControl();
+    const { view } = viewFor('', '/r/a.md', control);
+    await openLink(view, '<>');
+    expect(control.calls).toEqual([]);
+    expect(shellOpen).not.toHaveBeenCalled();
   });
 
   it('opens the document anyway when the kind cannot be asked', async () => {

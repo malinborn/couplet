@@ -30,8 +30,8 @@ export function fakeLinkControl(overrides: Partial<LinkControl> = {}): FakeLinkC
     missing: (path) => {
       calls.push(`missing:${path}`);
     },
-    unresolvable: (url) => {
-      calls.push(`unresolvable:${url}`);
+    unresolvable: (url, reason) => {
+      calls.push(`unresolvable:${url}:${reason}`);
     },
   };
   return Object.assign(base, overrides, { calls, kinds });

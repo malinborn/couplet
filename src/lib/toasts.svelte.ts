@@ -142,14 +142,19 @@ export type ToastPayload =
    */
   | { kind: 'stash-standing'; note: StandingStashNote }
   /**
-   * A file link (file-links D2) whose target is not there — or, with `path:
-   * null`, a relative link in a document that has no path yet (`fileName` is
-   * then the link as written). «Create» opens the missing path as a new
-   * unsaved tab, saved where the link points; it is never created on the
-   * click itself, so a typo in an agent's link cannot litter the disk.
-   * `canCreate` is false for a target couplet would not open as a document.
+   * A file link (file-links D2) whose target is not there. «Create» opens the
+   * missing path as a new unsaved tab, saved where the link points; it is
+   * never created on the click itself, so a typo in an agent's link cannot
+   * litter the disk. `canCreate` is false for a target couplet would not open
+   * as a document.
    */
-  | { kind: 'link-missing'; path: string | null; fileName: string; canCreate: boolean }
+  | { kind: 'link-missing'; path: string; fileName: string; canCreate: boolean }
+  /**
+   * The same toast for a link that resolves to no path at all (`fileName` is
+   * the link as written): `untitled` — relative, in a document with no path
+   * yet («save first»); `no-home` — `~/` before the home folder is known.
+   */
+  | { kind: 'link-missing'; path: null; reason: 'untitled' | 'no-home'; fileName: string; canCreate: false }
   | { kind: 'update'; latest: string; current: string; highlight?: string }
   /**
    * Answers to a manual "Check for Updates…" click (#82) — the automatic

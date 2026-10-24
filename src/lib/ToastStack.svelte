@@ -227,9 +227,11 @@
           {@const createPath = link.canCreate ? link.path : null}
           <span class="md-toast-text">
             <strong
-              >{link.path === null
-                ? t('toast.link_unresolvable.headline', { fileName: link.fileName })
-                : t('toast.link_missing.headline', { fileName: link.fileName })}</strong
+              >{link.path !== null
+                ? t('toast.link_missing.headline', { fileName: link.fileName })
+                : link.reason === 'no-home'
+                  ? t('toast.link_no_home.headline', { fileName: link.fileName })
+                  : t('toast.link_unresolvable.headline', { fileName: link.fileName })}</strong
             >
           </span>
           {#if createPath !== null}

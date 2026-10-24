@@ -10,7 +10,13 @@ export type ResolvedLink =
   | { kind: 'anchor'; slug: string }
   | { kind: 'external'; url: string }
   | { kind: 'file'; path: string; fragment: string | null }
-  | { kind: 'unresolvable'; reason: 'empty' | 'untitled' | 'no-home' };
+  | { kind: 'unresolvable'; reason: UnresolvableReason };
+
+/**
+ * Why a destination resolves to nothing: an empty one (`[x](<>)`), a relative
+ * path in a document with no path yet, or `~/` before the home folder is known.
+ */
+export type UnresolvableReason = 'empty' | 'untitled' | 'no-home';
 
 const SCHEME = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
 const FILE_SCHEME = /^file:/i;

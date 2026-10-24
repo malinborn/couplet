@@ -2,7 +2,7 @@ import { Facet, type EditorState } from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
 import { documentPathField } from '../json-fence';
 import { navigateToHeading } from '../heading-slugs';
-import { resolveLinkTarget, type ResolvedLink } from '../../links/link-target';
+import { resolveLinkTarget, type ResolvedLink, type UnresolvableReason } from '../../links/link-target';
 import { opensAsDocument } from '../../links/link-kind';
 import type { PathKind } from '../../links/types';
 import { t } from '../../i18n';
@@ -26,8 +26,12 @@ export interface LinkControl {
   reveal(path: string): Promise<void>;
   /** The link's target does not exist: the `link-missing` toast with «Create». */
   missing(path: string): void;
-  /** A relative link in a document with no path. */
-  unresolvable(url: string): void;
+  /**
+   * A link that resolves to no path: `untitled` — relative, in a document
+   * with no path yet; `no-home` — `~/` before the home folder is known. An
+   * empty destination never gets here: a click on it does nothing.
+   */
+  unresolvable(url: string, reason: Exclude<UnresolvableReason, 'empty'>): void;
 }
 
 export const linkControlFacet = Facet.define<LinkControl, LinkControl | null>({
@@ -112,7 +116,7 @@ export async function openLink(view: EditorView, url: string): Promise<void> {
     return;
   }
   if (target.kind === 'unresolvable') {
-    control.unresolvable(url);
+    if (target.reason !== 'empty') control.unresolvable(url, target.reason);
     return;
   }
   let kind: PathKind;

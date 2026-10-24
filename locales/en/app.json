@@ -31,6 +31,7 @@
   "toast.link_missing.headline": "No file {fileName}",
   "toast.link_missing.create": "Create",
   "toast.link_unresolvable.headline": "Save this document first — {fileName} is relative to it",
+  "toast.link_no_home.headline": "Can't open {fileName} — the home folder is not known yet",
 
   "toast.reload_error.headline": "Could not reload {fileName}",
   "toast.reload_error.instruction": "Autosave is paused until the file can be read again. To keep your version, press",

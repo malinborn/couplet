@@ -2198,7 +2198,8 @@
       }),
     missing: (path) =>
       toasts.push({ kind: 'link-missing', path, fileName: basename(path), canCreate: opensAsDocument(path) }),
-    unresolvable: (url) => toasts.push({ kind: 'link-missing', path: null, fileName: url, canCreate: false }),
+    unresolvable: (url, reason) =>
+      toasts.push({ kind: 'link-missing', path: null, reason, fileName: url, canCreate: false }),
   };
 
   function liveAskShown(): boolean {

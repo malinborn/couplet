@@ -31,6 +31,7 @@
   "toast.link_missing.headline": "Нет файла {fileName}",
   "toast.link_missing.create": "Создать",
   "toast.link_unresolvable.headline": "Сначала сохраните документ — {fileName} указан относительно него",
+  "toast.link_no_home.headline": "Не открыть {fileName} — домашняя папка ещё не известна",
 
   "toast.reload_error.headline": "Не удалось перечитать {fileName}",
   "toast.reload_error.instruction": "Автосохранение приостановлено, пока файл снова не прочитается. Чтобы сохранить свою версию, нажмите",

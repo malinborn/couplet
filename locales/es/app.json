@@ -31,6 +31,7 @@
   "toast.link_missing.headline": "No existe el archivo {fileName}",
   "toast.link_missing.create": "Crear",
   "toast.link_unresolvable.headline": "Guarde primero el documento — {fileName} es relativo a él",
+  "toast.link_no_home.headline": "No se puede abrir {fileName}: aún no se conoce la carpeta de inicio",
 
   "toast.reload_error.headline": "No se pudo recargar {fileName}",
   "toast.reload_error.instruction": "El guardado automático está en pausa hasta que el archivo vuelva a poder leerse. Para conservar tu versión, pulsa",

@@ -31,6 +31,7 @@
   "toast.link_missing.headline": "Keine Datei {fileName}",
   "toast.link_missing.create": "Erstellen",
   "toast.link_unresolvable.headline": "Speichern Sie das Dokument zuerst — {fileName} ist relativ dazu",
+  "toast.link_no_home.headline": "{fileName} lässt sich nicht öffnen — der Benutzerordner ist noch nicht bekannt",
 
   "toast.reload_error.headline": "{fileName} konnte nicht neu geladen werden",
   "toast.reload_error.instruction": "Automatisches Speichern ist pausiert, bis die Datei wieder lesbar ist. Um Ihre Fassung zu behalten, drücken",
