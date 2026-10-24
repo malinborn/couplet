@@ -56,23 +56,36 @@ unary   := '-' unary | power
 power   := postfix ('^' unary)?          -- right-associative; -2^2 = -4
 postfix := primary '%'?
 primary := number | '(' expr ')'
-number  := digits ((' ' digits{3})*) ([.,] digits)?
+number  := digit{1,3} (SP digit{3})* ([.,] digit+)?
+         | digit+ ([.,] digit+)?
+SP      := ' ' | U+00A0 (no-break space) | U+202F (narrow no-break space)
 ```
 
 - Synonyms, normalised by the tokenizer: `×` `·` → `*`; `÷` → `/`;
   `−` (U+2212) `–` (U+2013) → `-`.
-- Whitespace between tokens is ignored. Inside a number a single space is a
+- Whitespace between tokens (`SP`) is ignored. Inside a number an `SP` is a
   thousands separator only when followed by exactly three digits that are not
-  followed by a fourth (`1 500` is 1500; `15 + 2` stays two numbers).
+  followed by a fourth, and only after a leading group of one to three digits
+  (`1 500` is 1500; `15 + 2` stays two numbers; `12345 678` is two adjacent
+  numbers, so no answer). The no-break spaces count exactly like a space; the
+  answer always uses a plain space.
+- A number literal with more than 15 significant digits is refused (leading
+  zeros and trailing fraction zeros do not count): a double cannot hold it
+  exactly, so `9007199254740993 - 9007199254740992 =` gives nothing rather
+  than a wrong `0`.
 - Percent (calculator rules):
-  - `a + b%` = a·(1 + b/100), `a - b%` = a·(1 − b/100) — when the right
-    operand of `+`/`-` is a `%` postfix;
+  - `a + b%` = a·(1 + b/100), `a - b%` = a·(1 − b/100) — only when the
+    **direct** right operand of `+`/`-` is a `%` postfix;
   - `a * b%` = a·b/100, `a / b%` = a / (b/100) — `%` is just ÷100;
   - a lone `b%` = b/100.
+  - In any other context `%` is just ÷100: `100 + (10%)` = 100.1 (the
+    parentheses make it a plain operand), `200 + 10% * 2` = 200.2 (the right
+    operand of `+` is the product, not the percent).
 - An expression must contain at least one binary operator or `%`: `2024 =`
   gives nothing.
-- Implementation limits: input length ≤ 200 characters, nesting depth ≤ 32.
-  Past either → `null` (no answer), never an exception.
+- Implementation limits: input length ≤ 200 characters, nesting depth ≤ 32
+  (one unit per paren level and per unary minus). Past either → `null` (no
+  answer), never an exception.
 
 `MathResult` = `{ value: number, style: { decimalComma: boolean, thousandsSpace: boolean } }`,
 where the style records how the **input** wrote its numbers.
@@ -81,9 +94,12 @@ where the style records how the **input** wrote its numbers.
 
 - `null` (no answer) for `NaN`, `±Infinity` (division by zero), |x| ≥ 1e15
   and 0 < |x| < 1e-10: no exponent notation is ever shown.
-- Round to 10 significant digits (`toPrecision(10)`), then drop trailing zeros
-  and a trailing separator: `0.1 + 0.2 =` → `0.3`, `10 / 3 =` → `3.333333333`.
-  `-0` prints as `0`.
+- The integer part is never rounded: `1234567890123 + 1 =` → `1234567890124`.
+  Only the fraction is rounded, so that the answer has at most 10 significant
+  digits (`toFixed(max(0, 9 − magnitude))`), then trailing zeros and a
+  trailing separator are dropped: `0.1 + 0.2 =` → `0.3`, `10 / 3 =` →
+  `3.333333333`. An answer that reads as zero prints as `0` (never `-0`); a
+  fraction rounded up into 1e15 is refused like any other |x| ≥ 1e15.
 - Mirror the input: decimal comma if any input number used one; thousands
   spaces (groups of three in the integer part) if any input number used them.
   `1 500,5 * 2 =` → `3 001`.
@@ -94,6 +110,9 @@ Evaluated on every update where `isHumanEdit(update)` is true (keys, paste,
 undo/redo — not an agent's edit, not a reload) and the selection is a single
 empty cursor, not during IME composition. The answer shows only if **all** hold:
 
+0. The document is markdown (`state.facet(language)?.name === 'markdown'`).
+   A code file, JSON, `.env` or a state with no language never gets a ghost:
+   there `=` is assignment, not a question.
 1. The text of the caret's line **right of the caret** is empty or whitespace.
 2. The text **left of the caret** ends with `=` followed by zero or more
    spaces, and the character before that `=` is not `=`, `<`, `>`, `!`
@@ -105,10 +124,22 @@ empty cursor, not during IME composition. The answer shows only if **all** hold:
    (repeated), list markers `- ` `* ` `+ ` `1. ` `1) `, and a task box
    `[ ] ` / `[x] `. Otherwise `- 5 + 3 =` would read as minus five.
 5. The expression is the **longest suffix** of the remaining text before `=`
-   made of allowed characters (digits, space, `.,+-*/^%()×·÷−–`), trimmed,
-   that `evaluate` accepts. In `Итого: 338 * 1.3 =` it is `338 * 1.3`.
-   Scanning stops at the first disallowed character, then shrinks from the left
-   until it parses (so `шаг 2) (3+4) =` still finds `(3+4)`).
+   made of allowed characters (digits, the three `SP` spaces,
+   `.,+-*/^%()×·÷−–`), trimmed, that `evaluate` accepts. In
+   `Итого: 338 * 1.3 =` it is `338 * 1.3`. Scanning stops at the first
+   disallowed character, then shrinks from the left until it parses (so
+   `шаг 2) (3+4) =` still finds `(3+4)`).
+   - If that run, without spaces at its ends, is longer than 200 characters
+     there is no answer — it is never cut to its last 200. The scan back stops
+     as soon as the run passes the limit, so a huge line costs no more per
+     keystroke than a short one.
+   - Shrinking tries only starts at a **token boundary**: the character before
+     the start (inside or outside the run) is not a digit, `.`, `,`, a letter
+     or a non-ASCII space, and the nearest non-space character before it is
+     not a digit. So `1e5 + 1 =`, `0x10 + 1 =`, `v1.2.3 + 1 =`, `.5 + 1 =`,
+     `1,5,5 + 1 =`, `12 34 + 1 =`, `1 5000 + 1 =`, `1,500 000 + 1 =` and
+     `шаг 2 (3+4) =` all give nothing instead of an answer for their tail;
+     `x = 5 + 3 =` → `8` and `Например, 5 + 3 =` → `8` still work.
 6. `formatResult` returns a string.
 
 Any other update clears the ghost: a selection change without an edit, Esc, a
@@ -149,14 +180,16 @@ caret around the widget.
 ## Testing
 
 - `evaluate.test.ts` — precedence, associativity of `^`, unary minus, each
-  percent rule, comma decimal, thousands spaces (`1 500` vs `15 + 2`), Unicode
-  operators, garbage / letters / empty / unbalanced parens → `null`, length and
-  depth limits.
-- `format.test.ts` — rounding noise, trailing zeros, `-0`, ±∞/NaN/≥1e15 → `null`,
-  comma and thousands mirroring.
+  percent rule and percent in context, comma decimal, thousands spaces
+  (`1 500` vs `15 + 2`, no-break spaces, leading group of 1–3 digits), the
+  15-significant-digit refusal, Unicode operators, garbage / letters / empty /
+  unbalanced parens → `null`, length and depth limits.
+- `format.test.ts` — rounding noise, trailing zeros, `-0`, exact integers,
+  ±∞/NaN/≥1e15 → `null`, comma and thousands mirroring.
 - `trigger.test.ts` — every list/quote/heading/task prefix, code (fenced,
   indented, inline), table, `==`/`>=`/`<=`/`!=`, text right of caret, longest
-  valid suffix, `Итого: 338 * 1.3 =`.
+  valid suffix, `Итого: 338 * 1.3 =`, token boundaries, a run past the length
+  limit, markdown only.
 - `ghost.test.ts` — an `EditorView` in jsdom: typing `=` shows the field's
   answer; a caret move clears it; Tab inserts `= 439.4` and is one undo step;
   Tab without a ghost falls through (list indent still works); Esc clears;
