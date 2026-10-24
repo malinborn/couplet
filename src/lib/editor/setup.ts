@@ -29,6 +29,7 @@ import { linkControlFacet, linkUrlAt, openLink, type LinkControl } from './links
 import { linkExistence } from './links/link-existence';
 import { createFileLinkSource } from './links/file-link-source';
 import { linkAction } from './links/slash-link';
+import { linkDropCaret } from './links/link-drop';
 import { aiHighlightField, aiHighlightKeymap } from './ai-highlight';
 import { aiAskField } from './ai-ask';
 import { aiCommentAttention, aiCommentField } from './ai-comment';
@@ -144,7 +145,7 @@ export function createExtensions(deps: EditorDeps = {}): Extension[] {
     headingFoldStatePlugin,
     syntaxHighlighting(classHighlighter),
     previewCompartment.of(livePreviewPlugin),
-    ...(linkControl ? [linkControlFacet.of(linkControl), linkExistence] : []),
+    ...(linkControl ? [linkControlFacet.of(linkControl), linkExistence, linkDropCaret] : []),
     listLayoutCompartment.of(listLayoutExtension(DEFAULT_LIST_LAYOUT)),
     tableSelectionSnapOut,
     hoverBlockMenu(),
