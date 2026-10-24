@@ -3,6 +3,9 @@ import { RectangleMarker, layer, type EditorView } from '@codemirror/view';
 import { documentPathField } from '../json-fence';
 import { isMarkdownBuffer } from '../file-language';
 import { linkControlOf } from './open-link';
+import { linkDropAllowedAt } from './link-query';
+
+export { linkDropAllowedAt };
 import { linkMarkdownFor } from '../../links/link-destination';
 import type { LinkProject } from '../../links/types';
 
@@ -131,7 +134,8 @@ export function createLinkDropTarget(currentView: () => EditorView | undefined):
     const view = usable();
     if (!view || !inside(view, x, y)) return null;
     const pos = view.posAtCoords({ x, y });
-    return pos === null ? null : { view, pos };
+    // Inside or touching a table, code, an HTML block or a link: no drop there.
+    return pos === null || !linkDropAllowedAt(view.state, pos) ? null : { view, pos };
   }
 
   function clear(): void {

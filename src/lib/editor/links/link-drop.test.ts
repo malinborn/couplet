@@ -11,6 +11,7 @@ import {
   createLinkDropTarget,
   dropPointToClient,
   insertLinkAt,
+  linkDropAllowedAt,
   linkDropCaretField,
   linkTextFor,
   padLink,
@@ -169,5 +170,63 @@ describe('createLinkDropTarget', () => {
   it('a drop with nothing to link is no drop', () => {
     const view = viewFor('x');
     expect(createLinkDropTarget(() => view).drop(10, 10, [])).toBe(false);
+  });
+
+  it('a point that maps into a table, a fence or a link takes no caret and no drop', async () => {
+    const doc = 'p\n\n```\ncode\n```\n\n[a](url) x';
+    const view = viewFor(doc, { pos: doc.indexOf('url') + 1 });
+    const target = createLinkDropTarget(() => view);
+    target.hover(10, 10);
+    expect(view.state.field(linkDropCaretField)).toBeNull();
+    expect(target.drop(10, 10, [{ path: '/r/docs/plan.md', title: null }])).toBe(false);
+    await flush();
+    expect(view.state.doc.toString()).toBe(doc);
+  });
+});
+
+describe('linkDropAllowedAt', () => {
+  const state = (doc: string) => EditorState.create({ doc, extensions: [markdownExtension()] });
+  const at = (doc: string, marker: string, offset = 0) => linkDropAllowedAt(state(doc), doc.indexOf(marker) + offset);
+
+  it('plain text takes a link', () => {
+    expect(at('see here', 'here')).toBe(true);
+    expect(at('see here', 'here', 4)).toBe(true);
+    expect(at('', '')).toBe(true);
+  });
+
+  it('never inside or at either edge of a table', () => {
+    const doc = 'p\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nz';
+    expect(at(doc, '| 1')).toBe(false);
+    expect(at(doc, '| 2 |', 5)).toBe(false);
+    expect(at(doc, '| a')).toBe(false);
+    // The blank line right under the last row: a line typed there joins the table.
+    expect(at(doc, '\n\nz', 1)).toBe(false);
+    expect(at(doc, 'z')).toBe(true);
+  });
+
+  it('never inside, before or after a fenced or indented code block', () => {
+    const doc = 'p\n\n```\ncode\n```\n\nafter\n\n    indented\n';
+    expect(at(doc, 'code')).toBe(false);
+    expect(at(doc, '```\ncode')).toBe(false);
+    expect(at(doc, '```\n\nafter', 3)).toBe(false);
+    expect(at(doc, 'after')).toBe(true);
+    expect(at(doc, 'indented')).toBe(false);
+  });
+
+  it('never in an HTML block, nor on the blank line that ends one', () => {
+    const doc = '<div>\nhi\n</div>\n\nz';
+    expect(at(doc, 'hi')).toBe(false);
+    expect(at(doc, '\n\nz', 1)).toBe(false);
+    expect(at(doc, 'z')).toBe(true);
+  });
+
+  it('never inside a link — its text, its URL, or touching its brackets', () => {
+    const doc = 'a [t](url) b';
+    expect(at(doc, 'url', 1)).toBe(false);
+    expect(at(doc, 't]')).toBe(false);
+    expect(at(doc, '[t')).toBe(false);
+    expect(at(doc, ') b', 1)).toBe(false);
+    expect(at(doc, ' b', 1)).toBe(true);
+    expect(at('see `code` x', 'ode')).toBe(false);
   });
 });
