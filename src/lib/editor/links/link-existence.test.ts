@@ -81,6 +81,22 @@ describe('the checker', () => {
     expect(view.state.field(linkExistenceField).get('/r/plan.md')).toBe(true);
   });
 
+  it('a state shown again (a tab switched back to) re-checks what it knew', async () => {
+    const control = fakeLinkControl();
+    control.kinds.set('/r/gone.md', 'missing');
+    view = new EditorView({ state: stateFor(control) });
+    await vi.advanceTimersByTimeAsync(LINK_CHECK_DELAY_MS + 1);
+    const cached = view.state;
+    expect(cached.field(linkExistenceField).get('/r/gone.md')).toBe(false);
+
+    control.kinds.delete('/r/gone.md'); // «Create» in another tab saved it
+    view.setState(stateFor(control, 'other'));
+    view.setState(cached);
+    expect(view.state.field(linkExistenceField).get('/r/gone.md')).toBe(false); // no flicker
+    await vi.advanceTimersByTimeAsync(LINK_CHECK_DELAY_MS + 1);
+    expect(view.state.field(linkExistenceField).get('/r/gone.md')).toBe(true);
+  });
+
   it('on window focus re-checks what it knows and replaces it in one go', async () => {
     const control = fakeLinkControl();
     control.kinds.set('/r/gone.md', 'missing');

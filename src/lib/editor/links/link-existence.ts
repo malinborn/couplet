@@ -68,11 +68,20 @@ class LinkExistenceChecker {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly pending = new Set<string>();
   private destroyed = false;
+  /** The next timer re-checks everything known instead of only the unknown. */
+  private recheckDue = false;
   private readonly onFocus = (): void => {
     void this.recheckAll();
   };
 
   constructor(private readonly view: EditorView) {
+    // A plugin is built for every state the view is given, so a state that
+    // already knows answers is one shown again — a tab switched back to. Its
+    // answers may be stale (the «Create» of a missing link saved that file in
+    // another tab), so they are re-checked and replaced in one effect, like
+    // on window focus: no flicker to "unknown" meanwhile.
+    const known = view.state.field(linkExistenceField, false);
+    this.recheckDue = known !== undefined && known.size > 0;
     this.schedule();
     window.addEventListener('focus', this.onFocus);
   }
@@ -87,7 +96,12 @@ class LinkExistenceChecker {
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       this.timer = null;
-      void this.check();
+      if (this.recheckDue) {
+        this.recheckDue = false;
+        void this.recheckAll();
+      } else {
+        void this.check();
+      }
     }, LINK_CHECK_DELAY_MS);
   }
 
