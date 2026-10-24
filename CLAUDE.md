@@ -110,7 +110,7 @@ src/                    # Frontend (Svelte + TypeScript)
                         # panel (spotlight.ts), table-cell highlights (widget-matches.ts)
     ai-mark-nav.ts      # ⌘' / ⌘⇧' cycle the caret through AI marks (edit highlights, comment anchors, asks); menu ids ai_next_mark / ai_prev_mark
     human-edit.ts       # isHumanEdit: did the human change the document (not an agent's edit, not a reload) — a quick look's «Keep»
-    math/               # `338 * 1.3 =` → ghost `439.4`, Tab writes it: evaluate.ts (parser, no eval), format.ts (input's number style), trigger.ts (expr = at the caret, not in code/tables), ghost.ts (field + widget + Tab/Esc)
+    math/               # `338 * 1.3 =` → ghost `439.4`, Tab writes it: evaluate.ts (parser, no eval), format.ts (input's number style), trigger.ts (expr = at the caret, not in code/tables), ghost.ts (field + widget + Tab/Esc), cell.ts (a table cell that is exactly `<expr> =` shows its answer + `ƒ`, expression in `title`; drawn by `renderCellContent` in preview/tables.ts, the buffer keeps the expression)
   lib/ai-commands.ts    # Pure helpers for AI commands (show target resolution, changed-line ranges)
   lib/csv/              # CSV documents: the buffer is a GFM table, CSV only at the disk boundary
     csv.ts              # RFC 4180 parse/serialize + dialect (delimiter sniffing, BOM, eol, trailing blank lines)

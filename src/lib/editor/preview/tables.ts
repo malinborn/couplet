@@ -25,7 +25,7 @@ import {
   encodedOffset,
   decodedOffset,
 } from './table-encoding';
-import { docPosForCaretIn, placeCaretFromPoint, visibleOffsetIn } from './cell-caret';
+import { caretOffsetIn, docPosForCaretIn, placeCaretFromPoint, visibleOffsetIn } from './cell-caret';
 import {
   activeCellEditSession,
   applyTextareaEdit,
@@ -43,6 +43,7 @@ import {
   type CommentAnchorSpan,
 } from '../ai-comment';
 import { t } from '../../i18n';
+import { computeCell, COMPUTED_CELL_CLASS } from '../math/cell';
 
 /** Class of the per-cell nested editing host that carries the cell's text. */
 export const CELL_TEXT_CLASS = 'cm-md-table-celltext';
@@ -952,14 +953,61 @@ function appendCellText(
   }
 }
 
-/** Render inline markdown (code, bold, italic, strikethrough, links) into a cell element. */
+/**
+ * Draw a computed cell: the answer, then a small marker; the expression is the
+ * tooltip. The answer's characters are not the source's, so a comment anchored
+ * anywhere in the expression marks the whole answer (the first thread's id),
+ * and ⌘F's cell highlights skip the cell — they need a single text node that
+ * reads as the source (`search/widget-matches.ts`).
+ */
+function renderComputedCell(
+  cellEl: HTMLElement,
+  answer: string,
+  expression: string,
+  highlights: CellHighlight[]
+): void {
+  cellEl.classList.add(COMPUTED_CELL_CLASS);
+  cellEl.title = expression;
+  if (highlights.length > 0) {
+    const span = document.createElement('span');
+    span.className = COMMENT_ANCHOR_CLASS;
+    span.setAttribute(COMMENT_ANCHOR_ATTR, highlights[0].id);
+    span.textContent = answer;
+    cellEl.appendChild(span);
+  } else {
+    cellEl.appendChild(document.createTextNode(answer));
+  }
+  const mark = document.createElement('span');
+  mark.className = 'cm-md-cell-computed-mark';
+  mark.setAttribute('aria-hidden', 'true');
+  mark.textContent = 'ƒ';
+  cellEl.appendChild(mark);
+}
+
+/**
+ * Render a cell's text into its element — the one place a cell's view is
+ * drawn (`toDOM` and `updateDOM` both come here). Inline markdown (code, bold,
+ * italic, strikethrough, links), or the answer of a computed cell
+ * (`math/cell.ts`). `updateDOM` reuses the element, so the computed state is
+ * reset first.
+ */
 function renderCellContent(
   cellEl: HTMLElement,
   text: string,
   view: EditorView,
   highlights: CellHighlight[] = []
 ): void {
+  if (cellEl.classList.contains(COMPUTED_CELL_CLASS)) {
+    cellEl.classList.remove(COMPUTED_CELL_CLASS);
+    cellEl.removeAttribute('title');
+  }
   if (!text) return;
+
+  const computed = computeCell(text);
+  if (computed) {
+    renderComputedCell(cellEl, computed.answer, computed.expression, highlights);
+    return;
+  }
 
   const tokens = parseInlineMarkdown(text);
 
@@ -1624,8 +1672,22 @@ function cellEditorOpen(): boolean {
  * made in the cell, and `live-render/selection-toolbar.ts` deliberately reads
  * it from the DOM rather than from `state.selection`.
  */
+/**
+ * Document position of the collapsed DOM caret in a cell, or `null`.
+ *
+ * A computed cell shows an answer whose characters have no counterpart in the
+ * source, so any caret in it stands for the end of the expression — appending
+ * is the harmless answer, as for text that does not reconstruct.
+ */
+function cellCaretPos(textEl: HTMLElement, cell: CellInfo): number | null {
+  if (textEl.classList.contains(COMPUTED_CELL_CLASS)) {
+    return caretOffsetIn(textEl) === null ? null : cell.from + cell.text.length;
+  }
+  return docPosForCaretIn(textEl, cell.text, cell.from);
+}
+
 function syncDocCaret(view: EditorView, textEl: HTMLElement, cell: CellInfo): void {
-  const pos = docPosForCaretIn(textEl, cell.text, cell.from);
+  const pos = cellCaretPos(textEl, cell);
   if (pos === null) return;
   const main = view.state.selection.main;
   if (main.empty && main.head === pos) return;
@@ -1741,10 +1803,14 @@ function hostSelectionAsSource(
   textEl: HTMLElement,
   cell: CellInfo
 ): { from: number; to: number } | undefined {
-  const caret = docPosForCaretIn(textEl, cell.text, cell.from);
+  const caret = cellCaretPos(textEl, cell);
   if (caret !== null) {
     const at = caret - cell.from;
     return { from: at, to: at };
+  }
+  // A selection over an answer selects nothing of the expression: the end.
+  if (textEl.classList.contains(COMPUTED_CELL_CLASS)) {
+    return { from: cell.text.length, to: cell.text.length };
   }
   const range = hostSelectionRange(textEl, cell.text);
   return range ?? undefined;

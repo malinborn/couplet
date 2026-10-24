@@ -2321,6 +2321,19 @@
   }
 }
 
+/* Computed table cell (editor/math/cell.ts, preview/tables.ts): the cell shows
+   the answer of its `<expr> =`, then this marker; the expression is the cell's
+   `title`. The answer keeps the cell's own colour; only the marker is muted.
+   Not selectable, so a copy of the cell's text is the answer alone. */
+.cm-md-table .cm-md-cell-computed-mark {
+  margin-left: 0.3em;
+  font-size: 0.75em;
+  color: var(--text-muted);
+  -webkit-text-fill-color: currentColor;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 /* Inline arithmetic: the answer offered after `=` (editor/math/ghost.ts).
    An existing token, so every theme already has it. A heading line sets
    `-webkit-text-fill-color: transparent` for its gradient, and that inherits:

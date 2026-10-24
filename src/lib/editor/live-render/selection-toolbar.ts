@@ -14,6 +14,7 @@ import {
 } from './format-commands';
 import { WIDGET_TEXT_HOST_SELECTOR } from '../widget-text-selection';
 import { sourceRangeForVisible } from './cell-anchor';
+import { COMPUTED_CELL_CLASS } from '../math/cell';
 import { INLINE_FORMAT_BINDINGS } from '../keybindings';
 import {
   acceleratorAriaKeyShortcuts,
@@ -165,6 +166,11 @@ function widgetTarget(view: EditorView): ToolbarTarget | null {
 
   const active = view.root.activeElement;
   if (!active || !host.contains(active)) return null;
+
+  // A computed table cell shows an answer, not its source: no rendered offset
+  // in it maps to a character of the expression. Formatting or commenting it
+  // goes through the cell edit overlay, which holds the source.
+  if (host.classList.contains(COMPUTED_CELL_CLASS)) return null;
 
   // Hosts that render text from somewhere other than the document — a comment
   // card's quote — carry no source range, and nothing here can anchor to them.

@@ -633,6 +633,16 @@ The plugin has one more CSV-facing knob, outside table code — the `previewRebu
 
 **Never branch on "is this CSV" inside `tables.ts`** — a CSV need that the facet cannot express is a new facet field with a markdown default, not an `if`. Keeping the buffer one table (no text around it, undo across a reload) is `csv-guard.ts`'s job, outside table code; the ⇔ toggle and the hover "+" gutter are hidden in a CSV tab by CSS (`cm-csv-file-mode`).
 
+### Computed Cells Break "the DOM Reads as the Source"
+
+A cell whose whole text is `<expr> =` (`math/cell.ts`, `computeCell`) is drawn by `renderCellContent` as the answer + a `ƒ` marker, with `cm-md-cell-computed` and the expression as `title` on the text element; the buffer keeps the expression, so CSV writes it back unchanged. Everything that maps rendered characters to source offsets must not trust such a cell:
+
+- `renderCellContent` resets the class and `title` first — `updateDOM` reuses the element when a cell turns plain.
+- ⌘F cell highlights and the spotlight's hole already skip it: they need one text node equal to the source.
+- A caret or selection in it maps to the **end of the expression** (`cellCaretPos`, `hostSelectionAsSource`), so typing appends.
+- The live-render format toolbar refuses it (`widgetTarget`); format or comment through the overlay, which holds the source.
+- A comment anchored anywhere in the expression marks the whole answer.
+
 ## Mermaid Pan/Zoom (`mermaid-viewport.ts`, `mermaid-state.ts`)
 
 Rendered diagrams sit in a fixed-height frame and can be zoomed and panned.
