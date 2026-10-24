@@ -2311,6 +2311,46 @@ describe('TabDrawer — drag to insert a link (file links plan 03)', () => {
     expect(h.root().classList.contains('open')).toBe(false);
   });
 
+  const cancels: [string, () => void][] = [
+    [
+      'Esc',
+      () =>
+        document.body.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', altKey: true, bubbles: true, cancelable: true })
+        ),
+    ],
+    ['a window blur', () => window.dispatchEvent(new Event('blur'))],
+    ['a pointercancel', () => pointer(window, 'pointercancel', { clientX: 600, clientY: 300 })],
+  ];
+
+  for (const [name, cancel] of cancels) {
+    it(`a link-mode drag cancelled by ${name} clears the caret, and the next plain drag moves`, async () => {
+      grab(card('b'), { x: 600, y: 300 }, { altKey: true });
+      await settle();
+      expect(h.root().classList.contains('link-mode')).toBe(true);
+      link.clear.mockClear();
+      cancel();
+      await settle();
+      expect(link.clear).toHaveBeenCalled();
+      expect(link.drop).not.toHaveBeenCalled();
+      expect(h.root().classList.contains('link-mode')).toBe(false);
+      expect(page().querySelector('.ghost')).toBeNull();
+      // Released after the cancel: nothing happens.
+      pointer(window, 'pointerup', { clientX: 600, clientY: 300 });
+      await settle();
+      expect(link.drop).not.toHaveBeenCalled();
+      if (!h.root().classList.contains('open')) {
+        h.handle().toggle();
+        await settle();
+      }
+      grab(card('c'), { x: 600, y: 300 });
+      await settle();
+      await settle();
+      expect(h.root().classList.contains('link-mode')).toBe(false);
+      expect(carousel(), 'a plain drag is a move again').not.toBeNull();
+    });
+  }
+
   it('ARefusedDropFallsThroughToTheOldBehaviour', async () => {
     link.drop.mockReturnValue(false);
     grab(card('b'), { x: 600, y: 300 }, { altKey: true });
