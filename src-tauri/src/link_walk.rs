@@ -71,6 +71,13 @@ pub struct WalkResult {
     pub truncated: bool,
 }
 
+/// A symlink is listed when its name is linkable and it points at a file.
+/// The name comes first: the walk never stats a target it would not list (a
+/// link into a TCC-protected folder would raise a consent dialog).
+fn lists_symlink(name: &str, points_at_file: impl FnOnce() -> bool) -> bool {
+    is_linkable(name) && points_at_file()
+}
+
 pub fn is_linkable(name: &str) -> bool {
     Path::new(name)
         .extension()
@@ -143,12 +150,14 @@ pub fn walk_project(root: &Path, limits: WalkLimits, never_enter: &[PathBuf]) ->
             }
             // A symlink is listed only when it points at a file; a symlinked
             // directory is never entered.
-            let is_file = if kind.is_symlink() {
-                fs::metadata(entry.path()).is_ok_and(|m| m.is_file())
+            let listed = if kind.is_symlink() {
+                lists_symlink(&name, || {
+                    fs::metadata(entry.path()).is_ok_and(|m| m.is_file())
+                })
             } else {
-                kind.is_file()
+                kind.is_file() && is_linkable(&name)
             };
-            if !is_file || !is_linkable(&name) {
+            if !listed {
                 continue;
             }
             if files.len() >= limits.max_files {
@@ -338,6 +347,23 @@ mod tests {
         let r = walk_project(&root, PROJECT_LIMITS, &[]);
         assert_eq!(names(&r, &root), vec!["l.md"]);
         assert!(!r.truncated);
+    }
+
+    #[test]
+    fn a_symlink_with_a_name_never_listed_is_never_followed() {
+        let stat_called = std::cell::Cell::new(false);
+        let stat = || {
+            stat_called.set(true);
+            true
+        };
+        assert!(!lists_symlink("photo.heic", stat));
+        assert!(
+            !stat_called.get(),
+            "the target of a name the walk would not list is not stat'ed"
+        );
+        assert!(lists_symlink("plan.md", stat));
+        assert!(stat_called.get());
+        assert!(!lists_symlink("plan.md", || false));
     }
 
     #[test]
