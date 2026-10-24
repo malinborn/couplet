@@ -33,6 +33,9 @@ import {
   setCellEditSession,
 } from '../cell-edit-session';
 import { isAnchor, navigateToHeading } from '../heading-slugs';
+import { linkControlOf, openLink } from '../links/open-link';
+import { isExternalUrl } from '../../links/link-target';
+import { linkPresentation } from '../links/link-presentation';
 import { makeWidgetTextSelectable } from '../widget-text-selection';
 import { parseInlineMarkdown } from './inline-tokens';
 import { visibleRangeForSource, sourceRangeForVisible } from '../live-render/cell-anchor';
@@ -846,6 +849,8 @@ function openUrl(url: string): void {
  * Anchor URLs (`#heading-slug`) jump within the document via `navigateToHeading`;
  * everything else is opened externally through the supplied `openExternal` callback
  * (Tauri shell in the live editor, injectable in tests).
+ * With a `LinkControl` (the app, not the landing) a file link goes through
+ * `openLink` instead — the same router as ⌘-click.
  *
  * Pure — does not touch the click event itself. The DOM wiring layer is responsible
  * for `preventDefault` / `stopPropagation` so the native `<a>` activation doesn't
@@ -860,6 +865,9 @@ export function routeLinkClick(
 ): void {
   if (isAnchor(url)) {
     navigateToHeading(view, url.slice(1));
+  } else if (linkControlOf(view.state) && !isExternalUrl(url)) {
+    // A file link (file-links D3): the same router as ⌘-click.
+    void openLink(view, url);
   } else {
     openExternal(url);
   }
@@ -1021,6 +1029,9 @@ function renderCellContent(
         a.className = 'cm-md-link';
         a.href = token.url;
         a.rel = 'noopener noreferrer';
+        // Where it goes (file-links D4). No missing-file style here: the
+        // table widget's `eq()` does not see the existence cache.
+        a.title = linkPresentation(view.state, token.url).title;
         appendCellText(a, token.text, vis, highlights);
         vis += token.text.length;
         // mousedown drives the actual routing — same trigger setup.ts uses for
