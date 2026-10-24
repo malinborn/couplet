@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(() => Promise.resolve(null)) }));
 
 import { invoke } from '@tauri-apps/api/core';
-import { PATH_KINDS_MAX, pathKinds, revealInFinder } from './ipc';
+import { PATH_KINDS_MAX, linkCandidates, linkProject, pathKinds, revealInFinder } from './ipc';
 
 beforeEach(() => vi.mocked(invoke).mockClear());
 
@@ -29,5 +29,17 @@ describe('links ipc', () => {
     const match = /pub const MAX_PATH_KINDS: usize = (\d+);/.exec(readFileSync(LINKS_RS, 'utf8'));
     expect(match, 'MAX_PATH_KINDS not found in links.rs').not.toBeNull();
     expect(PATH_KINDS_MAX).toBe(Number(match![1]));
+  });
+});
+
+describe('picker ipc', () => {
+  it('linkCandidates passes the document path', async () => {
+    await linkCandidates('/r/a.md');
+    expect(invoke).toHaveBeenCalledWith('link_candidates', { docPath: '/r/a.md' });
+  });
+
+  it('linkProject passes null for an untitled document', async () => {
+    await linkProject(null);
+    expect(invoke).toHaveBeenCalledWith('link_project', { docPath: null });
   });
 });
