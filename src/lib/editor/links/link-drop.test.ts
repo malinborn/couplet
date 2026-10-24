@@ -172,6 +172,20 @@ describe('createLinkDropTarget', () => {
     expect(createLinkDropTarget(() => view).drop(10, 10, [])).toBe(false);
   });
 
+  it('each dropped path is spelled the way Rust spells the document before it is made relative', async () => {
+    // Finder answers `/tmp/…`; the document and its root are `/private/tmp/…`.
+    const control = fakeLinkControl({
+      project: async (p) => ({
+        projectRoot: '/private/tmp/fl',
+        docPath: p && p.replace(/^\/tmp\//, '/private/tmp/'),
+      }),
+    });
+    const view = viewFor('see  here', { control, path: '/private/tmp/fl/a.md', pos: 4 });
+    createLinkDropTarget(() => view).drop(10, 10, [{ path: '/tmp/fl/docs/plan.md', title: null }]);
+    await flush();
+    expect(view.state.doc.toString()).toBe('see [plan](docs/plan.md) here');
+  });
+
   it('a point that maps into a table, a fence or a link takes no caret and no drop', async () => {
     const doc = 'p\n\n```\ncode\n```\n\n[a](url) x';
     const view = viewFor(doc, { pos: doc.indexOf('url') + 1 });

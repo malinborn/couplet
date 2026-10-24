@@ -171,18 +171,27 @@ export function createLinkDropTarget(currentView: () => EditorView | undefined):
       const { view, pos } = at;
       view.dispatch({ effects: setLinkDropCaret.of(pos) });
       const docPath = view.state.field(documentPathField, false) ?? null;
-      void control
-        .project(docPath)
-        .catch((err: unknown): LinkProject => {
-          console.warn('link_project failed, linking absolutely:', err);
-          return { projectRoot: null, docPath };
-        })
-        .then((project) => {
-          // A state swapped in meanwhile (another tab) has no caret: nothing lands there.
-          const held = view.state.field(linkDropCaretField, false);
-          if (held === null || held === undefined) return;
-          insertLinkAt(view, held, items, project);
-        });
+      const project = control.project(docPath).catch((err: unknown): LinkProject => {
+        console.warn('link_project failed, linking absolutely:', err);
+        return { projectRoot: null, docPath };
+      });
+      // A Finder path (`/tmp/…`, a symlinked folder) is spelled the way Rust
+      // spells the document (`path_norm`), or nothing would come out relative —
+      // the «Choose file…» fix (13ec67b). A failure keeps the path as given.
+      const spelled = Promise.all(
+        items.map((item) =>
+          control
+            .project(item.path)
+            .then((p) => ({ ...item, path: p.docPath ?? item.path }))
+            .catch(() => item)
+        )
+      );
+      void Promise.all([project, spelled]).then(([answer, linked]) => {
+        // A state swapped in meanwhile (another tab) has no caret: nothing lands there.
+        const held = view.state.field(linkDropCaretField, false);
+        if (held === null || held === undefined) return;
+        insertLinkAt(view, held, linked, answer);
+      });
       return true;
     },
   };
