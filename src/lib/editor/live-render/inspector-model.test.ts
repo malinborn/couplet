@@ -92,6 +92,12 @@ describe('detectInspectorTarget — link', () => {
     }
   });
 
+  it('edits the destination of a link whose text is a URL', () => {
+    const urlDoc = '[https://a.test](https://b.test)\n';
+    const link = detectInspectorTarget(makeState(urlDoc), 3) as LinkTarget;
+    expect(urlDoc.slice(link.url.from, link.url.to)).toBe('https://b.test');
+  });
+
   it('stays out of a [[ picker query — the picker owns it (file-links D5)', () => {
     // Lezer reads `[[pl]]` as a Link (shortcut reference); with the caret
     // in the query the URL panel would cover the picker's popup.

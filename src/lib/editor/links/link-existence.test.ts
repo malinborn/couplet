@@ -39,6 +39,11 @@ describe('fileLinkPaths', () => {
     const state = stateFor(fakeLinkControl());
     expect(fileLinkPaths(state, 0, state.doc.length)).toEqual(['/r/plan.md', '/r/gone.md']);
   });
+
+  it('reads the destination, not a URL-looking link text', () => {
+    const state = stateFor(fakeLinkControl(), '[/r/text.md](dest.md) [https://x.test](other.md)');
+    expect(fileLinkPaths(state, 0, state.doc.length)).toEqual(['/r/dest.md', '/r/other.md']);
+  });
 });
 
 describe('linkExistenceField', () => {

@@ -12,7 +12,7 @@ import {
 } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import type { SyntaxNode } from '@lezer/common';
-import { isRenderedLink } from '../preview/link-refs';
+import { isRenderedLink, linkDestinationNode } from '../preview/link-refs';
 import { blockquoteLayout, insideBlockquote, listMarkColumns } from '../preview/lists';
 import { isExplicitRoot, listLayoutFacet, ownsListGeometry, planExplicitList } from '../preview/explicit-lists';
 
@@ -280,7 +280,7 @@ function collectMarkupModel(state: EditorState): { spans: RawSpan[]; pairs: Mark
           // alone would miss a caret landing inside the URL (see report).
           if (!isChecklistLookalikeLink(doc, node.node)) {
             const linkMarks = node.node.getChildren('LinkMark');
-            const url = node.node.getChild('URL');
+            const url = linkDestinationNode(node.node);
             const openMark = linkMarks.find((m) => m.from === node.from);
             const closeBracket = url
               ? linkMarks.find((m) => m.to <= url.from && m.from > node.from)

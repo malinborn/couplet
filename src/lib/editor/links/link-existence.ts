@@ -2,7 +2,7 @@ import { StateEffect, StateField, type EditorState, type Extension } from '@code
 import { ViewPlugin, type EditorView, type ViewUpdate } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import { documentPathField } from '../json-fence';
-import { isRenderedLink } from '../preview/link-refs';
+import { isRenderedLink, linkDestinationNode } from '../preview/link-refs';
 import { heldByATab, linkControlOf, resolveInState, type LinkControl } from './open-link';
 import type { PathKind } from '../../links/types';
 import { PATH_KINDS_MAX } from '../../links/types';
@@ -63,7 +63,7 @@ export function fileLinkPaths(state: EditorState, from: number, to: number): str
       // A bracket pair that is not a link (`see [1]`, #51): descend, a real
       // link may sit inside it.
       if (!isRenderedLink(state.doc, node.node)) return;
-      const url = node.node.getChild('URL');
+      const url = linkDestinationNode(node.node);
       if (url) {
         const target = resolveInState(state, state.doc.sliceString(url.from, url.to));
         if (target.kind === 'file') out.add(target.path);

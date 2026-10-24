@@ -2,6 +2,7 @@ import { syntaxTree } from '@codemirror/language';
 import type { EditorState, TransactionSpec } from '@codemirror/state';
 import type { SyntaxNode } from '@lezer/common';
 import { linkQueryAt } from '../links/link-query';
+import { linkDestinationNode } from '../preview/link-refs';
 
 /**
  * Element inspector — Phase 7 of live-render.
@@ -75,7 +76,7 @@ function linkTargetFrom(node: SyntaxNode): LinkTarget | null {
   // The last LinkMark ends the node (`)`), whether or not a title is present.
   const closeParen = marks[marks.length - 1];
 
-  const urlNode = node.getChild('URL');
+  const urlNode = linkDestinationNode(node);
   const url: Range = urlNode
     ? { from: urlNode.from, to: urlNode.to }
     : { from: closeBracket.to + 1, to: closeParen.from };

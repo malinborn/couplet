@@ -8,7 +8,7 @@ import { ensureSyntaxTree, syntaxTree } from '@codemirror/language';
 import { Strikethrough, Table } from '@lezer/markdown';
 import type { SyntaxNode } from '@lezer/common';
 import { classHighlighter, highlightTree } from '@lezer/highlight';
-import { isRenderedLink, linkReferenceLabels, normalizeLinkLabel } from './link-refs';
+import { isRenderedLink, linkDestinationNode, linkReferenceLabels, normalizeLinkLabel } from './link-refs';
 import { livePreviewPlugin } from './plugin';
 import { LIVE_PREVIEW, flavourFacet } from './flavour';
 
@@ -125,6 +125,24 @@ describe('isRenderedLink — a real link', () => {
 
   it('a definition placed before its use', () => {
     expect(rendered('[foo]: /x\n\nuse [foo] here\n')).toEqual(['[foo]']);
+  });
+});
+
+describe('linkDestinationNode', () => {
+  const dest = (doc: string) => {
+    const state = makeState(doc);
+    const node = linkDestinationNode(linkNodes(state)[0]);
+    return node ? doc.slice(node.from, node.to) : null;
+  };
+
+  it('is the URL after `](`, never an autolinked URL in the text', () => {
+    expect(dest('[https://a.test](https://b.test)')).toBe('https://b.test');
+    expect(dest('[docs](plan.md)')).toBe('plan.md');
+  });
+
+  it('is null without a destination', () => {
+    expect(dest('[text]()')).toBeNull();
+    expect(dest('[https://a.test]')).toBeNull();
   });
 });
 
@@ -264,6 +282,15 @@ describe('what the preview actually draws', () => {
     expect(ranges).toContainEqual([0, 1, 'replace']);
     expect(ranges).toContainEqual([0, 27, 'cm-md-link']);
     expect(ranges).toContainEqual([5, 27, 'replace']);
+  });
+
+  it('hides the syntax of a link whose text is itself a URL (the [[ picker\'s «Link to»)', () => {
+    // GFM autolinks the text, so the Link has two URL children: the text's
+    // and the destination. The `](url)` span must start at the `]`.
+    const doc = '[https://x.test](https://x.test)';
+    const ranges = decorationRanges(doc);
+    expect(ranges).toContainEqual([0, 1, 'replace']);
+    expect(ranges).toContainEqual([15, 32, 'replace']);
   });
 
   it('still hides the syntax of a resolved reference link', () => {

@@ -3,7 +3,7 @@ import type { EditorView } from '@codemirror/view';
 import type { RangeSetBuilder } from '@codemirror/state';
 import type { SyntaxNode } from '@lezer/common';
 import { shouldReveal } from './flavour';
-import { isRenderedLink } from './link-refs';
+import { isRenderedLink, linkDestinationNode } from './link-refs';
 import { linkPresentation } from '../links/link-presentation';
 import type { DecoSink } from './utils';
 
@@ -113,7 +113,7 @@ export function decorateLink(
   if (!isRenderedLink(view.state.doc, node)) return;
   if (shouldReveal(view, 'link', node.from, node.to)) return;
 
-  const url = node.getChild('URL');
+  const url = linkDestinationNode(node);
   const linkMarks = node.getChildren('LinkMark');
 
   // Find the opening [ mark
