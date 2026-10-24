@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest';
-import { EditorState } from '@codemirror/state';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { EditorState, StateEffect } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { markdownExtension } from '../markdown-language';
 import { documentPathField, setDocumentPath } from '../json-fence';
@@ -8,6 +8,7 @@ import { linkControlFacet, type LinkControl } from './open-link';
 import { fakeLinkControl } from './fake-link-control';
 import { createDocumentState } from '../state-factory';
 import {
+  LINK_DROP_ANSWER_MS,
   createLinkDropTarget,
   dropPointToClient,
   insertLinkAt,
@@ -170,6 +171,31 @@ describe('createLinkDropTarget', () => {
   it('a drop with nothing to link is no drop', () => {
     const view = viewFor('x');
     expect(createLinkDropTarget(() => view).drop(10, 10, [])).toBe(false);
+  });
+
+  it('a drop the document no longer takes (read-only meanwhile) leaves no caret behind', async () => {
+    const view = viewFor('see  here', { pos: 4 });
+    createLinkDropTarget(() => view).drop(10, 10, [{ path: '/r/docs/plan.md', title: null }]);
+    view.dispatch({ effects: StateEffect.appendConfig.of(EditorState.readOnly.of(true)) });
+    await flush();
+    expect(view.state.doc.toString()).toBe('see  here');
+    expect(view.state.field(linkDropCaretField)).toBeNull();
+  });
+
+  it('a project that never answers is given up on: the link is written absolute, the caret goes', async () => {
+    vi.useFakeTimers();
+    try {
+      const control = fakeLinkControl({ project: () => new Promise<never>(() => {}) });
+      const view = viewFor('see  here', { control, pos: 4 });
+      createLinkDropTarget(() => view).drop(10, 10, [{ path: '/r/docs/plan.md', title: null }]);
+      await vi.advanceTimersByTimeAsync(LINK_DROP_ANSWER_MS - 1);
+      expect(view.state.field(linkDropCaretField)).toBe(4);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(view.state.doc.toString()).toBe('see [plan](/r/docs/plan.md) here');
+      expect(view.state.field(linkDropCaretField)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('each dropped path is spelled the way Rust spells the document before it is made relative', async () => {

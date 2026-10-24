@@ -6,6 +6,7 @@ import { clearAiComments } from '../editor/ai-comment';
 import { clearJsonOffer } from '../editor/json-paste';
 import { closeThemePicker, type ThemeControl } from '../editor/slash-theme';
 import { closeTonePicker } from '../editor/slash-tone';
+import { setLinkDropCaret } from '../editor/links/link-drop';
 
 /**
  * What must not stay in a state that goes to the background:
@@ -19,6 +20,10 @@ import { closeTonePicker } from '../editor/slash-tone';
  *   only the picker's own update listener would ever clear it — which a state
  *   in the background, or `setState`, never runs.
  *
+ * - a link drop caret (file links D7): a drop still waiting for
+ *   `link_project` lands only where a caret is held, so a cached state must
+ *   not keep one — or the link would land there on return.
+ *
  * AI highlights stay: they mark an agent's edit nobody has looked at yet.
  */
 export function leaveEffects(): StateEffect<unknown>[] {
@@ -28,6 +33,7 @@ export function leaveEffects(): StateEffect<unknown>[] {
     clearJsonOffer.of(null),
     closeThemePicker.of(null),
     closeTonePicker.of(null),
+    setLinkDropCaret.of(null),
   ];
 }
 

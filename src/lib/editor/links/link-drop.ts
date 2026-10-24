@@ -15,6 +15,9 @@ export interface LinkInsertItem {
   title: string | null;
 }
 
+/** How long a drop waits for `link_project` before linking the paths as given. */
+export const LINK_DROP_ANSWER_MS = 2000;
+
 /** Where a link-mode drag would drop; `null` hides the caret. */
 export const setLinkDropCaret = StateEffect.define<number | null>();
 
@@ -171,26 +174,45 @@ export function createLinkDropTarget(currentView: () => EditorView | undefined):
       const { view, pos } = at;
       view.dispatch({ effects: setLinkDropCaret.of(pos) });
       const docPath = view.state.field(documentPathField, false) ?? null;
-      const project = control.project(docPath).catch((err: unknown): LinkProject => {
-        console.warn('link_project failed, linking absolutely:', err);
-        return { projectRoot: null, docPath };
+      const asked = (async () => {
+        const project = control.project(docPath);
+        // A Finder path (`/tmp/…`, a symlinked folder) is spelled the way Rust
+        // spells the document (`path_norm`), or nothing would come out
+        // relative — the «Choose file…» fix (13ec67b). A failure keeps the
+        // path as given.
+        const spelled = Promise.all(
+          items.map((item) =>
+            control
+              .project(item.path)
+              .then((p) => ({ ...item, path: p.docPath ?? item.path }))
+              .catch(() => item)
+          )
+        );
+        return { project: await project, linked: await spelled };
+      })();
+      // No answer in time, or a failure: link the paths as given, absolutely.
+      // Either way the caret does not wait forever.
+      const fallback = { project: { projectRoot: null, docPath }, linked: items };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<typeof fallback>((resolve) => {
+        timer = setTimeout(() => {
+          console.warn('link_project did not answer, linking absolutely');
+          resolve(fallback);
+        }, LINK_DROP_ANSWER_MS);
       });
-      // A Finder path (`/tmp/…`, a symlinked folder) is spelled the way Rust
-      // spells the document (`path_norm`), or nothing would come out relative —
-      // the «Choose file…» fix (13ec67b). A failure keeps the path as given.
-      const spelled = Promise.all(
-        items.map((item) =>
-          control
-            .project(item.path)
-            .then((p) => ({ ...item, path: p.docPath ?? item.path }))
-            .catch(() => item)
-        )
-      );
-      void Promise.all([project, spelled]).then(([answer, linked]) => {
-        // A state swapped in meanwhile (another tab) has no caret: nothing lands there.
+      void Promise.race([
+        asked.catch((err: unknown) => {
+          console.warn('link_project failed, linking absolutely:', err);
+          return fallback;
+        }),
+        late,
+      ]).then(({ project, linked }) => {
+        clearTimeout(timer);
+        // A state swapped in meanwhile (another tab) has no caret — the strip
+        // on leave clears it: nothing lands there.
         const held = view.state.field(linkDropCaretField, false);
         if (held === null || held === undefined) return;
-        insertLinkAt(view, held, linked, answer);
+        if (!insertLinkAt(view, held, linked, project)) view.dispatch({ effects: setLinkDropCaret.of(null) });
       });
       return true;
     },
