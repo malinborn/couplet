@@ -1930,6 +1930,7 @@ If `couplet` is available, use it to point at things in the user's open editor a
 - `couplet ask <file> --question "..." --option A --option B [--option ...]` — post a question with 2-6 option buttons inside the document and block until the user clicks one; prints `{"ok":true,"answer":"A"}` with the chosen option's text. Add `--multi` for checkbox mode (any number of options, including none, checked and confirmed) — prints `{"ok":true,"answers":["A","C"]}` instead. Add `--free-text` to also let the user type a custom answer — prints `{"ok":true,"custom":"..."}` (or alongside `answers` in `--multi` mode) when they do.
 - `couplet <file>` — open a file as a tab. From you (an agent, `CLAUDECODE` set) it opens in the background: the tab shimmers until the user looks; `-f` brings it to the front. When the user should read something now, use `couplet show <file>` (or `-f`).
 - `couplet ls` — the open windows: number, project, tabs (`--json` for machine-readable output). `couplet close <file>` — close a tab you opened and no longer need.
+- When a document refers to another file, write a relative markdown link — `[plan](docs/plan.md)`, relative to the document you write in. couplet opens it on ⌘-click (`plan.md#risks` jumps to that heading).
 
 Windows: every answer names the window it landed in — `{"ok":true,"window":7,"focused":true}`. Pass `-t 7` to `show`/`edit`/`ask`/`couplet <file>` to keep working in that window. Without `-t` a file goes to its own tab if it is open (wherever that is — the answer's `window` says where), else to a window of its project (the git toplevel), else to a new window. The tab the user is typing in is never taken from them, and while they type in one couplet window no other window comes forward: `"focused":false` means your show landed in the background — tell them where to look instead of retrying. If they are typing in that very tab, the answer is `"focused":true` but nothing moves: the target only pulses, possibly off-screen. An `edit` of a background tab is applied and saved there; an `ask` for one waits there until they open it, and its timeout still counts from the call. Use `couplet show <file> --transient` for a quick look: the tab asks them "Close / Keep" by itself.
 
@@ -2004,6 +2005,7 @@ pub(crate) const MCP_AGENT_SNIPPET: &str = r#"## couplet via MCP — how to use 
 - `transient: true` is for a quick look — something they glance at once. The tab asks them «Close / Keep» by itself; leave it off for documents you will keep working in.
 - An `edit` of a background tab is applied and saved there, highlighted when they open it; an `ask` for one waits there until they do, and its timeout still counts from the call.
 - Close what you opened and no longer need with `close` — hygiene, not isolation.
+- When a document refers to another file, write a relative markdown link — `[plan](docs/plan.md)`, relative to that document. couplet opens it on ⌘-click (`plan.md#risks` jumps to that heading).
 
 ### Comments the user leaves for you
 
