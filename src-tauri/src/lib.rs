@@ -16,6 +16,7 @@ mod commands;
 mod dock_icon;
 mod git_info;
 mod i18n;
+mod link_walk;
 mod links;
 mod locale;
 pub mod mcp_server;
