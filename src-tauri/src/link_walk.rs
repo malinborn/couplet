@@ -22,13 +22,27 @@ pub const PROJECT_LIMITS: WalkLimits = WalkLimits {
     budget: Duration::from_millis(300),
 };
 
-/// The home folder or `/` as a "project" (a loose note in `~`): its own files
-/// only. Walking further would read all of home and raise macOS consent
-/// prompts for `~/Documents`, `~/Desktop`, `~/Downloads`.
+/// The home folder, an ancestor of it or `/` as a "project" (a loose note in
+/// `~`, a repository at `/Users`): its own files only. Walking further would
+/// read all of home and raise macOS consent prompts for `~/Documents`,
+/// `~/Desktop`, `~/Downloads`.
 pub const SHALLOW_LIMITS: WalkLimits = WalkLimits {
     max_depth: 1,
     ..PROJECT_LIMITS
 };
+
+/// Home folders macOS guards with a consent prompt (TCC), or that are huge
+/// and never a project (`Library`). Never entered by a walk — reading one
+/// from a root *inside* it is fine: the user already opened a file there.
+const PROTECTED_HOME_DIRS: [&str; 7] = [
+    "Documents",
+    "Desktop",
+    "Downloads",
+    "Library",
+    "Pictures",
+    "Movies",
+    "Music",
+];
 
 pub const CACHE_TTL: Duration = Duration::from_secs(30);
 
@@ -69,30 +83,44 @@ pub fn skips_dir(name: &str) -> bool {
 }
 
 pub fn limits_for(root: &Path, home: Option<&Path>) -> WalkLimits {
-    if root.parent().is_none() || home == Some(root) {
+    if root.parent().is_none() || home.is_some_and(|h| h.starts_with(root)) {
         SHALLOW_LIMITS
     } else {
         PROJECT_LIMITS
     }
 }
 
-/// Breadth first, so a cut-short walk keeps the files nearest the root.
-pub fn walk_project(root: &Path, limits: WalkLimits) -> WalkResult {
+/// The directories a walk never enters (`PROTECTED_HOME_DIRS` under `home`).
+/// A root inside one still walks: none of its descendants is one of them.
+pub fn protected_dirs(home: Option<&Path>) -> Vec<PathBuf> {
+    home.map(|h| PROTECTED_HOME_DIRS.iter().map(|d| h.join(d)).collect())
+        .unwrap_or_default()
+}
+
+/// Breadth first, so a cut-short walk keeps the files nearest the root. The
+/// budget is checked per entry while a directory is read, not per directory:
+/// one huge folder cannot overrun it. An unreadable directory is skipped.
+pub fn walk_project(root: &Path, limits: WalkLimits, never_enter: &[PathBuf]) -> WalkResult {
     let started = Instant::now();
     let mut files = Vec::new();
     let mut truncated = false;
     let mut queue = VecDeque::from([(root.to_path_buf(), 1usize)]);
     'walk: while let Some((dir, depth)) = queue.pop_front() {
+        if started.elapsed() >= limits.budget {
+            truncated = true;
+            break;
+        }
         let Ok(read) = fs::read_dir(&dir) else {
             continue;
         };
-        let mut entries: Vec<fs::DirEntry> = read.filter_map(Result::ok).collect();
-        entries.sort_by_key(|e| e.file_name());
-        for entry in entries {
+        for entry in read {
             if started.elapsed() >= limits.budget {
                 truncated = true;
                 break 'walk;
             }
+            let Ok(entry) = entry else {
+                continue;
+            };
             let name = entry.file_name();
             let name = name.to_string_lossy();
             let Ok(kind) = entry.file_type() else {
@@ -102,8 +130,12 @@ pub fn walk_project(root: &Path, limits: WalkLimits) -> WalkResult {
                 if skips_dir(&name) {
                     continue;
                 }
+                let path = entry.path();
+                if never_enter.contains(&path) {
+                    continue;
+                }
                 if depth < limits.max_depth {
-                    queue.push_back((entry.path(), depth + 1));
+                    queue.push_back((path, depth + 1));
                 } else {
                     truncated = true;
                 }
@@ -130,6 +162,7 @@ pub fn walk_project(root: &Path, limits: WalkLimits) -> WalkResult {
             });
         }
     }
+    // The one ordering the result has: read order is the file system's.
     files.sort_by(|a, b| {
         b.modified
             .cmp(&a.modified)
@@ -173,9 +206,12 @@ pub fn cached_walk(root: &Path) -> WalkResult {
     static CACHE: OnceLock<WalkCache> = OnceLock::new();
     let home = dirs::home_dir().map(|h| crate::path_norm::normalize_path(&h));
     let limits = limits_for(root, home.as_deref());
+    let never_enter = protected_dirs(home.as_deref());
     CACHE
         .get_or_init(WalkCache::default)
-        .get_or_walk(root, Instant::now(), || walk_project(root, limits))
+        .get_or_walk(root, Instant::now(), || {
+            walk_project(root, limits, &never_enter)
+        })
 }
 
 #[cfg(test)]
@@ -233,7 +269,7 @@ mod tests {
         ] {
             touch(&root, rel);
         }
-        let r = walk_project(&root, PROJECT_LIMITS);
+        let r = walk_project(&root, PROJECT_LIMITS, &[]);
         assert_eq!(
             names(&r, &root),
             vec!["a.md", "b.TXT", "c.csv", "d.tsv", "docs/f.md", "e.markdown"]
@@ -252,6 +288,7 @@ mod tests {
                 max_depth: 2,
                 ..PROJECT_LIMITS
             },
+            &[],
         );
         assert_eq!(names(&r, &root), vec!["a/x.md"]);
         assert!(r.truncated);
@@ -269,6 +306,7 @@ mod tests {
                 max_files: 2,
                 ..PROJECT_LIMITS
             },
+            &[],
         );
         assert_eq!(r.files.len(), 2);
         assert!(r.truncated);
@@ -284,6 +322,7 @@ mod tests {
                 budget: Duration::ZERO,
                 ..PROJECT_LIMITS
             },
+            &[],
         );
         assert!(r.files.is_empty());
         assert!(r.truncated);
@@ -296,7 +335,7 @@ mod tests {
         touch(&other, "z.md");
         std::os::unix::fs::symlink(&other, root.join("linked-dir")).unwrap();
         std::os::unix::fs::symlink(other.join("z.md"), root.join("l.md")).unwrap();
-        let r = walk_project(&root, PROJECT_LIMITS);
+        let r = walk_project(&root, PROJECT_LIMITS, &[]);
         assert_eq!(names(&r, &root), vec!["l.md"]);
         assert!(!r.truncated);
     }
@@ -313,7 +352,7 @@ mod tests {
             .unwrap()
             .set_modified(old)
             .unwrap();
-        let r = walk_project(&root, PROJECT_LIMITS);
+        let r = walk_project(&root, PROJECT_LIMITS, &[]);
         let order: Vec<String> = r
             .files
             .iter()
@@ -357,5 +396,73 @@ mod tests {
             one.clone()
         });
         assert_eq!(walks, 2);
+    }
+
+    #[test]
+    fn an_ancestor_of_home_is_walked_one_level() {
+        let home = Path::new("/Users/me");
+        assert_eq!(limits_for(Path::new("/Users"), Some(home)), SHALLOW_LIMITS);
+        // Path::starts_with compares components: /Users/meow is no ancestor.
+        assert_eq!(
+            limits_for(Path::new("/Users/meow"), Some(home)),
+            PROJECT_LIMITS
+        );
+        assert_eq!(limits_for(Path::new("/srv/proj"), None), PROJECT_LIMITS);
+    }
+
+    #[test]
+    fn the_protected_home_folders_are_listed() {
+        let dirs = protected_dirs(Some(Path::new("/Users/me")));
+        for name in [
+            "Documents",
+            "Desktop",
+            "Downloads",
+            "Library",
+            "Pictures",
+            "Movies",
+            "Music",
+        ] {
+            assert!(
+                dirs.contains(&PathBuf::from("/Users/me").join(name)),
+                "{name}"
+            );
+        }
+        assert!(protected_dirs(None).is_empty());
+    }
+
+    #[test]
+    fn a_protected_home_folder_is_never_entered() {
+        let home = scratch("tcc-home");
+        touch(&home, "Documents/a.md");
+        touch(&home, "Downloads/b.md");
+        touch(&home, "notes/c.md");
+        let r = walk_project(&home, PROJECT_LIMITS, &protected_dirs(Some(&home)));
+        assert_eq!(names(&r, &home), vec!["notes/c.md"]);
+        assert!(!r.truncated);
+    }
+
+    #[test]
+    fn a_root_inside_a_protected_folder_is_walked() {
+        let home = scratch("tcc-inside");
+        touch(&home, "Documents/proj/a.md");
+        touch(&home, "Documents/proj/docs/b.md");
+        let root = home.join("Documents/proj");
+        let r = walk_project(&root, PROJECT_LIMITS, &protected_dirs(Some(&home)));
+        assert_eq!(names(&r, &root), vec!["a.md", "docs/b.md"]);
+    }
+
+    #[test]
+    fn an_unreadable_directory_is_skipped_without_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("denied");
+        touch(&root, "a.md");
+        touch(&root, "locked/b.md");
+        let locked = root.join("locked");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let r = walk_project(&root, PROJECT_LIMITS, &[]);
+        // Put it back first, so a failed assertion still leaves a removable dir.
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(names(&r, &root), vec!["a.md"]);
+        assert!(!r.truncated);
     }
 }
