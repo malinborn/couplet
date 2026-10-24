@@ -7,6 +7,8 @@ import { addAiComment, aiCommentField, type CommentActions } from '../editor/ai-
 import { jsonOfferField, setJsonOffer } from '../editor/json-paste';
 import { aiHighlightField, aiHighlightRanges, setAiHighlights } from '../editor/ai-highlight';
 import { decideEnter, leaveEffects, stripLeavingState } from './tab-cache';
+import { markdownExtension } from '../editor/markdown-language';
+import { mathGhost, mathGhostField } from '../editor/math/ghost';
 import { EditorView } from '@codemirror/view';
 import { completionStatus, currentCompletions, setSelectedCompletion } from '@codemirror/autocomplete';
 import { createDocumentState } from '../editor/state-factory';
@@ -50,6 +52,21 @@ function busyState(): EditorState {
 }
 
 describe('leaveEffects', () => {
+  it('ClearsTheMathGhost', () => {
+    // A ghost kept in a cached state would come back on return with no edit
+    // behind it, and Tab there would write an answer nobody was just offered.
+    const base = EditorState.create({ doc: '338 * 1.3 ', extensions: [markdownExtension(), mathGhost()] });
+    const before = base.update({
+      changes: { from: 10, insert: '=' },
+      selection: { anchor: 11 },
+      userEvent: 'input.type',
+    }).state;
+    expect(before.field(mathGhostField)?.answer).toBe('439.4');
+
+    const after = before.update({ effects: leaveEffects() }).state;
+    expect(after.field(mathGhostField)).toBeNull();
+  });
+
   it('StripsAsksCommentCardsAndTheJsonOffer', () => {
     const before = busyState();
     expect(activeAskIds(before)).toEqual([7]);

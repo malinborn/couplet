@@ -2322,9 +2322,12 @@
 }
 
 /* Inline arithmetic: the answer offered after `=` (editor/math/ghost.ts).
-   An existing token, so every theme already has it. */
+   An existing token, so every theme already has it. A heading line sets
+   `-webkit-text-fill-color: transparent` for its gradient, and that inherits:
+   without the reset the ghost is painted in the heading's colours. */
 .cm-math-ghost {
   color: var(--text-muted);
+  -webkit-text-fill-color: currentColor;
   pointer-events: none;
   user-select: none;
 }

@@ -4,6 +4,7 @@ import { closeCompletion } from '@codemirror/autocomplete';
 import { clearAiAsks } from '../editor/ai-ask';
 import { clearAiComments } from '../editor/ai-comment';
 import { clearJsonOffer } from '../editor/json-paste';
+import { clearMathGhost } from '../editor/math/ghost';
 import { closeThemePicker, type ThemeControl } from '../editor/slash-theme';
 import { closeTonePicker } from '../editor/slash-tone';
 
@@ -15,6 +16,8 @@ import { closeTonePicker } from '../editor/slash-tone';
  * - comment cards: rebuilt from the sidecar on return, and a cached card
  *   would carry a textarea with stale text;
  * - the JSON offer: its toast belongs to the window and is withdrawn on leave;
+ * - the math ghost: an answer offered for an edit made before the switch;
+ *   kept, it would reappear on return with Tab live and no edit behind it;
  * - an open `/theme` or `/tone` picker: its preview belongs to the window, and
  *   only the picker's own update listener would ever clear it — which a state
  *   in the background, or `setState`, never runs.
@@ -26,6 +29,7 @@ export function leaveEffects(): StateEffect<unknown>[] {
     clearAiAsks.of(null),
     clearAiComments.of(null),
     clearJsonOffer.of(null),
+    clearMathGhost.of(null),
     closeThemePicker.of(null),
     closeTonePicker.of(null),
   ];

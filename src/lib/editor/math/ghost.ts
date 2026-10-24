@@ -13,12 +13,16 @@ import { findExpression, type Candidate } from './trigger';
  * next human edit, so a space after `=` (or retyping `=`) brings it back.
  */
 
-const setMathGhost = StateEffect.define<Candidate | null>();
+/**
+ * Hides the ghost until the next human edit: Esc, Tab, a blur, and a state
+ * going to the background (`leaveEffects` in `tabs/tab-cache.ts`).
+ */
+export const clearMathGhost = StateEffect.define<null>();
 
 export const mathGhostField = StateField.define<Candidate | null>({
   create: () => null,
   update(value, tr) {
-    for (const effect of tr.effects) if (effect.is(setMathGhost)) return effect.value;
+    if (tr.effects.some((effect) => effect.is(clearMathGhost))) return null;
     if (isHumanEdit({ docChanged: tr.docChanged, transactions: [tr] })) {
       if (tr.isUserEvent('input.type.compose')) return null;
       const { ranges, main } = tr.state.selection;
@@ -64,12 +68,12 @@ class GhostWidget extends WidgetType {
 /** Tab: `=` plus whatever spaces followed it becomes `= <answer>`. Its own undo step. */
 export const acceptMathGhost: Command = (view) => {
   const ghost = view.state.field(mathGhostField, false);
-  if (!ghost) return false;
+  if (!ghost || view.state.readOnly) return false;
   const insert = ' ' + ghost.answer;
   view.dispatch({
     changes: { from: ghost.eq, to: ghost.pos, insert },
     selection: { anchor: ghost.eq + insert.length },
-    effects: setMathGhost.of(null),
+    effects: clearMathGhost.of(null),
     annotations: isolateHistory.of('full'),
     userEvent: 'input.complete',
     scrollIntoView: true,
@@ -80,7 +84,7 @@ export const acceptMathGhost: Command = (view) => {
 /** Esc: hide the ghost. Not taken when there is none (AI highlights, search keep Esc). */
 export const dismissMathGhost: Command = (view) => {
   if (!view.state.field(mathGhostField, false)) return false;
-  view.dispatch({ effects: setMathGhost.of(null) });
+  view.dispatch({ effects: clearMathGhost.of(null) });
   return true;
 };
 
@@ -96,7 +100,7 @@ export function mathGhost(): Extension {
       ])
     ),
     EditorView.focusChangeEffect.of((state, focusing) =>
-      !focusing && state.field(mathGhostField, false) ? setMathGhost.of(null) : null
+      !focusing && state.field(mathGhostField, false) ? clearMathGhost.of(null) : null
     ),
   ];
 }

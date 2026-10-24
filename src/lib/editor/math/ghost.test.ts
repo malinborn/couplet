@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, describe, it, expect } from 'vitest';
-import { EditorState, Transaction } from '@codemirror/state';
+import { EditorState, Transaction, type Extension } from '@codemirror/state';
 import { EditorView, keymap, runScopeHandlers } from '@codemirror/view';
-import { history, undo } from '@codemirror/commands';
+import { history, redo, undo } from '@codemirror/commands';
 import { markdownExtension } from '../markdown-language';
 import { setAiHighlights } from '../ai-highlight';
 import { mathGhost, mathGhostField } from './ghost';
@@ -19,7 +19,7 @@ afterEach(() => {
   for (const view of views.splice(0)) view.destroy();
 });
 
-function makeView(doc: string): EditorView {
+function makeView(doc: string, extra: Extension[] = []): EditorView {
   fellThrough = 0;
   const view = new EditorView({
     state: EditorState.create({
@@ -31,6 +31,7 @@ function makeView(doc: string): EditorView {
         mathGhost(),
         // Stands in for list indent etc.: what Tab does when no ghost is shown.
         keymap.of([{ key: 'Tab', run: () => (fellThrough++, true) }]),
+        ...extra,
       ],
     }),
   });
@@ -102,6 +103,32 @@ describe('math ghost', () => {
     type(view, '!');
     undo(view);
     expect(view.state.doc.toString()).toBe('338 * 1.3 = 439.4');
+  });
+
+  it('undoing an accept brings the ghost back, redoing it clears it', () => {
+    const view = makeView('338 * 1.3 ');
+    type(view, '=');
+    press(view, 'Tab');
+    undo(view);
+    expect(ghost(view)?.answer).toBe('439.4');
+    expect(ghostText(view)).toBe(' 439.4');
+    redo(view);
+    expect(view.state.doc.toString()).toBe('338 * 1.3 = 439.4');
+    expect(ghost(view)).toBeNull();
+  });
+
+  it('a read-only document is never written: Tab falls through', () => {
+    const view = makeView('338 * 1.3 ', [EditorState.readOnly.of(true)]);
+    type(view, '=');
+    expect(press(view, 'Tab')).toBe(true);
+    expect(fellThrough).toBe(1);
+    expect(view.state.doc.toString()).toBe('338 * 1.3 =');
+  });
+
+  it('the ghost is hidden from assistive technology', () => {
+    const view = makeView('338 * 1.3 ');
+    type(view, '=');
+    expect(view.contentDOM.querySelector('.cm-math-ghost')?.getAttribute('aria-hidden')).toBe('true');
   });
 
   it('Tab collapses the spaces typed after `=`', () => {
