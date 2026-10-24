@@ -141,6 +141,15 @@ export type ToastPayload =
    * so the refusal was never read. A newer standing note replaces the last.
    */
   | { kind: 'stash-standing'; note: StandingStashNote }
+  /**
+   * A file link (file-links D2) whose target is not there — or, with `path:
+   * null`, a relative link in a document that has no path yet (`fileName` is
+   * then the link as written). «Create» opens the missing path as a new
+   * unsaved tab, saved where the link points; it is never created on the
+   * click itself, so a typo in an agent's link cannot litter the disk.
+   * `canCreate` is false for a target couplet would not open as a document.
+   */
+  | { kind: 'link-missing'; path: string | null; fileName: string; canCreate: boolean }
   | { kind: 'update'; latest: string; current: string; highlight?: string }
   /**
    * Answers to a manual "Check for Updates…" click (#82) — the automatic
@@ -245,6 +254,8 @@ const ORDER: Record<ToastKind, number> = {
   // Answers a drawer action the user just took, like the rest of this group.
   stash: 4,
   'stash-standing': 4,
+  // Answers the ⌘-click the user just made.
+  'link-missing': 4,
   // Sorts below everything: it is the only toast that is still waiting on a
   // decision, so it belongs closest to the pointer that has to make it.
   'json-offer': 5,
