@@ -202,12 +202,25 @@ fn recent_paths(app: &AppHandle) -> Vec<String> {
     let Some(recent) = app.try_state::<crate::recent::RecentFiles>() else {
         return Vec::new();
     };
-    recent
-        .snapshot()
-        .files
+    existing_normalized(
+        recent
+            .snapshot()
+            .files
+            .into_iter()
+            .map(|f| f.path)
+            .collect(),
+    )
+}
+
+/// Recent files that still exist (Q7: a deleted one would only make a dead
+/// link), in `path_norm` spelling so they dedup against tabs and the
+/// document. At most ten paths, one `stat` and one canonicalize each, with
+/// no lock held.
+fn existing_normalized(paths: Vec<String>) -> Vec<String> {
+    paths
         .into_iter()
-        .map(|f| f.path)
         .filter(|p| Path::new(p).exists())
+        .map(|p| crate::path_norm::normalize_str(&p))
         .collect()
 }
 
@@ -435,5 +448,19 @@ mod tests {
                 "docPath": "/r/doc.md"
             })
         );
+    }
+
+    #[test]
+    fn recent_paths_are_normalized_and_missing_ones_dropped() {
+        let dir = scratch("recent");
+        fs::write(dir.join("a.md"), "x").unwrap();
+        let alias = scratch("recent-alias").join("link");
+        std::os::unix::fs::symlink(&dir, &alias).unwrap();
+        let got = existing_normalized(vec![
+            alias.join("a.md").to_string_lossy().into_owned(),
+            dir.join("gone.md").to_string_lossy().into_owned(),
+        ]);
+        let real = dir.join("a.md").canonicalize().unwrap();
+        assert_eq!(got, vec![real.to_string_lossy().into_owned()]);
     }
 }
