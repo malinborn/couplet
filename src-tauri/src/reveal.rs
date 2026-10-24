@@ -42,6 +42,47 @@ pub async fn reveal_in_finder(app: AppHandle, path: String) -> Result<(), String
     }
 }
 
+/// An `NSAutoreleasePool` that drains on `Drop`, panics included — the guard
+/// `migration.rs` uses, built on the `objc` runtime like the rest of this
+/// file instead of `cocoa`'s deprecated wrapper. `stringWithUTF8String:`,
+/// `fileURLWithPath:` and `arrayWithObject:` return autoreleased objects; on
+/// the main thread outside AppKit's own event dispatch nothing else is
+/// guaranteed to drain them.
+#[cfg(target_os = "macos")]
+struct AutoreleasePool(*mut objc::runtime::Object);
+
+#[cfg(target_os = "macos")]
+impl AutoreleasePool {
+    fn new() -> Result<Self, String> {
+        use objc::runtime::{Class, Object, Sel};
+        use objc::Message;
+        let class = Class::get("NSAutoreleasePool").ok_or("NSAutoreleasePool is not available")?;
+        // SAFETY: `new` (alloc + init) on NSAutoreleasePool takes no
+        // arguments and returns an owned pool, released by `drain` in `Drop`.
+        let pool: *mut Object = unsafe {
+            class
+                .send_message(Sel::register("new"), ())
+                .map_err(|e| format!("{e:?}"))?
+        };
+        if pool.is_null() {
+            return Err("could not create an autorelease pool".to_string());
+        }
+        Ok(Self(pool))
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for AutoreleasePool {
+    fn drop(&mut self) {
+        use objc::runtime::Sel;
+        use objc::Message;
+        // SAFETY: `self.0` is the pool `new` created; nothing else drains it.
+        unsafe {
+            let _ = (*self.0).send_message::<(), ()>(Sel::register("drain"), ());
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn select_in_finder(path: &Path) -> Result<(), String> {
     use objc::runtime::{Class, Object, Sel};
@@ -51,6 +92,8 @@ fn select_in_finder(path: &Path) -> Result<(), String> {
     let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
         .map_err(|_| "the path contains a NUL byte".to_string())?;
     let class = |name: &str| Class::get(name).ok_or_else(|| format!("{name} is not available"));
+    // Drained when this function returns, on every path out of it.
+    let _pool = AutoreleasePool::new()?;
     unsafe {
         let ns_path: *mut Object = class("NSString")?
             .send_message(Sel::register("stringWithUTF8String:"), (c_path.as_ptr(),))
@@ -103,6 +146,18 @@ mod tests {
             reveal_target(dir.join("a.png").to_str().unwrap()).unwrap(),
             dir.join("a.png")
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_autorelease_pool_opens_and_drains() {
+        // Nested pools are legal, and `Drop` drains this one: a pool that was
+        // never drained, or drained twice, aborts the test process.
+        let outer = AutoreleasePool::new().expect("outer pool");
+        {
+            let _inner = AutoreleasePool::new().expect("inner pool");
+        }
+        drop(outer);
     }
 
     #[test]
