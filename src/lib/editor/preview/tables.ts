@@ -1661,18 +1661,6 @@ function cellEditorOpen(): boolean {
 }
 
 /**
- * Move the document selection to wherever the caret is sitting in this cell.
- *
- * The DOM caret is the one the user sees; this is the other half — everything
- * that asks the *state* where the user is (comments, AI edits, the session's
- * saved caret) should get an answer inside the clicked cell instead of a stale
- * one somewhere else in the file.
- *
- * A non-collapsed host selection is left alone: that is a text selection being
- * made in the cell, and `live-render/selection-toolbar.ts` deliberately reads
- * it from the DOM rather than from `state.selection`.
- */
-/**
  * Document position of the collapsed DOM caret in a cell, or `null`.
  *
  * A computed cell shows an answer whose characters have no counterpart in the
@@ -1686,6 +1674,18 @@ function cellCaretPos(textEl: HTMLElement, cell: CellInfo): number | null {
   return docPosForCaretIn(textEl, cell.text, cell.from);
 }
 
+/**
+ * Move the document selection to wherever the caret is sitting in this cell.
+ *
+ * The DOM caret is the one the user sees; this is the other half — everything
+ * that asks the *state* where the user is (comments, AI edits, the session's
+ * saved caret) should get an answer inside the clicked cell instead of a stale
+ * one somewhere else in the file.
+ *
+ * A non-collapsed host selection is left alone: that is a text selection being
+ * made in the cell, and `live-render/selection-toolbar.ts` deliberately reads
+ * it from the DOM rather than from `state.selection`.
+ */
 function syncDocCaret(view: EditorView, textEl: HTMLElement, cell: CellInfo): void {
   const pos = cellCaretPos(textEl, cell);
   if (pos === null) return;

@@ -639,7 +639,8 @@ A cell whose whole text is `<expr> =` (`math/cell.ts`, `computeCell`) is drawn b
 
 - `renderCellContent` resets the class and `title` first — `updateDOM` reuses the element when a cell turns plain.
 - ⌘F cell highlights and the spotlight's hole already skip it: they need one text node equal to the source.
-- A caret or selection in it maps to the **end of the expression** (`cellCaretPos`, `hostSelectionAsSource`), so typing appends.
+- A caret or selection in it maps to the **end of the expression** (`cellCaretPos`, `hostSelectionAsSource`), so typing appends (`338 * 1.3 =5` — plain text until fixed) and Backspace removes the `=` (the cell shows the expression). Current behaviour; an owner decision is pending (Excel-style replace-on-first-key is the alternative).
+- Copying a selection inside it copies the visible answer (the host exemption above); whether WKWebView leaves the `user-select: none` marker out is unverified.
 - The live-render format toolbar refuses it (`widgetTarget`); format or comment through the overlay, which holds the source.
 - A comment anchored anywhere in the expression marks the whole answer.
 

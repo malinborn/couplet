@@ -242,8 +242,18 @@ markdown syntax. Tables get their own form instead — a computed cell.
   answer (they index the source).
 - **No leading `=`:** Excel-style `=A1+B1` is a CSV formula (and a known
   injection vector); the trailing `=` keeps one syntax across text and tables.
-- **Known limits:** ⌘F searches the source (`338`, not `439`); copying a table
-  copies the source; sorting by such a column (if ever added) sorts the source.
+- **Known limits:** ⌘F searches the source (`338`, not `439`). Copying a
+  selection made inside a computed cell copies the visible answer (a cell's
+  text is a nested editing host, so `copy` takes the rendered text —
+  `preview/CLAUDE.md`); copying the table's source (raw mode, or a document
+  selection over the table) copies the expression. The marker is
+  `user-select: none`, but whether WKWebView leaves `ƒ` out of a copy is
+  unverified. Sorting by such a column (if ever added) sorts the source.
+- **Typing in a computed cell (current behaviour, owner decision pending):**
+  a caret or a selection over the answer stands for the end of the
+  expression, so typing appends — `338 * 1.3 =5`, plain text until fixed —
+  and Backspace removes the `=`, so the cell shows the expression. The
+  alternative is Excel-style: the first key replaces the whole cell.
 - **Security hardening:** the operator synonym table becomes a `Map` (no
   prototype lookup at all).
 - **Tests:** `computeCell` table (valid, refused, comparisons, prose, spaces
