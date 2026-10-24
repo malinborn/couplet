@@ -131,15 +131,33 @@ empty cursor, not during IME composition. The answer shows only if **all** hold:
    `шаг 2) (3+4) =` still finds `(3+4)`).
    - If that run, without spaces at its ends, is longer than 200 characters
      there is no answer — it is never cut to its last 200. The scan back stops
-     as soon as the run passes the limit, so a huge line costs no more per
-     keystroke than a short one.
-   - Shrinking tries only starts at a **token boundary**: the character before
-     the start (inside or outside the run) is not a digit, `.`, `,`, a letter
-     or a non-ASCII space, and the nearest non-space character before it is
-     not a digit. So `1e5 + 1 =`, `0x10 + 1 =`, `v1.2.3 + 1 =`, `.5 + 1 =`,
-     `1,5,5 + 1 =`, `12 34 + 1 =`, `1 5000 + 1 =`, `1,500 000 + 1 =` and
-     `шаг 2 (3+4) =` all give nothing instead of an answer for their tail;
-     `x = 5 + 3 =` → `8` and `Например, 5 + 3 =` → `8` still work.
+     as soon as the run passes the limit.
+   - Only the last 512 characters before the caret are looked at. On a longer
+     line that tail is used as is (no block-prefix stripping: a run of at most
+     200 characters cannot reach the line start), and a run that reaches the
+     start of the tail is no answer, since it may go on past it. So the
+     string work per keystroke — the `=` regex, the scan, the `evaluate`
+     calls — is bounded by 512 characters whatever the line length. Taking
+     the caret's line out of the document is still O(line), and the
+     syntax-tree lookup is CodeMirror's normal incremental parse
+     (`ensureSyntaxTree` up to the caret's line).
+   - Shrinking tries only starts at a **token boundary**:
+     - the character right before the start (inside or outside the run) is
+       not a digit, `.`, `,`, a letter or a non-ASCII space — the two no-break
+       spaces excepted, they count as spaces;
+     - the nearest non-space character before the start is not a digit
+       (two adjacent numbers);
+     - if that nearest character is inside the run, it is `)`, `,` or `.` —
+       after an operator, `(` or `%` the start would be the tail of an
+       unfinished expression.
+
+     So `1e5 + 1 =`, `0x10 + 1 =`, `v1.2.3 + 1 =`, `.5 + 1 =`, `1,5,5 + 1 =`,
+     `12 34 + 1 =`, `1 5000 + 1 =`, `1,500 000 + 1 =`, `шаг 2 (3+4) =`,
+     `5 * (3 + 4 =`, `10 / (2 + 3 =`, `(1 + 2) * (3 + 4 =`,
+     `100 - (20 + 5 =`, `2 + + 3 + 4 =` and `x-5 + 3 =` all give nothing
+     instead of an answer for their tail; `шаг 2) (3+4) =` → `7`,
+     `Например, 5 + 3 =` → `8`, `(см. 5 + 3 =` → `8`, `x = 5 + 3 =` → `8`
+     and `Итого:` + no-break space + `5 + 3 =` → `8` still work.
 6. `formatResult` returns a string.
 
 Any other update clears the ghost: a selection change without an edit, Esc, a
