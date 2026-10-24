@@ -18,13 +18,15 @@ pub enum MenuRoute {
 }
 
 pub fn menu_route(id: &str) -> MenuRoute {
-    const BROADCAST_PREFIXES: [&str; 6] = [
+    const BROADCAST_PREFIXES: [&str; 8] = [
         "engine_",
         "theme_",
         "toggle_ocd_alignment",
         "toggle_tabs_compact",
         "toggle_tabs_dates",
         "transient_ignored_",
+        "list_",
+        "toggle_list_",
     ];
     match id {
         "toggle_mode" | "zoom_in" | "zoom_out" | "zoom_reset" | "toggle_line_glow" => {
@@ -120,6 +122,12 @@ mod tests {
             "theme_system:off",
             "transient_ignored_keep",
             "transient_ignored_close",
+            "list_preset_standard",
+            "list_preset_explicit",
+            "toggle_list_guides:on",
+            "toggle_list_strict:off",
+            "list_guide_dotted",
+            "list_density_sparse",
         ] {
             assert_eq!(menu_route(id), MenuRoute::Broadcast, "{id}");
         }

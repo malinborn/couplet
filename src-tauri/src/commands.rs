@@ -88,6 +88,21 @@ pub async fn sync_ocd_alignment_menu(
     Ok(())
 }
 
+/// Sets View → Lists to the frontend's stored layout (`explicit-lists.ts`):
+/// at start, for the `Toggle`s `lib.rs` reads, and after every click, since
+/// macOS flips the clicked item itself and a preset moves four marks at once.
+#[command]
+pub async fn sync_list_menu(
+    state: tauri::State<'_, crate::menu::ListMenuItems>,
+    guides: bool,
+    strict: bool,
+    guide_style: String,
+    density: String,
+) -> Result<(), String> {
+    state.sync(guides, strict, &guide_style, &density);
+    Ok(())
+}
+
 /// Sets View → Tabs → Compact to the frontend's persisted flag — the same
 /// start-up sync as `sync_ocd_alignment_menu`, for the same reason: `lib.rs`
 /// sends windows this toggle's value from `ViewToggleItems`, not "flip it".

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Списки · песочница</title>
+  </head>
+  <body>
+    <aside class="pg-panel">
+      <h1>View → Списки</h1>
+      <p class="pg-hint">Те же пункты, что в меню приложения.</p>
+
+      <div class="pg-menu" id="menu">
+        <button data-id="list_preset_standard">Стандартные</button>
+        <button data-id="list_preset_explicit">Явные</button>
+        <hr />
+        <button data-id="toggle_list_guides">Линии вложенности</button>
+        <button data-id="toggle_list_strict">Строгий отступ</button>
+        <hr />
+        <button data-id="list_guide_solid" data-needs-guides>Сплошные линии</button>
+        <button data-id="list_guide_dashed" data-needs-guides>Пунктирные линии</button>
+        <button data-id="list_guide_dotted" data-needs-guides>Точечные линии</button>
+        <hr />
+        <button data-id="list_density_compact">Компактно</button>
+        <button data-id="list_density_standard">Обычно</button>
+        <button data-id="list_density_sparse">Просторно</button>
+      </div>
+
+      <h2>Песочница</h2>
+      <label class="pg-row">Движок
+        <span class="pg-seg" data-key="engine">
+          <button data-v="live-preview">preview</button><button data-v="live-render">render</button>
+        </span>
+      </label>
+      <label class="pg-row">Тема
+        <select id="theme"></select>
+      </label>
+      <label class="pg-row">Ширина колонки <output></output>
+        <input type="range" id="width" min="320" max="1100" step="10" value="640" data-unit="px" />
+      </label>
+
+      <button id="reset" class="pg-reset">Вернуть исходный текст</button>
+      <p class="pg-hint">Текст редактируемый. Настройки запоминаются в этом браузере.</p>
+    </aside>
+
+    <main class="pg-stage">
+      <div id="editor" class="pg-editor"></div>
+    </main>
+
+    <script type="module" src="./lists.ts"></script>
+  </body>
+</html>

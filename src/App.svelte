@@ -4,9 +4,9 @@
   import type { EditorHandle } from './lib/editor/Editor.svelte';
   import type { ViewUpdate } from '@codemirror/view';
   import { isHumanEdit } from './lib/editor/human-edit';
-  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createTabsCompactStore, createTabsDatesStore, createTransientPolicyStore, createFileState, createRecentFilesStore, setProductName, setWindowNumber, getWindowNumber } from './lib/stores.svelte';
+  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createListLayoutStore, createTabsCompactStore, createTabsDatesStore, createTransientPolicyStore, createFileState, createRecentFilesStore, setProductName, setWindowNumber, getWindowNumber } from './lib/stores.svelte';
   import { getName } from '@tauri-apps/api/app';
-  import { readDocument, writeDocument, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncDockIcon, syncEngineMenu, syncOcdAlignmentMenu, broadcastTheme, syncTabsCompactMenu, syncTabsDatesMenu, syncTransientMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type TabClaim, type WindowInit } from './lib/tauri/commands';
+  import { readDocument, writeDocument, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncDockIcon, syncEngineMenu, syncOcdAlignmentMenu, syncListMenu, broadcastTheme, syncTabsCompactMenu, syncTabsDatesMenu, syncTransientMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type TabClaim, type WindowInit } from './lib/tauri/commands';
   import { concreteTheme, halfOf, type ThemeFamily } from './lib/theme-resolve';
   import type { ThemeControl } from './lib/editor/slash-theme';
   import {
@@ -88,7 +88,8 @@
   import { stashKeysHandler } from './lib/stash/stash-keys';
   import type { StashControl } from './lib/editor/slash-stash';
   import { shouldShowHint, nextCheckDelay } from './lib/ai-hint';
-  import { previewCompartment, lineGlowCompartment } from './lib/editor/setup';
+  import { previewCompartment, lineGlowCompartment, listLayoutCompartment } from './lib/editor/setup';
+  import { listLayoutExtension } from './lib/editor/preview/explicit-lists';
   import { stashAndUnfoldAll, restoreStashedFolds } from './lib/editor/fold-memory';
   import { EditorView, highlightActiveLine } from '@codemirror/view';
   import type { StateEffect } from '@codemirror/state';
@@ -224,6 +225,7 @@
   const zoom = createZoomStore();
   const lineGlow = createLineGlowStore();
   const ocdAlignment = createOcdAlignmentStore();
+  const listLayout = createListLayoutStore();
   const tabsCompact = createTabsCompactStore();
   const tabsDates = createTabsDatesStore();
   const transientPolicy = createTransientPolicyStore();
@@ -747,6 +749,7 @@
     // `applyPreviewConfig`).
     applyPreviewConfig();
     applyLineGlow();
+    applyListLayout();
     // The state's own path field: the `$effect` below only re-runs when
     // `fileState.filePath` changes, and two untitled tabs share `null`.
     editorHandle?.setDocumentPath(path);
@@ -2544,6 +2547,13 @@
     // Menu events
     const unlistenMenu = onMenuEvent((action) => {
       if (DRAWER_CLOSING_ACTIONS.has(action)) drawerHandle?.close();
+      // View → Lists: every id carries its value. The correcting sync is
+      // needed even so — a preset moves four checkmarks at once, and macOS
+      // has already flipped the one that was clicked.
+      if (listLayout.apply(action)) {
+        syncListMenu(listLayout.value);
+        return;
+      }
       switch (action) {
         case 'new':
           handleNew();
@@ -2937,6 +2947,9 @@
     syncOcdAlignmentMenu(ocdAlignment.enabled);
   });
   $effect(() => {
+    syncListMenu(listLayout.value);
+  });
+  $effect(() => {
     syncTabsCompactMenu(tabsCompact.enabled);
   });
   $effect(() => {
@@ -2989,6 +3002,19 @@
       effects: lineGlowCompartment.reconfigure(lineGlow.enabled ? highlightActiveLine() : []),
     });
   }
+
+  /** List layout lives in each state's own compartment, like line glow. */
+  function applyListLayout(): void {
+    const view = editorHandle?.view;
+    if (!view) return;
+    view.dispatch({ effects: listLayoutCompartment.reconfigure(listLayoutExtension(listLayout.value)) });
+  }
+
+  $effect(() => {
+    void listLayout.value;
+    void editorHandle?.view;
+    applyListLayout();
+  });
 
   // Reconfigure line glow when toggled
   $effect(() => {

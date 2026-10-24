@@ -5,7 +5,7 @@ import {
   type ViewUpdate,
   type EditorView,
 } from '@codemirror/view';
-import { Facet, RangeSetBuilder, combineConfig } from '@codemirror/state';
+import { Facet, RangeSetBuilder, combineConfig, type Text } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import { decorateHeading } from './headings';
 import {
@@ -15,7 +15,15 @@ import {
   decorateInlineCode,
   decorateLink,
 } from './inline';
-import { decorateListItem, decorateBlockquote, insideBlockquote } from './lists';
+import { decorateListItem, decorateBlockquote, insideBlockquote, listMarkColumns } from './lists';
+import {
+  isExplicitRoot,
+  layoutExplicitList,
+  listLayoutFacet,
+  ownsListGeometry,
+  type ListLayout,
+} from './explicit-lists';
+import type { Tree } from '@lezer/common';
 import { decorateHorizontalRule, decorateFencedCode } from './blocks';
 import { decorateTable, noteTableUpdate, forgetTableUpdates } from './tables';
 import { decorateMermaidBlock, mermaidRendered } from './mermaid';
@@ -86,8 +94,41 @@ export const previewRebuild = Facet.define<Partial<PreviewRebuildConfig>, Previe
   compare: (a, b) => a.onSelection === b.onSelection && a.onViewport === b.onViewport,
 });
 
+type Placed = { from: number; to: number; value: Decoration };
+const explicitListCache = new WeakMap<Tree, { layout: ListLayout; items: Placed[] }>();
+
+/**
+ * The explicit-lists line layout of the whole document. It depends on the
+ * tree and the layout only — never on the selection — so it is kept per tree
+ * and a caret move (a rebuild like any other) reuses it. A new document always
+ * comes with a new tree. Lists in quotes keep the classic layout: their lines
+ * carry the quote's bars as a background.
+ */
+function explicitListDecorations(doc: Text, tree: Tree, layout: ListLayout): Placed[] {
+  const cached = explicitListCache.get(tree);
+  if (cached && cached.layout === layout) return cached.items;
+  const items: Placed[] = [];
+  const sink: DecoSink = { add: (from, to, value) => items.push({ from, to, value }) };
+  tree.iterate({
+    enter(node) {
+      if (node.name !== 'BulletList' && node.name !== 'OrderedList') return;
+      if (!isExplicitRoot(node.node)) return;
+      layoutExplicitList(doc, node.node, layout, (item) => listMarkColumns(item, doc), sink);
+      return false;
+    },
+  });
+  explicitListCache.set(tree, { layout, items });
+  return items;
+}
+
 export function buildDecorations(view: EditorView): DecorationSet {
   const builder = new SortingSink();
+  const listLayout = view.state.facet(listLayoutFacet);
+  if (ownsListGeometry(listLayout)) {
+    for (const d of explicitListDecorations(view.state.doc, syntaxTree(view.state), listLayout)) {
+      builder.add(d.from, d.to, d.value);
+    }
+  }
 
   syntaxTree(view.state).iterate({
     enter(node) {
@@ -200,7 +241,8 @@ export const livePreviewPlugin = ViewPlugin.fromClass(
       // neither the document nor the selection — without this check the mode
       // switch appears to do nothing until the next keystroke.
       const flavourChanged =
-        update.state.facet(flavourFacet) !== update.startState.facet(flavourFacet);
+        update.state.facet(flavourFacet) !== update.startState.facet(flavourFacet) ||
+        update.state.facet(listLayoutFacet) !== update.startState.facet(listLayoutFacet);
       // Same reason as the flavour: a compartment reconfigure that only swaps
       // the table config changes neither document nor selection.
       const tableConfigChanged =

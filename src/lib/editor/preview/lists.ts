@@ -3,6 +3,7 @@ import type { EditorView } from '@codemirror/view';
 import { RangeSetBuilder, type Text } from '@codemirror/state';
 import type { SyntaxNode } from '@lezer/common';
 import { shouldReveal } from './flavour';
+import { isExplicitLists, markerBox, markerKind } from './explicit-lists';
 import type { DecoSink } from './utils';
 
 class CheckboxWidget extends WidgetType {
@@ -36,6 +37,7 @@ class CheckboxWidget extends WidgetType {
 }
 
 class BulletWidget extends WidgetType {
+  /** `columns` 0 = explicit lists: the box is `--xl-bullet-w` wide, glyph centred. */
   constructor(private columns: number) {
     super();
   }
@@ -44,7 +46,8 @@ class BulletWidget extends WidgetType {
   // `ch`, and `ch` inside the enlarged glyph would measure the enlarged font.
   toDOM(): HTMLElement {
     const span = document.createElement('span');
-    span.className = `cm-md-bullet cm-md-list-mark-w${this.columns}`;
+    span.className =
+      this.columns === 0 ? 'cm-md-bullet cm-md-xl-box cm-md-xl-bullet' : `cm-md-bullet cm-md-list-mark-w${this.columns}`;
     const glyph = document.createElement('span');
     glyph.className = 'cm-md-bullet-glyph';
     glyph.textContent = '\u2022';
@@ -234,6 +237,11 @@ export function decorateListItem(
 
   const doc = view.state.doc;
 
+  if (isExplicitLists(view.state) && !insideBlockquote(node)) {
+    decorateExplicitMarker(view, node, listMark, builder);
+    return;
+  }
+
   // Emitted before every early return below, and regardless of `shouldReveal`:
   // the indent must not shift sideways when the caret lands on the line.
   const depth = Math.min(listItemDepth(node), MAX_INDENT_DEPTH);
@@ -285,6 +293,56 @@ export function decorateListItem(
       listMark.to,
       Decoration.replace({ widget: new BulletWidget(columns) })
     );
+  }
+}
+
+const xlBoxCache = new Map<string, Decoration>();
+function xlBox(kind: 'bullet' | 'ordered', width: string): Decoration {
+  const key = `${kind} ${width}`;
+  let d = xlBoxCache.get(key);
+  if (!d) {
+    d = Decoration.mark({
+      class: `cm-md-list-mark cm-md-xl-box cm-md-xl-${kind}`,
+      attributes: { style: `width: calc(${width})` },
+    });
+    xlBoxCache.set(key, d);
+  }
+  return d;
+}
+
+/**
+ * The marker of an item under explicit lists. Line geometry (padding, hanging
+ * indent, guides) and the gap after the marker are `layoutExplicitList`'s;
+ * here only the marker itself — a box of the width the layout reckoned with —
+ * and the source indent before it.
+ */
+function decorateExplicitMarker(
+  view: EditorView,
+  node: SyntaxNode,
+  listMark: SyntaxNode,
+  builder: DecoSink
+): void {
+  const doc = view.state.doc;
+  const indent = sourceIndentRange(doc, listMark.from);
+  if (indent.to > indent.from) builder.add(indent.from, indent.to, indentMark);
+
+  const kind = markerKind(node, doc, listMarkColumns(node, doc));
+  if (kind.kind === 'task') {
+    const isChecked = doc.sliceString(listMark.to + 2, listMark.to + 3) === 'x';
+    const checkboxStart = listMark.to + 1;
+    builder.add(
+      listMark.from,
+      checkboxStart + 3,
+      Decoration.replace({ widget: new CheckboxWidget(isChecked, checkboxStart) })
+    );
+    if (isChecked) {
+      for (const r of checkedTextRanges(node, doc, checkboxStart + 3)) builder.add(r.from, r.to, checkedTextMark);
+    }
+    return;
+  }
+  builder.add(listMark.from, listMark.to, xlBox(kind.kind, markerBox(kind)));
+  if (kind.kind === 'bullet' && !shouldReveal(view, 'listBullet', node.from, node.to)) {
+    builder.add(listMark.from, listMark.to, Decoration.replace({ widget: new BulletWidget(0) }));
   }
 }
 

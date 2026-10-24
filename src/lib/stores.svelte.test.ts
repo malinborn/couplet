@@ -4,6 +4,7 @@ import {
   createEngineStore,
   createThemeStore,
   createOcdAlignmentStore,
+  createListLayoutStore,
   createTabsCompactStore,
   createTabsDatesStore,
   createTransientPolicyStore,
@@ -134,6 +135,34 @@ describe('createEngineStore', () => {
       store.cycle();
       expect(store.value).toBe('live-render');
     });
+  });
+});
+
+describe('createListLayoutStore', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('DefaultsToStandard', () => {
+    expect(createListLayoutStore().value).toMatchObject({ guides: false, strict: false });
+  });
+
+  it('AppliesMenuEvents_AndPersists', () => {
+    const store = createListLayoutStore();
+    expect(store.apply('list_preset_explicit')).toBe(true);
+    expect(store.apply('list_density_sparse')).toBe(true);
+    expect(store.apply('toggle_ocd_alignment:on')).toBe(false);
+    expect(createListLayoutStore().value).toEqual({
+      guides: true,
+      strict: true,
+      guideStyle: 'solid',
+      density: 'sparse',
+    });
+  });
+
+  it('SurvivesAGarbledSetting', () => {
+    localStorage.setItem('md-mini:listLayout', '"explicit"');
+    expect(createListLayoutStore().value).toMatchObject({ guides: false, strict: false });
   });
 });
 

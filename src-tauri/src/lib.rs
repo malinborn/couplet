@@ -50,7 +50,7 @@ use window::{FileWatchers, OpenFiles, PendingFiles, PendingTab};
 /// `None` для всего, что тумблером не является: такие события уходят как есть.
 /// Здесь только пункты, чьё значение фронтенд сообщает при старте
 /// (`sync_theme_menu`, `sync_ocd_alignment_menu`, `sync_tabs_compact_menu`,
-/// `sync_tabs_dates_menu`) —
+/// `sync_tabs_dates_menu`, `sync_list_menu`) —
 /// без этого `Toggle` не с чего было бы начинать. `toggle_line_glow` такой
 /// синхронизации не имеет и
 /// потому сюда не включён; он до сих пор рассылает «переключи» и ведёт себя
@@ -69,6 +69,12 @@ fn toggle_value(app: &tauri::AppHandle, id: &str) -> Option<bool> {
         "toggle_tabs_dates" => app
             .try_state::<menu::ViewToggleItems>()
             .map(|s| s.dates_enabled.flip()),
+        "toggle_list_guides" => app
+            .try_state::<menu::ListMenuItems>()
+            .map(|s| s.guides_on.flip()),
+        "toggle_list_strict" => app
+            .try_state::<menu::ListMenuItems>()
+            .map(|s| s.strict_on.flip()),
         _ => None,
     }
 }
@@ -230,6 +236,7 @@ pub fn run() {
             commands::sync_dock_icon,
             commands::sync_engine_menu,
             commands::sync_ocd_alignment_menu,
+            commands::sync_list_menu,
             commands::sync_tabs_compact_menu,
             commands::sync_tabs_dates_menu,
             commands::sync_transient_menu,
@@ -320,14 +327,14 @@ pub fn run() {
             // interleave.
             stash::start_housekeeping(app.state::<stash::StashState>().inner().clone(), app.handle().clone());
 
-            let (menu, theme_items, engine_items, view_toggles, session_menu_items, transient_items) =
-                menu::build_menu(app.handle(), pending_count, explicit_language.as_deref())?;
-            app.set_menu(menu)?;
-            app.manage(theme_items);
-            app.manage(view_toggles);
-            app.manage(engine_items);
-            app.manage(session_menu_items);
-            app.manage(transient_items);
+            let built = menu::build_menu(app.handle(), pending_count, explicit_language.as_deref())?;
+            app.set_menu(built.menu)?;
+            app.manage(built.theme);
+            app.manage(built.view_toggles);
+            app.manage(built.engine);
+            app.manage(built.session);
+            app.manage(built.transient);
+            app.manage(built.lists);
 
             let app_handle = app.handle().clone();
             app.on_menu_event(move |_app, event| {
@@ -434,6 +441,9 @@ pub fn run() {
                 // Значение берётся из `Toggle`, а не из самого пункта меню:
                 // macOS применяет щелчок уже после нашего обработчика, и пункт
                 // отвечает доизменённым состоянием.
+                if let Some(lists) = _app.try_state::<menu::ListMenuItems>() {
+                    lists.note_preset(&id);
+                }
                 let id = match toggle_value(_app, &id) {
                     Some(true) => format!("{id}:on"),
                     Some(false) => format!("{id}:off"),
