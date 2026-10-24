@@ -79,10 +79,10 @@ describe('pure helpers', () => {
     expect(padLink('L', '\n', ')')).toBe('L');
   });
 
-  it('dropPointToClient divides by the scale factor and the page zoom', () => {
-    expect(dropPointToClient({ x: 400, y: 200 }, 2, 1)).toEqual({ x: 200, y: 100 });
-    expect(dropPointToClient({ x: 400, y: 200 }, 2, 1.25)).toEqual({ x: 160, y: 80 });
-    expect(dropPointToClient({ x: 10, y: 20 }, 0, 0)).toEqual({ x: 10, y: 20 });
+  it('dropPointToClient divides by the page zoom only — the position is already in points (wry)', () => {
+    expect(dropPointToClient({ x: 400, y: 200 }, 1)).toEqual({ x: 400, y: 200 });
+    expect(dropPointToClient({ x: 400, y: 200 }, 1.25)).toEqual({ x: 320, y: 160 });
+    expect(dropPointToClient({ x: 10, y: 20 }, 0)).toEqual({ x: 10, y: 20 });
   });
 });
 

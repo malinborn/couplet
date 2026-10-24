@@ -2234,10 +2234,8 @@
     if (paths.length === 0) return false;
     const mods = await currentModifiers().catch(() => null);
     if (!mods?.alt) return false;
-    const scale = await import('@tauri-apps/api/window')
-      .then(({ getCurrentWindow }) => getCurrentWindow().scaleFactor())
-      .catch(() => window.devicePixelRatio || 1);
-    const point = dropPointToClient(position, scale, zoom.level);
+    // Points relative to the webview, not physical px (see `dropPointToClient`).
+    const point = dropPointToClient(position, zoom.level);
     if (!linkDrop.over(point.x, point.y)) return false;
     return linkDrop.drop(
       point.x,

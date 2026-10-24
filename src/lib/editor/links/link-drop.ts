@@ -63,13 +63,20 @@ export function padLink(text: string, before: string, after: string): string {
   return `${left}${text}${right}`;
 }
 
-/** Tauri's drop position (physical px) → the page's CSS px: divide by the scale factor and the page zoom. */
-export function dropPointToClient(
-  position: { x: number; y: number },
-  scaleFactor: number,
-  zoom: number
-): { x: number; y: number } {
-  const factor = (scaleFactor > 0 ? scaleFactor : 1) * (zoom > 0 ? zoom : 1);
+/**
+ * Tauri's drop position → the page's CSS px: divide by the page zoom only.
+ *
+ * Typed `PhysicalPosition`, but on macOS it is logical points relative to
+ * the webview: wry 0.54.4 `wkwebview/drag_drop.rs` `perform_drag_operation`
+ * builds it from `draggingLocation()` in NSView points
+ * (`(dl.x, frame.size.height - dl.y)`), and tauri-runtime-wry 2.10.1
+ * (`with_drag_drop_handler`, lib.rs ~4684) wraps that in a
+ * `PhysicalPosition` without scaling it. Dividing by the display scale put a
+ * 2× screen's link at half the coordinates. Page zoom (`WKWebView.pageZoom`)
+ * still sits between a point and a CSS px.
+ */
+export function dropPointToClient(position: { x: number; y: number }, zoom: number): { x: number; y: number } {
+  const factor = zoom > 0 ? zoom : 1;
   return { x: position.x / factor, y: position.y / factor };
 }
 
