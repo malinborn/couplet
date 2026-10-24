@@ -28,6 +28,8 @@ import { foldMemory } from './fold-memory';
 import { headingSlugsField } from './heading-slugs';
 import { linkControlFacet, openLink, type LinkControl } from './links/open-link';
 import { linkExistence } from './links/link-existence';
+import { createFileLinkSource } from './links/file-link-source';
+import { linkAction } from './links/slash-link';
 import { aiHighlightField, aiHighlightKeymap } from './ai-highlight';
 import { aiAskField } from './ai-ask';
 import { aiCommentAttention, aiCommentField } from './ai-comment';
@@ -81,6 +83,7 @@ export function createExtensions(deps: EditorDeps = {}): Extension[] {
   const actions: SlashAction[] = [
     ...(themeControl ? [themeAction(themeControl), toneAction(themeControl)] : []),
     ...(stashControl ? [stashAction(stashControl)] : []),
+    ...(linkControl ? [linkAction()] : []),
   ];
 
   return [
@@ -103,6 +106,8 @@ export function createExtensions(deps: EditorDeps = {}): Extension[] {
     codeBlockExitKeymap,
     listContinuation(),
     slashCommands(actions),
+    // `[[` file picker (file-links D5). One source per state, built here once.
+    ...(linkControl ? [createFileLinkSource(linkControl).extension] : []),
     ...(themeControl ? themePickerExtensions(themeControl) : []),
     ...(themeControl ? tonePickerExtensions(themeControl) : []),
     autocompletion(
