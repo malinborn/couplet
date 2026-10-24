@@ -58,8 +58,16 @@ function chooseAndInsert(view: EditorView, control: LinkControl, data: LinkCandi
   closeCompletion(view);
   control
     .chooseFile()
-    .then((path) => {
-      if (!path || view.state.doc !== doc) return;
+    .then(async (picked) => {
+      if (!picked) return;
+      // The dialog spells `/tmp/…`; the candidates (and `data.docPath`) are in
+      // Rust's `path_norm` spelling, `/private/tmp/…`. Compared as they are,
+      // every pick would come out absolute. `link_project` normalizes it.
+      const path = await control
+        .project(picked)
+        .then((p) => p.docPath ?? picked)
+        .catch(() => picked);
+      if (view.state.doc !== doc) return;
       const text = linkMarkdownFor({ path, title: null }, data.docPath, data.projectRoot);
       view.dispatch({
         changes: { from, to, insert: text },

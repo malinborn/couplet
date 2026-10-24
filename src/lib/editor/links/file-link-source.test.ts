@@ -208,6 +208,31 @@ describe('applying a pick', () => {
     expect(view.state.doc.toString()).toBe('[new idea](<../notes/new idea.md>)');
   });
 
+  it('Choose file spells the picked path the way Rust does before making it relative', async () => {
+    // The dialog answers `/tmp/…`; the document and root are `/private/tmp/…`.
+    const data: LinkCandidates = { ...DATA, projectRoot: '/private/tmp/fl', docPath: '/private/tmp/fl/a.md' };
+    const project = vi.fn(async (p: string | null) => ({ projectRoot: null, docPath: p && p.replace(/^\/tmp\//, '/private/tmp/') }));
+    const { source, state } = setup('[[x]]', 3, { chooseFile: async () => '/tmp/fl/notes/b.md', project }, data);
+    view = new EditorView({ state });
+    const r = (await source(new CompletionContext(view.state, 3, false))) as CompletionResult;
+    apply(view, r.options[r.options.length - 1], r.from, r.to ?? 3);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(project).toHaveBeenCalledWith('/tmp/fl/notes/b.md');
+    expect(view.state.doc.toString()).toBe('[b](notes/b.md)');
+  });
+
+  it('Choose file falls back to the dialog\'s spelling when link_project fails', async () => {
+    const { source, state } = setup('[[x]]', 3, {
+      chooseFile: async () => '/r/notes/c.md',
+      project: () => Promise.reject(new Error('down')),
+    });
+    view = new EditorView({ state });
+    const r = (await source(new CompletionContext(view.state, 3, false))) as CompletionResult;
+    apply(view, r.options[r.options.length - 1], r.from, r.to ?? 3);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(view.state.doc.toString()).toBe('[c](../notes/c.md)');
+  });
+
   it('a cancelled dialog leaves [[q]] as typed', async () => {
     const { source, state } = setup('[[x]]', 3, { chooseFile: async () => null });
     view = new EditorView({ state });
