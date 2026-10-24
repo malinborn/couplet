@@ -158,6 +158,24 @@ pub fn modifiers_from_flags(flags: u64) -> Modifiers {
     }
 }
 
+/// How long a drop waits for the main thread. It may be in a modal or a
+/// menu-tracking loop; a plain Finder drop must not hang behind it.
+const MODIFIERS_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The main thread's answer: no answer in time means no modifiers (the drop
+/// opens its files as tabs, as a plain drop does).
+fn modifiers_answer(
+    outcome: Result<Result<u64, String>, std::sync::mpsc::RecvTimeoutError>,
+) -> Result<Modifiers, String> {
+    match outcome {
+        Ok(flags) => flags.map(modifiers_from_flags),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(Modifiers::default()),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err("the main thread did not answer".to_string())
+        }
+    }
+}
+
 /// `+[NSEvent modifierFlags]` — global state, independent of any event —
 /// read on the main thread (R6).
 #[tauri::command]
@@ -167,13 +185,10 @@ pub async fn current_modifiers(app: AppHandle) -> Result<Modifiers, String> {
         let _ = tx.send(modifier_flags());
     })
     .map_err(|e| e.to_string())?;
-    let outcome = tauri::async_runtime::spawn_blocking(move || rx.recv())
+    let outcome = tauri::async_runtime::spawn_blocking(move || rx.recv_timeout(MODIFIERS_WAIT))
         .await
         .map_err(|e| e.to_string())?;
-    match outcome {
-        Ok(flags) => flags.map(modifiers_from_flags),
-        Err(_) => Err("the main thread did not answer".to_string()),
-    }
+    modifiers_answer(outcome)
 }
 
 #[cfg(target_os = "macos")]
@@ -252,7 +267,28 @@ mod tests {
             }
         );
         // Caps Lock (1 << 16) and device-dependent low bits are not modifiers here.
-        assert_eq!(modifiers_from_flags((1 << 16) | 0x100), Modifiers::default());
+        assert_eq!(
+            modifiers_from_flags((1 << 16) | 0x100),
+            Modifiers::default()
+        );
+    }
+
+    #[test]
+    fn a_main_thread_that_does_not_answer_in_time_means_no_modifiers() {
+        use std::sync::mpsc::RecvTimeoutError;
+        assert_eq!(
+            modifiers_answer(Err(RecvTimeoutError::Timeout)),
+            Ok(Modifiers::default())
+        );
+        assert_eq!(
+            modifiers_answer(Ok(Ok(1 << 19))),
+            Ok(Modifiers {
+                alt: true,
+                ..Modifiers::default()
+            })
+        );
+        assert!(modifiers_answer(Ok(Err("x".to_string()))).is_err());
+        assert!(modifiers_answer(Err(RecvTimeoutError::Disconnected)).is_err());
     }
 
     #[test]
