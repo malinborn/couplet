@@ -90,7 +90,8 @@
   import type { LinkControl } from './lib/editor/links/open-link';
   import { refreshLinkTargets } from './lib/editor/links/link-existence';
   import { navigateToHeading } from './lib/editor/heading-slugs';
-  import { linkCandidates, linkProject, pathKinds, revealInFinder } from './lib/links/ipc';
+  import { currentModifiers, linkCandidates, linkProject, pathKinds, revealInFinder } from './lib/links/ipc';
+  import { createLinkDropTarget, dropPointToClient } from './lib/editor/links/link-drop';
   import { opensAsDocument } from './lib/links/link-kind';
   import { basename } from './lib/links/link-target';
   import { shouldShowHint, nextCheckDelay } from './lib/ai-hint';
@@ -2220,6 +2221,31 @@
     chooseFile: () => showOpenDialog(),
   };
 
+  /** The editor's text as a link drop target (file-links D7) — for the drawer and Finder drops. */
+  const linkDrop = createLinkDropTarget(() => editorHandle?.view);
+
+  /**
+   * ⌥-drop from Finder (D7): links at the drop point instead of tabs. The
+   * webview gets no key events while Finder drives the drag, so the modifier
+   * is asked from the OS at drop time; any failure counts as no modifier and
+   * the files open as tabs, as before. `true`: the drop became links.
+   */
+  async function finderDropAsLink(paths: string[], position: { x: number; y: number }): Promise<boolean> {
+    if (paths.length === 0) return false;
+    const mods = await currentModifiers().catch(() => null);
+    if (!mods?.alt) return false;
+    const scale = await import('@tauri-apps/api/window')
+      .then(({ getCurrentWindow }) => getCurrentWindow().scaleFactor())
+      .catch(() => window.devicePixelRatio || 1);
+    const point = dropPointToClient(position, scale, zoom.level);
+    if (!linkDrop.over(point.x, point.y)) return false;
+    return linkDrop.drop(
+      point.x,
+      point.y,
+      paths.map((path) => ({ path, title: null }))
+    );
+  }
+
   function liveAskShown(): boolean {
     const view = editorHandle?.view;
     return view ? activeAskIds(view.state).length > 0 : false;
@@ -2821,11 +2847,14 @@
     });
 
     // Drag & drop: every dropped file becomes a tab of this window; the first
-    // may take a blank tab's place.
+    // may take a blank tab's place. With ⌥ held over the text the files become
+    // links at the drop point instead (file-links D7).
     const unlistenDragDrop = import('@tauri-apps/api/webview').then(({ getCurrentWebview }) =>
       getCurrentWebview().onDragDropEvent(async (event) => {
         if (event.payload.type !== 'drop') return;
-        for (const path of event.payload.paths as string[]) {
+        const paths = event.payload.paths as string[];
+        if (await finderDropAsLink(paths, event.payload.position)) return;
+        for (const path of paths) {
           await openTab(path);
         }
       })
@@ -3235,6 +3264,7 @@
   onstashrestore={(entry) => void restoreStashEntry(entry)}
   onstashpurge={(entry) => void purgeStashEntry(entry)}
   onstashtag={(entry, change) => void tagStashEntry(entry, change)}
+  {linkDrop}
 />
 
 <TransientBar
