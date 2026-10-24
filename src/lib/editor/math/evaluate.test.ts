@@ -114,5 +114,7 @@ describe('evaluate', () => {
     expect(evaluate('('.repeat(40) + '1' + ')'.repeat(40) + '+1')).toBeNull();
     expect(evaluate('-'.repeat(40) + '1+1')).toBeNull();
     expect(valueOf('('.repeat(10) + '1' + ')'.repeat(10) + '+1')).toBe(2);
+    // One depth unit per paren level: 30 levels are within MAX_DEPTH (32).
+    expect(valueOf('('.repeat(30) + '1' + ')'.repeat(30) + '+1')).toBe(2);
   });
 });

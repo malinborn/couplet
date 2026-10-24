@@ -24,6 +24,7 @@ export interface MathResult {
 }
 
 export const MAX_EXPRESSION_LENGTH = 200;
+/** Recursion through `unary`: one unit per unary minus and per paren level. */
 export const MAX_DEPTH = 32;
 
 type Op = '+' | '-' | '*' | '/' | '^' | '%' | '(' | ')';
@@ -190,9 +191,8 @@ class Parser {
     }
     if (token?.kind === 'op' && token.op === '(') {
       this.pos++;
-      this.enter();
+      // No enter() here: `expr` reaches `unary`, which counts this level.
       const inner = this.expr();
-      this.depth--;
       if (this.peek() !== ')') throw new ParseError('unbalanced');
       this.pos++;
       return inner.value;
