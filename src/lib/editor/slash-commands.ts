@@ -36,7 +36,8 @@ function slashCommandSource(actions: readonly SlashAction[]) {
       },
     }));
 
-    const actionOptions: Completion[] = actions.map((action): Completion => ({
+    const offered = actions.filter((action) => !action.available || action.available(context.state, from));
+    const actionOptions: Completion[] = offered.map((action): Completion => ({
       label: action.label,
       detail: action.detail,
       section: ACTIONS_SECTION,

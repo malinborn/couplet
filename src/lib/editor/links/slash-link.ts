@@ -2,6 +2,7 @@ import { startCompletion } from '@codemirror/autocomplete';
 import type { EditorView } from '@codemirror/view';
 import type { SlashAction } from '../slash-actions';
 import { t } from '../../i18n';
+import { pickerAllowedAt } from './link-query';
 
 /**
  * Insert `[[]]` at the caret, caret inside, and open the `[[` picker — the
@@ -24,5 +25,7 @@ export function linkAction(): SlashAction {
     label: '/link',
     detail: t('editor.slash_link.action_detail'),
     run: (view) => openLinkPicker(view),
+    // Not in code or HTML: the `[[` would stay text and no popup would open.
+    available: (state, pos) => pickerAllowedAt(state, pos),
   };
 }

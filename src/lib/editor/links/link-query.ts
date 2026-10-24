@@ -33,15 +33,25 @@ export interface LinkQuery {
   query: string;
 }
 
+/**
+ * May a picker start at `pos` (Q8)? Markdown is the language there, and it is
+ * not inside code, an HTML block or a link's URL. Also decides where `/link`
+ * is offered: it would insert `[[]]` exactly here.
+ */
+export function pickerAllowedAt(state: EditorState, pos: number): boolean {
+  if (!markdownLanguage.isActiveAt(state, pos, 1)) return false;
+  for (let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, 1); node; node = node.parent) {
+    if (NO_PICKER.has(node.name)) return false;
+  }
+  return true;
+}
+
 export function linkQueryAt(state: EditorState, pos: number): LinkQuery | null {
   const line = state.doc.lineAt(pos);
   const match = TRIGGER.exec(state.sliceDoc(line.from, pos));
   if (!match) return null;
   const from = pos - match[0].length;
-  if (!markdownLanguage.isActiveAt(state, from, 1)) return null;
-  for (let node: SyntaxNode | null = syntaxTree(state).resolveInner(from, 1); node; node = node.parent) {
-    if (NO_PICKER.has(node.name)) return null;
-  }
+  if (!pickerAllowedAt(state, from)) return null;
   const to = state.sliceDoc(pos, pos + 2) === ']]' ? pos + 2 : pos;
   return { from, to, query: match[1] };
 }
