@@ -13,7 +13,7 @@ import {
   type FenceTarget,
 } from './inspector-model';
 import { openInspectorFor } from './effects';
-import { isAnchor, navigateToHeading } from '../heading-slugs';
+import { linkActionFor, linkControlOf, openButtonLabel, openLink, resolveInState } from '../links/open-link';
 import { t } from '../../i18n';
 import '../../../styles/live-render-inspector.css';
 
@@ -176,16 +176,21 @@ function buildLinkPanel(view: EditorView, target: LinkTarget, autoFocus: boolean
   openBtn.className = 'cm-inspector-btn';
   openBtn.textContent = t('editor.inspector.open');
 
+  /** What Open would do with the URL as it stands in the field right now (file-links D3). */
+  function actionNow() {
+    return linkActionFor(resolveInState(view.state, input.value.trim()), linkControlOf(view.state) !== null);
+  }
+
   /**
    * Подпись зависит от того, куда ведёт ссылка: у якоря «открыть в браузере»
-   * было бы враньём, а кнопка одна. Обновляется по мере правки поля, иначе
-   * разойдётся с тем, что в нём сейчас написано.
+   * было бы враньём, а кнопка одна — «Open», «Open file», «Show in Finder»,
+   * «Jump to heading». Обновляется по мере правки поля, иначе разойдётся с
+   * тем, что в нём сейчас написано.
    */
   function syncOpenLabel(): void {
-    openBtn.setAttribute(
-      'aria-label',
-      isAnchor(input.value) ? t('editor.inspector.jump_to_heading') : t('editor.inspector.open_in_browser')
-    );
+    const label = openButtonLabel(actionNow());
+    openBtn.textContent = label.text;
+    openBtn.setAttribute('aria-label', label.aria);
   }
   syncOpenLabel();
   input.addEventListener('input', syncOpenLabel);
@@ -218,20 +223,14 @@ function buildLinkPanel(view: EditorView, target: LinkTarget, autoFocus: boolean
     e.preventDefault();
     const url = input.value.trim();
     if (!url) return;
-    // Якорь ведёт внутрь документа, и до этого кнопка на нём просто молчала:
-    // открыть его в браузере нельзя, а перейти по нему — можно, ровно как это
-    // делает ⌘-клик по самой ссылке.
-    if (isAnchor(url)) {
+    // The same router as ⌘-click (file-links D3). Anything that moves the
+    // view — a heading, another tab, Finder — takes the panel down first; a
+    // browser URL leaves the editor as it was, as before.
+    if (actionNow() !== 'external') {
       hidePanel();
       view.focus();
-      navigateToHeading(view, url.slice(1));
-      return;
     }
-    import('@tauri-apps/plugin-shell')
-      .then(({ open }) => open(url))
-      .catch(() => {
-        window.open(url, '_blank');
-      });
+    void openLink(view, url);
   });
 
   removeBtn.addEventListener('mousedown', (e) => {
