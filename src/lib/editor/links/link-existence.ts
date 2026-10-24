@@ -86,6 +86,14 @@ async function existenceOf(
   return answers;
 }
 
+function sameAnswers(a: ReadonlyMap<string, boolean>, b: ReadonlyMap<string, boolean>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [path, exists] of a) {
+    if (b.get(path) !== exists) return false;
+  }
+  return true;
+}
+
 /** Trailing quiet period before asking: typing a path does not ask per keystroke. */
 export const LINK_CHECK_DELAY_MS = 150;
 
@@ -166,6 +174,10 @@ class LinkExistenceChecker {
     try {
       const fresh = await existenceOf(control, paths, await control.pathKinds(paths));
       if (this.destroyed) return;
+      // Usually nothing changed: a new Map would still be a new field value,
+      // and the preview plugin rebuilds every decoration on that.
+      const now = this.view.state.field(linkExistenceField, false) ?? EMPTY;
+      if (sameAnswers(now, fresh)) return;
       this.view.dispatch({ effects: replaceLinkExistence.of(fresh) });
     } catch (err) {
       console.warn('link existence re-check failed:', err);

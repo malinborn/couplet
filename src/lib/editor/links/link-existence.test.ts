@@ -67,6 +67,18 @@ describe('the checker', () => {
     expect(control.calls).toHaveLength(1);
   });
 
+  it('a re-check that learns nothing new dispatches nothing (no full decoration rebuild)', async () => {
+    const control = fakeLinkControl();
+    control.kinds.set('/r/gone.md', 'missing');
+    view = new EditorView({ state: stateFor(control) });
+    await vi.advanceTimersByTimeAsync(LINK_CHECK_DELAY_MS + 1);
+    const dispatch = vi.spyOn(view, 'dispatch');
+    window.dispatchEvent(new Event('focus'));
+    await vi.advanceTimersByTimeAsync(LINK_CHECK_DELAY_MS + 1);
+    expect(control.calls).toHaveLength(2); // it did ask
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it('a missing file that a tab holds counts as existing (no dashed style)', async () => {
     const control = fakeLinkControl();
     control.kinds.set('/r/gone.md', 'missing');
