@@ -11,6 +11,7 @@ import {
   fileLinkPaths,
   linkExistence,
   linkExistenceField,
+  refreshLinkTargets,
   setLinkExistence,
 } from './link-existence';
 
@@ -86,6 +87,18 @@ describe('the checker', () => {
     view = new EditorView({ state: stateFor(control) });
     await vi.advanceTimersByTimeAsync(LINK_CHECK_DELAY_MS + 1);
     expect(view.state.field(linkExistenceField).get('/r/gone.md')).toBe(true);
+  });
+
+  it('asks about ~/ links once the home folder arrives (refreshLinkTargets)', async () => {
+    let home: string | null = null;
+    const control = fakeLinkControl({ home: () => home });
+    view = new EditorView({ state: stateFor(control, '[h](~/x.md)') });
+    await vi.advanceTimersByTimeAsync(LINK_CHECK_DELAY_MS + 1);
+    expect(control.calls).toEqual([]); // unresolvable: nothing to ask
+    home = '/Users/me';
+    view.dispatch({ effects: refreshLinkTargets.of(null) });
+    await vi.advanceTimersByTimeAsync(LINK_CHECK_DELAY_MS + 1);
+    expect(control.calls).toEqual(['pathKinds:/Users/me/x.md']);
   });
 
   it('a failed ask leaves the links unknown and is retried on the next change', async () => {

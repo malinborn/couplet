@@ -9,7 +9,7 @@ import { livePreviewPlugin } from '../preview/plugin';
 import { LIVE_PREVIEW, flavourFacet } from '../preview/flavour';
 import { linkControlFacet } from './open-link';
 import { fakeLinkControl } from './fake-link-control';
-import { linkExistenceField, setLinkExistence } from './link-existence';
+import { linkExistenceField, refreshLinkTargets, setLinkExistence } from './link-existence';
 import { linkPresentation } from './link-presentation';
 
 function state(withControl: boolean, known: [string, boolean][] = []): EditorState {
@@ -55,6 +55,40 @@ describe('linkPresentation', () => {
 });
 
 describe('decorateLink', () => {
+  it('re-resolves titles when refreshLinkTargets says the home folder arrived', () => {
+    const doc = '[img](~/a.png)\n\npark the caret here';
+    let home: string | null = null;
+    let s = EditorState.create({
+      doc,
+      selection: { anchor: doc.length },
+      extensions: [
+        markdownExtension(),
+        flavourFacet.of(LIVE_PREVIEW),
+        documentPathField,
+        linkExistenceField,
+        linkControlFacet.of(fakeLinkControl({ home: () => home })),
+        livePreviewPlugin,
+      ],
+    });
+    s = s.update({ effects: setDocumentPath.of('/r/a.md') }).state;
+    ensureSyntaxTree(s, doc.length, 5000);
+    const view = new EditorView({ state: s });
+    const titleAt0 = (): string => {
+      let title = '';
+      view.plugin(livePreviewPlugin)!.decorations.between(0, 1, (from, _to, value) => {
+        const spec = value.spec as { attributes?: { title?: string } };
+        if (from === 0 && spec.attributes?.title) title = spec.attributes.title;
+      });
+      return title;
+    };
+    expect(titleAt0()).toMatch(/to open a\.png$/); // unresolvable until home is known
+    home = '/Users/me';
+    view.dispatch({ effects: refreshLinkTargets.of(null) });
+    expect(titleAt0()).toMatch(/to show in Finder$/);
+    view.destroy();
+  });
+
+
   it('adds cm-md-link-missing and the title to a known-missing link', () => {
     const doc = '[gone](gone.md) [ok](plan.md)\n\npark the caret here';
     let s = EditorState.create({

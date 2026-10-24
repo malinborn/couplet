@@ -88,6 +88,7 @@
   import { stashKeysHandler } from './lib/stash/stash-keys';
   import type { StashControl } from './lib/editor/slash-stash';
   import type { LinkControl } from './lib/editor/links/open-link';
+  import { refreshLinkTargets } from './lib/editor/links/link-existence';
   import { navigateToHeading } from './lib/editor/heading-slugs';
   import { pathKinds, revealInFinder } from './lib/links/ipc';
   import { opensAsDocument } from './lib/links/link-kind';
@@ -2837,10 +2838,15 @@
     window.addEventListener('focus', handleWindowFocus);
     // `~/` in a link (agents write these): the home folder, asked once. Stays
     // `null` in the browser dev build, where such links are unresolvable.
+    // Asked in the background rather than awaited before the tab sources open
+    // (that would hold the first document behind an IPC round trip); when it
+    // lands, the shown document re-resolves its links once. A state swapped
+    // in later builds fresh plugins and resolves with the home folder anyway.
     import('@tauri-apps/api/path')
       .then(({ homeDir }) => homeDir())
       .then((home) => {
         linkHome = home.replace(/\/+$/, '');
+        editorHandle?.view?.dispatch({ effects: refreshLinkTargets.of(null) });
       })
       .catch(() => {});
 

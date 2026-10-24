@@ -32,7 +32,7 @@ import { tableConfig } from './table-config';
 import { flavourFacet } from './flavour';
 import { aiCommentField } from '../ai-comment';
 import { isRenderedLink } from './link-refs';
-import { linkExistenceField } from '../links/link-existence';
+import { linkExistenceField, refreshesLinkTargets } from '../links/link-existence';
 import { documentPathField } from '../json-fence';
 import type { DecoSink } from './utils';
 
@@ -258,10 +258,12 @@ export const livePreviewPlugin = ViewPlugin.fromClass(
         update.state.field(aiCommentField, false) !==
         update.startState.field(aiCommentField, false);
       // File links (D4): a missing-file answer restyles a link, and a new
-      // document path re-resolves every relative one (title, missing state).
+      // document path — or the home folder arriving — re-resolves every
+      // relative one (title, missing state).
       const linksChanged =
         update.state.field(linkExistenceField, false) !== update.startState.field(linkExistenceField, false) ||
-        update.state.field(documentPathField, false) !== update.startState.field(documentPathField, false);
+        update.state.field(documentPathField, false) !== update.startState.field(documentPathField, false) ||
+        refreshesLinkTargets(update);
       // Same reason again; and `previewRebuild` itself decides what follows.
       const rebuildConfig = update.state.facet(previewRebuild);
       const rebuildConfigChanged = rebuildConfig !== update.startState.facet(previewRebuild);

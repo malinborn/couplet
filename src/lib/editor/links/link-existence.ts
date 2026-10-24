@@ -18,6 +18,18 @@ const EMPTY: ReadonlyMap<string, boolean> = new Map();
 export const setLinkExistence = StateEffect.define<ReadonlyMap<string, boolean>>();
 /** A fresh cache that replaces the old one whole (the focus re-check). */
 export const replaceLinkExistence = StateEffect.define<ReadonlyMap<string, boolean>>();
+/**
+ * Something outside the state that links resolve against changed — the home
+ * folder for `~/`, which arrives asynchronously after the first paint. Titles
+ * and styles are rebuilt and the newly resolvable targets asked about. Only
+ * the shown state needs it: a state swapped in later builds fresh plugins.
+ */
+export const refreshLinkTargets = StateEffect.define<null>();
+
+/** Does this update carry `refreshLinkTargets`? */
+export function refreshesLinkTargets(update: ViewUpdate): boolean {
+  return update.transactions.some((tr) => tr.effects.some((e) => e.is(refreshLinkTargets)));
+}
 
 function docPathOf(state: EditorState): string | null {
   return state.field(documentPathField, false) ?? null;
@@ -120,7 +132,12 @@ class LinkExistenceChecker {
   }
 
   update(update: ViewUpdate): void {
-    if (update.docChanged || update.viewportChanged || docPathOf(update.startState) !== docPathOf(update.state)) {
+    if (
+      update.docChanged ||
+      update.viewportChanged ||
+      docPathOf(update.startState) !== docPathOf(update.state) ||
+      refreshesLinkTargets(update)
+    ) {
       this.schedule();
     }
   }
