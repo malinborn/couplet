@@ -1,6 +1,6 @@
 # File Links 01 — Opening a Link Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** ⌘-click on `[план](2026-09-30-github-allowlist.md)` (and the inspector's Open, and a click on a link in a table cell) opens that file as a tab, switches to the tab/window that holds it, reveals a non-document in Finder, or offers to create a missing one — and a link to a missing file looks missing before anyone clicks it.
 
@@ -73,7 +73,7 @@ Every later task renders through `t()`; the completeness test in `src/lib/i18n.t
 - Modify: `locales/en/app.json`, `locales/ru/app.json`, `locales/de/app.json`, `locales/es/app.json`, `locales/fr/app.json`, `locales/zh/app.json`
 - Test: `src/lib/i18n.test.ts` (existing)
 
-- [ ] **Step 1: Insert the keys**
+- [x] **Step 1: Insert the keys**
 
 Run this once (it inserts after an existing anchor line in each catalog and re-parses the file):
 
@@ -220,12 +220,12 @@ EOF
 
 Expected output: `ok`.
 
-- [ ] **Step 2: Run the catalog completeness test**
+- [x] **Step 2: Run the catalog completeness test**
 
 Run: `npx vitest run src/lib/i18n.test.ts`
 Expected: PASS (every `<lang>_HasExactlyTheEnKeySet` green).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add locales/en/app.json locales/ru/app.json locales/de/app.json locales/es/app.json locales/fr/app.json locales/zh/app.json
@@ -242,7 +242,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Create: `src/lib/links/link-target.ts`
 - Test: `src/lib/links/link-target.test.ts`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 // src/lib/links/link-target.test.ts
@@ -362,12 +362,12 @@ describe('helpers', () => {
 });
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `npx vitest run src/lib/links/link-target.test.ts`
 Expected: FAIL — `Failed to resolve import "./link-target"`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```ts
 // src/lib/links/link-target.ts
@@ -478,12 +478,12 @@ export function resolveLinkTarget(url: string, docPath: string | null, home: str
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `npx vitest run src/lib/links/link-target.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/links/link-target.ts src/lib/links/link-target.test.ts
@@ -500,7 +500,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Create: `src/lib/links/link-kind.ts`
 - Test: `src/lib/links/link-kind.test.ts`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 // src/lib/links/link-kind.test.ts
@@ -540,12 +540,12 @@ describe('opensAsDocument', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run src/lib/links/link-kind.test.ts`
 Expected: FAIL — `Failed to resolve import "./link-kind"`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```ts
 // src/lib/links/link-kind.ts
@@ -574,12 +574,12 @@ export function opensAsDocument(path: string): boolean {
 }
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `npx vitest run src/lib/links/link-kind.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/links/link-kind.ts src/lib/links/link-kind.test.ts
@@ -596,7 +596,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Modify: `src/lib/editor/heading-slugs.ts`
 - Test: `src/lib/editor/heading-slugs.test.ts` (append)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `src/lib/editor/heading-slugs.test.ts` (the file already imports `EditorState`, `markdown`, `markdownLanguage`, `languages`, `Strikethrough`, `Table`, `navigateToHeading` and defines `makeView`):
 
@@ -627,12 +627,12 @@ describe('navigateToHeading — slug index that does not know the heading', () =
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run src/lib/editor/heading-slugs.test.ts`
 Expected: FAIL — `finds the heading from a full parse…` expected length 1, received 0.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `src/lib/editor/heading-slugs.ts`:
 
@@ -703,12 +703,12 @@ with:
   if (pos === null) return;
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `npx vitest run src/lib/editor/heading-slugs.test.ts src/lib/editor/preview/tables.test.ts`
 Expected: PASS (the existing `routeLinkClick` anchor tests still pass: `#nope` still dispatches nothing).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/editor/heading-slugs.ts src/lib/editor/heading-slugs.test.ts
@@ -726,7 +726,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Create: `src-tauri/src/reveal.rs`
 - Modify: `src-tauri/src/lib.rs` (module list near line 10–40; `generate_handler!` near line 162)
 
-- [ ] **Step 1: Write `links.rs` with its failing tests**
+- [x] **Step 1: Write `links.rs` with its failing tests**
 
 ```rust
 // src-tauri/src/links.rs
@@ -824,7 +824,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Write `reveal.rs` with its failing tests**
+- [x] **Step 2: Write `reveal.rs` with its failing tests**
 
 ```rust
 // src-tauri/src/reveal.rs
@@ -936,7 +936,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: Register the modules and commands**
+- [x] **Step 3: Register the modules and commands**
 
 In `src-tauri/src/lib.rs`, in the alphabetical module list, insert `mod links;` between `mod i18n;` and `mod locale;`, and `mod reveal;` between `mod recovery;` and `mod routing;`:
 
@@ -959,7 +959,7 @@ In `tauri::generate_handler![`, right after `commands::file_exists,` add:
             reveal::reveal_in_finder,
 ```
 
-- [ ] **Step 4: Run the Rust tests**
+- [x] **Step 4: Run the Rust tests**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml links::tests`
 Expected: PASS — 4 tests.
@@ -967,7 +967,7 @@ Expected: PASS — 4 tests.
 Run: `cargo test --manifest-path src-tauri/Cargo.toml reveal::tests`
 Expected: PASS — 2 tests.
 
-- [ ] **Step 5: Lint and the Intel guard**
+- [x] **Step 5: Lint and the Intel guard**
 
 Run: `cargo clippy --manifest-path src-tauri/Cargo.toml`
 Expected: no new warnings in `links.rs` / `reveal.rs`.
@@ -975,7 +975,7 @@ Expected: no new warnings in `links.rs` / `reveal.rs`.
 Run: `npm run check:x86`
 Expected: `Finished` — no `BOOL` is involved, but `c_char` differs per arch and this proves it compiles on both.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src-tauri/src/links.rs src-tauri/src/reveal.rs src-tauri/src/lib.rs
@@ -993,7 +993,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Create: `src/lib/links/ipc.ts`
 - Test: `src/lib/links/ipc.test.ts`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // src/lib/links/ipc.test.ts
@@ -1024,12 +1024,12 @@ describe('links ipc', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run src/lib/links/ipc.test.ts`
 Expected: FAIL — `Failed to resolve import "./ipc"`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```ts
 // src/lib/links/types.ts
@@ -1062,12 +1062,12 @@ export function revealInFinder(path: string): Promise<void> {
 }
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `npx vitest run src/lib/links/ipc.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/links/types.ts src/lib/links/ipc.ts src/lib/links/ipc.test.ts
@@ -1087,7 +1087,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 
 The interface defined here is the one every plan uses. Plan 02 adds three members (`candidates`, `project`, `chooseFile`) to this same interface and to the fake; nothing else changes it.
 
-- [ ] **Step 1: Write the fake control (test support, imported by tests only)**
+- [x] **Step 1: Write the fake control (test support, imported by tests only)**
 
 ```ts
 // src/lib/editor/links/fake-link-control.ts
@@ -1131,7 +1131,7 @@ export function fakeLinkControl(overrides: Partial<LinkControl> = {}): FakeLinkC
 }
 ```
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 ```ts
 // src/lib/editor/links/open-link.test.ts
@@ -1272,12 +1272,12 @@ describe('linkActionFor and openButtonLabel', () => {
 });
 ```
 
-- [ ] **Step 3: Run to verify it fails**
+- [x] **Step 3: Run to verify it fails**
 
 Run: `npx vitest run src/lib/editor/links/open-link.test.ts`
 Expected: FAIL — `Failed to resolve import "./open-link"`.
 
-- [ ] **Step 4: Implement**
+- [x] **Step 4: Implement**
 
 ```ts
 // src/lib/editor/links/open-link.ts
@@ -1418,12 +1418,12 @@ export async function openLink(view: EditorView, url: string): Promise<void> {
 }
 ```
 
-- [ ] **Step 5: Run to verify it passes**
+- [x] **Step 5: Run to verify it passes**
 
 Run: `npx vitest run src/lib/editor/links/open-link.test.ts`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/lib/editor/links/open-link.ts src/lib/editor/links/fake-link-control.ts src/lib/editor/links/open-link.test.ts
@@ -1440,7 +1440,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Create: `src/lib/editor/links/link-existence.ts`
 - Test: `src/lib/editor/links/link-existence.test.ts`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 // src/lib/editor/links/link-existence.test.ts
@@ -1542,12 +1542,12 @@ describe('the checker', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run src/lib/editor/links/link-existence.test.ts`
 Expected: FAIL — `Failed to resolve import "./link-existence"`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```ts
 // src/lib/editor/links/link-existence.ts
@@ -1709,12 +1709,12 @@ export const linkExistenceChecker = ViewPlugin.fromClass(LinkExistenceChecker);
 export const linkExistence: Extension = [linkExistenceField, linkExistenceChecker];
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `npx vitest run src/lib/editor/links/link-existence.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/editor/links/link-existence.ts src/lib/editor/links/link-existence.test.ts
@@ -1734,7 +1734,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Modify: `src/styles/editor.css` (after the `.cm-md-link` rule, ~line 162)
 - Test: `src/lib/editor/links/link-presentation.test.ts`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 // src/lib/editor/links/link-presentation.test.ts
@@ -1825,12 +1825,12 @@ describe('decorateLink', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run src/lib/editor/links/link-presentation.test.ts`
 Expected: FAIL — `Failed to resolve import "./link-presentation"`.
 
-- [ ] **Step 3: Implement `link-presentation.ts`**
+- [x] **Step 3: Implement `link-presentation.ts`**
 
 ```ts
 // src/lib/editor/links/link-presentation.ts
@@ -1882,7 +1882,7 @@ export function linkPresentation(state: EditorState, url: string): LinkPresentat
 }
 ```
 
-- [ ] **Step 4: Use it in `decorateLink`**
+- [x] **Step 4: Use it in `decorateLink`**
 
 In `src/lib/editor/preview/inline.ts`, replace lines 1–16:
 
@@ -1945,7 +1945,7 @@ with:
 
 (`RangeSetBuilder` is imported but unused there already — leave it.)
 
-- [ ] **Step 5: Rebuild when the cache or the document path changes**
+- [x] **Step 5: Rebuild when the cache or the document path changes**
 
 In `src/lib/editor/preview/plugin.ts`, add imports after `import { isRenderedLink } from './link-refs';`:
 
@@ -1966,7 +1966,7 @@ In `update(update: ViewUpdate)`, right after the `commentsChanged` constant add:
 
 and add `|| linksChanged` to the big `if (update.docChanged || viewDriven || …)` condition, after `rebuildConfigChanged`.
 
-- [ ] **Step 6: Style**
+- [x] **Step 6: Style**
 
 In `src/styles/editor.css`, right after the `.cm-md-link { … }` rule (ends `cursor: pointer;\n}`), add:
 
@@ -1981,7 +1981,7 @@ In `src/styles/editor.css`, right after the `.cm-md-link { … }` rule (ends `cu
 }
 ```
 
-- [ ] **Step 7: Run the tests**
+- [x] **Step 7: Run the tests**
 
 Run: `npx vitest run src/lib/editor/links/link-presentation.test.ts src/lib/editor/preview/link-refs.test.ts src/lib/editor/preview/blockquote.test.ts`
 Expected: PASS (`link-refs` still sees `cm-md-link` as the exact class of an ordinary link).
@@ -1989,7 +1989,7 @@ Expected: PASS (`link-refs` still sees `cm-md-link` as the exact class of an ord
 Run: `npx vitest run src/lib/theme`
 Expected: PASS (`theme-tokens.test.ts` accepts `--text-subtle`, a token every theme defines).
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/lib/editor/links/link-presentation.ts src/lib/editor/links/link-presentation.test.ts src/lib/editor/preview/inline.ts src/lib/editor/preview/plugin.ts src/styles/editor.css
@@ -2007,7 +2007,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Modify: `src/lib/editor/Editor.svelte`
 - Test: `src/lib/editor/state-factory.test.ts` (append)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `src/lib/editor/state-factory.test.ts`:
 
@@ -2032,12 +2032,12 @@ describe('createDocumentState — link control', () => {
 
 (The file already imports `describe`/`it`/`expect` and `createDocumentState`; ES `import` lines are valid anywhere at the top level, so appending them is fine — or move them up to the other imports.)
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run src/lib/editor/state-factory.test.ts`
 Expected: FAIL — TS/runtime error: `linkControl` is not in `EditorDeps`, facet is `null`.
 
-- [ ] **Step 3: Implement in `setup.ts`**
+- [x] **Step 3: Implement in `setup.ts`**
 
 Replace the import line
 
@@ -2118,7 +2118,7 @@ with:
         }
 ```
 
-- [ ] **Step 4: Pass the prop through `Editor.svelte`**
+- [x] **Step 4: Pass the prop through `Editor.svelte`**
 
 In `src/lib/editor/Editor.svelte`:
 
@@ -2137,7 +2137,7 @@ In the `$props()` destructuring, after `stashControl,` add `linkControl,`; in it
 
 Replace both occurrences of `{ themeControl, stashControl }` (in `createState` and in `onMount`) with `{ themeControl, stashControl, linkControl }`.
 
-- [ ] **Step 5: Run the tests and the type check**
+- [x] **Step 5: Run the tests and the type check**
 
 Run: `npx vitest run src/lib/editor/state-factory.test.ts src/lib/editor/links`
 Expected: PASS.
@@ -2145,7 +2145,7 @@ Expected: PASS.
 Run: `npm run check`
 Expected: `svelte-check found 0 errors`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/lib/editor/setup.ts src/lib/editor/Editor.svelte src/lib/editor/state-factory.test.ts
@@ -2163,7 +2163,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 
 The label logic is `openButtonLabel` (tested in Task 7); this task only wires it.
 
-- [ ] **Step 1: Replace the import**
+- [x] **Step 1: Replace the import**
 
 Replace:
 
@@ -2177,7 +2177,7 @@ with:
 import { linkActionFor, linkControlOf, openButtonLabel, openLink, resolveInState } from '../links/open-link';
 ```
 
-- [ ] **Step 2: Label follows the target**
+- [x] **Step 2: Label follows the target**
 
 Replace the `syncOpenLabel` function body:
 
@@ -2206,7 +2206,7 @@ with:
 
 (The earlier `openBtn.textContent = t('editor.inspector.open');` line may stay: `syncOpenLabel()` runs right after and overwrites it.)
 
-- [ ] **Step 3: One router**
+- [x] **Step 3: One router**
 
 Replace the Open button's `mousedown` listener:
 
@@ -2250,7 +2250,7 @@ with:
   });
 ```
 
-- [ ] **Step 4: Type check and the live-render tests**
+- [x] **Step 4: Type check and the live-render tests**
 
 Run: `npm run check`
 Expected: 0 errors (no remaining `isAnchor` / `navigateToHeading` references in `inspector.ts`).
@@ -2258,7 +2258,7 @@ Expected: 0 errors (no remaining `isAnchor` / `navigateToHeading` references in 
 Run: `npx vitest run src/lib/editor/live-render`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/editor/live-render/inspector.ts
@@ -2275,7 +2275,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Modify: `src/lib/editor/preview/tables.ts:35` (import), `routeLinkClick` (~856), cell link (~1027)
 - Test: `src/lib/editor/preview/tables.test.ts` (append inside / after the `routeLinkClick` describe)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `src/lib/editor/preview/tables.test.ts`:
 
@@ -2320,12 +2320,12 @@ describe('routeLinkClick with a LinkControl', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run src/lib/editor/preview/tables.test.ts`
 Expected: FAIL — `File_GoesThroughOpenLink…`: `openExternal` was called with `plan.md`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Replace the import
 
@@ -2380,12 +2380,12 @@ In the `case 'link':` branch of the cell renderer, after `a.rel = 'noopener nore
         a.title = linkPresentation(view.state, token.url).title;
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `npx vitest run src/lib/editor/preview/tables.test.ts`
 Expected: PASS (old `routeLinkClick` tests unchanged and green).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/editor/preview/tables.ts src/lib/editor/preview/tables.test.ts
@@ -2403,7 +2403,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Modify: `src/lib/ToastStack.svelte` (prop + branch)
 - Test: `src/lib/ToastStack.svelte.test.ts` (append)
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `src/lib/ToastStack.svelte.test.ts`:
 
@@ -2446,12 +2446,12 @@ describe('ToastStack: a link to a missing file (file-links D2)', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run src/lib/ToastStack.svelte.test.ts`
 Expected: FAIL — no `.md-toast-text` rendered for the unknown kind (falls into the last `{:else}` branch).
 
-- [ ] **Step 3: Add the payload**
+- [x] **Step 3: Add the payload**
 
 In `src/lib/toasts.svelte.ts`, in `ToastPayload`, right before `| { kind: 'update'; latest: string; current: string; highlight?: string }` add:
 
@@ -2474,7 +2474,7 @@ In `ORDER`, after `'stash-standing': 4,` add:
   'link-missing': 4,
 ```
 
-- [ ] **Step 4: Render it**
+- [x] **Step 4: Render it**
 
 In `src/lib/ToastStack.svelte`, add to the props destructuring after `onRevealWindow,`:
 
@@ -2515,12 +2515,12 @@ Add a branch right before `{:else if toast.payload.kind === 'reload-error'}`:
           {/if}
 ```
 
-- [ ] **Step 5: Run to verify it passes**
+- [x] **Step 5: Run to verify it passes**
 
 Run: `npx vitest run src/lib/ToastStack.svelte.test.ts src/lib/toasts.svelte.test.ts`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/lib/toasts.svelte.ts src/lib/ToastStack.svelte src/lib/ToastStack.svelte.test.ts
@@ -2538,7 +2538,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Modify: `src/App.svelte` (imports, `openTab` ~959, `openStashEntry` ~1106, `linkControl` after `stashControl` ~2165, `onMount` ~2778, `<Editor>` ~3110, `<ToastStack>` ~3165)
 - Test: `src/lib/tabs/controller.test.ts` (append)
 
-- [ ] **Step 1: Write the failing controller test**
+- [x] **Step 1: Write the failing controller test**
 
 Append at the end of the file (`started` and `fileTab` are module-level helpers there):
 
@@ -2552,12 +2552,12 @@ describe('openPath result (file links)', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run src/lib/tabs/controller.test.ts -t "ResolvesWithWhereTheFileEndedUp"`
 Expected: FAIL — received `undefined`.
 
-- [ ] **Step 3: Return the result from `openPath`**
+- [x] **Step 3: Return the result from `openPath`**
 
 In `src/lib/tabs/controller.ts`, replace:
 
@@ -2578,7 +2578,7 @@ with:
 Run: `npx vitest run src/lib/tabs/controller.test.ts`
 Expected: PASS.
 
-- [ ] **Step 4: App — imports**
+- [x] **Step 4: App — imports**
 
 In `src/App.svelte`:
 
@@ -2604,7 +2604,7 @@ After `import type { StashControl } from './lib/editor/slash-stash';` add:
   import { basename } from './lib/links/link-target';
 ```
 
-- [ ] **Step 5: App — `openTab` returns the result**
+- [x] **Step 5: App — `openTab` returns the result**
 
 Replace:
 
@@ -2636,7 +2636,7 @@ with
       },
 ```
 
-- [ ] **Step 6: App — the control**
+- [x] **Step 6: App — the control**
 
 Right after `const stashControl: StashControl = { putAway: putAwayActive };` add:
 
@@ -2669,7 +2669,7 @@ Right after `const stashControl: StashControl = { putAway: putAwayActive };` add
   };
 ```
 
-- [ ] **Step 7: App — home folder**
+- [x] **Step 7: App — home folder**
 
 Right after `window.addEventListener('focus', handleWindowFocus);` (inside `onMount`) add:
 
@@ -2684,7 +2684,7 @@ Right after `window.addEventListener('focus', handleWindowFocus);` (inside `onMo
       .catch(() => {});
 ```
 
-- [ ] **Step 8: App — props**
+- [x] **Step 8: App — props**
 
 In `<Editor …>` after `{stashControl}` add `{linkControl}`.
 
@@ -2694,7 +2694,7 @@ In `<ToastStack …>` after `onFormatJson={() => formatJson(true)}` add:
   onCreateLink={(path) => void openTab(path)}
 ```
 
-- [ ] **Step 9: Type check and the full frontend suite**
+- [x] **Step 9: Type check and the full frontend suite**
 
 Run: `npm run check`
 Expected: 0 errors.
@@ -2702,7 +2702,7 @@ Expected: 0 errors.
 Run: `npx vitest run --dir src`
 Expected: PASS.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add src/lib/tabs/controller.ts src/lib/tabs/controller.test.ts src/App.svelte
@@ -2717,7 +2717,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 
 **Files:** none changed (fix-forward commits only if a check fails).
 
-- [ ] **Step 1: Frontend**
+- [x] **Step 1: Frontend**
 
 Run: `npx vitest run --dir src`
 Expected: all green.
@@ -2725,12 +2725,12 @@ Expected: all green.
 Run: `npm run check`
 Expected: `svelte-check found 0 errors and 0 warnings` (warnings that existed on `main` before this plan are acceptable; no new ones).
 
-- [ ] **Step 2: The landing still builds without a `LinkControl`**
+- [x] **Step 2: The landing still builds without a `LinkControl`**
 
 Run: `npx vite build --config vite.config.site.ts --outDir /tmp/couplet-site-check --emptyOutDir`
 Expected: `✓ built in …` and nothing written under `docs/` (`git status --short docs/` prints nothing).
 
-- [ ] **Step 3: Rust**
+- [x] **Step 3: Rust**
 
 Run: `cd src-tauri && cargo test`
 Expected: all green.
@@ -2741,7 +2741,7 @@ Expected: no new warnings.
 Run: `npm run check:x86`
 Expected: `Finished`.
 
-- [ ] **Step 4: Live check (dev identity — never `npm run tauri dev`)**
+- [x] **Step 4: Live check (dev identity — never `npm run tauri dev`)**
 
 ```bash
 lsof -ti:1420 | xargs kill -9 2>/dev/null; npm run dev:app -- --features mcp-bridge \
@@ -2759,20 +2759,22 @@ printf '[plan](docs/plan.md) · [risks](docs/plan.md#risks) · [gone](docs/gone.
 
 Open `/tmp/fl/index.md` in the dev app (File → Open). Check, in both engines (View → engine):
 
-- [ ] Hover each link: titles say «⌘-click to open plan.md», «⌘-click to show in Finder», «⌘-click to open link».
-- [ ] Within ~150 ms `[gone]` turns dashed/muted; its title is «File not found — ⌘-click to create».
-- [ ] ⌘-click `[plan]` → `plan.md` opens as a new tab after `index.md`; ⌘-click it again from `index.md` → switches to that tab (no second tab).
-- [ ] ⌘-click `[risks]` → opens/switches and scrolls to «Risks».
-- [ ] Open `plan.md` in a second window (File → New Window, open it there); back in the first window ⌘-click `[plan]` → the second window comes forward.
-- [ ] ⌘-click `[gone]` → toast «No file gone.md» with «Create» → a new unsaved tab `gone.md`; type, wait for autosave → `/tmp/fl/docs/gone.md` exists. Before clicking «Create» the file does not exist (`ls /tmp/fl/docs`).
-- [ ] ⌘-click `[img]` and `[folder]` → Finder comes forward with the item selected; nothing opens in couplet.
-- [ ] ⌘-click `[web]` → the browser opens.
-- [ ] In a new untitled tab type `[x](plan.md)` and ⌘-click → «Save this document first — plan.md is relative to it».
-- [ ] Live render: put the caret in `[plan]`, the inspector shows «Open file»; for `[img]` «Show in Finder»; for `[web]` «Open»; Open on `[plan]` opens the file.
-- [ ] Click the link inside the table cell → opens `plan.md`.
-- [ ] `touch /tmp/fl/docs/gone.md` while couplet is in the background, focus the window → `[gone]` stops being dashed without flicker.
-- [ ] In the browser build (`npm run dev`, http://localhost:1420): ⌘-click a URL still opens a browser tab; no console errors from the link code.
+*Executed 2026-10-24. The checks were not run in live-preview-only mode (View → engine) — that pass is left for a human.*
 
-- [ ] **Step 5: Commit any fixes**
+- [x] Hover each link: titles say «⌘-click to open plan.md», «⌘-click to show in Finder», «⌘-click to open link».
+- [x] Within ~150 ms `[gone]` turns dashed/muted; its title is «File not found — ⌘-click to create».
+- [x] ⌘-click `[plan]` → `plan.md` opens as a new tab after `index.md`; ⌘-click it again from `index.md` → switches to that tab (no second tab).
+- [x] ⌘-click `[risks]` → opens/switches and scrolls to «Risks».
+- [x] Open `plan.md` in a second window (File → New Window, open it there); back in the first window ⌘-click `[plan]` → the second window comes forward.
+- [x] ⌘-click `[gone]` → toast «No file gone.md» with «Create» → a new unsaved tab `gone.md`; type, wait for autosave → `/tmp/fl/docs/gone.md` exists. Before clicking «Create» the file does not exist (`ls /tmp/fl/docs`).
+- [x] ⌘-click `[img]` and `[folder]` → Finder comes forward with the item selected; nothing opens in couplet.
+- [ ] ⌘-click `[web]` → the browser opens. *Not verified live (no OS-level browser launch from an agent) — left for a human.*
+- [ ] In a new untitled tab type `[x](plan.md)` and ⌘-click → «Save this document first — plan.md is relative to it». *Not verified live — unit-tested (`unresolvable` → `link-missing` toast); left for a human.*
+- [x] Live render: put the caret in `[plan]`, the inspector shows «Open file»; for `[img]` «Show in Finder»; for `[web]` «Open»; Open on `[plan]` opens the file.
+- [x] Click the link inside the table cell → opens `plan.md`.
+- [x] `touch /tmp/fl/docs/gone.md` while couplet is in the background, focus the window → `[gone]` stops being dashed without flicker.
+- [ ] In the browser build (`npm run dev`, http://localhost:1420): ⌘-click a URL still opens a browser tab; no console errors from the link code. *Not verified live (a web link ⌘-click) — left for a human.*
+
+- [x] **Step 5: Commit any fixes**
 
 If a live check needed a fix, commit it with explicit paths and a `fix(links): …` message ending with the `Co-Authored-By` line. Otherwise nothing to commit.
