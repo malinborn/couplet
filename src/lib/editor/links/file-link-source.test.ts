@@ -108,6 +108,25 @@ describe('the source', () => {
     expect(r.options.map((o) => o.detail)).toEqual(['r/docs', 'r/notes', '/n', undefined]);
   });
 
+  it('a cut-short walk is still reported when no project file matches', async () => {
+    // CM6 has no header-only section: the note rides on «Choose file…»,
+    // the row that can still reach the unlisted file.
+    const truncated = { ...DATA, truncated: true };
+    const none = setup('[[zzz', 5, {}, truncated);
+    const r1 = (await none.source(new CompletionContext(none.state, 5, false))) as CompletionResult;
+    expect(r1.options.map((o) => o.label)).toEqual(['Choose file…']);
+    expect(r1.options[0].detail).toBe('Project — not all files listed');
+    // A project row shown carries it in its header; Choose file stays bare.
+    const some = setup('[[idea', 6, {}, truncated);
+    const r2 = (await some.source(new CompletionContext(some.state, 6, false))) as CompletionResult;
+    expect(r2.options.map(sectionName)).toContain('Project — not all files listed');
+    expect(r2.options[r2.options.length - 1].detail).toBeUndefined();
+    // Not truncated: nothing to report.
+    const plain = setup('[[zzz', 5);
+    const r3 = (await plain.source(new CompletionContext(plain.state, 5, false))) as CompletionResult;
+    expect(r3.options[0].detail).toBeUndefined();
+  });
+
   it('another window’s tab names the window', async () => {
     const data: LinkCandidates = { ...DATA, candidates: [{ path: '/r/docs/b.md', group: 'tab', title: null, window: 3 }] };
     const { source, state } = setup('[[', 2, {}, data);

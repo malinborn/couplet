@@ -128,11 +128,22 @@ function resultFor(
 ): CompletionResult {
   const home = control.home();
   const shown = currentDoc ? { ...data, candidates: data.candidates.filter((c) => c.path !== currentDoc) } : data;
+  const items = pickerItems(shown, q.query);
+  // A cut-short walk is said in the Project header; with no project row on
+  // screen there is no header, so «Choose file…» says it (CM6 has no
+  // header-only section) — the one row that can still reach an unlisted file.
+  const unreported =
+    data.truncated && !items.some((i) => i.kind === 'candidate' && i.candidate.group === 'project');
   return {
     from: q.from,
     to: q.to,
     filter: false,
-    options: pickerItems(shown, q.query).map((item) => optionFor(control, data, item, home)),
+    options: items.map((item) => {
+      const option = optionFor(control, data, item, home);
+      return unreported && item.kind === 'choose'
+        ? { ...option, detail: t('editor.links.section_project_truncated') }
+        : option;
+    }),
   };
 }
 
