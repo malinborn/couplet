@@ -79,13 +79,13 @@ describe('evaluate', () => {
   });
 
   it('reads a no-break space and a narrow no-break space as thousands separators', () => {
-    const nbsp = evaluate('1 500 + 1');
+    const nbsp = evaluate('1\u00A0500 + 1');
     expect(nbsp?.value).toBe(1501);
     expect(nbsp?.style).toEqual({ decimalComma: false, thousandsSpace: true });
-    const narrow = evaluate('1 500 000 / 12');
+    const narrow = evaluate('1\u202F500\u202F000 / 12');
     expect(narrow?.value).toBe(125000);
     expect(narrow?.style.thousandsSpace).toBe(true);
-    expect(evaluate('1 5000 + 1')).toBeNull();
+    expect(evaluate('1\u00A05000 + 1')).toBeNull();
   });
 
   it('groups thousands only after a leading group of 1–3 digits', () => {

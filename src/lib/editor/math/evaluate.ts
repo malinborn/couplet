@@ -53,7 +53,7 @@ function isDigit(ch: string | undefined): boolean {
 
 /** A space, a no-break space or a narrow no-break space. */
 export function isSpace(ch: string | undefined): boolean {
-  return ch === ' ' || ch === ' ' || ch === ' ';
+  return ch === ' ' || ch === '\u00A0' || ch === '\u202F';
 }
 
 /**

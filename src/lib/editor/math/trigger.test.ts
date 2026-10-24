@@ -110,11 +110,27 @@ describe('findExpression', () => {
     ['1,5,5 + 1 =|', 'two commas'],
     ['1,500 000 + 1 =|', 'comma then a group'],
     ['v1.2.3 + 1 =|', 'version string'],
-    ['1 5000 + 1 =|', 'not a group after a no-break space'],
+    ['1\u00A05000 + 1 =|', 'not a group after a no-break space'],
     ['9007199254740993 - 9007199254740992 =|', 'more than 15 significant digits'],
     ['шаг 2 (3+4) =|', 'right after a number, only spaces between'],
+    ['5 * (3 + 4 =|', 'tail of an unclosed paren after `*`'],
+    ['10 / (2 + 3 =|', 'tail of an unclosed paren after `/`'],
+    ['(1 + 2) * (3 + 4 =|', 'tail of an unclosed second paren'],
+    ['100 - (20 + 5 =|', 'tail of an unclosed paren after `-`'],
+    ['2 + + 3 + 4 =|', 'tail after a doubled operator'],
+    ['x-5 + 3 =|', 'tail after a letter and a minus'],
+    ['Итого:\u20095 + 3 =|', 'a thin space still blocks'],
   ])('starts only at a token boundary: nothing for %j (%s)', (doc) => {
     expect(at(doc)).toBeNull();
+  });
+
+  it('works on at most the last 512 characters before the caret', () => {
+    const prose = 'слово '.repeat(17000);
+    expect(prose.length).toBeGreaterThan(100000);
+    expect(at(prose + ' 5 + 3 =|')?.answer).toBe('8');
+    expect(at('1+'.repeat(50000) + '1 =|')).toBeNull();
+    // A run that reaches the cut may continue past it: what is before is unknown.
+    expect(at('7' + ' '.repeat(600) + '5 + 3 =|')).toBeNull();
   });
 
   it.each([
@@ -122,8 +138,11 @@ describe('findExpression', () => {
     ['Итого: 338 * 1.3 =|', '439.4'],
     ['x = 5 + 3 =|', '8'],
     ['Например, 5 + 3 =|', '8'],
-    ['1 500 + 1 =|', '1 501'],
-    ['1 500 + 1 =|', '1 501'],
+    ['(см. 5 + 3 =|', '8'],
+    ['Итого:\u00A05 + 3 =|', '8'],
+    ['Итого:\u202F5 + 3 =|', '8'],
+    ['1\u00A0500 + 1 =|', '1 501'],
+    ['1\u202F500 + 1 =|', '1 501'],
   ])('still finds %j → %s', (doc, answer) => {
     expect(at(doc)?.answer).toBe(answer);
   });
