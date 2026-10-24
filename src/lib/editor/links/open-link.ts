@@ -99,8 +99,20 @@ export function openExternalUrl(url: string): Promise<void> {
  *
  * Without a control (the landing) a non-anchor goes to `openExternalUrl`
  * unchanged.
+ *
+ * Never rejects: every gesture fires it and forgets (`void openLink(…)`), so
+ * a failure here would be an unhandled rejection. The app's control reports
+ * its own failures (an `open-error` toast); anything left is logged.
  */
 export async function openLink(view: EditorView, url: string): Promise<void> {
+  try {
+    await routeLink(view, url);
+  } catch (err) {
+    console.error('Opening a link failed:', err);
+  }
+}
+
+async function routeLink(view: EditorView, url: string): Promise<void> {
   const control = linkControlOf(view.state);
   const target = resolveInState(view.state, url);
   if (target.kind === 'anchor') {

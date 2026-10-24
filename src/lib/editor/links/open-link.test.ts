@@ -118,6 +118,19 @@ describe('openLink', () => {
     expect(control.calls).toEqual(['openFile:/r/plan.md#']);
   });
 
+  it('never rejects when opening fails: callers fire and forget (`void openLink`)', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const control = fakeLinkControl({
+      openFile: () => Promise.reject(new Error('tab_open failed')),
+      reveal: () => Promise.reject(new Error('no Finder')),
+    });
+    const { view } = viewFor('', '/r/a.md', control);
+    await expect(openLink(view, 'plan.md')).resolves.toBeUndefined();
+    await expect(openLink(view, 'a.png')).resolves.toBeUndefined();
+    expect(error).toHaveBeenCalledTimes(2);
+    error.mockRestore();
+  });
+
   it('without a control keeps the old behaviour: the URL goes to the shell', async () => {
     const { view } = viewFor('', '/r/a.md', null);
     await openLink(view, 'plan.md');

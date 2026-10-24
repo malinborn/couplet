@@ -2185,7 +2185,15 @@
     home: () => linkHome,
     pathKinds: (paths) => pathKinds(paths),
     async openFile(path, fragment) {
-      const result = await openTab(path);
+      let result: OpenPathResult | undefined;
+      try {
+        result = await openTab(path);
+      } catch (err) {
+        // An IPC failure inside the open — reported like `reveal`'s, never
+        // left to reject out of the click handler.
+        reportOpenError(path, err);
+        return;
+      }
       // The fragment applies only when the file is now this window's active
       // tab; a file shown in another window loses it (spec D2).
       if (!fragment || !result || (result.kind !== 'opened' && result.kind !== 'shown')) return;
