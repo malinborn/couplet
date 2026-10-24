@@ -165,6 +165,8 @@ describe('evaluate', () => {
     expect(evaluate('('.repeat(40) + '1' + ')'.repeat(40) + '+1')).toBeNull();
     expect(evaluate('-'.repeat(40) + '1+1')).toBeNull();
     expect(valueOf('('.repeat(10) + '1' + ')'.repeat(10) + '+1')).toBe(2);
+    // One depth unit per paren level: 30 levels are within MAX_DEPTH (32).
+    expect(valueOf('('.repeat(30) + '1' + ')'.repeat(30) + '+1')).toBe(2);
   });
 });
 ```
@@ -205,6 +207,7 @@ export interface MathResult {
 }
 
 export const MAX_EXPRESSION_LENGTH = 200;
+/** Recursion through `unary`: one unit per unary minus and per paren level. */
 export const MAX_DEPTH = 32;
 
 type Op = '+' | '-' | '*' | '/' | '^' | '%' | '(' | ')';
@@ -371,9 +374,8 @@ class Parser {
     }
     if (token?.kind === 'op' && token.op === '(') {
       this.pos++;
-      this.enter();
+      // No enter() here: `expr` reaches `unary`, which counts this level.
       const inner = this.expr();
-      this.depth--;
       if (this.peek() !== ')') throw new ParseError('unbalanced');
       this.pos++;
       return inner.value;
@@ -565,9 +567,12 @@ import { EditorState } from '@codemirror/state';
 import { markdownExtension } from '../markdown-language';
 import { findExpression } from './trigger';
 
-/** `|` marks the caret; it is removed from the document. */
+/**
+ * The LAST `|` marks the caret; it is removed from the document. Last, not
+ * first: a table's own pipes come before the caret.
+ */
 function at(docWithCaret: string) {
-  const pos = docWithCaret.indexOf('|');
+  const pos = docWithCaret.lastIndexOf('|');
   const doc = docWithCaret.slice(0, pos) + docWithCaret.slice(pos + 1);
   const state = EditorState.create({ doc, extensions: [markdownExtension()] });
   return findExpression(state, pos);
@@ -636,6 +641,10 @@ describe('findExpression', () => {
     ['```\n5 + 3 =|', 'unclosed fence'],
     ['    5 + 3 =|', 'indented code'],
     ['`5 + 3 =|`', 'inline code'],
+    // The case above is already refused by rule 1 (the closing backtick is
+    // right of the caret); only an inline span across a line break reaches
+    // the syntax-tree check with nothing right of the caret.
+    ['`5 + 3 =|\n`', 'inline code across a line break'],
     ['| a | b |\n|---|---|\n| 1 | 5 + 3 =|', 'table row'],
   ])('nothing for %j (%s)', (doc) => {
     expect(at(doc)).toBeNull();
