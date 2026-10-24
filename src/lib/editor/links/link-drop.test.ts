@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EditorState, StateEffect } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
+import { history, undo } from '@codemirror/commands';
 import { markdownExtension } from '../markdown-language';
 import { documentPathField, setDocumentPath } from '../json-fence';
 import { linkControlFacet, type LinkControl } from './open-link';
@@ -81,6 +82,15 @@ describe('pure helpers', () => {
     expect(padLink('L', '\n', ')')).toBe('L');
   });
 
+  it('padLink adds no space after an opening bracket or quote', () => {
+    expect(padLink('L', '(', ')')).toBe('L');
+    expect(padLink('L', '[', ' ')).toBe('L');
+    expect(padLink('L', '{', '}')).toBe('L');
+    expect(padLink('L', '"', '"')).toBe('L');
+    expect(padLink('L', "'", "'")).toBe('L');
+    expect(padLink('L', '(', 'b')).toBe('L ');
+  });
+
   it('dropPointToClient divides by the page zoom only — the position is already in points (wry)', () => {
     expect(dropPointToClient({ x: 400, y: 200 }, 1)).toEqual({ x: 400, y: 200 });
     expect(dropPointToClient({ x: 400, y: 200 }, 1.25)).toEqual({ x: 320, y: 160 });
@@ -112,6 +122,19 @@ describe('insertLinkAt', () => {
     expect(view.state.doc.toString()).toBe('see [plan](plan.md) here');
     expect(view.state.selection.main.head).toBe(19);
     expect(view.state.field(linkDropCaretField)).toBeNull();
+  });
+
+  it('is its own undo step: typing right after it does not join it', () => {
+    const view = new EditorView({
+      state: EditorState.create({ doc: 'see  here', extensions: [history(), linkDropCaretField] }),
+    });
+    views.push(view);
+    insertLinkAt(view, 4, [{ path: '/r/docs/plan.md', title: null }], PROJECT);
+    view.dispatch({ changes: { from: 19, insert: 'x' }, userEvent: 'input.type' });
+    undo(view);
+    expect(view.state.doc.toString()).toBe('see [plan](plan.md) here');
+    undo(view);
+    expect(view.state.doc.toString()).toBe('see  here');
   });
 
   it('refuses a read-only document', () => {

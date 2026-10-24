@@ -1,5 +1,6 @@
 import { EditorSelection, StateEffect, StateField, type Extension } from '@codemirror/state';
 import { RectangleMarker, layer, type EditorView } from '@codemirror/view';
+import { isolateHistory } from '@codemirror/commands';
 import { documentPathField } from '../json-fence';
 import { isMarkdownBuffer } from '../file-language';
 import { linkControlOf } from './open-link';
@@ -62,10 +63,13 @@ export function linkTextFor(items: readonly LinkInsertItem[], docPath: string | 
   return items.map((item) => linkMarkdownFor(item, docPath, projectRoot)).join(', ');
 }
 
-/** R5: a space where the drop point touches a word — none before closing punctuation. */
+/**
+ * R5: a space where the drop point touches a word — none after an opening
+ * bracket or quote, none before closing punctuation or a closing quote.
+ */
 export function padLink(text: string, before: string, after: string): string {
-  const left = before !== '' && !/\s/.test(before) ? ' ' : '';
-  const right = after !== '' && !/[\s.,;:!?)\]]/.test(after) ? ' ' : '';
+  const left = before !== '' && !/[\s([{"']/.test(before) ? ' ' : '';
+  const right = after !== '' && !/[\s.,;:!?)\]}"']/.test(after) ? ' ' : '';
   return `${left}${text}${right}`;
 }
 
@@ -103,6 +107,8 @@ export function insertLinkAt(
     selection: { anchor: at + text.length },
     effects: setLinkDropCaret.of(null),
     userEvent: 'input.drop',
+    // Its own undo step: a keystroke right after it must not join it.
+    annotations: isolateHistory.of('full'),
     scrollIntoView: true,
   });
   view.focus();
