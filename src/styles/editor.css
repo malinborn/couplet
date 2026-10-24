@@ -246,30 +246,43 @@
  * it (the layout pass), and the classic step (`--list-indent-step`, which both
  * the classic depth rules and the non-strict pass use). `standard`'s step is
  * the classic 1.7em, so the default layout is exactly what it was. */
-.cm-editor {
-  --xl-base: 6px;
+/* Lengths a line sums into its padding and guide positions are registered,
+ * so they compute to pixels on `.cm-content` and are inherited as pixels: a
+ * code line (0.9em) or a heading inside an item keeps its neighbours' columns
+ * and guides. Unregistered, `em`/`ch` would be measured again in each line's
+ * own font. */
+@property --xl-gap { syntax: '<length>'; inherits: true; initial-value: 0px; }
+@property --xl-bullet-w { syntax: '<length>'; inherits: true; initial-value: 0px; }
+@property --xl-ch { syntax: '<length>'; inherits: true; initial-value: 0px; }
+@property --xl-dot-w { syntax: '<length>'; inherits: true; initial-value: 0px; }
+@property --xl-step { syntax: '<length>'; inherits: true; initial-value: 0px; }
+@property --xl-code-pad { syntax: '<length>'; inherits: true; initial-value: 0px; }
+.cm-content {
   --xl-gap: 0.3em;
   --xl-bullet-w: 1.15em;
-  --xl-task-w: 16px;
+  --xl-ch: 1ch;
   --xl-dot-w: 0.45ch;
+  --xl-code-pad: 1em;
+  /* Same element as `--list-indent-step`, so the density rules below reach it. */
+  --xl-step: var(--list-indent-step);
+}
+.cm-list-compact .cm-content {
+  --xl-gap: 0.2em;
+  --xl-bullet-w: 0.85em;
+  --list-indent-step: 1.3em;
+}
+.cm-list-sparse .cm-content {
+  --xl-gap: 0.5em;
+  --xl-bullet-w: 1.5em;
+  --list-indent-step: 2.2em;
+}
+.cm-editor {
+  --xl-base: 6px;
+  --xl-task-w: 16px;
   --xl-guide-w: 1px;
   --xl-guide-start: 1lh;
   --xl-guide-color: color-mix(in oklab, var(--color-list-marker) 40%, transparent);
   --xl-guide: linear-gradient(var(--xl-guide-color), var(--xl-guide-color));
-}
-.cm-editor.cm-list-compact {
-  --xl-gap: 0.2em;
-  --xl-bullet-w: 0.85em;
-}
-.cm-editor.cm-list-sparse {
-  --xl-gap: 0.5em;
-  --xl-bullet-w: 1.5em;
-}
-.cm-list-compact .cm-content {
-  --list-indent-step: 1.3em;
-}
-.cm-list-sparse .cm-content {
-  --list-indent-step: 2.2em;
 }
 /* A line restarts its background, so a dash or a dot can be cut at a line
  * boundary — at 1px nobody sees it. */

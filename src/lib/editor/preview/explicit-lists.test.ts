@@ -8,6 +8,8 @@ import {
   DEFAULT_LIST_LAYOUT,
   applyListPreset,
   layoutExplicitList,
+  markerKind,
+  planExplicitList,
   listLayoutFromMenu,
   listPresetOf,
   normalizeListLayout,
@@ -139,13 +141,71 @@ describe('layoutExplicitList', () => {
 
   it('steps a child from the parent marker by the classic step when not strict', () => {
     const doc = ['- parent', '  - child'].join('\n');
-    expect(lineStyles(doc, { ...EXPLICIT, strict: false }).get(2)).toContain('var(--list-indent-step)');
-    expect(lineStyles(doc, EXPLICIT).get(2)).not.toContain('var(--list-indent-step)');
+    expect(lineStyles(doc, { ...EXPLICIT, strict: false }).get(2)).toContain('var(--xl-step)');
+    expect(lineStyles(doc, EXPLICIT).get(2)).not.toContain('var(--xl-step)');
   });
 
   it('draws no guides with the switch off', () => {
     const doc = ['- parent', '  - one', '  - two'].join('\n');
     const styles = lineStyles(doc, { ...EXPLICIT, guides: false });
     for (const n of [1, 2, 3]) expect(guideCount(styles.get(n))).toBe(0);
+  });
+});
+
+/** The collapsed ranges of the first top-level list, as `[line, width]`. */
+function collapsedByLine(doc: string): [number, number][] {
+  const state = makeState(doc);
+  let out: [number, number][] = [];
+  syntaxTree(state).iterate({
+    enter(node) {
+      if (node.name !== 'BulletList' && node.name !== 'OrderedList') return;
+      const plan = planExplicitList(state.doc, node.node, EXPLICIT, (item) => listMarkColumns(item, state.doc));
+      out = plan.collapsed.map((r) => [state.doc.lineAt(r.from).number, r.to - r.from]);
+      return false;
+    },
+  });
+  return out;
+}
+
+describe('planExplicitList — collapsed whitespace', () => {
+  it('hides a continuation indent only up to the item content column', () => {
+    const doc = ['- item', '  ```python', '  def f():', '      return 1', '  ```'].join('\n');
+    const widths = new Map(collapsedByLine(doc));
+    expect(widths.get(3)).toBe(2);
+    expect(widths.get(4)).toBe(2); // the four spaces of `return` stay on screen
+  });
+
+  it('hides the gap after a marker, after the checkbox for a task', () => {
+    expect(collapsedByLine('- a')).toEqual([[1, 1]]);
+    expect(collapsedByLine('- [ ]  todo')).toEqual([[1, 2]]);
+  });
+});
+
+describe('markerKind', () => {
+  const kindOf = (doc: string) => {
+    const state = makeState(doc);
+    let kind: ReturnType<typeof markerKind> | null = null;
+    syntaxTree(state).iterate({
+      enter(node) {
+        if (node.name === 'ListItem' && !kind) kind = markerKind(node.node, state.doc, listMarkColumns(node.node, state.doc));
+      },
+    });
+    return kind!;
+  };
+
+  it('treats `[X]` as text, like the classic path and atomic.ts', () => {
+    expect(kindOf('- [x] done').kind).toBe('task');
+    expect(kindOf('- [X] done').kind).toBe('bullet');
+  });
+
+  it('widens the box for a marker past four columns', () => {
+    expect(kindOf('1000. far').kind === 'ordered' && kindOf('1000. far')).toMatchObject({ columns: 5 });
+  });
+});
+
+describe('guide threshold', () => {
+  it('does not count fence lines as lines under the marker', () => {
+    const doc = ['- item', '  ```', '  one line of code', '  ```', '- next'].join('\n');
+    expect(guideCount(lineStyles(doc, EXPLICIT).get(3))).toBe(0);
   });
 });

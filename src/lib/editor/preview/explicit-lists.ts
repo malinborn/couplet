@@ -128,9 +128,11 @@ export type MarkerKind =
   | { kind: 'ordered'; columns: number; digits: number };
 
 /**
- * Lengths are CSS expressions, summed with `calc` at the line. They mix `em`,
- * `ch` and `px` — the marker of an ordered list is measured in digits, a
- * checkbox in pixels — so they cannot be added up in JS.
+ * Lengths are CSS expressions, summed with `calc` at the line. The variables
+ * are registered `<length>`s declared on `.cm-content` (editor.css), so they
+ * are pixels by the time a line reads them: a code line at 0.9em or a heading
+ * inside an item keeps the same columns and guides as its neighbours. A bare
+ * `em` or `ch` here would be measured in each line's own font.
  */
 export function markerBox(m: MarkerKind): string {
   switch (m.kind) {
@@ -139,7 +141,7 @@ export function markerBox(m: MarkerKind): string {
     case 'task':
       return 'var(--xl-task-w)';
     case 'ordered':
-      return `${m.columns}ch`;
+      return `(${m.columns} * var(--xl-ch))`;
   }
 }
 
@@ -161,18 +163,33 @@ function markerAnchor(m: MarkerKind): string {
     case 'task':
       return '(var(--xl-task-w) / 2)';
     case 'ordered':
-      return `(${m.columns}ch - var(--xl-dot-w) - ${m.digits / 2}ch)`;
+      return `(${m.columns - m.digits / 2} * var(--xl-ch) - var(--xl-dot-w))`;
   }
 }
+
+/**
+ * Same checkbox test as the classic path and `live-render/atomic.ts`: lowercase
+ * `x` only — `[X]` is text there, so it is text here too.
+ */
+const CHECKBOX_AFTER = /^\s\[[x ]\]/;
 
 export function markerKind(item: SyntaxNode, doc: Text, columns: number): MarkerKind {
   const mark = item.getChild('ListMark');
   if (!mark) return { kind: 'bullet' };
   const text = doc.sliceString(mark.from, mark.to);
-  if (/^\d/.test(text)) return { kind: 'ordered', columns, digits: text.length - 1 };
   const after = doc.sliceString(mark.to, Math.min(mark.to + 5, doc.length));
-  if (/^\s\[[xX ]\]/.test(after)) return { kind: 'task' };
+  if (CHECKBOX_AFTER.test(after)) return { kind: 'task' };
+  // `listMarkColumns` stops at 4 for the classic `min-width` box; this box
+  // has a fixed width, so a `1000.` widens its own.
+  if (/^\d/.test(text)) {
+    return { kind: 'ordered', columns: Math.max(columns, text.length), digits: text.length - 1 };
+  }
   return { kind: 'bullet' };
+}
+
+/** Where the marker's widget (or text) ends: after `[ ]` for a task. */
+export function markerEnd(kind: MarkerKind, mark: SyntaxNode): number {
+  return kind.kind === 'task' ? mark.to + 4 : mark.to;
 }
 
 interface Guide {
@@ -188,12 +205,15 @@ interface LineLayout {
   /** The item's own gutter on its marker line: the line hangs back by this much. */
   hang: string | null;
   guides: Guide[];
+  /** A line of a fenced block in the item: it keeps the block's own inner padding. */
+  code: boolean;
 }
 
 const sum = (terms: string[]): string => (terms.length ? terms.join(' + ') : '0px');
 
 function lineStyle(l: LineLayout): string {
-  const parts = [`padding-left: calc(var(--xl-base) + ${sum(l.content)})`];
+  const pad = l.code ? [...l.content, 'var(--xl-code-pad)'] : l.content;
+  const parts = [`padding-left: calc(var(--xl-base) + ${sum(pad)})`];
   if (l.hang) parts.push(`text-indent: calc(-1 * ${l.hang})`);
   if (l.guides.length) {
     parts.push(`background-image: ${l.guides.map(() => 'var(--xl-guide)').join(', ')}`);
@@ -214,6 +234,11 @@ function isBlank(doc: Text, n: number): boolean {
   return /^\s*$/.test(doc.line(n).text);
 }
 
+/** A fence delimiter: its line is hidden (`blocks.ts`), so it is no line to the reader. */
+function isFenceLine(doc: Text, n: number): boolean {
+  return /^\s*(```|~~~)/.test(doc.line(n).text);
+}
+
 /** Last line that belongs to `item`, trailing blank lines dropped (a loose list keeps them in the item). */
 function lastLine(doc: Text, item: SyntaxNode): number {
   const first = doc.lineAt(item.from).number;
@@ -226,22 +251,43 @@ function isListNode(n: SyntaxNode): boolean {
   return n.name === 'BulletList' || n.name === 'OrderedList';
 }
 
-const collapse = Decoration.mark({ class: 'cm-md-list-indent' });
-
 /**
- * Lays out one top-level list and everything nested in it. Marker boxes and
- * widgets are still `decorateListItem`'s; this pass owns the line geometry —
- * padding, the hanging indent, the guides — and the leading whitespace of
- * continuation lines, which only it knows the meaning of.
+ * The item's content column in the source (CommonMark): the marker's column
+ * plus the 1–4 spaces after it, or plus one when 5+ follow (indented code) or
+ * nothing does. A continuation line's indent up to this column is the item's;
+ * anything past it — the indentation inside a code block — is the text's own.
  */
-export function layoutExplicitList(
+function contentColumn(doc: Text, mark: SyntaxNode): number {
+  const line = doc.lineAt(mark.from);
+  const rest = line.text.slice(mark.to - line.from);
+  const spaces = rest.match(/^[ \t]*/)?.[0].length ?? 0;
+  const step = spaces === 0 || spaces >= 5 || spaces === rest.length ? 1 : spaces;
+  return mark.to - line.from + step;
+}
+
+/** What one top-level list looks like under a layout. */
+export interface ExplicitListPlan {
+  lines: Map<number, LineLayout>;
+  /**
+   * Source whitespace drawn at zero width: the gap after each marker (the box
+   * carries `--xl-gap` instead) and continuation indents up to the item's
+   * content column (the padding draws them). `live-render/atomic.ts` makes the
+   * same ranges atomic, so the caret never stops inside a run it cannot see.
+   */
+  collapsed: { from: number; to: number }[];
+}
+
+export function planExplicitList(
   doc: Text,
   list: SyntaxNode,
   layout: ListLayout,
-  columnsOf: (item: SyntaxNode) => number,
-  builder: DecoSink
-): void {
+  columnsOf: (item: SyntaxNode) => number
+): ExplicitListPlan {
   const lines = new Map<number, LineLayout>();
+  const collapsed: { from: number; to: number }[] = [];
+  /** Per continuation line: the content column of the innermost item holding it. */
+  const continuation = new Map<number, number>();
+  const codeLines = new Set<number>();
 
   // `outer`: where this list's markers start. Strict: the parent's text
   // column. Otherwise the parent's marker plus one classic step, and a wrapped
@@ -250,14 +296,22 @@ export function layoutExplicitList(
   const walk = (listNode: SyntaxNode, outer: string[], guides: Guide[]): void => {
     for (let item = listNode.firstChild; item; item = item.nextSibling) {
       if (item.name !== 'ListItem') continue;
+      const mark = item.getChild('ListMark');
+      if (!mark) continue;
       const kind = markerKind(item, doc, columnsOf(item));
       const gutter = markerGutter(kind);
       const content = [...outer, gutter];
       const first = doc.lineAt(item.from).number;
       const last = lastLine(doc, item);
+      const firstLine = doc.line(first);
+
+      const end = markerEnd(kind, mark);
+      const gap = firstLine.text.slice(end - firstLine.from).match(/^[ \t]*/)?.[0].length ?? 0;
+      if (gap > 0) collapsed.push({ from: end, to: end + gap });
+
       let below = 0;
       for (let n = first + 1; n <= last && below < GUIDE_MIN_LINES; n++) {
-        if (!isBlank(doc, n)) below++;
+        if (!isBlank(doc, n) && !isFenceLine(doc, n)) below++;
       }
       const own: Guide | null =
         layout.guides && below >= GUIDE_MIN_LINES
@@ -268,39 +322,74 @@ export function layoutExplicitList(
         content: layout.strict ? content : outer,
         hang: layout.strict ? gutter : null,
         guides: own && layout.strict ? [...guides, { ...own, belowFirst: true }] : guides,
+        code: false,
       });
+      continuation.delete(first);
       const inner = own ? [...guides, own] : guides;
+      const column = contentColumn(doc, mark);
       for (let n = first + 1; n <= last; n++) {
-        lines.set(n, { content, hang: null, guides: inner });
+        lines.set(n, { content, hang: null, guides: inner, code: false });
+        continuation.set(n, column);
       }
-      // `--list-indent-step` is declared on `.cm-content` (density scales it
-      // there), so it is read at the line rather than through a variable
-      // declared on `.cm-editor`, where it does not resolve.
-      const childOuter = layout.strict ? content : [...outer, 'var(--list-indent-step)'];
+      const childOuter = layout.strict ? content : [...outer, 'var(--xl-step)'];
       for (let child = item.firstChild; child; child = child.nextSibling) {
         if (isListNode(child)) walk(child, childOuter, inner);
+        else if (child.name === 'FencedCode') {
+          const a = doc.lineAt(child.from).number;
+          const b = doc.lineAt(child.to).number;
+          for (let n = a; n <= b; n++) codeLines.add(n);
+        }
       }
     }
   };
   walk(list, [], []);
 
-  // Continuation lines (not a marker line): their source indent is the item's
-  // content column in CommonMark, which the padding now draws — hide it.
-  const markerLines = new Set<number>();
-  list.cursor().iterate((n) => {
-    if (n.name === 'ListItem') markerLines.add(doc.lineAt(n.from).number);
-  });
-
-  for (const [n, geometry] of [...lines].sort((a, b) => a[0] - b[0])) {
+  for (const [n, column] of continuation) {
     const line = doc.line(n);
+    const ws = line.text.match(/^[ \t]*/)?.[0].length ?? 0;
+    const hide = Math.min(ws, column);
+    if (hide > 0 && ws < line.length) collapsed.push({ from: line.from, to: line.from + hide });
+  }
+  for (const n of codeLines) {
+    const l = lines.get(n);
+    if (l) l.code = true;
+  }
+  collapsed.sort((a, b) => a.from - b.from);
+  return { lines, collapsed };
+}
+
+const collapse = Decoration.mark({ class: 'cm-md-list-indent' });
+
+/**
+ * Lays out one top-level list and everything nested in it. Marker boxes and
+ * widgets are still `decorateListItem`'s; this pass owns the line geometry —
+ * padding, the hanging indent, the guides — and the whitespace it draws at
+ * zero width (`ExplicitListPlan.collapsed`).
+ */
+export function layoutExplicitList(
+  doc: Text,
+  list: SyntaxNode,
+  layout: ListLayout,
+  columnsOf: (item: SyntaxNode) => number,
+  builder: DecoSink
+): void {
+  const plan = planExplicitList(doc, list, layout, columnsOf);
+  for (const [n, geometry] of plan.lines) {
+    const from = doc.line(n).from;
     builder.add(
-      line.from,
-      line.from,
+      from,
+      from,
       Decoration.line({ class: 'cm-md-xl-line', attributes: { style: lineStyle(geometry) } })
     );
-    if (!markerLines.has(n)) {
-      const ws = line.text.match(/^[ \t]*/)?.[0].length ?? 0;
-      if (ws > 0 && ws < line.length) builder.add(line.from, line.from + ws, collapse);
-    }
   }
+  for (const r of plan.collapsed) builder.add(r.from, r.to, collapse);
+}
+
+/** True for a list the layout pass starts from: outermost, and not in a quote. */
+export function isExplicitRoot(node: SyntaxNode): boolean {
+  if (!isListNode(node) || node.parent?.name === 'ListItem') return false;
+  for (let p: SyntaxNode | null = node.parent; p; p = p.parent) {
+    if (p.name === 'Blockquote') return false;
+  }
+  return true;
 }

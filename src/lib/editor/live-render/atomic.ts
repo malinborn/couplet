@@ -13,7 +13,8 @@ import {
 import { syntaxTree } from '@codemirror/language';
 import type { SyntaxNode } from '@lezer/common';
 import { isRenderedLink } from '../preview/link-refs';
-import { blockquoteLayout, insideBlockquote } from '../preview/lists';
+import { blockquoteLayout, insideBlockquote, listMarkColumns } from '../preview/lists';
+import { isExplicitRoot, listLayoutFacet, ownsListGeometry, planExplicitList } from '../preview/explicit-lists';
 
 /**
  * Lezer node names whose ranges are hidden under the live-render flavour
@@ -203,8 +204,18 @@ function collectMarkupModel(state: EditorState): { spans: RawSpan[]; pairs: Mark
   const spans: RawSpan[] = [];
   const pairs: MarkupPair[] = [];
 
+  // View → Lists draws some source whitespace at zero width (the gap after a
+  // marker, continuation indents): the same ranges `planExplicitList` hands
+  // the decorations, so the caret never stops inside a run it cannot see.
+  const listLayout = state.facet(listLayoutFacet);
+  const explicitLists = ownsListGeometry(listLayout);
+
   syntaxTree(state).iterate({
     enter(node) {
+      if (explicitLists && isExplicitRoot(node.node)) {
+        const plan = planExplicitList(doc, node.node, listLayout, (item) => listMarkColumns(item, doc));
+        for (const r of plan.collapsed) push(spans, r.from, r.to, 'to');
+      }
       switch (node.name) {
         case 'ATXHeading1':
         case 'ATXHeading2':
@@ -407,7 +418,10 @@ function buildMarkupModel(state: EditorState): MarkupModel {
 export const markupModelField = StateField.define<MarkupModel>({
   create: buildMarkupModel,
   update(value, tr) {
-    return syntaxTree(tr.startState) === syntaxTree(tr.state) ? value : buildMarkupModel(tr.state);
+    const same =
+      syntaxTree(tr.startState) === syntaxTree(tr.state) &&
+      tr.startState.facet(listLayoutFacet) === tr.state.facet(listLayoutFacet);
+    return same ? value : buildMarkupModel(tr.state);
   },
 });
 

@@ -303,7 +303,7 @@ function xlBox(kind: 'bullet' | 'ordered', width: string): Decoration {
   if (!d) {
     d = Decoration.mark({
       class: `cm-md-list-mark cm-md-xl-box cm-md-xl-${kind}`,
-      attributes: { style: `width: ${width}` },
+      attributes: { style: `width: calc(${width})` },
     });
     xlBoxCache.set(key, d);
   }
@@ -312,9 +312,9 @@ function xlBox(kind: 'bullet' | 'ordered', width: string): Decoration {
 
 /**
  * The marker of an item under explicit lists. Line geometry (padding, hanging
- * indent, guides) is `layoutExplicitList`'s; here only the marker: a box of
- * the width the layout reckoned with, and the whitespace either side of it
- * collapsed, so the gap before the text is `--xl-gap` and not the font's space.
+ * indent, guides) and the gap after the marker are `layoutExplicitList`'s;
+ * here only the marker itself — a box of the width the layout reckoned with —
+ * and the source indent before it.
  */
 function decorateExplicitMarker(
   view: EditorView,
@@ -323,34 +323,27 @@ function decorateExplicitMarker(
   builder: DecoSink
 ): void {
   const doc = view.state.doc;
-  const line = doc.lineAt(listMark.from);
   const indent = sourceIndentRange(doc, listMark.from);
   if (indent.to > indent.from) builder.add(indent.from, indent.to, indentMark);
 
   const kind = markerKind(node, doc, listMarkColumns(node, doc));
-  let markEnd = listMark.to;
   if (kind.kind === 'task') {
-    const afterMark = doc.sliceString(listMark.to, Math.min(listMark.to + 5, doc.length));
-    const isChecked = /^\s\[[xX]\]/.test(afterMark);
+    const isChecked = doc.sliceString(listMark.to + 2, listMark.to + 3) === 'x';
     const checkboxStart = listMark.to + 1;
     builder.add(
       listMark.from,
       checkboxStart + 3,
       Decoration.replace({ widget: new CheckboxWidget(isChecked, checkboxStart) })
     );
-    markEnd = checkboxStart + 3;
     if (isChecked) {
-      for (const r of checkedTextRanges(node, doc, markEnd)) builder.add(r.from, r.to, checkedTextMark);
+      for (const r of checkedTextRanges(node, doc, checkboxStart + 3)) builder.add(r.from, r.to, checkedTextMark);
     }
-  } else {
-    builder.add(listMark.from, listMark.to, xlBox(kind.kind, markerBox(kind)));
-    if (kind.kind === 'bullet' && !shouldReveal(view, 'listBullet', node.from, node.to)) {
-      builder.add(listMark.from, listMark.to, Decoration.replace({ widget: new BulletWidget(0) }));
-    }
+    return;
   }
-
-  const gap = line.text.slice(markEnd - line.from).match(/^[ \t]*/)?.[0].length ?? 0;
-  if (gap > 0) builder.add(markEnd, markEnd + gap, indentMark);
+  builder.add(listMark.from, listMark.to, xlBox(kind.kind, markerBox(kind)));
+  if (kind.kind === 'bullet' && !shouldReveal(view, 'listBullet', node.from, node.to)) {
+    builder.add(listMark.from, listMark.to, Decoration.replace({ widget: new BulletWidget(0) }));
+  }
 }
 
 /** True when `node` sits inside a blockquote, at any distance. */
