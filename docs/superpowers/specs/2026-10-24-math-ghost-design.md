@@ -149,7 +149,8 @@ empty cursor, not during IME composition. The answer shows only if **all** hold:
        (two adjacent numbers);
      - if that nearest character is inside the run, it is `)`, `,` or `.` —
        after an operator, `(` or `%` the start would be the tail of an
-       unfinished expression.
+       unfinished expression. After `)` at least one space must separate it
+       from the start: `(1+2)3 + 1 =` gives nothing, `(1+2) 3 + 1 =` → `4`.
 
      So `1e5 + 1 =`, `0x10 + 1 =`, `v1.2.3 + 1 =`, `.5 + 1 =`, `1,5,5 + 1 =`,
      `12 34 + 1 =`, `1 5000 + 1 =`, `1,500 000 + 1 =`, `шаг 2 (3+4) =`,

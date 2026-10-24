@@ -119,6 +119,7 @@ describe('findExpression', () => {
     ['100 - (20 + 5 =|', 'tail of an unclosed paren after `-`'],
     ['2 + + 3 + 4 =|', 'tail after a doubled operator'],
     ['x-5 + 3 =|', 'tail after a letter and a minus'],
+    ['(1+2)3 + 1 =|', 'right after `)` with no space'],
     ['Итого:\u20095 + 3 =|', 'a thin space still blocks'],
   ])('starts only at a token boundary: nothing for %j (%s)', (doc) => {
     expect(at(doc)).toBeNull();
@@ -139,6 +140,7 @@ describe('findExpression', () => {
     ['x = 5 + 3 =|', '8'],
     ['Например, 5 + 3 =|', '8'],
     ['(см. 5 + 3 =|', '8'],
+    ['(1+2) 3 + 1 =|', '4'],
     ['Итого:\u00A05 + 3 =|', '8'],
     ['Итого:\u202F5 + 3 =|', '8'],
     ['1\u00A0500 + 1 =|', '1 501'],

@@ -57,9 +57,10 @@ const STARTS_AFTER_IN_RUN = /[),.]/;
  * than answered for their tail). Then, past any spaces, the nearest character:
  * - a digit → no: two adjacent numbers (`12 34 + 1`, `1 5000 + 1`), which
  *   `evaluate` already refused as a whole;
- * - inside the run, only `)`, `,` or `.` → yes (`шаг 2) (3+4)`,
- *   `Например, 5 + 3`, `(см. 5 + 3`); an operator, `(` or `%` → no, it is the
- *   tail of an unfinished expression (`5 * (3 + 4 =` is not `7`);
+ * - inside the run, only `)` (with a space before the start), `,` or `.` →
+ *   yes (`шаг 2) (3+4)`, `Например, 5 + 3`, `(см. 5 + 3`); an operator, `(`
+ *   or `%` → no, it is the tail of an unfinished expression (`5 * (3 + 4 =`
+ *   is not `7`); `(1+2)3` is not `3` either;
  * - outside the run (text, `=`, `:`) or nothing → yes.
  */
 function atTokenBoundary(text: string, from: number, runStart: number): boolean {
@@ -72,7 +73,10 @@ function atTokenBoundary(text: string, from: number, runStart: number): boolean 
   const nearest = text[i];
   if (nearest === undefined) return true;
   if (/[0-9]/.test(nearest)) return false;
-  return i < runStart || STARTS_AFTER_IN_RUN.test(nearest);
+  if (i < runStart) return true;
+  // `(1+2)3` is not `3`: after `)` the start needs a space between them.
+  if (nearest === ')') return i < from - 1;
+  return STARTS_AFTER_IN_RUN.test(nearest);
 }
 
 /**
