@@ -53,7 +53,7 @@
     "url": "https://couplet.pro/",
     "downloadUrl": "https://github.com/malinborn/couplet/releases",
     "sameAs": ["https://github.com/malinborn/couplet"],
-    "softwareVersion": "2.4.0",
+    "softwareVersion": "2.4.1",
     "license": "https://opensource.org/licenses/GPL-3.0"
   }
   </script>
@@ -62,7 +62,7 @@
   <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 
-  <script type="module" crossorigin src="/assets/index-B_sDqC-4.js"></script>
+  <script type="module" crossorigin src="/assets/index-DifqrV_w.js"></script>
   <link rel="stylesheet" crossorigin href="/assets/index-EyzrsmDE.css">
 </head>
 <body>
@@ -458,6 +458,19 @@
       <div class="changelog-list">
 
         <details class="changelog-entry" open>
+          <summary class="changelog-summary">
+            <span class="changelog-version">v2.4.1</span>
+            <span class="changelog-date">2026-10-25</span>
+            <span class="changelog-tag fix">fix</span>
+            <span class="changelog-title">Numbers move along</span>
+          </summary>
+          <ul class="changelog-body-list">
+            <li><strong>Enter renumbers the list</strong> &mdash; press Enter after <code>1.</code> in a numbered list and the new item is <code>2.</code>, but the items below kept their numbers: <code>1, 2, 2, 3</code>. Since May couplet&rsquo;s own Enter handler had taken the key from the editor&rsquo;s built-in one, which renumbered, and it only ever wrote the next number. Now the rest of the list counts on, in the same step &mdash; one <kbd>&#8984;Z</kbd> takes back the new item and the renumbering together</li>
+            <li><strong>The list is read, not scanned</strong> &mdash; the renumbering follows the markdown parser rather than walking lines that start with a digit: a second line of an item belongs to that item, a nested list keeps its own count, a list that starts at <code>5.</code> still starts at 5, and a list written as <code>1. 1. 1.</code> on purpose is left alone</li>
+          </ul>
+        </details>
+
+        <details class="changelog-entry">
           <summary class="changelog-summary">
             <span class="changelog-version">v2.4.0</span>
             <span class="changelog-date">2026-10-25</span>
