@@ -53,7 +53,7 @@
     "url": "https://couplet.pro/",
     "downloadUrl": "https://github.com/malinborn/couplet/releases",
     "sameAs": ["https://github.com/malinborn/couplet"],
-    "softwareVersion": "2.3.1",
+    "softwareVersion": "2.4.0",
     "license": "https://opensource.org/licenses/GPL-3.0"
   }
   </script>
@@ -457,6 +457,26 @@
       <div class="changelog-list">
 
         <details class="changelog-entry" open>
+          <summary class="changelog-summary">
+            <span class="changelog-version">v2.4.0</span>
+            <span class="changelog-date">2026-10-25</span>
+            <span class="changelog-tag feature">feature</span>
+            <span class="changelog-title">Links go somewhere, sums add up</span>
+          </summary>
+          <ul class="changelog-body-list">
+            <li><strong>Links to files open them</strong> &mdash; <code>&#8984;</code>-click <code>[plan](docs/plan.md)</code> and the file opens as a tab, or couplet switches to the tab or window that already has it; <code>plan.md#risks</code> also scrolls to that heading. Until now every link went to the system&rsquo;s URL opener, which accepts only <code>http</code>, <code>mailto</code> and <code>tel</code>, so a path did nothing at all. Paths are read relative to the document, absolute, or from <code>~/</code></li>
+            <li><strong>Nothing runs from a link</strong> &mdash; a link to an image, a PDF, a folder or an <code>.app</code> is shown in Finder, never opened: a markdown file can come from anywhere. A link to a file that does not exist is drawn dashed, and clicking it offers to create the file instead of creating it behind your back</li>
+            <li><strong><code>[[</code> and <code>/link</code></strong> &mdash; type <code>[[</code> anywhere in a line, or pick <code>/link</code>, and a file picker opens: your open tabs first, then markdown files of the project, then recent files and the stash, then &ldquo;Choose file&hellip;&rdquo;. What lands in the document is a plain markdown link with a relative path, readable by GitHub and by any other editor. The project walk never goes into Documents, Desktop or Downloads, so macOS does not pop up permission dialogs</li>
+            <li><strong>Drag to link</strong> &mdash; drop a stash card onto the text and it becomes a link. A tab card dragged with <kbd>&#8997;</kbd> held does the same (without <kbd>&#8997;</kbd> it still moves the tab to another window), and so does a file dropped from Finder with <kbd>&#8997;</kbd>. A drop that would break a table, a code block or another link is refused</li>
+            <li><strong>Your agent links too</strong> &mdash; the prompt from <code>AI &rarr; Teach Your AI couplet</code> now tells agents to write file and section links, and how a heading turns into its <code>#anchor</code>. Run it again to update your agent&rsquo;s skill</li>
+            <li><strong>Arithmetic after <code>=</code></strong> &mdash; type <code>338 * 1.3 =</code> and a grey <code>439.4</code> appears; <kbd>Tab</kbd> writes it in, <kbd>Esc</kbd> hides it. It is a small parser of its own, not <code>eval</code>: digits, <code>+ &minus; &times; &divide; ^ %</code> and brackets, decimal commas and spaced thousands included; anything it is not sure about gets no answer rather than a wrong one</li>
+            <li><strong>Computed table cells</strong> &mdash; a cell holding <code>338 * 1.3 = 439.4</code> shows <code>439.4 &fnof;</code>, with the expression in its tooltip, as long as the stored answer is exactly right. In markdown tables and CSV alike</li>
+            <li><strong>View &rarr; Lists</strong> &mdash; indentation lines from each item&rsquo;s bullet down to the end of its block, strict indentation that keeps every wrapped line under the item&rsquo;s text, three line styles and three densities. With both switches off lists render exactly as before</li>
+            <li><strong>Fixes</strong> &mdash; <code>&#8984;G</code> inside a table scrolled to the table&rsquo;s bottom edge rather than to the match, because table rows are zero-height lines under the widget. A link whose text is itself a URL rendered half-raw, since the URL in the text was read as the destination. And a lone <code>-</code> at the start of a line no longer turns into a bullet before you type the space</li>
+          </ul>
+        </details>
+
+        <details class="changelog-entry">
           <summary class="changelog-summary">
             <span class="changelog-version">v2.3.1</span>
             <span class="changelog-date">2026-10-06</span>
