@@ -160,7 +160,10 @@ function collapsedByLine(doc: string): [number, number][] {
     enter(node) {
       if (node.name !== 'BulletList' && node.name !== 'OrderedList') return;
       const plan = planExplicitList(state.doc, node.node, EXPLICIT, (item) => listMarkColumns(item, state.doc));
-      out = plan.collapsed.map((r) => [state.doc.lineAt(r.from).number, r.to - r.from]);
+      out = [...plan.hidden, ...plan.gaps]
+        .filter((r) => r.to > r.from)
+        .sort((a, b) => a.from - b.from)
+        .map((r) => [state.doc.lineAt(r.from).number, r.to - r.from]);
       return false;
     },
   });
@@ -178,6 +181,45 @@ describe('planExplicitList — collapsed whitespace', () => {
   it('hides the gap after a marker, after the checkbox for a task', () => {
     expect(collapsedByLine('- a')).toEqual([[1, 1]]);
     expect(collapsedByLine('- [ ]  todo')).toEqual([[1, 2]]);
+  });
+});
+
+/** Every non-line decoration the layout pass emits, with its spec. */
+function layoutSpecs(doc: string): { from: number; to: number; spec: Record<string, unknown> }[] {
+  const state = makeState(doc);
+  const out: { from: number; to: number; spec: Record<string, unknown> }[] = [];
+  const sink = {
+    add(from: number, to: number, value: Decoration) {
+      const spec = value.spec as Record<string, unknown>;
+      if (!(spec.attributes as { style?: string } | undefined)?.style) out.push({ from, to, spec });
+    },
+  };
+  syntaxTree(state).iterate({
+    enter(node) {
+      if ((node.name === 'BulletList' || node.name === 'OrderedList') && node.node.parent?.name !== 'ListItem') {
+        layoutExplicitList(state.doc, node.node, EXPLICIT, (item) => listMarkColumns(item, state.doc), sink);
+        return false;
+      }
+    },
+  });
+  return out;
+}
+
+describe('layoutExplicitList — no zero-size text in a line', () => {
+  // A `font-size: 0` span between the marker and the text made CM6 map a click
+  // right of the line to the marker's end, and drew the caret there 0px tall.
+  it('hides whitespace by replacing it, never by shrinking its font', () => {
+    const specs = layoutSpecs(['- a', '  - b', '  continued'].join('\n'));
+    expect(specs.some((s) => s.spec.class === 'cm-md-list-indent')).toBe(false);
+    // `  ` before the nested marker and before the continuation: replaced.
+    expect(specs.filter((s) => s.to - s.from === 2 && !s.spec.widget)).toHaveLength(2);
+  });
+
+  it('turns the gap after a marker into a widget of its own width', () => {
+    const specs = layoutSpecs('- a');
+    expect(specs).toHaveLength(1);
+    expect(specs[0]).toMatchObject({ from: 1, to: 2 });
+    expect(specs[0].spec.widget).toBeDefined();
   });
 });
 

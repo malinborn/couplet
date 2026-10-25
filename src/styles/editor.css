@@ -310,8 +310,14 @@
 }
 .cm-xl .cm-md-xl-box {
   display: inline-block;
-  margin-right: var(--xl-gap);
   font-variant-numeric: tabular-nums;
+}
+/* The gap between marker and text is its own widget (`GapWidget`), a real
+ * line-high box — never a margin plus source whitespace shrunk to
+ * `font-size: 0`, which CM6 cannot map clicks or the caret onto. */
+.cm-xl .cm-md-xl-gap {
+  display: inline-block;
+  width: var(--xl-gap);
 }
 /* Numbers right aligned, so `9.` and `10.` share a text column. A bullet —
  * the widget, or the `-` revealed under the caret — centred in its box. */
@@ -326,12 +332,12 @@
 .cm-xl .cm-md-bullet.cm-md-xl-box {
   width: var(--xl-bullet-w);
 }
-/* `font-size: inherit`: an <input> has the UA's 13.3px, and the `em` of the
- * gap would be measured in it — the text then misses the hanging column. */
+/* The checkbox is exactly `--xl-task-w` wide with no margins, so the gap
+ * widget after it lands on the column the layout reckoned with. */
 .cm-xl .cm-md-checkbox {
   font-size: inherit;
   margin-left: 0;
-  margin-right: var(--xl-gap);
+  margin-right: 0;
   box-sizing: border-box;
   width: var(--xl-task-w);
   height: var(--xl-task-w);

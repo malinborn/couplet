@@ -1,5 +1,5 @@
 import { Facet, type EditorState, type Extension, type Text } from '@codemirror/state';
-import { Decoration, EditorView } from '@codemirror/view';
+import { Decoration, EditorView, WidgetType } from '@codemirror/view';
 import type { SyntaxNode } from '@lezer/common';
 import type { DecoSink } from './utils';
 
@@ -269,12 +269,19 @@ function contentColumn(doc: Text, mark: SyntaxNode): number {
 export interface ExplicitListPlan {
   lines: Map<number, LineLayout>;
   /**
-   * Source whitespace drawn at zero width: the gap after each marker (the box
-   * carries `--xl-gap` instead) and continuation indents up to the item's
-   * content column (the padding draws them). `live-render/atomic.ts` makes the
-   * same ranges atomic, so the caret never stops inside a run it cannot see.
+   * Source indents the padding draws instead: before each marker, and on a
+   * continuation line up to the item's content column. Replaced, never shrunk
+   * to `font-size: 0` — a zero-size node in a line makes CM6 map a click right
+   * of the line onto it and draw the caret there 0px tall.
    */
-  collapsed: { from: number; to: number }[];
+  hidden: { from: number; to: number }[];
+  /**
+   * The whitespace after each marker (or the point after it, when there is
+   * none), drawn as one `--xl-gap`-wide widget whatever the source holds.
+   * `live-render/atomic.ts` makes `hidden` and the gaps atomic, from this
+   * same plan.
+   */
+  gaps: { from: number; to: number }[];
 }
 
 export function planExplicitList(
@@ -284,7 +291,8 @@ export function planExplicitList(
   columnsOf: (item: SyntaxNode) => number
 ): ExplicitListPlan {
   const lines = new Map<number, LineLayout>();
-  const collapsed: { from: number; to: number }[] = [];
+  const hidden: { from: number; to: number }[] = [];
+  const gaps: { from: number; to: number }[] = [];
   /** Per continuation line: the content column of the innermost item holding it. */
   const continuation = new Map<number, number>();
   const codeLines = new Set<number>();
@@ -305,9 +313,11 @@ export function planExplicitList(
       const last = lastLine(doc, item);
       const firstLine = doc.line(first);
 
+      const lead = firstLine.text.slice(0, mark.from - firstLine.from);
+      if (lead.length > 0 && /^[ \t]*$/.test(lead)) hidden.push({ from: firstLine.from, to: mark.from });
       const end = markerEnd(kind, mark);
       const gap = firstLine.text.slice(end - firstLine.from).match(/^[ \t]*/)?.[0].length ?? 0;
-      if (gap > 0) collapsed.push({ from: end, to: end + gap });
+      gaps.push({ from: end, to: end + gap });
 
       let below = 0;
       for (let n = first + 1; n <= last && below < GUIDE_MIN_LINES; n++) {
@@ -348,23 +358,43 @@ export function planExplicitList(
     const line = doc.line(n);
     const ws = line.text.match(/^[ \t]*/)?.[0].length ?? 0;
     const hide = Math.min(ws, column);
-    if (hide > 0 && ws < line.length) collapsed.push({ from: line.from, to: line.from + hide });
+    if (hide > 0 && ws < line.length) hidden.push({ from: line.from, to: line.from + hide });
   }
   for (const n of codeLines) {
     const l = lines.get(n);
     if (l) l.code = true;
   }
-  collapsed.sort((a, b) => a.from - b.from);
-  return { lines, collapsed };
+  hidden.sort((a, b) => a.from - b.from);
+  return { lines, hidden, gaps };
 }
 
-const collapse = Decoration.mark({ class: 'cm-md-list-indent' });
+/**
+ * The gap between a marker and its text: a real box, line-high (the zero-width
+ * space gives it a line box), so the caret on either side of it is drawn at
+ * full height and a click lands where it points.
+ */
+class GapWidget extends WidgetType {
+  toDOM(): HTMLElement {
+    const span = document.createElement('span');
+    span.className = 'cm-md-xl-gap';
+    span.textContent = '\u200b';
+    return span;
+  }
+
+  eq(): boolean {
+    return true;
+  }
+}
+
+const hide = Decoration.replace({});
+const gapOver = Decoration.replace({ widget: new GapWidget() });
+const gapAt = Decoration.widget({ widget: new GapWidget(), side: 1 });
 
 /**
  * Lays out one top-level list and everything nested in it. Marker boxes and
  * widgets are still `decorateListItem`'s; this pass owns the line geometry —
- * padding, the hanging indent, the guides — and the whitespace it draws at
- * zero width (`ExplicitListPlan.collapsed`).
+ * padding, the hanging indent, the guides — and the source whitespace that
+ * geometry stands in for (`ExplicitListPlan.hidden`, `.gaps`).
  */
 export function layoutExplicitList(
   doc: Text,
@@ -382,7 +412,8 @@ export function layoutExplicitList(
       Decoration.line({ class: 'cm-md-xl-line', attributes: { style: lineStyle(geometry) } })
     );
   }
-  for (const r of plan.collapsed) builder.add(r.from, r.to, collapse);
+  for (const r of plan.hidden) builder.add(r.from, r.to, hide);
+  for (const g of plan.gaps) builder.add(g.from, g.to, g.to > g.from ? gapOver : gapAt);
 }
 
 /** True for a list the layout pass starts from: outermost, and not in a quote. */

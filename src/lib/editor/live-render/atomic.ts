@@ -214,7 +214,7 @@ function collectMarkupModel(state: EditorState): { spans: RawSpan[]; pairs: Mark
     enter(node) {
       if (explicitLists && isExplicitRoot(node.node)) {
         const plan = planExplicitList(doc, node.node, listLayout, (item) => listMarkColumns(item, doc));
-        for (const r of plan.collapsed) push(spans, r.from, r.to, 'to');
+        for (const r of [...plan.hidden, ...plan.gaps]) push(spans, r.from, r.to, 'to');
       }
       switch (node.name) {
         case 'ATXHeading1':
