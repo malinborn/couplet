@@ -21,6 +21,7 @@ import { livePreviewPlugin } from './preview/plugin';
 import { tableModeField } from './preview/table-state';
 import { mermaidViewField } from './preview/mermaid-state';
 import { tableSelectionSnapOut } from './preview/table-selection';
+import { tableCellScroll } from './preview/table-scroll';
 import { hoverBlockMenu } from './hover-menu';
 import { markdownFoldService, headingFoldClick, headingFoldStatePlugin } from './folding';
 import { foldMemory } from './fold-memory';
@@ -143,6 +144,9 @@ export function createExtensions(deps: EditorDeps = {}): Extension[] {
     syntaxHighlighting(classHighlighter),
     previewCompartment.of(livePreviewPlugin),
     tableSelectionSnapOut,
+    // Scrolling to a position in a table body (⌘G onto a match) goes to the
+    // cell: the row's own line is a zero-height strip at the table's bottom.
+    tableCellScroll,
     hoverBlockMenu(),
     // Hide gutter when scrolled horizontally (buttons overlap content)
     ViewPlugin.fromClass(class {

@@ -608,8 +608,17 @@ visible row used to open a field nobody could see). The column controls live in
 the strip *above* the header's natural place, so while the header is stuck they
 are off screen; hover the header in place to use them.
 
-Known gap, older than the sticky header: ⌘F does not scroll to a match inside
-a rendered table — CM6 scrolls to the widget, not the cell.
+**Scrolling to a position in a table goes to the cell** (`table-scroll.ts`,
+an `EditorView.scrollHandler` installed in `setup.ts`). CM6's own target for a
+body-row position is `coordsAt(pos)` — a zero-height rect at the table's
+*bottom edge*, since every body row is a hidden line right below the widget
+(measured: row 2 of 12 resolved to y 509, its cell sat at y 171). So ⌘G/⇧⌘G
+counted and selected a match in a cell but scrolled the table's bottom into
+view, and ⇧⌘G left the cell above the window. The handler runs in the measure
+phase (the table's DOM exists by then), finds the cell by `data-source-from/-to`
+and scrolls it into view below the sticky header's height; a range outside one
+rendered cell falls through to CM6. It was a gap on `main` for every cell, not
+only computed ones.
 
 ### CSV documents
 
