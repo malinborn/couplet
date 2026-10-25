@@ -288,7 +288,7 @@
   "tabs.carousel.more_up": "▲ autres fenêtres",
   "tabs.carousel.more_down": "▼ autres fenêtres",
   "tabs.carousel.foot_drag": "relâchez sur une fenêtre · retour au tiroir — ordre · Échap — annuler",
-  "tabs.carousel.foot_link": "⌥ — insérer un lien à la place",
+  "tabs.carousel.foot_link": "{key} — insérer un lien à la place",
   "tabs.ghost.link": "Insérer un lien",
   "tabs.carousel.foot_keys": "↑↓ — choisir · Entrée — déplacer · Échap — annuler",
 

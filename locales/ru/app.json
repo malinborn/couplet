@@ -288,7 +288,7 @@
   "tabs.carousel.more_up": "▲ ещё окна",
   "tabs.carousel.more_down": "▼ ещё окна",
   "tabs.carousel.foot_drag": "отпустите на окне · вернитесь в ящик — порядок · Esc — отмена",
-  "tabs.carousel.foot_link": "⌥ — вставить ссылку",
+  "tabs.carousel.foot_link": "{key} — вставить ссылку",
   "tabs.ghost.link": "Вставить ссылку",
   "tabs.carousel.foot_keys": "↑↓ — выбрать · Enter — перенести · Esc — отмена",
 

@@ -33,6 +33,7 @@
   import { t } from '../i18n';
   import { acceleratorAriaKeyShortcuts, acceleratorLabel, isMacPlatform } from '../editor/hotkey-label';
   import { EXPAND_MS } from '../tabs/drawer-state';
+  import { slideOf } from '../tabs/drawer-geometry';
   import StashCard from './StashCard.svelte';
   import StashIcon from './StashIcon.svelte';
   import TrashBar from './TrashBar.svelte';
@@ -64,6 +65,7 @@
     windowNumber,
     dropReady,
     dropHot,
+    away = false,
     draggingId,
     onpress,
     onopen,
@@ -85,6 +87,8 @@
     dropReady: boolean;
     /** …and they are over it now. */
     dropHot: boolean;
+    /** File links (D7): ⌥ during a tab-card drag — the drawer steps aside (still open) so the text it covers takes the drop. */
+    away?: boolean;
     /** The stash card being dragged (the tabs drawer runs the drag). */
     draggingId: string | null;
     onpress: (entry: StashEntry, card: HTMLElement, e: PointerEvent) => void;
@@ -289,13 +293,14 @@
   }
 
   function contains(x: number, y: number): boolean {
-    if (!open || !wrapEl) return false;
+    if (!open || away || !wrapEl) return false;
     const r = wrapEl.getBoundingClientRect();
     return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
   }
 
+  /** Where the drawer's left edge rests — not where it is while it slides back after ⌥. */
   function left(): number | null {
-    return open && asideEl ? asideEl.getBoundingClientRect().left : null;
+    return open && asideEl ? asideEl.getBoundingClientRect().left - slideOf(wrapEl) : null;
   }
 
   /** The trash bar: switch the view, with the keys in the stash drawer (mockup `trashBtn`). */
@@ -452,6 +457,7 @@
 <div
   class="stash-wrap"
   class:open
+  class:away
   class:narrow
   class:compact
   style:width="{width}px"
@@ -644,6 +650,12 @@
     transform: translateX(0);
   }
 
+  /* File links (D7): stepped aside during an ⌥ tab drag, still open (TabDrawer's `linkAside`). */
+  .stash-wrap.open.away {
+    transform: translateX(calc(100% + 8px));
+    pointer-events: none;
+  }
+
   .drawer {
     --acc: var(--color-stash);
     position: absolute;
@@ -665,6 +677,10 @@
     box-shadow:
       -14px 0 44px rgba(var(--tabs-shadow-rgb), calc(var(--tabs-shadow-a) * 1.4)),
       -2px 0 8px rgba(var(--tabs-shadow-rgb), var(--tabs-shadow-a));
+  }
+
+  .open.away .drawer {
+    box-shadow: none;
   }
 
   /* Focus is shown only by this rim, in the drawer's own colour; the other drawer is not dimmed. */

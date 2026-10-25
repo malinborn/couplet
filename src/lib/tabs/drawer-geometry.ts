@@ -39,3 +39,23 @@ export function moveIds(order: readonly string[], ids: readonly string[], before
   rest.splice(at === -1 ? rest.length : at, 0, ...block);
   return rest;
 }
+
+/**
+ * The x shift in a computed `transform` (`getComputedStyle(el).transform`:
+ * `none`, `matrix(…)` or `matrix3d(…)` — mid-transition, the in-flight value).
+ * A drawer sliding back after ⌥ is released still has its box shifted;
+ * subtracting this gives the edge it is coming back to.
+ */
+export function translateXOf(transform: string): number {
+  const m = /^matrix(3d)?\(([^)]*)\)$/.exec(transform.trim());
+  if (!m) return 0;
+  const raw = m[2].split(',')[m[1] ? 12 : 4];
+  const x = raw === undefined ? NaN : Number(raw);
+  return Number.isFinite(x) ? x : 0;
+}
+
+/** How far `el` is shifted sideways right now by its own transform (0 without a layout). */
+export function slideOf(el: Element | undefined): number {
+  if (!el || typeof getComputedStyle !== 'function') return 0;
+  return translateXOf(getComputedStyle(el).transform);
+}

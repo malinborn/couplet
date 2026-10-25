@@ -95,6 +95,8 @@
   const what = $derived(count > 1 ? plural(count, 'tabs.carousel.tabs') : lead);
   // The tab's name is bold in the mockup; the sentence stays one translation.
   const head = $derived(t('tabs.carousel.head').split('{what}'));
+  // ⌥ is drawn as a key cap; the rest of the line stays one translation.
+  const linkLine = $derived(t('tabs.carousel.foot_link').split('{key}'));
   const optionId = (i: number) => `car-opt-${i}`;
   const selectedIndex = $derived(mode === 'keys' ? kb : hot);
 
@@ -304,7 +306,9 @@
   </div>
   <div class="car-foot">
     {mode === 'keys' ? t('tabs.carousel.foot_keys') : t('tabs.carousel.foot_drag')}
-    {#if linkHint && mode === 'drag'}<span class="car-foot-link">{t('tabs.carousel.foot_link')}</span>{/if}
+    {#if linkHint && mode === 'drag'}<span class="car-foot-link"
+        >{linkLine[0]}<kbd>⌥</kbd>{linkLine[1] ?? ''}</span
+      >{/if}
   </div>
 </div>
 
@@ -554,10 +558,33 @@
     font-size: 11px;
     color: var(--text-muted);
   }
+  /* File links (D7): the ⌥ line is the one a drag must not miss — larger,
+     in the primary text colour, the key drawn as a cap. Still no colour of
+     its own: it reads as part of the band, not as an alert. */
   .car-foot-link {
-    display: block;
-    margin-top: 4px;
-    color: var(--text-subtle);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4em;
+    margin-top: 9px;
+    font-size: 13.5px;
+    color: var(--text-primary);
+    white-space: pre;
+  }
+  .car-foot-link kbd {
+    display: inline-grid;
+    place-items: center;
+    min-width: 24px;
+    height: 23px;
+    padding: 0 6px;
+    font-family: var(--tabs-ui);
+    font-size: 14px;
+    line-height: 1;
+    color: var(--text-primary);
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 6px;
   }
   @keyframes car-in {
     from {

@@ -53,7 +53,7 @@
   import { sortedOrder, type SortKind } from './drawer-sort';
   import { DRAWER_MOVE_KEY, DRAWER_SORT_KEYS } from './drawer-keys';
   import { createDrawerData, type DrawerDataDeps, type GitInfo, type TabText } from './drawer-data';
-  import { dropBefore, moveIds, pastThreshold, sweptIds, type Box } from './drawer-geometry';
+  import { dropBefore, moveIds, pastThreshold, slideOf, sweptIds, type Box } from './drawer-geometry';
   import { repoLabel, tabCaption, type Caption } from '../stash/tab-caption';
   import type { StashMark } from '../stash/marks';
   import type { RenumberResult } from './window-number';
@@ -63,7 +63,7 @@
   import type { StashStore } from '../stash/stash-store.svelte';
   import type { StashEntry, TagChange } from '../stash/types';
   import { drawerLayout, pageBand, type Band } from '../stash/drawer-width';
-  import { resolveDrop, type DropTarget } from '../stash/drop-target';
+  import { resolveDrop, type DragSource, type DropTarget } from '../stash/drop-target';
   import type { LinkDropTarget, LinkInsertItem } from '../editor/links/link-drop';
   import { linkItemsForTabs } from './link-items';
   import { entryTitle } from '../stash/stash-view';
@@ -224,6 +224,14 @@
   let drag = $state<DragState | null>(null);
   /** File links (D7): the drag would drop a link into the text — the page shows through (R3). */
   const linkMode = $derived(drag?.target === 'text');
+  /** ⌥ held during the current drag (D7): a tab card links instead of moving. Read from every pointer and key event. */
+  let altHeld = $state(false);
+  /**
+   * ⌥ during a tab-card drag: both drawers step aside, so the text they cover
+   * can take the drop. Only a CSS class (`away`) — the drawer stays open, its
+   * list keeps the pointer capture and the drag goes on; ⌥ up brings it back.
+   */
+  const linkAside = $derived(drag !== null && stepsAside(drag.src, altHeld));
 
   interface CarouselState {
     mode: 'drag' | 'keys';
@@ -246,6 +254,7 @@
   let carHandle: CarouselHandle | undefined = $state();
   let selHintFits = $state(true);
   let rootEl: HTMLDivElement | undefined = $state();
+  let wrapEl: HTMLDivElement | undefined = $state();
   let listEl: HTMLDivElement | undefined = $state();
   let asideEl: HTMLElement | undefined = $state();
   let selHintEl: HTMLElement | undefined = $state();
@@ -263,8 +272,6 @@
   let gesture: 'press' | 'drag' | 'sweep' | null = null;
   let endGesture: (() => void) | null = null;
   let inWrap = false;
-  /** ⌥ held during the current drag (D7): a tab card links instead of moving. Read from every pointer and key event. */
-  let altHeld = false;
   /** `null` until the list first has tabs: the count a window starts with is not an arrival. */
   let lastUnviewed: number | null = null;
   /** The list as it was last rendered — to find the neighbour of a focused card that went away. */
@@ -450,7 +457,7 @@
 
   // Both drawers open veil the page as the carousel does (D17): App's one blur.
   $effect(() => {
-    oncarousel?.((car !== null || stashOpen) && !linkMode);
+    oncarousel?.((car !== null || stashOpen) && !linkMode && !linkAside);
   });
 
   // ⌘G's carousel follows its tabs: one closed while it is up (⌘W, an agent)
@@ -851,12 +858,16 @@
 
   function wrapEnter(e: PointerEvent): void {
     trackShift(e);
+    // Stepped aside for ⌥, the drawer slides under and away from a still
+    // pointer: that is no hover. `inWrap` keeps what it was before ⌥.
+    if (linkAside) return;
     inWrap = true;
     clearTimeout(hoverCloseTimer);
   }
 
   function wrapLeave(e: PointerEvent): void {
     trackShift(e);
+    if (linkAside) return;
     inWrap = false;
     scheduleHoverClose();
   }
@@ -1057,7 +1068,7 @@
       kb: 0,
       hot: null,
       got: null,
-      left: asideEl?.getBoundingClientRect().right ?? 0,
+      left: tabsRight(),
       right: (() => {
         const stashLeft = stashOpen ? (stashHandle?.left() ?? null) : null;
         return stashLeft === null ? 0 : Math.max(0, window.innerWidth - stashLeft);
@@ -1160,11 +1171,19 @@
     carHandle?.reveal(kb);
   }
 
+  /**
+   * The tabs drawer's right edge where it rests: right after ⌥ is released it
+   * is still sliding back, and the carousel must keep to its resting edge.
+   */
+  function tabsRight(): number {
+    const r = asideEl?.getBoundingClientRect();
+    return r ? r.right - slideOf(wrapEl) : 0;
+  }
+
   /** The page band the carousel may use: right of the tabs drawer, left of the stash drawer (D20). */
   function carouselBand(): Band | null {
-    const tabsRight = asideEl?.getBoundingClientRect().right ?? 0;
     const stashLeft = stashOpen ? (stashHandle?.left() ?? null) : null;
-    return pageBand(tabsRight, stashLeft, window.innerWidth, layout.narrow);
+    return pageBand(tabsRight(), stashLeft, window.innerWidth, layout.narrow);
   }
 
   /** Over the page between the drawers: the carousel; anywhere else: gone (mockup `carouselFollow`). */
@@ -1326,19 +1345,25 @@
     return !!r && r.width > 0 && r.height > 0 && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
   }
 
+  /** ⌥ with a tab card, and links can be dropped: the drawers step aside (`linkAside`). */
+  function stepsAside(src: DragSource, alt: boolean): boolean {
+    return src === 'tabs' && alt && !!linkDrop;
+  }
+
   function dropTargetAt(src: 'tabs' | 'stash', x: number, y: number): DropTarget {
-    return resolveDrop(
-      src,
-      {
-        stashDrawer: stashOpen && (stashHandle?.contains(x, y) ?? false),
-        stashZone: !!stash && inside(stashBarEl, x, y),
-        list: overList(x, y),
-        tabsDrawer: inside(asideEl, x, y),
-        text: !!linkDrop && linkDrop.over(x, y),
-      },
-      !!ds.query,
-      altHeld
-    );
+    const text = !!linkDrop && linkDrop.over(x, y);
+    // Stepped aside, nothing of the drawers is under the pointer — wherever
+    // their boxes are while they slide out.
+    const hits = stepsAside(src, altHeld)
+      ? { stashDrawer: false, stashZone: false, list: false, tabsDrawer: false, text }
+      : {
+          stashDrawer: stashOpen && (stashHandle?.contains(x, y) ?? false),
+          stashZone: !!stash && inside(stashBarEl, x, y),
+          list: overList(x, y),
+          tabsDrawer: inside(asideEl, x, y),
+          text,
+        };
+    return resolveDrop(src, hits, !!ds.query, altHeld);
   }
 
   /** The drag with the pointer at `ev`: where it is, and what a drop there would do. */
@@ -1377,6 +1402,14 @@
     drag = next;
     followLink(next);
     if (d.src === 'tabs') followCarousel(d.x, d.y, next.target === 'page');
+    // The drawers just stepped aside (or back): the caret is placed again once
+    // they let the pointer through — before that the hit test found the drawer.
+    if (stepsAside(d.src, true)) {
+      void tick().then(() => {
+        const now = drag;
+        if (now) followLink(now);
+      });
+    }
   }
 
   function linkItemsFor(d: DragState): LinkInsertItem[] {
@@ -1465,7 +1498,7 @@
   class:car={car !== null}
   class:stash-open={stashOpen}
   class:narrow={layout.narrow}
-  class:link-mode={linkMode}
+  class:link-mode={linkMode || linkAside}
   bind:this={rootEl}
   onfocusin={onFocusIn}
   onfocusout={onFocusOut}
@@ -1479,7 +1512,9 @@
   ></div>
   <div
     class="drawer-wrap"
+    class:away={linkAside}
     role="presentation"
+    bind:this={wrapEl}
     onpointerenter={wrapEnter}
     onpointerleave={wrapLeave}
     onpointermove={trackShift}
@@ -1670,6 +1705,7 @@
       compact={compactCards}
       {windowNumber}
       dropReady={drag?.src === 'tabs'}
+      away={linkAside}
       dropHot={drag?.target === 'stash-drawer'}
       draggingId={drag?.src === 'stash' ? (drag.entry?.id ?? null) : null}
       onpress={onStashPress}
@@ -1828,6 +1864,14 @@
     transform: translateX(0);
   }
 
+  /* File links (D7): ⌥ during a tab-card drag — the drawer slides out of the
+     way so the text it covers can take the drop, and comes back on ⌥ up. It
+     stays open: the drag and its pointer capture live in it. */
+  .open .drawer-wrap.away {
+    transform: translateX(-100%);
+    pointer-events: none;
+  }
+
   .drawer {
     position: absolute;
     top: 6px;
@@ -1850,6 +1894,13 @@
     box-shadow:
       14px 0 44px rgba(var(--tabs-shadow-rgb), calc(var(--tabs-shadow-a) * 1.4)),
       2px 0 8px rgba(var(--tabs-shadow-rgb), var(--tabs-shadow-a));
+  }
+
+  /* Stepped aside, its shadow would still fall on the text it left. */
+  .open .away .drawer {
+    box-shadow:
+      10px 0 40px rgba(var(--tabs-shadow-rgb), 0),
+      0 0 0 rgba(0, 0, 0, 0);
   }
 
   .drawer {

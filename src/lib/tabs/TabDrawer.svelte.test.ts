@@ -2328,12 +2328,14 @@ describe('TabDrawer — drag to insert a link (file links plan 03)', () => {
       grab(card('b'), { x: 600, y: 300 }, { altKey: true });
       await settle();
       expect(h.root().classList.contains('link-mode')).toBe(true);
+      expect(el('.drawer-wrap').classList.contains('away'), '⌥ stepped the drawer aside').toBe(true);
       link.clear.mockClear();
       cancel();
       await settle();
       expect(link.clear).toHaveBeenCalled();
       expect(link.drop).not.toHaveBeenCalled();
       expect(h.root().classList.contains('link-mode')).toBe(false);
+      expect(el('.drawer-wrap').classList.contains('away'), 'the drawer is back').toBe(false);
       expect(page().querySelector('.ghost')).toBeNull();
       // Released after the cancel: nothing happens.
       pointer(window, 'pointerup', { clientX: 600, clientY: 300 });
@@ -2350,6 +2352,114 @@ describe('TabDrawer — drag to insert a link (file links plan 03)', () => {
       expect(carousel(), 'a plain drag is a move again').not.toBeNull();
     });
   }
+
+  describe('⌥ steps the drawers aside (the text they cover takes the drop)', () => {
+    const stashWrap = () => page().querySelector<HTMLElement>('.stash-wrap')!;
+
+    /** The drawers' real boxes: the tab list and the tabs drawer on the left, the stash on the right. */
+    function layOut(): void {
+      el('.tab-list').getBoundingClientRect = () => new DOMRect(0, 0, 300, 600);
+      el('#tab-drawer').getBoundingClientRect = () => new DOMRect(0, 0, 420, 768);
+      stashWrap().getBoundingClientRect = () => new DOMRect(624, 0, 400, 768);
+      page().querySelector<HTMLElement>('.stash-drawer')!.getBoundingClientRect = () => new DOMRect(624, 6, 400, 756);
+    }
+
+    beforeEach(async () => {
+      h.handle().toggleStash();
+      await settleLong();
+      layOut();
+      // Text everywhere — under both drawers too.
+      link.over.mockImplementation(() => true);
+    });
+
+    it('AltDownMidDragHidesBothDrawers_ADropWhereTheTabListWasLinks', async () => {
+      grab(card('b'), { x: 200, y: 300 });
+      await settle();
+      expect(page().querySelector('.ghost')).not.toBeNull();
+      expect(el('.drawer-wrap').classList.contains('away')).toBe(false);
+      expect(link.drop).not.toHaveBeenCalled();
+      altKey('keydown', true);
+      await settle();
+      expect(el('.drawer-wrap').classList.contains('away')).toBe(true);
+      expect(stashWrap().classList.contains('away')).toBe(true);
+      expect(h.root().classList.contains('open'), 'stepped aside, not closed').toBe(true);
+      expect(stash.state.open).toBe(true);
+      expect(h.root().classList.contains('link-mode'), 'the scrim lightens and lets the pointer through').toBe(true);
+      expect(h.oncarousel, 'no blur over the text').toHaveBeenLastCalledWith(false);
+      expect(page().querySelector('.ghost.as-link'), 'the ghost keeps following').not.toBeNull();
+      expect(link.hover).toHaveBeenLastCalledWith(200, 300);
+      pointer(window, 'pointermove', { buttons: 1, clientX: 700, clientY: 320, altKey: true });
+      await settle();
+      expect(link.hover, 'over where the stash drawer was').toHaveBeenLastCalledWith(700, 320);
+      pointer(window, 'pointerup', { clientX: 201, clientY: 300, altKey: true });
+      await settle();
+      expect(link.drop).toHaveBeenCalledWith(201, 300, [{ path: '/p/beta.md', title: null }]);
+      expect(h.onreorder).not.toHaveBeenCalled();
+      expect(h.root().classList.contains('open'), 'the drawer stays closed after a link drop').toBe(false);
+    });
+
+    it('AltUpBringsTheDrawersBack_AndTheCarousel', async () => {
+      grab(card('b'), { x: 520, y: 300 });
+      await settle();
+      await settle();
+      expect(carousel()).not.toBeNull();
+      altKey('keydown', true);
+      await settle();
+      expect(carousel()).toBeNull();
+      expect(el('.drawer-wrap').classList.contains('away')).toBe(true);
+      altKey('keyup', false);
+      await settle();
+      await settle();
+      expect(el('.drawer-wrap').classList.contains('away')).toBe(false);
+      expect(stashWrap().classList.contains('away')).toBe(false);
+      expect(h.root().classList.contains('link-mode')).toBe(false);
+      expect(carousel(), 'the carousel is back').not.toBeNull();
+      expect(page().querySelector('.ghost'), 'the drag is still on').not.toBeNull();
+      // Back over the list: a reorder, as in plain move mode.
+      pointer(window, 'pointermove', { buttons: 1, clientX: 100, clientY: 590 });
+      pointer(window, 'pointerup', { clientX: 100, clientY: 590 });
+      await settle();
+      expect(h.onreorder).toHaveBeenCalledTimes(1);
+      expect(link.drop).not.toHaveBeenCalled();
+    });
+
+    it('AStashCardDragDoesNotHideTheDrawers', async () => {
+      const s2 = page().querySelector('[data-stash-id="s2"]')!;
+      pointer(s2, 'pointerdown', { button: 0, buttons: 1, clientX: 700, clientY: 100 });
+      pointer(window, 'pointermove', { buttons: 1, clientX: 600, clientY: 300, altKey: true });
+      await settle();
+      expect(el('.drawer-wrap').classList.contains('away')).toBe(false);
+      expect(stashWrap().classList.contains('away')).toBe(false);
+      pointer(window, 'pointercancel', { clientX: 600, clientY: 300 });
+      await settle();
+    });
+  });
+
+  it('AHoverOpenedDrawerDoesNotCloseForRealWhileSteppedAside', async () => {
+    vi.useFakeTimers();
+    h.handle().toggle();
+    await settle();
+    await hoverOpen();
+    grab(card('b'), { x: 600, y: 300 });
+    await settle();
+    altKey('keydown', true);
+    await settle();
+    expect(el('.drawer-wrap').classList.contains('away')).toBe(true);
+    // The drawer slid from under the pointer.
+    pointer(el('.drawer-wrap'), 'pointerleave', { clientX: 600, clientY: 300 });
+    vi.advanceTimersByTime(HOVER_CLOSE_MS * 3);
+    await settle();
+    expect(h.root().classList.contains('open')).toBe(true);
+    expect(el('.drawer').hasAttribute('inert')).toBe(false);
+    altKey('keyup', false);
+    await settle();
+    vi.advanceTimersByTime(HOVER_CLOSE_MS * 3);
+    await settle();
+    expect(el('.drawer-wrap').classList.contains('away')).toBe(false);
+    expect(h.root().classList.contains('open'), 'still open after the ⌥ round trip').toBe(true);
+    pointer(window, 'pointercancel', { clientX: 600, clientY: 300 });
+    await settle();
+  });
 
   it('ARefusedDropFallsThroughToTheOldBehaviour', async () => {
     link.drop.mockReturnValue(false);

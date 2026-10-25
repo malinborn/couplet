@@ -150,4 +150,12 @@ describe('WindowCarousel', () => {
     show(carouselItems([win('editor-3', 12)]));
     expect(target.querySelector('.car-foot-link')).toBeNull();
   });
+
+  it('TheOptionHintShowsTheKeyAsAKeyCap', () => {
+    show(carouselItems([win('editor-3', 12)]), { linkHint: true });
+    const hint = target.querySelector('.car-foot-link')!;
+    const kbd = hint.querySelector('kbd');
+    expect(kbd?.textContent).toBe('⌥');
+    expect(hint.textContent).toBe('⌥ — insert a link instead');
+  });
 });

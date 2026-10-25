@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { dropBefore, moveIds, pastThreshold, sweptIds } from './drawer-geometry';
+import { dropBefore, moveIds, pastThreshold, sweptIds, translateXOf } from './drawer-geometry';
 
 const boxes = [
   { id: 'a', top: 0, bottom: 40 },
@@ -42,5 +42,20 @@ describe('pastThreshold', () => {
   it('IsMoreThanFivePixels', () => {
     expect(pastThreshold(3, 4)).toBe(false);
     expect(pastThreshold(4, 4)).toBe(true);
+  });
+});
+
+describe('translateXOf', () => {
+  it('reads the x shift of a computed transform, 2D or 3D', () => {
+    expect(translateXOf('matrix(1, 0, 0, 1, -420, 0)')).toBe(-420);
+    expect(translateXOf('matrix(1, 0, 0, 1, 137.5, 4)')).toBe(137.5);
+    expect(translateXOf('matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 408, 0, 0, 1)')).toBe(408);
+  });
+
+  it('is 0 for no transform or one it cannot read', () => {
+    expect(translateXOf('none')).toBe(0);
+    expect(translateXOf('')).toBe(0);
+    expect(translateXOf('translateX(-100%)')).toBe(0);
+    expect(translateXOf('matrix(1, 0, 0, 1, x, 0)')).toBe(0);
   });
 });

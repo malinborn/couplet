@@ -288,7 +288,7 @@
   "tabs.carousel.more_up": "▲ 更多窗口",
   "tabs.carousel.more_down": "▼ 更多窗口",
   "tabs.carousel.foot_drag": "在窗口上松开 · 拖回抽屉 — 排序 · Esc — 取消",
-  "tabs.carousel.foot_link": "⌥ — 改为插入链接",
+  "tabs.carousel.foot_link": "{key} — 改为插入链接",
   "tabs.ghost.link": "插入链接",
   "tabs.carousel.foot_keys": "↑↓ — 选择 · Enter — 移动 · Esc — 取消",
 
