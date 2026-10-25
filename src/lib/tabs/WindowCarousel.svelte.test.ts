@@ -29,7 +29,7 @@ beforeAll(() => {
 
 function show(
   items: CarouselItem[] | null,
-  extra: Partial<{ mode: 'drag' | 'keys'; kb: number; count: number }> = {}
+  extra: Partial<{ mode: 'drag' | 'keys'; kb: number; count: number; linkHint: boolean }> = {}
 ) {
   target = document.createElement('div');
   document.body.appendChild(target);
@@ -46,6 +46,7 @@ function show(
       count: extra.count ?? 1,
       lead: 'plan.md',
       pointer: null,
+      linkHint: extra.linkHint ?? false,
       onpick,
       get handle() {
         return handle;
@@ -133,5 +134,20 @@ describe('WindowCarousel', () => {
     show(carouselItems([win('editor-3', 12, '<img src=x onerror="alert(1)"> **bold**')]));
     expect(target.querySelector('img')).toBeNull();
     expect(options()[1].querySelector('.doc')?.textContent).toContain('<img');
+  });
+
+  it('ADragWithLinksAvailableSaysOptionInsertsALink', () => {
+    show(carouselItems([win('editor-3', 12)]), { linkHint: true });
+    expect(target.querySelector('.car-foot-link')?.textContent).toBe('⌥ — insert a link instead');
+    unmount(component!);
+    component = null;
+    target.remove();
+    show(carouselItems([win('editor-3', 12)]), { linkHint: true, mode: 'keys' });
+    expect(target.querySelector('.car-foot-link')).toBeNull();
+    unmount(component!);
+    component = null;
+    target.remove();
+    show(carouselItems([win('editor-3', 12)]));
+    expect(target.querySelector('.car-foot-link')).toBeNull();
   });
 });

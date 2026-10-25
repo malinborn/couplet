@@ -1935,6 +1935,16 @@ Windows: every answer names the window it landed in — `{"ok":true,"window":7,"
 
 All verbs print one line of JSON to stdout: `{"ok":true}` (plus `"window"`/`"focused"`, `"changed_lines":[[start,end]]` for `edit`, `"answer":"..."` for `ask`, `"answers":[...]` for `ask --multi`, or `"custom":"..."` for a typed `ask --free-text` answer) on success, `{"ok":false,"error":"..."}` on failure. Exit code 0 = success, 1 = couplet rejected the request, 2 = couplet isn't running or the command was malformed. If the target file isn't open yet, `edit`/`show` open it as a tab by the rule above — for `show` it must already exist on disk (`ask` requires the same: already open, or existing on disk). Always send the full document on stdin for `edit`, never a diff.
 
+### Links between documents
+
+couplet follows markdown links, so a document you write can take the user straight to another file or to a section of one:
+
+- Another file: `[plan](docs/plan.md)` — relative to the folder of the document you are writing in. An absolute path or `~/…` works too, for a file outside that tree. A path with spaces goes in angle brackets: `[notes](<meeting notes.md>)`.
+- A section of another file: `[risks](docs/plan.md#risks)`. A section of the same document: `[risks](#risks)`.
+- The anchor is the heading's text lowercased, punctuation dropped, spaces turned into `-`: `## Risks & open questions` → `#risks-open-questions`; non-Latin letters stay as they are (`## Открытые вопросы` → `#открытые-вопросы`). A repeated heading gets `-2`, `-3`.
+- On ⌘-click couplet opens the file as a tab (or switches to the tab or window that already has it) and scrolls to the heading. A link to a missing file is drawn dashed and offers to create it; a non-text file (an image, a PDF, a folder) is only revealed in Finder, never opened.
+- Write links rather than bare paths whenever a plan, report or review refers to a spec, a source document or another section — the user gets there in one click. To take them somewhere right now, use `couplet show` instead.
+
 ### Comments the user leaves for you
 
 The user can also comment on a fragment of a document and expect you to answer. Threads live in `.mdmini_comments_<doc>.md` beside the document as plain markdown, so these verbs need no running app:
@@ -2004,6 +2014,16 @@ pub(crate) const MCP_AGENT_SNIPPET: &str = r#"## couplet via MCP — how to use 
 - `transient: true` is for a quick look — something they glance at once. The tab asks them «Close / Keep» by itself; leave it off for documents you will keep working in.
 - An `edit` of a background tab is applied and saved there, highlighted when they open it; an `ask` for one waits there until they do, and its timeout still counts from the call.
 - Close what you opened and no longer need with `close` — hygiene, not isolation.
+
+### Links between documents
+
+couplet follows markdown links, so a document you write can take the user straight to another file or to a section of one:
+
+- Another file: `[plan](docs/plan.md)` — relative to the folder of the document you are writing in. An absolute path or `~/…` works too, for a file outside that tree. A path with spaces goes in angle brackets: `[notes](<meeting notes.md>)`.
+- A section of another file: `[risks](docs/plan.md#risks)`. A section of the same document: `[risks](#risks)`.
+- The anchor is the heading's text lowercased, punctuation dropped, spaces turned into `-`: `## Risks & open questions` → `#risks-open-questions`; non-Latin letters stay as they are (`## Открытые вопросы` → `#открытые-вопросы`). A repeated heading gets `-2`, `-3`.
+- On ⌘-click couplet opens the file as a tab (or switches to the tab or window that already has it) and scrolls to the heading. A link to a missing file is drawn dashed and offers to create it; a non-text file (an image, a PDF, a folder) is only revealed in Finder, never opened.
+- Write links rather than bare paths whenever a plan, report or review refers to a spec, a source document or another section — the user gets there in one click. To take them somewhere right now, use `show` instead.
 
 ### Comments the user leaves for you
 

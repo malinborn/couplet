@@ -23,4 +23,17 @@ describe('resolveDrop', () => {
     expect(resolveDrop('stash', { ...none, stashDrawer: true }, false)).toBe('none');
     expect(resolveDrop('stash', none, false)).toBe('none');
   });
+
+  it('a stash card over the text links (file links, plan 03); the drawers still win', () => {
+    expect(resolveDrop('stash', { ...none, text: true }, false)).toBe('text');
+    expect(resolveDrop('stash', { ...none, text: true, tabsDrawer: true }, false)).toBe('tabs-drawer');
+    expect(resolveDrop('stash', { ...none, text: true, stashDrawer: true }, false)).toBe('none');
+  });
+
+  it('a tab card over the page moves it — with ⌥ it links instead, and never opens the carousel', () => {
+    expect(resolveDrop('tabs', { ...none, text: true }, false)).toBe('page');
+    expect(resolveDrop('tabs', { ...none, text: true }, false, true)).toBe('text');
+    expect(resolveDrop('tabs', none, false, true)).toBe('none');
+    expect(resolveDrop('tabs', { ...none, text: true, stashZone: true, tabsDrawer: true }, false, true)).toBe('stash-zone');
+  });
 });

@@ -44,6 +44,7 @@
     count,
     lead,
     pointer,
+    linkHint = false,
     onpick,
     oncancel,
     onscroll,
@@ -68,6 +69,8 @@
     lead: string;
     /** The dragged pointer, for the edge zones; `null` in keys mode. */
     pointer: { x: number; y: number } | null;
+    /** File links (D7): ⌥ would insert a link instead — said in drag mode only. */
+    linkHint?: boolean;
     onpick: (index: number) => void;
     /** Keys mode: a press on the carousel off every thumbnail (mockup). */
     oncancel?: () => void;
@@ -299,7 +302,10 @@
     </div>
     <div class="car-edge bot" class:on={edges.bottom} class:hot={edges.v > 0}>{t('tabs.carousel.more_down')}</div>
   </div>
-  <div class="car-foot">{mode === 'keys' ? t('tabs.carousel.foot_keys') : t('tabs.carousel.foot_drag')}</div>
+  <div class="car-foot">
+    {mode === 'keys' ? t('tabs.carousel.foot_keys') : t('tabs.carousel.foot_drag')}
+    {#if linkHint && mode === 'drag'}<span class="car-foot-link">{t('tabs.carousel.foot_link')}</span>{/if}
+  </div>
 </div>
 
 <style>
@@ -547,6 +553,11 @@
     margin-bottom: 14px;
     font-size: 11px;
     color: var(--text-muted);
+  }
+  .car-foot-link {
+    display: block;
+    margin-top: 4px;
+    color: var(--text-subtle);
   }
   @keyframes car-in {
     from {

@@ -1,3 +1,4 @@
+import type { EditorState } from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
 
 /**
@@ -25,4 +26,10 @@ export interface SlashAction {
   detail: string;
   /** What to do instead of inserting text. The typed command text is already deleted. */
   run(view: EditorView): void;
+  /**
+   * Whether to offer the action with its `/` at `pos`. Omitted: everywhere
+   * the slash menu opens. `/link` uses it to stay out of code and HTML, where
+   * the `[[` it inserts would open no picker.
+   */
+  available?(state: EditorState, pos: number): boolean;
 }

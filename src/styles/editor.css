@@ -161,6 +161,15 @@
   cursor: pointer;
 }
 
+/* A file link whose target does not exist (file-links D4): dashed and muted,
+ * so a typo in a path is visible before anyone ⌘-clicks it. Two classes, so
+ * it outranks `.cm-md-link` without `!important`. */
+.cm-md-link.cm-md-link-missing {
+  color: var(--text-subtle);
+  text-decoration-style: dashed;
+  text-decoration-color: var(--text-subtle);
+}
+
 /* Formatting inside a quote is muted: every accent is pulled 80% of the way to the
  * quote's own grey text, so `**bold**` in a quote reads a shade apart from
  * `**bold**` in the body. A mix rather than `filter: saturate()` because a
@@ -230,6 +239,102 @@
 
 .cm-md-list-indent {
   font-size: 0;
+}
+
+/* View → Lists (`preview/explicit-lists.ts`).
+ *
+ * With either switch on, the geometry of every list line is an inline style
+ * the layout pass writes — padding to the item's text column, a negative
+ * `text-indent` on the marker line under `strict` so a wrapped line hangs
+ * under the text, and one background strip per guide. Only the knobs live
+ * here, on `.cm-editor` because that is where `listLayoutExtension` puts its
+ * classes. `text-indent` is inherited, so every inline block on such a line
+ * (the marker box, the bullet, widgets) resets it.
+ *
+ * Density is three looks, not a slider: the marker column and the gap after
+ * it (the layout pass), and the classic step (`--list-indent-step`, which both
+ * the classic depth rules and the non-strict pass use). `standard`'s step is
+ * the classic 1.7em, so the default layout is exactly what it was. */
+/* Lengths a line sums into its padding and guide positions are registered,
+ * so they compute to pixels on `.cm-content` and are inherited as pixels: a
+ * code line (0.9em) or a heading inside an item keeps its neighbours' columns
+ * and guides. Unregistered, `em`/`ch` would be measured again in each line's
+ * own font. */
+@property --xl-gap { syntax: '<length>'; inherits: true; initial-value: 0px; }
+@property --xl-bullet-w { syntax: '<length>'; inherits: true; initial-value: 0px; }
+@property --xl-ch { syntax: '<length>'; inherits: true; initial-value: 0px; }
+@property --xl-dot-w { syntax: '<length>'; inherits: true; initial-value: 0px; }
+@property --xl-step { syntax: '<length>'; inherits: true; initial-value: 0px; }
+@property --xl-code-pad { syntax: '<length>'; inherits: true; initial-value: 0px; }
+.cm-content {
+  --xl-gap: 0.3em;
+  --xl-bullet-w: 1.15em;
+  --xl-ch: 1ch;
+  --xl-dot-w: 0.45ch;
+  --xl-code-pad: 1em;
+  /* Same element as `--list-indent-step`, so the density rules below reach it. */
+  --xl-step: var(--list-indent-step);
+}
+.cm-list-compact .cm-content {
+  --xl-gap: 0.2em;
+  --xl-bullet-w: 0.85em;
+  --list-indent-step: 1.3em;
+}
+.cm-list-sparse .cm-content {
+  --xl-gap: 0.5em;
+  --xl-bullet-w: 1.5em;
+  --list-indent-step: 2.2em;
+}
+.cm-editor {
+  --xl-base: 6px;
+  --xl-task-w: 16px;
+  --xl-guide-w: 1px;
+  --xl-guide-start: 1lh;
+  --xl-guide-color: color-mix(in oklab, var(--color-list-marker) 40%, transparent);
+  --xl-guide: linear-gradient(var(--xl-guide-color), var(--xl-guide-color));
+}
+/* A line restarts its background, so a dash or a dot can be cut at a line
+ * boundary — at 1px nobody sees it. */
+.cm-editor.cm-xl-guide-dashed {
+  --xl-guide: repeating-linear-gradient(to bottom, var(--xl-guide-color) 0 4px, transparent 4px 7px);
+}
+.cm-editor.cm-xl-guide-dotted {
+  --xl-guide-w: 1.5px;
+  --xl-guide: repeating-linear-gradient(to bottom, var(--xl-guide-color) 0 1.5px, transparent 1.5px 4.5px);
+}
+.cm-line.cm-md-xl-line {
+  background-repeat: no-repeat;
+}
+.cm-line.cm-md-xl-line * {
+  text-indent: 0;
+}
+.cm-xl .cm-md-xl-box {
+  display: inline-block;
+  margin-right: var(--xl-gap);
+  font-variant-numeric: tabular-nums;
+}
+/* Numbers right aligned, so `9.` and `10.` share a text column. A bullet —
+ * the widget, or the `-` revealed under the caret — centred in its box. */
+.cm-xl .cm-md-xl-ordered {
+  text-align: right;
+}
+.cm-xl .cm-md-xl-bullet {
+  text-align: center;
+}
+/* The bullet widget replaces the marker's range, so the box mark does not
+ * wrap it — it is the box itself, width and gap included. */
+.cm-xl .cm-md-bullet.cm-md-xl-box {
+  width: var(--xl-bullet-w);
+}
+/* `font-size: inherit`: an <input> has the UA's 13.3px, and the `em` of the
+ * gap would be measured in it — the text then misses the hanging column. */
+.cm-xl .cm-md-checkbox {
+  font-size: inherit;
+  margin-left: 0;
+  margin-right: var(--xl-gap);
+  box-sizing: border-box;
+  width: var(--xl-task-w);
+  height: var(--xl-task-w);
 }
 
 /* The marker column. Fixed width per list (`listMarkColumns`) and right

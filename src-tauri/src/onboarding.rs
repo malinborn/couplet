@@ -544,7 +544,7 @@ const PROMPT_INTRO: &str = r#"1. Register couplet over MCP, if your harness supp
 
    ---
    name: couplet
-   description: Use when the user should read something with their own eyes, when a file or report needs to be shown, when asking a question about a document they already have open, when replying to comments they left in one, or when looking for something they put away in their couplet stash. Covers the MCP tools (show/edit/ask/question/answer/stash_search/stash_get) and the CLI fallback.
+   description: Use when the user should read something with their own eyes, when a file or report needs to be shown, when asking a question about a document they already have open, when replying to comments they left in one, when a document you write refers to other files or sections (couplet opens markdown links on ⌘-click), or when looking for something they put away in their couplet stash. Covers the MCP tools (show/edit/ask/question/answer/stash_search/stash_get), links between documents, and the CLI fallback.
    ---
 
    Its body is everything between the SKILL markers below, verbatim.
@@ -584,8 +584,9 @@ see something with their own eyes — a report, plan, spec or review you just
 wrote; when they say "show me"; when the question is about a document they
 already have open; when a mermaid diagram is involved; when they left
 comments in a document for you; or when they mention something they put away
-(their couplet stash — search it, never dump it). Load the `couplet` skill
-before using it.
+(their couplet stash — search it, never dump it). When a document you write
+refers to another file or section, write a markdown link (`[plan](plan.md#risks)`)
+— couplet opens it on ⌘-click. Load the `couplet` skill before using it.
 
 Prefer the MCP tools (`show`, `edit`, `ask`, `question`, `answer`,
 `stash_search`). If MCP is not registered, not supported by this harness, or a

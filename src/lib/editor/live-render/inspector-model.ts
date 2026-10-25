@@ -1,6 +1,8 @@
 import { syntaxTree } from '@codemirror/language';
 import type { EditorState, TransactionSpec } from '@codemirror/state';
 import type { SyntaxNode } from '@lezer/common';
+import { linkQueryAt } from '../links/link-query';
+import { linkDestinationNode } from '../preview/link-refs';
 
 /**
  * Element inspector — Phase 7 of live-render.
@@ -65,16 +67,26 @@ function findEnclosingAtPos(state: EditorState, pos: number, name: string): Synt
   return findEnclosing(tree.resolveInner(pos, -1), name);
 }
 
-function linkTargetFrom(node: SyntaxNode): LinkTarget | null {
+function linkTargetFrom(state: EditorState, node: SyntaxNode): LinkTarget | null {
   const marks = node.getChildren('LinkMark');
   if (marks.length < 2) return null; // malformed — shouldn't happen for a Link node
 
   const openBracket = marks[0];
   const closeBracket = marks[1];
+  // Only an inline link has a URL to edit: `(` right after the text's `]`.
+  // `see [1] here`, `[[x]]` and `[a][ref]` are Link nodes too, and for them
+  // the last mark is a `]` — a URL range from it would run backwards and
+  // `setLinkUrl` would throw `RangeError: Invalid change range`.
+  const openParen = marks[2];
+  const inline =
+    openParen !== undefined &&
+    openParen.from === closeBracket.to &&
+    state.sliceDoc(openParen.from, openParen.to) === '(';
+  if (!inline) return null;
   // The last LinkMark ends the node (`)`), whether or not a title is present.
   const closeParen = marks[marks.length - 1];
 
-  const urlNode = node.getChild('URL');
+  const urlNode = linkDestinationNode(node);
   const url: Range = urlNode
     ? { from: urlNode.from, to: urlNode.to }
     : { from: closeBracket.to + 1, to: closeParen.from };
@@ -110,9 +122,12 @@ function fenceTargetFrom(node: SyntaxNode): FenceTarget {
  * as in live-preview.
  */
 export function detectInspectorTarget(state: EditorState, pos: number): InspectorTarget | null {
-  const link = findEnclosingAtPos(state, pos, 'Link');
+  // Lezer reads `[[query]]` as a Link (a shortcut reference). While the
+  // caret is in one the `[[` picker owns it; a URL panel would cover the
+  // popup (file-links D5).
+  const link = linkQueryAt(state, pos) ? null : findEnclosingAtPos(state, pos, 'Link');
   if (link) {
-    const target = linkTargetFrom(link);
+    const target = linkTargetFrom(state, link);
     if (target) return target;
   }
 

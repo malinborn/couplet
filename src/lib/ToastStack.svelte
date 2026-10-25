@@ -21,6 +21,8 @@
      * that window forward (`reveal_other_window`).
      */
     onRevealWindow,
+    /** «Create» on a `link-missing` toast: open that path as a new tab. */
+    onCreateLink,
     /**
      * Stash stage 04 (D19): px from the window's right edge while the stash
      * drawer is open — the stack sits bottom-right, exactly where that drawer
@@ -32,6 +34,7 @@
     onDismiss?: (entry: ToastEntry) => void;
     onFormatJson?: () => void;
     onRevealWindow?: (label: string) => void;
+    onCreateLink?: (path: string) => void;
     right?: number;
   } = $props();
 
@@ -217,6 +220,29 @@
               }}
             >
               {t('toast.stash.go')}
+            </button>
+          {/if}
+        {:else if toast.payload.kind === 'link-missing'}
+          {@const link = toast.payload}
+          {@const createPath = link.canCreate ? link.path : null}
+          <span class="md-toast-text">
+            <strong
+              >{link.path !== null
+                ? t('toast.link_missing.headline', { fileName: link.fileName })
+                : link.reason === 'no-home'
+                  ? t('toast.link_no_home.headline', { fileName: link.fileName })
+                  : t('toast.link_unresolvable.headline', { fileName: link.fileName })}</strong
+            >
+          </span>
+          {#if createPath !== null}
+            <button
+              class="md-toast-cmd md-toast-action"
+              onclick={() => {
+                if (createPath !== null) onCreateLink?.(createPath);
+                dismiss(toast);
+              }}
+            >
+              {t('toast.link_missing.create')}
             </button>
           {/if}
         {:else if toast.payload.kind === 'reload-error'}

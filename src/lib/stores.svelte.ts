@@ -16,6 +16,7 @@ import { windowTitle } from './window-title';
 import type { TransientPolicy } from './tabs/controller';
 import type { LineEnding } from './line-endings';
 import type { StashKind } from './stash/types';
+import { listLayoutFromMenu, normalizeListLayout, type ListLayout } from './editor/preview/explicit-lists';
 
 /**
  * Third mode added alongside the original binary `live-preview | raw`:
@@ -30,6 +31,7 @@ const EDITOR_ENGINES: readonly EditorEngine[] = ['raw', 'live-preview', 'live-re
 function isEditorEngine(value: unknown): value is EditorEngine {
   return typeof value === 'string' && (EDITOR_ENGINES as readonly string[]).includes(value);
 }
+
 
 function loadSetting<T>(key: string, fallback: T): T {
   try {
@@ -245,6 +247,29 @@ export function createOcdAlignmentStore() {
     set(value: boolean) {
       enabled = value;
       saveSetting('ocdAlignment', enabled);
+    },
+  };
+}
+
+/**
+ * View → Lists: guides, strict indentation, guide style, density. Global, one
+ * copy per window like the rest; each menu event carries its value
+ * (`listLayoutFromMenu`), so every window lands on the same layout.
+ */
+export function createListLayoutStore() {
+  let layout = $state.raw<ListLayout>(normalizeListLayout(loadSetting<unknown>('listLayout', null)));
+
+  return {
+    get value() {
+      return layout;
+    },
+    /** Applies a View → Lists menu event; false when `id` is not one. */
+    apply(id: string): boolean {
+      const next = listLayoutFromMenu(layout, id);
+      if (!next) return false;
+      layout = next;
+      saveSetting('listLayout', layout);
+      return true;
     },
   };
 }

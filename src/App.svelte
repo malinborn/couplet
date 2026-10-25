@@ -4,9 +4,9 @@
   import type { EditorHandle } from './lib/editor/Editor.svelte';
   import type { ViewUpdate } from '@codemirror/view';
   import { isHumanEdit } from './lib/editor/human-edit';
-  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createTabsCompactStore, createTabsDatesStore, createTransientPolicyStore, createFileState, createRecentFilesStore, setProductName, setWindowNumber, getWindowNumber } from './lib/stores.svelte';
+  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createListLayoutStore, createTabsCompactStore, createTabsDatesStore, createTransientPolicyStore, createFileState, createRecentFilesStore, setProductName, setWindowNumber, getWindowNumber } from './lib/stores.svelte';
   import { getName } from '@tauri-apps/api/app';
-  import { readDocument, writeDocument, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncDockIcon, syncEngineMenu, syncOcdAlignmentMenu, broadcastTheme, syncTabsCompactMenu, syncTabsDatesMenu, syncTransientMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type TabClaim, type WindowInit } from './lib/tauri/commands';
+  import { readDocument, writeDocument, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncDockIcon, syncEngineMenu, syncOcdAlignmentMenu, syncListMenu, broadcastTheme, syncTabsCompactMenu, syncTabsDatesMenu, syncTransientMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type TabClaim, type WindowInit } from './lib/tauri/commands';
   import { concreteTheme, halfOf, type ThemeFamily } from './lib/theme-resolve';
   import type { ThemeControl } from './lib/editor/slash-theme';
   import {
@@ -87,8 +87,16 @@
   import { createStashMarks } from './lib/stash/stash-marks.svelte';
   import { stashKeysHandler } from './lib/stash/stash-keys';
   import type { StashControl } from './lib/editor/slash-stash';
+  import type { LinkControl } from './lib/editor/links/open-link';
+  import { refreshLinkTargets } from './lib/editor/links/link-existence';
+  import { navigateToHeading } from './lib/editor/heading-slugs';
+  import { currentModifiers, linkCandidates, linkProject, pathKinds, revealInFinder } from './lib/links/ipc';
+  import { createLinkDropTarget, dropPointToClient } from './lib/editor/links/link-drop';
+  import { opensAsDocument } from './lib/links/link-kind';
+  import { basename } from './lib/links/link-target';
   import { shouldShowHint, nextCheckDelay } from './lib/ai-hint';
-  import { previewCompartment, lineGlowCompartment } from './lib/editor/setup';
+  import { previewCompartment, lineGlowCompartment, listLayoutCompartment } from './lib/editor/setup';
+  import { listLayoutExtension } from './lib/editor/preview/explicit-lists';
   import { stashAndUnfoldAll, restoreStashedFolds } from './lib/editor/fold-memory';
   import { EditorView, highlightActiveLine } from '@codemirror/view';
   import type { StateEffect } from '@codemirror/state';
@@ -121,7 +129,7 @@
   import { closeSearchPanel, findNext, findPrevious } from '@codemirror/search';
   import { findStepAllowed, openFind } from './lib/editor/search/panel';
   import { hideHoverMenu } from './lib/editor/hover-menu';
-  import { createTabController, type DiskOptions, type MoveDone, type OpenAnswer, type Stranded } from './lib/tabs/controller';
+  import { createTabController, type DiskOptions, type MoveDone, type OpenAnswer, type OpenPathResult, type Stranded } from './lib/tabs/controller';
   import { AGENT_ERRORS, createAgentCommands, type AgentResponse, type AskResult } from './lib/tabs/agent-commands';
   import { createTypingTracker } from './lib/tabs/typing';
   import { emptyTabList, type TabListState, type TabMeta } from './lib/tabs/tab-model';
@@ -224,6 +232,7 @@
   const zoom = createZoomStore();
   const lineGlow = createLineGlowStore();
   const ocdAlignment = createOcdAlignmentStore();
+  const listLayout = createListLayoutStore();
   const tabsCompact = createTabsCompactStore();
   const tabsDates = createTabsDatesStore();
   const transientPolicy = createTransientPolicyStore();
@@ -747,6 +756,7 @@
     // `applyPreviewConfig`).
     applyPreviewConfig();
     applyLineGlow();
+    applyListLayout();
     // The state's own path field: the `$effect` below only re-runs when
     // `fileState.filePath` changes, and two untitled tabs share `null`.
     editorHandle?.setDocumentPath(path);
@@ -956,7 +966,7 @@
     releaseTabSources = resolve;
   });
 
-  function openTab(path: string, position?: { cursor: number; topLine: number }): Promise<void> {
+  function openTab(path: string, position?: { cursor: number; topLine: number }): Promise<OpenPathResult | undefined> {
     return tabSourcesReady.then(() => tabs.openPath(path, position));
   }
 
@@ -1097,7 +1107,9 @@
       activate: async (tabId) => {
         await tabs.activate(tabId);
       },
-      openPath: (path, position) => tabs.openPath(path, position),
+      openPath: async (path, position) => {
+        await tabs.openPath(path, position);
+      },
       has,
       place: (path, at) => {
         const tab = tabs.findByPath(path);
@@ -2164,6 +2176,74 @@
   /** `/stash` in the slash menu. One object: the editor's completion sources are built once per state. */
   const stashControl: StashControl = { putAway: putAwayActive };
 
+  /** The home folder for `~/` links; filled once in `onMount`, `null` in the browser. */
+  let linkHome: string | null = null;
+
+  /**
+   * File links (file-links D2/D3). One object: the editor's facet holds it for
+   * every state this window shows.
+   */
+  const linkControl: LinkControl = {
+    home: () => linkHome,
+    pathKinds: (paths) => pathKinds(paths),
+    async openFile(path, fragment) {
+      let result: OpenPathResult | undefined;
+      try {
+        result = await openTab(path);
+      } catch (err) {
+        // An IPC failure inside the open — reported like `reveal`'s, never
+        // left to reject out of the click handler.
+        reportOpenError(path, err);
+        return;
+      }
+      // The fragment applies only when the file is now this window's active
+      // tab; a file shown in another window loses it (spec D2).
+      if (!fragment || !result || (result.kind !== 'opened' && result.kind !== 'shown')) return;
+      const view = editorHandle?.view;
+      if (view) navigateToHeading(view, fragment);
+    },
+    reveal: (path) =>
+      revealInFinder(path).catch((err: unknown) => {
+        reportOpenError(path, err);
+      }),
+    async holds(path) {
+      if (tabs.findByPath(path)) return true;
+      // Another window's tab: the registry knows every window's paths.
+      const owner = await invoke<TabOwner>('tab_owner', { path });
+      return owner.kind !== 'none';
+    },
+    missing: (path) =>
+      toasts.push({ kind: 'link-missing', path, fileName: basename(path), canCreate: opensAsDocument(path) }),
+    unresolvable: (url, reason) =>
+      toasts.push({ kind: 'link-missing', path: null, reason, fileName: url, canCreate: false }),
+    candidates: (docPath) => linkCandidates(docPath),
+    project: (docPath) => linkProject(docPath),
+    chooseFile: () => showOpenDialog(),
+  };
+
+  /** The editor's text as a link drop target (file-links D7) — for the drawer and Finder drops. */
+  const linkDrop = createLinkDropTarget(() => editorHandle?.view);
+
+  /**
+   * ⌥-drop from Finder (D7): links at the drop point instead of tabs. The
+   * webview gets no key events while Finder drives the drag, so the modifier
+   * is asked from the OS at drop time; any failure counts as no modifier and
+   * the files open as tabs, as before. `true`: the drop became links.
+   */
+  async function finderDropAsLink(paths: string[], position: { x: number; y: number }): Promise<boolean> {
+    if (paths.length === 0) return false;
+    const mods = await currentModifiers().catch(() => null);
+    if (!mods?.alt) return false;
+    // Points relative to the webview, not physical px (see `dropPointToClient`).
+    const point = dropPointToClient(position, zoom.level);
+    if (!linkDrop.over(point.x, point.y)) return false;
+    return linkDrop.drop(
+      point.x,
+      point.y,
+      paths.map((path) => ({ path, title: null }))
+    );
+  }
+
   function liveAskShown(): boolean {
     const view = editorHandle?.view;
     return view ? activeAskIds(view.state).length > 0 : false;
@@ -2544,6 +2624,13 @@
     // Menu events
     const unlistenMenu = onMenuEvent((action) => {
       if (DRAWER_CLOSING_ACTIONS.has(action)) drawerHandle?.close();
+      // View → Lists: every id carries its value. The correcting sync is
+      // needed even so — a preset moves four checkmarks at once, and macOS
+      // has already flipped the one that was clicked.
+      if (listLayout.apply(action)) {
+        syncListMenu(listLayout.value);
+        return;
+      }
       switch (action) {
         case 'new':
           handleNew();
@@ -2758,11 +2845,14 @@
     });
 
     // Drag & drop: every dropped file becomes a tab of this window; the first
-    // may take a blank tab's place.
+    // may take a blank tab's place. With ⌥ held over the text the files become
+    // links at the drop point instead (file-links D7).
     const unlistenDragDrop = import('@tauri-apps/api/webview').then(({ getCurrentWebview }) =>
       getCurrentWebview().onDragDropEvent(async (event) => {
         if (event.payload.type !== 'drop') return;
-        for (const path of event.payload.paths as string[]) {
+        const paths = event.payload.paths as string[];
+        if (await finderDropAsLink(paths, event.payload.position)) return;
+        for (const path of paths) {
           await openTab(path);
         }
       })
@@ -2776,6 +2866,19 @@
     window.addEventListener('keydown', onWindowCtrlTab, true);
     window.addEventListener('keydown', onWindowStashKeys, true);
     window.addEventListener('focus', handleWindowFocus);
+    // `~/` in a link (agents write these): the home folder, asked once. Stays
+    // `null` in the browser dev build, where such links are unresolvable.
+    // Asked in the background rather than awaited before the tab sources open
+    // (that would hold the first document behind an IPC round trip); when it
+    // lands, the shown document re-resolves its links once. A state swapped
+    // in later builds fresh plugins and resolves with the home folder anyway.
+    import('@tauri-apps/api/path')
+      .then(({ homeDir }) => homeDir())
+      .then((home) => {
+        linkHome = home.replace(/\/+$/, '');
+        editorHandle?.view?.dispatch({ effects: refreshLinkTargets.of(null) });
+      })
+      .catch(() => {});
 
     // Start recovery interval
     startRecoveryInterval();
@@ -2937,6 +3040,9 @@
     syncOcdAlignmentMenu(ocdAlignment.enabled);
   });
   $effect(() => {
+    syncListMenu(listLayout.value);
+  });
+  $effect(() => {
     syncTabsCompactMenu(tabsCompact.enabled);
   });
   $effect(() => {
@@ -2989,6 +3095,19 @@
       effects: lineGlowCompartment.reconfigure(lineGlow.enabled ? highlightActiveLine() : []),
     });
   }
+
+  /** List layout lives in each state's own compartment, like line glow. */
+  function applyListLayout(): void {
+    const view = editorHandle?.view;
+    if (!view) return;
+    view.dispatch({ effects: listLayoutCompartment.reconfigure(listLayoutExtension(listLayout.value)) });
+  }
+
+  $effect(() => {
+    void listLayout.value;
+    void editorHandle?.view;
+    applyListLayout();
+  });
 
   // Reconfigure line glow when toggled
   $effect(() => {
@@ -3109,6 +3228,7 @@
     onJsonOfferWithdrawn={() => toasts.dismissKind('json-offer')}
     {themeControl}
     {stashControl}
+    {linkControl}
   />
 </main>
 
@@ -3142,6 +3262,7 @@
   onstashrestore={(entry) => void restoreStashEntry(entry)}
   onstashpurge={(entry) => void purgeStashEntry(entry)}
   onstashtag={(entry, change) => void tagStashEntry(entry, change)}
+  {linkDrop}
 />
 
 <TransientBar
@@ -3166,6 +3287,7 @@
   store={toasts}
   right={stashStore.state.open ? stashStore.width + 16 : undefined}
   onFormatJson={() => formatJson(true)}
+  onCreateLink={(path) => void openTab(path)}
   onRevealWindow={(label) => {
     invoke('reveal_other_window', { label }).catch(logTabIpc('reveal_other_window'));
   }}

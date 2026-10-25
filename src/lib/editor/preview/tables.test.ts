@@ -16,6 +16,9 @@ import {
   type RowData,
   type TableContext,
 } from './tables.js';
+import { documentPathField, setDocumentPath } from '../json-fence';
+import { linkControlFacet } from '../links/open-link';
+import { fakeLinkControl } from '../links/fake-link-control';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -748,5 +751,40 @@ describe('cellHighlights', () => {
 
   it('has nothing to mark in an empty cell', () => {
     expect(cellHighlights(cell(''), [{ id: 'c-aaaaaa', from: 100, to: 101 }])).toEqual([]);
+  });
+});
+
+describe('routeLinkClick with a LinkControl', () => {
+  function viewWithControl() {
+    const control = fakeLinkControl();
+    let state = EditorState.create({
+      doc: '# Hello\n',
+      extensions: [
+        markdown({ base: markdownLanguage, codeLanguages: languages, extensions: [Strikethrough, Table] }),
+        headingSlugsField,
+        documentPathField,
+        linkControlFacet.of(control),
+      ],
+    });
+    state = state.update({ effects: setDocumentPath.of('/r/a.md') }).state;
+    const view = { state, dispatch: vi.fn() } as unknown as EditorView;
+    return { view, control };
+  }
+
+  it('File_GoesThroughOpenLink_NotTheExternalOpener', async () => {
+    const { view, control } = viewWithControl();
+    const openExternal = vi.fn();
+    routeLinkClick('plan.md', view, openExternal);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(control.calls).toContain('openFile:/r/plan.md#');
+    expect(openExternal).not.toHaveBeenCalled();
+  });
+
+  it('External_StillUsesTheInjectedOpener', () => {
+    const { view, control } = viewWithControl();
+    const openExternal = vi.fn();
+    routeLinkClick('https://x.test', view, openExternal);
+    expect(openExternal).toHaveBeenCalledExactlyOnceWith('https://x.test');
+    expect(control.calls).toEqual([]);
   });
 });

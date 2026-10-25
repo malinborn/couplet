@@ -11,6 +11,7 @@ import { DOUBLE_CLICK_MS, ctrlDigitHandler, type RenumberResult, type RevealResu
 import type { StashMark } from '../stash/marks';
 import { RELOAD_COALESCE_MS, createStashStore, type StashStore } from '../stash/stash-store.svelte';
 import type { StashEntry } from '../stash/types';
+import type { LinkDropTarget } from '../editor/links/link-drop';
 
 /*
  * The drawer's keyboard and pointer contract against a stand-in for the
@@ -2185,5 +2186,179 @@ describe('TabDrawer — the drag ghost speaks like the card (stage-03 carry-over
     grab('w');
     expect(ghost().name).toBe('draft text');
     expect(ghost().meta).toBe('not saved');
+  });
+});
+
+describe('TabDrawer — drag to insert a link (file links plan 03)', () => {
+  const page = () => h.root().parentElement!;
+  const carousel = () => page().querySelector('.carousel');
+  let stash: StashStore;
+  let link: FakeLinkDrop;
+  const onstashopen = vi.fn();
+
+  interface FakeLinkDrop extends LinkDropTarget {
+    over: ReturnType<typeof vi.fn<LinkDropTarget['over']>>;
+    hover: ReturnType<typeof vi.fn<LinkDropTarget['hover']>>;
+    clear: ReturnType<typeof vi.fn<LinkDropTarget['clear']>>;
+    drop: ReturnType<typeof vi.fn<LinkDropTarget['drop']>>;
+  }
+
+  /** The text is right of x = 450 (the drawer and the stash drawer are zero boxes in jsdom). */
+  function fakeLinkDrop(): FakeLinkDrop {
+    return {
+      over: vi.fn<LinkDropTarget['over']>((x) => x > 450),
+      hover: vi.fn<LinkDropTarget['hover']>(),
+      clear: vi.fn<LinkDropTarget['clear']>(),
+      drop: vi.fn<LinkDropTarget['drop']>(() => true),
+    };
+  }
+
+  beforeEach(async () => {
+    h?.destroy();
+    stash = fakeStash();
+    link = fakeLinkDrop();
+    onstashopen.mockClear();
+    h = setup(initialList(), {}, { stash, onstashopen, onstashremove: vi.fn(), onstashtag: vi.fn(), linkDrop: link });
+    h.handle().toggle();
+    await settle();
+  });
+
+  function grab(from: Element, to: { x: number; y: number }, init: PointerEventInit = {}): void {
+    pointer(from, 'pointerdown', { button: 0, buttons: 1, clientX: 10, clientY: 10, ...init });
+    pointer(window, 'pointermove', { buttons: 1, ...init, clientX: to.x, clientY: to.y });
+    flushSync();
+  }
+
+  function altKey(type: 'keydown' | 'keyup', held: boolean): void {
+    document.body.dispatchEvent(
+      new KeyboardEvent(type, { key: 'Alt', code: 'AltLeft', altKey: held, bubbles: true, cancelable: true })
+    );
+  }
+
+  it('AnAltDragOfATabOverTheTextLinksInsteadOfMoving_NoCarousel', async () => {
+    grab(card('b'), { x: 600, y: 300 }, { altKey: true });
+    await settle();
+    await settle();
+    expect(carousel()).toBeNull();
+    expect(h.root().classList.contains('link-mode')).toBe(true);
+    expect(page().querySelector('.ghost.as-link')).not.toBeNull();
+    expect(page().querySelector('.ghost-bar span')?.textContent).toBe('Insert link');
+    expect(link.hover).toHaveBeenLastCalledWith(600, 300);
+    pointer(window, 'pointerup', { clientX: 601, clientY: 300, altKey: true });
+    await settle();
+    expect(link.drop).toHaveBeenCalledWith(601, 300, [{ path: '/p/beta.md', title: null }]);
+    expect(h.onmove).not.toHaveBeenCalled();
+    expect(h.root().classList.contains('open'), 'the drawer closes on a link drop (R2)').toBe(false);
+  });
+
+  it('APlainDragStillOpensTheCarousel_ItsBandSaysAltLinks_ADropOffTheThumbnailsLinksNothing', async () => {
+    grab(card('b'), { x: 600, y: 300 });
+    await settle();
+    await settle();
+    expect(carousel()).not.toBeNull();
+    expect(page().querySelector('.car-foot-link')?.textContent).toBe('⌥ — insert a link instead');
+    expect(h.root().classList.contains('link-mode')).toBe(false);
+    document.elementFromPoint = vi.fn(() => page().querySelector<HTMLElement>('.car-view'));
+    pointer(window, 'pointerup', { clientX: 601, clientY: 300 });
+    await settle();
+    expect(link.drop).not.toHaveBeenCalled();
+    expect(h.onmove).not.toHaveBeenCalled();
+  });
+
+  it('AltPressedAndReleasedWithThePointerStillSwitchesBetweenLinkAndMove', async () => {
+    grab(card('b'), { x: 600, y: 300 });
+    await settle();
+    await settle();
+    expect(carousel()).not.toBeNull();
+    altKey('keydown', true);
+    await settle();
+    expect(carousel()).toBeNull();
+    expect(h.root().classList.contains('link-mode')).toBe(true);
+    expect(link.hover).toHaveBeenLastCalledWith(600, 300);
+    altKey('keyup', false);
+    await settle();
+    await settle();
+    expect(h.root().classList.contains('link-mode')).toBe(false);
+    expect(link.clear).toHaveBeenCalled();
+    expect(carousel(), 'the carousel comes back').not.toBeNull();
+  });
+
+  it('AnAltDragOffTheTextIsNoDrop_NeitherLinkNorMove', async () => {
+    grab(card('b'), { x: 400, y: 300 }, { altKey: true });
+    await settle();
+    expect(carousel()).toBeNull();
+    expect(page().querySelector('.ghost.cancel')).not.toBeNull();
+    pointer(window, 'pointerup', { clientX: 401, clientY: 300, altKey: true });
+    await settle();
+    expect(link.drop).not.toHaveBeenCalled();
+    expect(h.onmove).not.toHaveBeenCalled();
+    expect(h.root().classList.contains('open')).toBe(true);
+  });
+
+  it('AStashCardDroppedOnTheTextLinksToItUnderItsTitle_NoAltNeeded', async () => {
+    h.handle().toggleStash();
+    await settleLong();
+    const s2 = page().querySelector('[data-stash-id="s2"]')!;
+    pointer(s2, 'pointerdown', { button: 0, buttons: 1, clientX: 700, clientY: 100 });
+    pointer(window, 'pointermove', { buttons: 1, clientX: 600, clientY: 300 });
+    flushSync();
+    expect(page().querySelector('.ghost.as-link')).not.toBeNull();
+    expect(h.oncarousel, 'the page shows through: no blur while linking').toHaveBeenLastCalledWith(false);
+    pointer(window, 'pointerup', { clientX: 601, clientY: 300 });
+    await settle();
+    expect(link.drop).toHaveBeenCalledWith(601, 300, [{ path: '/n/two.md', title: 'Beta note' }]);
+    expect(onstashopen).not.toHaveBeenCalled();
+    expect(h.root().classList.contains('open')).toBe(false);
+  });
+
+  const cancels: [string, () => void][] = [
+    [
+      'Esc',
+      () =>
+        document.body.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', altKey: true, bubbles: true, cancelable: true })
+        ),
+    ],
+    ['a window blur', () => window.dispatchEvent(new Event('blur'))],
+    ['a pointercancel', () => pointer(window, 'pointercancel', { clientX: 600, clientY: 300 })],
+  ];
+
+  for (const [name, cancel] of cancels) {
+    it(`a link-mode drag cancelled by ${name} clears the caret, and the next plain drag moves`, async () => {
+      grab(card('b'), { x: 600, y: 300 }, { altKey: true });
+      await settle();
+      expect(h.root().classList.contains('link-mode')).toBe(true);
+      link.clear.mockClear();
+      cancel();
+      await settle();
+      expect(link.clear).toHaveBeenCalled();
+      expect(link.drop).not.toHaveBeenCalled();
+      expect(h.root().classList.contains('link-mode')).toBe(false);
+      expect(page().querySelector('.ghost')).toBeNull();
+      // Released after the cancel: nothing happens.
+      pointer(window, 'pointerup', { clientX: 600, clientY: 300 });
+      await settle();
+      expect(link.drop).not.toHaveBeenCalled();
+      if (!h.root().classList.contains('open')) {
+        h.handle().toggle();
+        await settle();
+      }
+      grab(card('c'), { x: 600, y: 300 });
+      await settle();
+      await settle();
+      expect(h.root().classList.contains('link-mode')).toBe(false);
+      expect(carousel(), 'a plain drag is a move again').not.toBeNull();
+    });
+  }
+
+  it('ARefusedDropFallsThroughToTheOldBehaviour', async () => {
+    link.drop.mockReturnValue(false);
+    grab(card('b'), { x: 600, y: 300 }, { altKey: true });
+    await settle();
+    pointer(window, 'pointerup', { clientX: 601, clientY: 300, altKey: true });
+    await settle();
+    expect(link.drop).toHaveBeenCalled();
+    expect(h.onmove).not.toHaveBeenCalled();
+    expect(h.root().classList.contains('open')).toBe(true);
   });
 });

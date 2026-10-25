@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import ToastStack from './ToastStack.svelte';
-import { createToastStore } from './toasts.svelte';
+import { createToastStore, type ToastPayload } from './toasts.svelte';
 import { installCatalog } from './i18n';
 
 let cleanup: (() => void) | null = null;
@@ -130,5 +130,50 @@ describe('ToastStack: stash errors', () => {
     expect(dim).toContain('в тайник не попал');
     expect(dim).toContain('stash unavailable: locked');
     expect(dim).not.toContain('во вкладке');
+  });
+});
+
+describe('ToastStack: a link to a missing file (file-links D2)', () => {
+  function renderLink(payload: Extract<ToastPayload, { kind: 'link-missing' }>) {
+    const store = createToastStore();
+    store.push(payload);
+    const onCreateLink = vi.fn();
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(ToastStack, { target, props: { store, onCreateLink } });
+    flushSync();
+    cleanup = () => {
+      unmount(component);
+      target.remove();
+    };
+    return { root: target, store, onCreateLink };
+  }
+
+  it('NamesTheFile_AndCreateOpensItAsANewTab', () => {
+    const { root, store, onCreateLink } = renderLink({ kind: 'link-missing', path: '/r/gone.md', fileName: 'gone.md', canCreate: true });
+    expect(root.querySelector('.md-toast-text')?.textContent?.trim()).toBe('No file gone.md');
+    root.querySelector<HTMLButtonElement>('.md-toast-action')!.click();
+    expect(onCreateLink).toHaveBeenCalledWith('/r/gone.md');
+    expect(store.hasKind('link-missing')).toBe(false);
+  });
+
+  it('OffersNoCreate_ForANonDocument', () => {
+    const { root } = renderLink({ kind: 'link-missing', path: '/r/x.png', fileName: 'x.png', canCreate: false });
+    expect(root.querySelector('.md-toast-action')).toBeNull();
+  });
+
+  it('AnUntitledDocumentSaysToSaveFirst', () => {
+    const { root } = renderLink({ kind: 'link-missing', path: null, reason: 'untitled', fileName: 'plan.md', canCreate: false });
+    expect(root.querySelector('.md-toast-text')?.textContent?.trim()).toBe(
+      'Save this document first — plan.md is relative to it'
+    );
+  });
+
+  it('AHomeLinkBeforeTheHomeFolderIsKnownSaysThat', () => {
+    const { root } = renderLink({ kind: 'link-missing', path: null, reason: 'no-home', fileName: '~/b.md', canCreate: false });
+    expect(root.querySelector('.md-toast-text')?.textContent?.trim()).toBe(
+      "Can't open ~/b.md — the home folder is not known yet"
+    );
+    expect(root.querySelector('.md-toast-action')).toBeNull();
   });
 });

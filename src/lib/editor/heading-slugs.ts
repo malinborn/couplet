@@ -1,6 +1,7 @@
 import { StateField, type EditorState, type StateEffect } from '@codemirror/state';
-import { syntaxTree, foldedRanges, unfoldEffect } from '@codemirror/language';
+import { ensureSyntaxTree, syntaxTree, foldedRanges, unfoldEffect } from '@codemirror/language';
 import { EditorView } from '@codemirror/view';
+import type { Tree } from '@lezer/common';
 
 export function slugify(text: string): string {
   return text
@@ -16,10 +17,9 @@ const LEAF_BLOCKS = new Set(['Table', 'Paragraph', 'FencedCode', 'CodeBlock', 'H
 
 // Only ATX headings (`# Foo`) are indexed; setext (`Foo\n===`) is not — matches
 // the rest of the editor (folding.ts, preview/headings.ts) which is also ATX-only.
-function buildIndex(state: EditorState): Map<string, number> {
+function buildIndex(state: EditorState, tree: Tree = syntaxTree(state)): Map<string, number> {
   const map = new Map<string, number>();
   const counts = new Map<string, number>();
-  const tree = syntaxTree(state);
   const doc = state.doc;
 
   tree.iterate({
@@ -65,6 +65,19 @@ export function getHeadingPos(state: EditorState, slug: string): number | null {
 }
 
 /**
+ * The slug index is rebuilt only on a document change, from whatever tree the
+ * state had then. A state created a moment ago — a file just opened by a link
+ * with `#fragment` (file-links D2) — may hold a tree parsed only part of the
+ * way, and its index misses every heading below that part. A miss is asked
+ * again against a tree parsed to the end (bounded, like every other forced
+ * parse in the editor).
+ */
+function headingPosFromFullParse(state: EditorState, slug: string): number | null {
+  const tree = ensureSyntaxTree(state, state.doc.length, 200) ?? syntaxTree(state);
+  return buildIndex(state, tree).get(slug) ?? null;
+}
+
+/**
  * Ведёт ли ссылка внутрь этого же документа.
  *
  * Признак — `#` в начале, а не отсутствие `http`. Без схемы бывают и файловые
@@ -90,7 +103,7 @@ export function navigateToHeading(view: EditorView, rawSlug: string): void {
   const slug = slugify(decoded);
   if (!slug) return;
 
-  const pos = getHeadingPos(view.state, slug);
+  const pos = getHeadingPos(view.state, slug) ?? headingPosFromFullParse(view.state, slug);
   if (pos === null) return;
 
   const effects: StateEffect<unknown>[] = [];

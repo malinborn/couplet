@@ -64,6 +64,8 @@
   import type { StashEntry, TagChange } from '../stash/types';
   import { drawerLayout, pageBand, type Band } from '../stash/drawer-width';
   import { resolveDrop, type DropTarget } from '../stash/drop-target';
+  import type { LinkDropTarget, LinkInsertItem } from '../editor/links/link-drop';
+  import { linkItemsForTabs } from './link-items';
   import { entryTitle } from '../stash/stash-view';
   import { arrowFocus, focusDrawer, type DrawerFocus } from '../stash/stash-state';
   import {
@@ -132,6 +134,7 @@
     onstashrestore,
     onstashpurge,
     onstashtag,
+    linkDrop,
     handle = $bindable(),
   }: {
     list: TabListState;
@@ -175,6 +178,11 @@
     onstashrestore?: (entry: StashEntry) => void;
     onstashpurge?: (entry: StashEntry) => void;
     onstashtag?: (entry: StashEntry, change: TagChange) => void;
+    /**
+     * File links (D7): the editor's text as a drop target. A stash card over
+     * it, or a tab card with ⌥, inserts a link there. Absent: no link drops.
+     */
+    linkDrop?: LinkDropTarget;
     handle?: TabDrawerHandle;
   } = $props();
 
@@ -214,6 +222,8 @@
   let flashing = $state<SortKind | null>(null);
   let bump = $state(0);
   let drag = $state<DragState | null>(null);
+  /** File links (D7): the drag would drop a link into the text — the page shows through (R3). */
+  const linkMode = $derived(drag?.target === 'text');
 
   interface CarouselState {
     mode: 'drag' | 'keys';
@@ -253,6 +263,8 @@
   let gesture: 'press' | 'drag' | 'sweep' | null = null;
   let endGesture: (() => void) | null = null;
   let inWrap = false;
+  /** ⌥ held during the current drag (D7): a tab card links instead of moving. Read from every pointer and key event. */
+  let altHeld = false;
   /** `null` until the list first has tabs: the count a window starts with is not an arrival. */
   let lastUnviewed: number | null = null;
   /** The list as it was last rendered — to find the neighbour of a focused card that went away. */
@@ -438,7 +450,7 @@
 
   // Both drawers open veil the page as the carousel does (D17): App's one blur.
   $effect(() => {
-    oncarousel?.(car !== null || stashOpen);
+    oncarousel?.((car !== null || stashOpen) && !linkMode);
   });
 
   // ⌘G's carousel follows its tabs: one closed while it is up (⌘W, an agent)
@@ -893,6 +905,7 @@
     if (gesture === 'drag') {
       e.preventDefault();
       e.stopPropagation();
+      setAlt(e.altKey);
       if (e.key === 'Escape') endGesture?.();
       return;
     }
@@ -983,6 +996,7 @@
 
   function onKeyUp(e: KeyboardEvent): void {
     trackShift(e);
+    if (gesture === 'drag') setAlt(e.altKey);
   }
 
   function onWindowBlur(): void {
@@ -1320,24 +1334,59 @@
         stashZone: !!stash && inside(stashBarEl, x, y),
         list: overList(x, y),
         tabsDrawer: inside(asideEl, x, y),
+        text: !!linkDrop && linkDrop.over(x, y),
       },
-      !!ds.query
+      !!ds.query,
+      altHeld
     );
   }
 
   /** The drag with the pointer at `ev`: where it is, and what a drop there would do. */
   function dragAt(d: DragState, ev: PointerEvent): DragState {
-    const target = dropTargetAt(d.src, ev.clientX, ev.clientY);
+    altHeld = ev.altKey;
+    return dragAtPoint(d, ev.clientX, ev.clientY);
+  }
+
+  function dragAtPoint(d: DragState, x: number, y: number): DragState {
+    const target = dropTargetAt(d.src, x, y);
     // A filtered view has no manual order to drop into (mockup).
-    const inList = !ds.query && overList(ev.clientX, ev.clientY) && (target === 'list' || target === 'tabs-drawer');
+    const inList = !ds.query && overList(x, y) && (target === 'list' || target === 'tabs-drawer');
     return {
       ...d,
-      x: ev.clientX,
-      y: ev.clientY,
+      x,
+      y,
       target,
       inList,
-      before: inList ? dropBefore(cardBoxes(), ev.clientY, new Set(d.src === 'tabs' ? d.ids : [])) : null,
+      before: inList ? dropBefore(cardBoxes(), y, new Set(d.src === 'tabs' ? d.ids : [])) : null,
     };
+  }
+
+  /** The drop caret follows a drag over the text (D7). */
+  function followLink(d: DragState): void {
+    if (d.target === 'text') linkDrop?.hover(d.x, d.y);
+    else linkDrop?.clear();
+  }
+
+  /** ⌥ pressed or released with the pointer still: decide the drop under it again (D7). */
+  function setAlt(alt: boolean): void {
+    const d = drag;
+    const changed = alt !== altHeld;
+    altHeld = alt;
+    if (!d || !changed) return;
+    const next = dragAtPoint(d, d.x, d.y);
+    drag = next;
+    followLink(next);
+    if (d.src === 'tabs') followCarousel(d.x, d.y, next.target === 'page');
+  }
+
+  function linkItemsFor(d: DragState): LinkInsertItem[] {
+    if (d.src === 'stash') {
+      const entry = d.entry;
+      // A trashed entry's path is its trash path: nothing to link to.
+      if (!entry || entry.deletedAt !== null) return [];
+      return [{ path: entry.path, title: entry.kind === 'note' ? entry.title : null }];
+    }
+    return linkItemsForTabs(d.ids, byId, marks);
   }
 
   function dragMove(ev: PointerEvent): void {
@@ -1346,6 +1395,7 @@
     const next = dragAt(d, ev);
     drag = next;
     if (next.inList) autoScroll(ev.clientY);
+    followLink(next);
     if (d.src === 'tabs') followCarousel(ev.clientX, ev.clientY, next.target === 'page');
   }
 
@@ -1362,6 +1412,16 @@
         c = { ...c, hot };
         car = c;
       }
+    }
+    // File links (D7): a stash card, or a tab card with ⌥, dropped on the text.
+    linkDrop?.clear();
+    const linked =
+      dropped && ev !== null && d?.target === 'text' && !!linkDrop && linkDrop.drop(ev.clientX, ev.clientY, linkItemsFor(d));
+    altHeld = false;
+    if (linked) {
+      if (c?.mode === 'drag') closeCarousel();
+      closeDrawer();
+      return;
     }
     if (d?.src === 'stash') {
       // Onto the tabs drawer: open here, at the drop position of an unfiltered list; both drawers stay (D9).
@@ -1405,6 +1465,7 @@
   class:car={car !== null}
   class:stash-open={stashOpen}
   class:narrow={layout.narrow}
+  class:link-mode={linkMode}
   bind:this={rootEl}
   onfocusin={onFocusIn}
   onfocusout={onFocusOut}
@@ -1628,23 +1689,27 @@
     {@const hotItem = car && car.hot !== null ? car.items?.[car.hot] : undefined}
     {@const toStash = drag.target === 'stash-zone' || drag.target === 'stash-drawer'}
     {@const toOpen = drag.src === 'stash' && drag.target === 'tabs-drawer'}
+    {@const toLink = drag.target === 'text'}
     <!-- pointer-events: none (styles): the carousel's hit test must see the thumbnail under it.
          Over a stash target it shrinks and lifts above the pointer, so the zone stays readable (mockup `dragAt`). -->
     <div
       class="ghost"
       class:multi={drag.ids.length > 1}
       class:from-stash={drag.src === 'stash'}
-      class:cancel={!drag.inList && !hotItem && !toStash && !toOpen}
+      class:cancel={!drag.inList && !hotItem && !toStash && !toOpen && !toLink}
       class:as-car={inCar}
       class:as-stash={toStash}
       class:as-open={toOpen}
+      class:as-link={toLink}
       aria-hidden="true"
-      style:width={inCar ? null : toStash ? '240px' : `${drag.width}px`}
+      style:width={inCar ? null : toStash || toLink ? '240px' : `${drag.width}px`}
       style:transform={inCar
         ? `translate(${drag.x - 40}px, ${drag.y - 12}px)`
         : toStash
           ? `translate(${drag.x - 40}px, ${drag.y - 112}px)`
-          : toOpen
+          : toLink
+            ? `translate(${drag.x + 14}px, ${drag.y + 18}px)`
+            : toOpen
             ? `translate(${drag.x - drag.ox}px, ${drag.y - drag.oy}px)`
             : `translate(${drag.x - drag.ox}px, ${drag.y - drag.oy}px) rotate(-1.2deg)`}
     >
@@ -1658,7 +1723,9 @@
               ? t('stash.ghost.to_stash')
               : toOpen
                 ? t('stash.ghost.open')
-                : ''}</span
+                : toLink
+                  ? t('tabs.ghost.link')
+                  : ''}</span
         >
       </div>
       <div class="ghost-body">
@@ -1684,6 +1751,7 @@
       count={car.ids.length}
       lead={car.lead}
       pointer={car.mode === 'drag' && drag ? { x: drag.x, y: drag.y } : null}
+      linkHint={!!linkDrop}
       onpick={pick}
       oncancel={cancelKeysCarousel}
       onscroll={refreshHot}
@@ -1733,6 +1801,13 @@
      (App blurs `main` through `oncarousel`, off under reduced motion). */
   .stash-open .scrim {
     opacity: 0.82;
+  }
+
+  /* File links (D7, R3): a link drop looks at the text — the scrim lightens
+     and lets the pointer through, so `posAtCoords` hits the line under it. */
+  .link-mode .scrim {
+    opacity: 0.25;
+    pointer-events: none;
   }
 
   .drawer-wrap {
@@ -2287,8 +2362,13 @@
     outline: 2px solid var(--tabs-brand-a);
   }
 
+  .ghost.as-link {
+    outline: 2px solid var(--color-link);
+  }
+
   .ghost.as-stash .ghost-bar,
-  .ghost.as-open .ghost-bar {
+  .ghost.as-open .ghost-bar,
+  .ghost.as-link .ghost-bar {
     height: 24px;
   }
 
