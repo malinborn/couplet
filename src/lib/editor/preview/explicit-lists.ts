@@ -97,8 +97,11 @@ export function listLayoutFromMenu(layout: ListLayout, id: string): ListLayout |
   return null;
 }
 
-/** Fewer lines than this under a marker draw no guide: one line needs no line. */
-export const GUIDE_MIN_LINES = 2;
+/**
+ * Lines under a marker (non-blank, not a fence) it takes to draw a guide: any
+ * child or continuation does — only an item that is one line has none.
+ */
+export const GUIDE_MIN_LINES = 1;
 
 export const listLayoutFacet: Facet<ListLayout, ListLayout> = Facet.define({
   combine: (values) => (values.length ? values[values.length - 1] : DEFAULT_LIST_LAYOUT),

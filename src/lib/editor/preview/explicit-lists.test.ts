@@ -108,12 +108,19 @@ describe('normalizeListLayout', () => {
 });
 
 describe('layoutExplicitList', () => {
-  it('draws no guide for an item with one line under its marker', () => {
-    const styles = lineStyles(['- parent', '  - only child', '- next'].join('\n'), EXPLICIT);
+  it('draws no guide for an item that is one line', () => {
+    const styles = lineStyles(['- alone', '- next'].join('\n'), EXPLICIT);
+    expect(guideCount(styles.get(1))).toBe(0);
     expect(guideCount(styles.get(2))).toBe(0);
   });
 
-  it('draws a guide from two lines under the marker on, through every line it covers', () => {
+  it('draws a guide for an item with a single child', () => {
+    const styles = lineStyles(['- parent', '  - only child', '- next'].join('\n'), EXPLICIT);
+    expect(guideCount(styles.get(2))).toBe(1);
+    expect(guideCount(styles.get(3))).toBe(0);
+  });
+
+  it('draws a guide through every line it covers', () => {
     const doc = ['- parent', '  - one', '  - two', '- next'].join('\n');
     const styles = lineStyles(doc, EXPLICIT);
     expect(guideCount(styles.get(1))).toBe(1); // starts below the marker's first visual line
@@ -122,9 +129,9 @@ describe('layoutExplicitList', () => {
     expect(guideCount(styles.get(4))).toBe(0);
   });
 
-  it('does not count blank lines toward the two', () => {
+  it('counts a continuation paragraph, after a blank line too', () => {
     const doc = ['- parent', '', '  continuation', '- next'].join('\n');
-    expect(guideCount(lineStyles(doc, EXPLICIT).get(3))).toBe(0);
+    expect(guideCount(lineStyles(doc, EXPLICIT).get(3))).toBe(1);
   });
 
   it('passes every ancestor guide through a deep line', () => {
@@ -251,7 +258,8 @@ describe('markerKind', () => {
 
 describe('guide threshold', () => {
   it('does not count fence lines as lines under the marker', () => {
-    const doc = ['- item', '  ```', '  one line of code', '  ```', '- next'].join('\n');
-    expect(guideCount(lineStyles(doc, EXPLICIT).get(3))).toBe(0);
+    // An empty fenced block: two hidden fence lines, nothing on screen.
+    const doc = ['- item', '  ```', '  ```', '- next'].join('\n');
+    expect(guideCount(lineStyles(doc, EXPLICIT).get(2))).toBe(0);
   });
 });
