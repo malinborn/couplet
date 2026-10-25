@@ -6,7 +6,8 @@ import type { DecoSink } from './utils';
 /**
  * View → Lists. Two switches and two looks:
  *
- * - `guides` — an item with at least `GUIDE_MIN_LINES` lines under its marker
+ * - `guides` — an item that takes more than one line on screen (its text
+ *   wraps, or it has a child or continuation)
  *   draws a line from the marker down to its block's last line. Every
  *   ancestor's line passes through every line it covers, so the number of
  *   lines left of a line is its depth.
@@ -198,8 +199,24 @@ export function markerEnd(kind: MarkerKind, mark: SyntaxNode): number {
 interface Guide {
   /** Terms of the guide's x, summed after the base line padding. */
   x: string[];
-  /** Starts below the first visual line rather than at the top: the marker's own line. */
-  belowFirst: boolean;
+  /**
+   * `null`: runs through the whole line. Otherwise where it starts on the
+   * item's own marker line — below that line's first visual line, so it shows
+   * exactly when the text wraps (`markerLineHeight`).
+   */
+  start: string | null;
+}
+
+/**
+ * The height of an item's first visual line, which its own guide starts
+ * below. A bullet's glyph is 1.2em at the line's own line-height ratio, so its
+ * line is 1.2lh tall; a checkbox, a number and plain text keep 1lh (measured
+ * in Chrome at every density: 30.72 / 25.6 px). Start any higher and a
+ * one-line bullet item shows a stub of guide under its text; any lower and a
+ * wrapped one's guide hangs away from the first line.
+ */
+function markerLineHeight(m: MarkerKind): string {
+  return m.kind === 'bullet' ? 'var(--xl-first-bullet)' : 'var(--xl-first-line)';
 }
 
 interface LineLayout {
@@ -224,7 +241,7 @@ function lineStyle(l: LineLayout): string {
       `background-position: ${l.guides
         .map(
           (g) =>
-            `calc(var(--xl-base) + ${sum(g.x)} - var(--xl-guide-w) / 2) ${g.belowFirst ? 'var(--xl-guide-start)' : '0'}`
+            `calc(var(--xl-base) + ${sum(g.x)} - var(--xl-guide-w) / 2) ${g.start ?? '0'}`
         )
         .join(', ')}`
     );
@@ -327,15 +344,18 @@ export function planExplicitList(
       for (let n = first + 1; n <= last && below < GUIDE_MIN_LINES; n++) {
         if (!isBlank(doc, n) && !isFenceLine(doc, n)) below++;
       }
-      const own: Guide | null =
-        layout.guides && below >= GUIDE_MIN_LINES
-          ? { x: [...outer, markerAnchor(kind)], belowFirst: false }
-          : null;
+      const x = [...outer, markerAnchor(kind)];
+      const own: Guide | null = layout.guides && below >= GUIDE_MIN_LINES ? { x, start: null } : null;
+      // Guides follow visual lines: under strict, every item draws its guide
+      // along its own wrapped text, and a single visual line clips it to
+      // nothing. Not strict, a wrap goes back under the marker — no guide.
+      const wrap: Guide | null =
+        layout.guides && layout.strict ? { x, start: markerLineHeight(kind) } : null;
 
       lines.set(first, {
         content: layout.strict ? content : outer,
         hang: layout.strict ? gutter : null,
-        guides: own && layout.strict ? [...guides, { ...own, belowFirst: true }] : guides,
+        guides: wrap ? [...guides, wrap] : guides,
         code: false,
       });
       continuation.delete(first);

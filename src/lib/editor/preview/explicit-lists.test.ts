@@ -50,6 +50,11 @@ function lineStyles(doc: string, layout: ListLayout): Map<number, string> {
 
 const guideCount = (style: string | undefined): number =>
   (style?.match(/var\(--xl-guide\)/g) ?? []).length;
+/** Guides that start below the line's first visual line: seen only when the text wraps. */
+const wrapGuides = (style: string | undefined): number =>
+  (style?.match(/var\(--xl-first-/g) ?? []).length;
+/** Guides that run through the whole line: an ancestor's, or the item's own below its marker line. */
+const throughGuides = (style: string | undefined): number => guideCount(style) - wrapGuides(style);
 
 describe('presets', () => {
   it('explicit turns both switches on, standard both off, and leave the looks alone', () => {
@@ -108,36 +113,51 @@ describe('normalizeListLayout', () => {
 });
 
 describe('layoutExplicitList', () => {
-  it('draws no guide for an item that is one line', () => {
+  // A guide is drawn by visual lines: an item that is one line on screen has
+  // none; one whose text wraps, or that has a child or continuation, has one.
+  it('gives a one-line item only a guide below its first visual line, which one line clips', () => {
     const styles = lineStyles(['- alone', '- next'].join('\n'), EXPLICIT);
-    expect(guideCount(styles.get(1))).toBe(0);
-    expect(guideCount(styles.get(2))).toBe(0);
+    expect(throughGuides(styles.get(1))).toBe(0);
+    expect(wrapGuides(styles.get(1))).toBe(1);
+    expect(styles.get(1)).toContain('var(--xl-first-bullet)');
+    expect(throughGuides(styles.get(2))).toBe(0);
   });
 
-  it('draws a guide for an item with a single child', () => {
+  it('starts that guide one line height down for a task or a number, 1.2 for a bullet', () => {
+    expect(lineStyles('- [ ] task', EXPLICIT).get(1)).toContain('var(--xl-first-line)');
+    expect(lineStyles('1. one', EXPLICIT).get(1)).toContain('var(--xl-first-line)');
+    expect(lineStyles('- bullet', EXPLICIT).get(1)).toContain('var(--xl-first-bullet)');
+  });
+
+  it('carries the guide down through a single child', () => {
     const styles = lineStyles(['- parent', '  - only child', '- next'].join('\n'), EXPLICIT);
-    expect(guideCount(styles.get(2))).toBe(1);
-    expect(guideCount(styles.get(3))).toBe(0);
+    expect(throughGuides(styles.get(2))).toBe(1);
+    expect(throughGuides(styles.get(3))).toBe(0);
   });
 
   it('draws a guide through every line it covers', () => {
     const doc = ['- parent', '  - one', '  - two', '- next'].join('\n');
     const styles = lineStyles(doc, EXPLICIT);
-    expect(guideCount(styles.get(1))).toBe(1); // starts below the marker's first visual line
-    expect(guideCount(styles.get(2))).toBe(1);
-    expect(guideCount(styles.get(3))).toBe(1);
-    expect(guideCount(styles.get(4))).toBe(0);
+    expect(throughGuides(styles.get(1))).toBe(0);
+    expect(wrapGuides(styles.get(1))).toBe(1);
+    expect(throughGuides(styles.get(2))).toBe(1);
+    expect(throughGuides(styles.get(3))).toBe(1);
+    expect(throughGuides(styles.get(4))).toBe(0);
   });
 
   it('counts a continuation paragraph, after a blank line too', () => {
     const doc = ['- parent', '', '  continuation', '- next'].join('\n');
-    expect(guideCount(lineStyles(doc, EXPLICIT).get(3))).toBe(1);
+    expect(throughGuides(lineStyles(doc, EXPLICIT).get(3))).toBe(1);
   });
 
   it('passes every ancestor guide through a deep line', () => {
     const doc = ['- a', '  - b', '    - c', '      - d', '      - e', '    - f', '  - g'].join('\n');
-    // d sits under a, b and c — all three span two lines or more.
-    expect(guideCount(lineStyles(doc, EXPLICIT).get(4))).toBe(3);
+    expect(throughGuides(lineStyles(doc, EXPLICIT).get(4))).toBe(3);
+  });
+
+  it('draws no below-the-first-line guide when not strict: a wrap goes under the marker', () => {
+    const styles = lineStyles(['- alone', '- next'].join('\n'), { ...EXPLICIT, strict: false });
+    expect(guideCount(styles.get(1))).toBe(0);
   });
 
   it('hangs the marker line only under strict', () => {
@@ -260,6 +280,6 @@ describe('guide threshold', () => {
   it('does not count fence lines as lines under the marker', () => {
     // An empty fenced block: two hidden fence lines, nothing on screen.
     const doc = ['- item', '  ```', '  ```', '- next'].join('\n');
-    expect(guideCount(lineStyles(doc, EXPLICIT).get(2))).toBe(0);
+    expect(throughGuides(lineStyles(doc, EXPLICIT).get(2))).toBe(0);
   });
 });

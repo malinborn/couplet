@@ -289,7 +289,13 @@
   --xl-base: 6px;
   --xl-task-w: 16px;
   --xl-guide-w: 1px;
-  --xl-guide-start: 1lh;
+  /* Where an item's own guide starts on its marker line: below the first
+   * visual line (`markerLineHeight`). Unregistered on purpose — `lh` must
+   * resolve on the line itself. The extra pixel keeps a one-line item clean:
+   * lines sit at fractional offsets, and starting exactly at the line's
+   * bottom left an antialiased sliver of guide there (measured: 2 px). */
+  --xl-first-line: calc(1lh + 1px);
+  --xl-first-bullet: calc(1.2lh + 1px);
   --xl-guide-color: color-mix(in oklab, var(--color-list-marker) 40%, transparent);
   --xl-guide: linear-gradient(var(--xl-guide-color), var(--xl-guide-color));
 }
