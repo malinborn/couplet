@@ -4,7 +4,7 @@
  * table's bottom edge (where every body row's zero-height line sits). jsdom has
  * no layout, so rects are stubbed; the browser check is in the report.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { EditorSelection, EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { ensureSyntaxTree } from '@codemirror/language';
@@ -61,11 +61,16 @@ function layout(view: EditorView, needle: string, cellTop: number): void {
   }
 }
 
-function runHandlers(view: EditorView, from: number, to: number): boolean {
+function runHandlers(
+  view: EditorView,
+  from: number,
+  to: number,
+  y: 'nearest' | 'start' | 'end' | 'center' = 'nearest'
+): boolean {
   const range = EditorSelection.range(from, to);
   return view.state
     .facet(EditorView.scrollHandler)
-    .some((h) => h(view, range, { x: 'nearest', y: 'nearest', xMargin: 5, yMargin: 5 }));
+    .some((h) => h(view, range, { x: 'nearest', y, xMargin: 5, yMargin: 5 }));
 }
 
 describe('cellScrollDelta', () => {
@@ -111,6 +116,42 @@ describe('tableCellScroll', () => {
     const doc = view.state.doc.toString();
     expect(runHandlers(view, doc.indexOf('after'), doc.indexOf('after') + 5)).toBe(false);
     expect(runHandlers(view, doc.indexOf('a1'), doc.indexOf('439.4') + 5)).toBe(false);
+  });
+
+  it('a position outside any table returns at once, without touching the DOM', () => {
+    const view = makeView();
+    const query = vi.spyOn(Element.prototype, 'querySelectorAll');
+    const domAt = vi.spyOn(view, 'domAtPos');
+    try {
+      const at = view.state.doc.toString().indexOf('after');
+      expect(runHandlers(view, at, at + 5)).toBe(false);
+      expect(query).not.toHaveBeenCalled();
+      expect(domAt).not.toHaveBeenCalled();
+    } finally {
+      query.mockRestore();
+      domAt.mockRestore();
+    }
+  });
+
+  it('a header cell scrolls to the window top — the header is not under itself', () => {
+    const view = makeView();
+    view.scrollDOM.scrollTop = 5000;
+    layout(view, 'h2', -1000);
+    const at = view.state.doc.toString().indexOf('h2');
+
+    expect(runHandlers(view, at, at + 2)).toBe(true);
+    // No header height reserved: 5000 - (0 + 5 - (-1000)).
+    expect(view.scrollDOM.scrollTop).toBe(5000 - 1005);
+  });
+
+  it("y: 'center' centres the cell in the room below the header", () => {
+    const view = makeView();
+    layout(view, 'hello', 2000);
+    const at = view.state.doc.toString().indexOf('hello');
+
+    expect(runHandlers(view, at, at + 5, 'center')).toBe(true);
+    // Cell middle 2015, room 37–595 → middle 316.
+    expect(view.scrollDOM.scrollTop).toBe(2015 - 316);
   });
 
   it('is installed by the editor setup', () => {

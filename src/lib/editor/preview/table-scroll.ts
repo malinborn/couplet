@@ -1,5 +1,7 @@
 import { EditorView } from '@codemirror/view';
-import type { SelectionRange } from '@codemirror/state';
+import type { EditorState, SelectionRange } from '@codemirror/state';
+import { syntaxTree } from '@codemirror/language';
+import type { SyntaxNode } from '@lezer/common';
 import { CELL_TEXT_CLASS } from './tables';
 
 /**
@@ -27,10 +29,34 @@ import { CELL_TEXT_CLASS } from './tables';
 
 type ScrollStrategy = 'nearest' | 'start' | 'end' | 'center';
 
-/** The rendered cell (`.cm-md-table-cell`) whose source range holds `[from, to]`, if any. */
+/**
+ * The `Table` node holding `[from, to]`, from the tree as it is — no parse.
+ * Enough: the widget is drawn from that same tree, so a table the tree does
+ * not have yet has no widget and no hidden rows, and CM6's own scroll is right.
+ */
+function tableAt(state: EditorState, from: number, to: number): { from: number; to: number } | null {
+  for (let node: SyntaxNode | null = syntaxTree(state).resolveInner(from, 1); node; node = node.parent) {
+    if (node.name === 'Table') return node.to >= to ? { from: node.from, to: node.to } : null;
+  }
+  return null;
+}
+
+/**
+ * The rendered cell (`.cm-md-table-cell`) whose source range holds `[from, to]`,
+ * if any. Called on every scroll into view — every keystroke and arrow — so it
+ * leaves at once outside a table, and inside one looks only at that table's
+ * widget (on its header line), never at the whole document's cells.
+ */
 function cellFor(view: EditorView, from: number, to: number): HTMLElement | null {
-  for (const el of view.contentDOM.querySelectorAll<HTMLElement>(
-    `.cm-md-table .${CELL_TEXT_CLASS}[data-source-from][data-source-to]`
+  const table = tableAt(view.state, from, to);
+  if (!table) return null;
+  const { node } = view.domAtPos(view.state.doc.lineAt(table.from).from);
+  const widget = (node instanceof Element ? node : node.parentElement)
+    ?.closest('.cm-line')
+    ?.querySelector('.cm-md-table');
+  if (!widget) return null;
+  for (const el of widget.querySelectorAll<HTMLElement>(
+    `.${CELL_TEXT_CLASS}[data-source-from][data-source-to]`
   )) {
     const srcFrom = Number(el.dataset.sourceFrom);
     const srcTo = Number(el.dataset.sourceTo);
