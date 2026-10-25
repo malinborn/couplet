@@ -15,6 +15,8 @@ import { livePreviewPlugin } from '../editor/preview/plugin';
 import { csvPreviewExtensions } from './csv-extensions';
 import { DEFAULT_TABLE_CONFIG } from '../editor/preview/table-config';
 import { rowsToTable } from './csv-table';
+import { decodeFromDisk, encodeForDisk } from './csv-codec';
+import { CELL_TEXT_CLASS } from '../editor/preview/tables';
 
 /** Rows past the markdown table cap, so only the CSV bundle draws them. */
 const PAST_MD_CAP = DEFAULT_TABLE_CONFIG.maxLines + 100;
@@ -205,6 +207,31 @@ describe('cm-csv-file-mode', () => {
 
     expect(view.dom.classList.contains('cm-csv-file-mode')).toBe(true);
     expect(view.dom.classList.contains('hand-added')).toBe(false);
+    view.destroy();
+  });
+});
+
+describe('computed cells in a CSV document', () => {
+  it('verifies stored answers in the CSV table and writes the file back unchanged', () => {
+    const raw = 'Item;Sum\nFood;338 * 1.3 = 439.4\nRent;1,5 * 3 = 4,5\nOld;338 * 1.3 = 500\n';
+    const decoded = decodeFromDisk('/tmp/budget.csv', raw, 'lf');
+    const state = EditorState.create({
+      doc: decoded.text,
+      extensions: [markdownExtension(), csvPreviewExtensions],
+    });
+    ensureSyntaxTree(state, decoded.text.length, 5000);
+    const view = new EditorView({ state });
+
+    const cells = [...view.dom.querySelectorAll<HTMLElement>(`.${CELL_TEXT_CLASS}`)];
+    const food = cells.find((el) => el.title === '338 * 1.3 = 439.4');
+    const rent = cells.find((el) => el.title === '1,5 * 3 = 4,5');
+    expect(food?.firstChild?.textContent).toBe('439.4');
+    expect(rent?.firstChild?.textContent).toBe('4,5');
+    // A stale answer is shown as it is stored.
+    expect(cells.some((el) => el.textContent === '338 * 1.3 = 500' && !el.title)).toBe(true);
+
+    // Nothing is computed into the buffer: the bytes written are the file's own.
+    expect(encodeForDisk('/tmp/budget.csv', view.state.doc.toString(), 'lf', raw)).toBe(raw);
     view.destroy();
   });
 });

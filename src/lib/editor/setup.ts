@@ -21,6 +21,7 @@ import { livePreviewPlugin } from './preview/plugin';
 import { tableModeField } from './preview/table-state';
 import { mermaidViewField } from './preview/mermaid-state';
 import { tableSelectionSnapOut } from './preview/table-selection';
+import { tableCellScroll } from './preview/table-scroll';
 import { hoverBlockMenu } from './hover-menu';
 import { markdownFoldService, headingFoldClick, headingFoldStatePlugin } from './folding';
 import { foldMemory } from './fold-memory';
@@ -34,6 +35,7 @@ import { aiHighlightField, aiHighlightKeymap } from './ai-highlight';
 import { aiAskField } from './ai-ask';
 import { aiCommentAttention, aiCommentField } from './ai-comment';
 import { jsonFormatKeymap, jsonOfferField } from './json-paste';
+import { mathGhost } from './math/ghost';
 import { findPanel } from './search/panel';
 import { searchSpotlight } from './search/spotlight';
 import { readOnlyCompartment } from './read-only';
@@ -98,6 +100,8 @@ export function createExtensions(deps: EditorDeps = {}): Extension[] {
     aiCommentAttention,
     jsonOfferField,
     jsonFormatKeymap,
+    // `338 * 1.3 =` → grey `439.4` at the caret, Tab writes it (math/ghost.ts).
+    mathGhost(),
     lineGlowCompartment.of([]),
     readOnlyCompartment.of([]),
     drawSelection(),
@@ -148,6 +152,9 @@ export function createExtensions(deps: EditorDeps = {}): Extension[] {
     ...(linkControl ? [linkControlFacet.of(linkControl), linkExistence, linkDropCaret] : []),
     listLayoutCompartment.of(listLayoutExtension(DEFAULT_LIST_LAYOUT)),
     tableSelectionSnapOut,
+    // Scrolling to a position in a table body (⌘G onto a match) goes to the
+    // cell: the row's own line is a zero-height strip at the table's bottom.
+    tableCellScroll,
     hoverBlockMenu(),
     // Hide gutter when scrolled horizontally (buttons overlap content)
     ViewPlugin.fromClass(class {
