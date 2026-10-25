@@ -217,49 +217,61 @@ caret around the widget.
 
 ## Computed table cells (agreed 2026-10-24)
 
-The ghost is never shown inside a table: a cell is edited in its own overlay
-(`showCellEditor`), not at a CodeMirror caret, and a raw table row is
-markdown syntax. Tables get their own form instead — a computed cell.
+The text ghost is never shown inside a table: a cell is edited in its own
+overlay (`showCellEditor`), not at a CodeMirror caret, and a raw table row is
+markdown syntax. Tables get their own form — a computed cell.
+
+**Revised 2026-10-25 (owner): the answer is stored in the cell.** The first
+version stored only `338 * 1.3 =` and computed the answer on screen; ⌘F then
+could not find `439.4`. Storing `expr = answer` puts all three numbers in the
+source, so search, copy, GitHub and Excel need no special case.
 
 | Question | Decision |
 |----------|----------|
-| What is stored | The expression, as typed: `| Итого | 338 * 1.3 = |` |
-| What the view shows | The answer with a small muted marker (`439.4 ƒ`); the expression as the cell's tooltip |
-| Editing | The cell editor opens the stored text (`338 * 1.3 =`), as for any cell; the answer follows the commit |
-| References | None: a cell computes only its own text (no `B2`, no `sum`) |
+| What is stored | Expression and answer: `| Еда | 338 * 1.3 = 439.4 |` |
+| How the answer gets there | The cell editor offers it: typing `338 * 1.3 =` shows a hint `= 439.4 ⇥` inside the editor; Tab accepts (writes ` 439.4`), or the human types the answer |
+| What the view shows | A *verified* cell shows the answer + a small muted marker (`439.4 ƒ`), the whole text as tooltip |
+| Verified | The cell is exactly `<expr> = <number>` and `<number>` equals our formatted answer for `<expr>` |
+| Not verified | Shown as plain text, everything visible: a wrong/stale answer (`338 * 1.3 = 500`), or no answer (`338 * 1.3 =`) |
+| Editing | The cell editor opens the stored text (`338 * 1.3 = 439.4`), as for any cell |
+| References | None: a cell computes only its own text |
 | Where | Markdown tables and CSV documents (one widget) |
 
-- **When a cell computes:** its whole trimmed text is `<expr> =` (spaces
-  allowed after `=`), and `evaluate(<expr>)` + `formatResult` give an answer.
-  Strict on purpose — no prose, no block prefix, no longest-suffix search:
-  `Итого 5 + 3 =` in a cell stays text. Comparisons (`==`, `>=`, …) and
-  anything `evaluate` refuses stay text. The language gate (markdown only) does
-  not apply: a CSV document's buffer is a table in the same widget.
-- **One rendering path:** `renderCellContent` (`preview/tables.ts`) is the only
-  place a cell's view is drawn; it asks the pure `computeCell(text)` and, on an
-  answer, renders the answer (`textContent`) + the marker, with the expression
-  in `title`. Search highlights for that cell are skipped while it shows an
-  answer (they index the source).
+- **The marker means one thing:** "the stored answer was checked". A wrong
+  number is never dressed up as computed; an unanswered expression is not
+  silently computed either.
+- **Verification:** split on the last `=`; `<expr>` must satisfy the strict
+  whole-cell rule (no prose, no prefix, no comparison before `=`); `<number>`
+  is compared with `formatResult(evaluate(expr))` as text after normalising
+  spaces (plain, NBSP, U+202F) — so `1 200 * 3 = 3 600` and `= 3600` both
+  verify, and so do `1,5 * 3 = 4,5` and `= 4.5` only if the parsed values are
+  equal: compare **values** (parse `<number>` with the same number reader),
+  not strings.
+- **The hint in the cell editor:** shown while the editor's text (before the
+  caret, caret at the end) is `<expr> =` + optional spaces and `computeCell`
+  of that would give an answer — same rules as the text ghost, applied to the
+  editor's text. Rendered as a muted chip at the right edge inside the editor
+  (`= 439.4 ⇥`), `aria-hidden`, no pointer events. **Tab** accepts while the
+  hint is shown (inserts `' ' + answer`, collapsing spaces after `=`, as one
+  native undo step via `execCommand('insertText')` — never assigning
+  `.value`); the next Tab moves to the next cell as before. **Esc** hides the
+  hint; a second Esc closes the editor as before. Any further typing
+  re-evaluates (a space after `=` brings it back).
+- **One rendering path:** `renderCellContent` asks the pure
+  `verifiedCell(text)`; on success it renders the answer (`textContent`) + the
+  marker, with the whole text in `title`.
+- **Search, copy:** the source holds all three numbers, so ⌘F finds `338`,
+  `1.3` and `439.4`. Highlights in a verified cell cover the whole answer
+  (the rendered text is not the source).
 - **No leading `=`:** Excel-style `=A1+B1` is a CSV formula (and a known
   injection vector); the trailing `=` keeps one syntax across text and tables.
-- **Known limits:** ⌘F searches the source (`338`, not `439`). Copying a
-  selection made inside a computed cell copies the visible answer (a cell's
-  text is a nested editing host, so `copy` takes the rendered text —
-  `preview/CLAUDE.md`); copying the table's source (raw mode, or a document
-  selection over the table) copies the expression. The marker is
-  `user-select: none`, but whether WKWebView leaves `ƒ` out of a copy is
-  unverified. Sorting by such a column (if ever added) sorts the source.
-- **Typing in a computed cell (current behaviour, owner decision pending):**
-  a caret or a selection over the answer stands for the end of the
-  expression, so typing appends — `338 * 1.3 =5`, plain text until fixed —
-  and Backspace removes the `=`, so the cell shows the expression. The
-  alternative is Excel-style: the first key replaces the whole cell.
-- **Security hardening:** the operator synonym table becomes a `Map` (no
-  prototype lookup at all).
-- **Tests:** `computeCell` table (valid, refused, comparisons, prose, spaces
-  after `=`, CSV-style values); widget DOM: a computed cell shows answer +
-  marker + `title`, a plain cell is unchanged, the editor opens the source;
-  browser check on a markdown table and a CSV file.
+- **Security:** the operator synonym table is a `Map`; every user string goes
+  through `textContent` / `title`.
+- **Tests:** `verifiedCell` table (correct answer, stale, wrong, missing,
+  thousands/comma forms, comparisons, prose); cell-editor hint (shown / hidden,
+  Tab accepts once then navigates, Esc, undo); widget DOM (verified shows
+  answer + marker + title, stale shows text, plain unchanged); browser check
+  on a markdown table and a CSV file.
 
 ## Out of scope
 
