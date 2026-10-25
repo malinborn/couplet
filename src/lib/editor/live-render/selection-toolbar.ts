@@ -167,9 +167,9 @@ function widgetTarget(view: EditorView): ToolbarTarget | null {
   const active = view.root.activeElement;
   if (!active || !host.contains(active)) return null;
 
-  // A computed table cell shows an answer, not its source: no rendered offset
-  // in it maps to a character of the expression. Formatting or commenting it
-  // goes through the cell edit overlay, which holds the source.
+  // A verified table cell shows only its stored answer, not its source: a
+  // rendered offset in it does not map onto the cell text. Formatting or
+  // commenting it goes through the cell edit overlay, which holds the source.
   if (host.classList.contains(COMPUTED_CELL_CLASS)) return null;
 
   // Hosts that render text from somewhere other than the document — a comment

@@ -94,6 +94,22 @@ function readNumber(
   return { value: Number(fraction ? integer + '.' + fraction : integer), end: i };
 }
 
+/**
+ * `text` as exactly one number literal — the same reader the tokenizer uses,
+ * plus an optional leading `-` (how `formatResult` writes a negative answer).
+ * `null` for anything else, surrounding spaces included. Used to check a stored
+ * answer (`cell.ts`), so it reads the human's thousands spaces and comma too.
+ */
+export function parseNumberLiteral(text: string): MathResult | null {
+  const style: NumberStyle = { decimalComma: false, thousandsSpace: false };
+  const negative = text.startsWith('-');
+  const start = negative ? 1 : 0;
+  if (!isDigit(text[start])) return null;
+  const read = readNumber(text, start, style);
+  if (!read || read.end !== text.length) return null;
+  return { value: negative ? -read.value : read.value, style };
+}
+
 function tokenize(src: string, style: NumberStyle): Token[] | null {
   const tokens: Token[] = [];
   let i = 0;

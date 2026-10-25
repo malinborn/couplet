@@ -2321,15 +2321,31 @@
   }
 }
 
-/* Computed table cell (editor/math/cell.ts, preview/tables.ts): the cell shows
-   the answer of its `<expr> =`, then this marker; the expression is the cell's
-   `title`. The answer keeps the cell's own colour; only the marker is muted.
-   Not selectable, so a copy of the cell's text is the answer alone. */
+/* Verified table cell (editor/math/cell.ts, preview/tables.ts): a cell storing
+   `<expr> = <answer>` with the right answer shows the answer, then this marker;
+   the whole text is the cell's `title`. The answer keeps the cell's own
+   colour; only the marker is muted, and not selectable. */
 .cm-md-table .cm-md-cell-computed-mark {
   margin-left: 0.3em;
   font-size: 0.75em;
   color: var(--text-muted);
   -webkit-text-fill-color: currentColor;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* The answer offered inside the cell editor (`preview/cell-hint.ts`): a chip at
+   the field's right edge, `= 439.4 ⇥`, Tab writes it. Fixed over the field
+   (which lives in `document.body`, z-index 1000), in room the field reserves
+   with its right padding, so it never covers the text. Font and placement are
+   set inline from the field. */
+.cm-md-cell-hint {
+  position: fixed;
+  z-index: 1001;
+  white-space: pre;
+  color: var(--text-muted);
+  -webkit-text-fill-color: currentColor;
+  pointer-events: none;
   -webkit-user-select: none;
   user-select: none;
 }

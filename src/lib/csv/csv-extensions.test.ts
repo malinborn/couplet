@@ -212,8 +212,8 @@ describe('cm-csv-file-mode', () => {
 });
 
 describe('computed cells in a CSV document', () => {
-  it('shows the answer in the CSV table and writes the expression back to disk', () => {
-    const raw = 'Item;Sum\nFood;338 * 1.3 =\nRent;1,5 * 3 =\n';
+  it('verifies stored answers in the CSV table and writes the file back unchanged', () => {
+    const raw = 'Item;Sum\nFood;338 * 1.3 = 439.4\nRent;1,5 * 3 = 4,5\nOld;338 * 1.3 = 500\n';
     const decoded = decodeFromDisk('/tmp/budget.csv', raw, 'lf');
     const state = EditorState.create({
       doc: decoded.text,
@@ -223,13 +223,14 @@ describe('computed cells in a CSV document', () => {
     const view = new EditorView({ state });
 
     const cells = [...view.dom.querySelectorAll<HTMLElement>(`.${CELL_TEXT_CLASS}`)];
-    const food = cells.find((el) => el.title === '338 * 1.3 =');
-    const rent = cells.find((el) => el.title === '1,5 * 3 =');
+    const food = cells.find((el) => el.title === '338 * 1.3 = 439.4');
+    const rent = cells.find((el) => el.title === '1,5 * 3 = 4,5');
     expect(food?.firstChild?.textContent).toBe('439.4');
     expect(rent?.firstChild?.textContent).toBe('4,5');
+    // A stale answer is shown as it is stored.
+    expect(cells.some((el) => el.textContent === '338 * 1.3 = 500' && !el.title)).toBe(true);
 
-    // The buffer keeps the expression, so the bytes written are the file's own.
-    expect(view.state.doc.toString()).toContain('338 * 1.3 =');
+    // Nothing is computed into the buffer: the bytes written are the file's own.
     expect(encodeForDisk('/tmp/budget.csv', view.state.doc.toString(), 'lf', raw)).toBe(raw);
     view.destroy();
   });

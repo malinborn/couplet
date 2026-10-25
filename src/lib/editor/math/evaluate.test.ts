@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { evaluate, MAX_EXPRESSION_LENGTH } from './evaluate';
+import { evaluate, parseNumberLiteral, MAX_EXPRESSION_LENGTH } from './evaluate';
 
 function valueOf(expr: string): number | undefined {
   return evaluate(expr)?.value;
@@ -153,5 +153,36 @@ describe('evaluate', () => {
     expect(evaluate('1 + constructor')).toBeNull();
     expect(evaluate('__proto__ + 1')).toBeNull();
     expect(evaluate('1 + toString')).toBeNull();
+  });
+});
+
+describe('parseNumberLiteral', () => {
+  it.each([
+    ['439.4', 439.4, false, false],
+    ['3 600', 3600, false, true],
+    ['3\u00A0600', 3600, false, true],
+    ['4,5', 4.5, true, false],
+    ['4 039,4', 4039.4, true, true],
+    ['-2', -2, false, false],
+    ['0', 0, false, false],
+    ['1234567890124', 1234567890124, false, false],
+  ])('%j → %d', (text, value, decimalComma, thousandsSpace) => {
+    expect(parseNumberLiteral(text)).toEqual({ value, style: { decimalComma, thousandsSpace } });
+  });
+
+  it.each([
+    ['empty', ''],
+    ['two numbers', '1 2'],
+    ['a letter after', '12a'],
+    ['spaces around', ' 5 '],
+    ['a space after the minus', '- 2'],
+    ['two minus signs', '--2'],
+    ['an operator', '2+1'],
+    ['a bare separator', '5.'],
+    ['a leading separator', '.5'],
+    ['a percent', '5%'],
+    ['too many significant digits', '1234567890123456'],
+  ])('refuses %s', (_label, text) => {
+    expect(parseNumberLiteral(text)).toBeNull();
   });
 });
