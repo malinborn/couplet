@@ -276,8 +276,9 @@ export interface ExplicitListPlan {
    */
   hidden: { from: number; to: number }[];
   /**
-   * The whitespace after each marker (or the point after it, when there is
-   * none), drawn as one `--xl-gap`-wide widget whatever the source holds.
+   * The whitespace after each marker, drawn as one `--xl-gap`-wide widget
+   * whatever the source holds. None for a bare marker (`isBareMarker`): a gap
+   * there would look like the space nobody typed yet.
    * `live-render/atomic.ts` makes `hidden` and the gaps atomic, from this
    * same plan.
    */
@@ -317,7 +318,7 @@ export function planExplicitList(
       if (lead.length > 0 && /^[ \t]*$/.test(lead)) hidden.push({ from: firstLine.from, to: mark.from });
       const end = markerEnd(kind, mark);
       const gap = firstLine.text.slice(end - firstLine.from).match(/^[ \t]*/)?.[0].length ?? 0;
-      gaps.push({ from: end, to: end + gap });
+      if (gap > 0) gaps.push({ from: end, to: end + gap });
 
       let below = 0;
       for (let n = first + 1; n <= last && below < GUIDE_MIN_LINES; n++) {
@@ -388,7 +389,6 @@ class GapWidget extends WidgetType {
 
 const hide = Decoration.replace({});
 const gapOver = Decoration.replace({ widget: new GapWidget() });
-const gapAt = Decoration.widget({ widget: new GapWidget(), side: 1 });
 
 /**
  * Lays out one top-level list and everything nested in it. Marker boxes and
@@ -413,7 +413,7 @@ export function layoutExplicitList(
     );
   }
   for (const r of plan.hidden) builder.add(r.from, r.to, hide);
-  for (const g of plan.gaps) builder.add(g.from, g.to, g.to > g.from ? gapOver : gapAt);
+  for (const g of plan.gaps) builder.add(g.from, g.to, gapOver);
 }
 
 /** True for a list the layout pass starts from: outermost, and not in a quote. */

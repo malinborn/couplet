@@ -215,6 +215,10 @@ describe('layoutExplicitList — no zero-size text in a line', () => {
     expect(specs.filter((s) => s.to - s.from === 2 && !s.spec.widget)).toHaveLength(2);
   });
 
+  it('draws no gap after a bare marker: nothing typed yet, nothing to space', () => {
+    expect(layoutSpecs('-').some((s) => s.spec.widget)).toBe(false);
+  });
+
   it('turns the gap after a marker into a widget of its own width', () => {
     const specs = layoutSpecs('- a');
     expect(specs).toHaveLength(1);

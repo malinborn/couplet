@@ -13,7 +13,7 @@ import {
 import { syntaxTree } from '@codemirror/language';
 import type { SyntaxNode } from '@lezer/common';
 import { isRenderedLink, linkDestinationNode } from '../preview/link-refs';
-import { blockquoteLayout, insideBlockquote, listMarkColumns } from '../preview/lists';
+import { blockquoteLayout, insideBlockquote, isBareMarker, listMarkColumns } from '../preview/lists';
 import { isExplicitRoot, listLayoutFacet, ownsListGeometry, planExplicitList } from '../preview/explicit-lists';
 
 /**
@@ -322,7 +322,7 @@ function collectMarkupModel(state: EditorState): { spans: RawSpan[]; pairs: Mark
           const listMark = node.node.getChild('ListMark');
           if (listMark && !isChecklistLine(doc, listMark)) {
             const markText = doc.sliceString(listMark.from, listMark.to);
-            if (markText === '-' || markText === '*' || markText === '+') {
+            if ((markText === '-' || markText === '*' || markText === '+') && !isBareMarker(doc, listMark)) {
               push(spans, listMark.from, listMark.to, 'from');
             }
           }

@@ -216,6 +216,16 @@ describe('hiddenMarkRanges — nested and adjacent formatting', () => {
   });
 });
 
+describe('hiddenMarkRanges — a bare marker', () => {
+  // Mirrors lists.ts: a `-` with nothing after it stays a visible hyphen, so it
+  // must not be atomic; the bullet (and its atomic span) arrive with the space.
+  it('leaves a lone `-` alone and hides the bullet once a space follows', () => {
+    expect(spans('-')).toEqual([]);
+    expect(spans('- ')).toEqual([[0, 1]]);
+    expect(spans('- a')).toEqual([[0, 1]]);
+  });
+});
+
 describe('hiddenMarkRanges — checkbox exclusion', () => {
   it('- [x] done: no hidden span overlaps the CheckboxWidget span', () => {
     // listMark.from=0, checkboxEnd = listMark.to(1)+1+3 = 5 — the widget's
