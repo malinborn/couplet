@@ -242,13 +242,24 @@ source, so search, copy, GitHub and Excel need no special case.
   silently computed either.
 - **Verification:** split on the last `=`; `<expr>` must satisfy the strict
   whole-cell rule (no prose, no prefix, no comparison before `=`); `<number>`
-  is compared with `formatResult(evaluate(expr))` as text after normalising
-  spaces (plain, NBSP, U+202F) — so `1 200 * 3 = 3 600` and `= 3600` both
-  verify, and so do `1,5 * 3 = 4,5` and `= 4.5` only if the parsed values are
-  equal: compare **values** (parse `<number>` with the same number reader),
-  not strings.
+  must be one literal as the tokenizer reads them (valid thousands groups, one
+  separator, an optional leading `-`). Then **text** is compared — the stored
+  number is never rounded:
+  - expected = `formatResult(value, { decimalComma: <expr's>, thousandsSpace:
+    false })`, exactly what Tab writes minus thousands spaces;
+  - the stored number is normalised only by dropping spaces (plain, NBSP,
+    U+202F) and trailing fraction zeros with a then-bare separator
+    (`439.40` → `439.4`, `3 600` → `3600`). Leading zeros, `-0`, a sign stay
+    as written: `06`, `-0`, `0006.000` stay text;
+  - equal → verified. So `1 200 * 3 = 3 600` and `= 3600` verify, while
+    `100000000000 - 0 = 99999999999.5`, `10 / 3 = 3.3333333333999`,
+    `1 / 3 = 0.33333333334` and `10 / 3 = 3.33` stay text.
+  - **Separator:** if `<expr>` wrote a fraction (`1.5`, `1,5`), the answer must
+    use that separator (`1,5 * 3 = 4,5` ✓, `1.5 * 3 = 4,5` and `= 4,500` stay
+    text). Without one either separator is accepted (`9 / 2 = 4,5` and `= 4.5`
+    ✓); `9000 / 2 = 4,500` stays text — it normalises to `4,5`, not `4500`.
 - **The hint in the cell editor:** shown while the editor's text (before the
-  caret, caret at the end) is `<expr> =` + optional spaces and `computeCell`
+  caret, caret at the end) is `<expr> =` + optional spaces and `cellHint`
   of that would give an answer — same rules as the text ghost, applied to the
   editor's text. Rendered as a muted chip at the right edge inside the editor
   (`= 439.4 ⇥`), `aria-hidden`, no pointer events. **Tab** accepts while the

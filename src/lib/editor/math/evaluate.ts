@@ -27,6 +27,22 @@ export interface NumberStyle {
 export interface MathResult {
   value: number;
   style: NumberStyle;
+  /**
+   * A number in the input had a fraction part (`1.5`, `1,5`) — so its decimal
+   * separator was the human's choice, and a stored answer must use the same
+   * (`cell.ts`).
+   */
+  fractional: boolean;
+}
+
+/** What reading the numbers of an input records: its style, and whether any had a fraction. */
+interface ReadState {
+  style: NumberStyle;
+  fractional: boolean;
+}
+
+function newReadState(): ReadState {
+  return { style: { decimalComma: false, thousandsSpace: false }, fractional: false };
 }
 
 export const MAX_EXPRESSION_LENGTH = 200;
@@ -65,8 +81,9 @@ export function isSpace(ch: string | undefined): boolean {
 function readNumber(
   src: string,
   start: number,
-  style: NumberStyle
+  read: ReadState
 ): { value: number; end: number } | null {
+  const style = read.style;
   let i = start;
   let integer = '';
   while (isDigit(src[i])) integer += src[i++];
@@ -86,6 +103,7 @@ function readNumber(
   let fraction = '';
   if ((src[i] === '.' || src[i] === ',') && isDigit(src[i + 1])) {
     if (src[i] === ',') style.decimalComma = true;
+    read.fractional = true;
     i++;
     while (isDigit(src[i])) fraction += src[i++];
   }
@@ -101,16 +119,16 @@ function readNumber(
  * answer (`cell.ts`), so it reads the human's thousands spaces and comma too.
  */
 export function parseNumberLiteral(text: string): MathResult | null {
-  const style: NumberStyle = { decimalComma: false, thousandsSpace: false };
+  const state = newReadState();
   const negative = text.startsWith('-');
   const start = negative ? 1 : 0;
   if (!isDigit(text[start])) return null;
-  const read = readNumber(text, start, style);
+  const read = readNumber(text, start, state);
   if (!read || read.end !== text.length) return null;
-  return { value: negative ? -read.value : read.value, style };
+  return { value: negative ? -read.value : read.value, ...state };
 }
 
-function tokenize(src: string, style: NumberStyle): Token[] | null {
+function tokenize(src: string, state: ReadState): Token[] | null {
   const tokens: Token[] = [];
   let i = 0;
   while (i < src.length) {
@@ -121,7 +139,7 @@ function tokenize(src: string, style: NumberStyle): Token[] | null {
       tokens.push({ kind: 'op', op: ch as Op });
       i++;
     } else if (isDigit(ch)) {
-      const read = readNumber(src, i, style);
+      const read = readNumber(src, i, state);
       if (!read) return null;
       tokens.push({ kind: 'num', value: read.value });
       i = read.end;
@@ -243,13 +261,13 @@ class Parser {
  */
 export function evaluate(expr: string): MathResult | null {
   if (expr.length > MAX_EXPRESSION_LENGTH) return null;
-  const style: NumberStyle = { decimalComma: false, thousandsSpace: false };
-  const tokens = tokenize(expr, style);
+  const state = newReadState();
+  const tokens = tokenize(expr, state);
   if (!tokens || tokens.length === 0) return null;
   const parser = new Parser(tokens);
   try {
     const value = parser.parse();
-    return parser.sawOperator ? { value, style } : null;
+    return parser.sawOperator ? { value, ...state } : null;
   } catch (error) {
     if (error instanceof ParseError) return null;
     throw error;

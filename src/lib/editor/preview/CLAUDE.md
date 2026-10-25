@@ -635,7 +635,7 @@ The plugin has one more CSV-facing knob, outside table code — the `previewRebu
 
 ### Computed Cells Break "the DOM Reads as the Source"
 
-A cell stores `<expr> = <answer>` (`338 * 1.3 = 439.4`). When `verifiedCell` (`math/cell.ts`) confirms the answer — exactly what Tab would have written, compared as values — `renderCellContent` draws only the stored answer + a `ƒ` marker, with `cm-md-cell-computed` and the whole text as `title` on the text element. A stale (`= 500`) or missing (`=`) answer stays plain text. Nothing is computed into the buffer, so search, copy of the source and CSV see all three numbers. What the view shows is the answer alone, so everything that maps rendered characters to source offsets must not trust such a cell:
+A cell stores `<expr> = <answer>` (`338 * 1.3 = 439.4`). When `verifiedCell` (`math/cell.ts`) confirms the answer — exactly what Tab would have written, compared as **text** (spaces and trailing fraction zeros dropped, never rounded; the expression's decimal separator when it wrote a fraction) — `renderCellContent` draws only the stored answer + a `ƒ` marker, with `cm-md-cell-computed` and the whole text as `title` on the text element. A stale (`= 500`) or missing (`=`) answer stays plain text. Nothing is computed into the buffer, so search, copy of the source and CSV see all three numbers. What the view shows is the answer alone, so everything that maps rendered characters to source offsets must not trust such a cell:
 
 - `renderCellContent` resets the class and `title` first — `updateDOM` reuses the element when a cell turns plain.
 - ⌘F: the counter counts source matches; any match inside a verified cell highlights the whole answer (`widgetMatchRanges`), so `439.4` and `1.3` both light up the cell. The spotlight's hole falls back to the cell box.
@@ -644,7 +644,7 @@ A cell stores `<expr> = <answer>` (`338 * 1.3 = 439.4`). When `verifiedCell` (`m
 - The live-render format toolbar refuses it (`widgetTarget`); format or comment through the overlay, which holds the source.
 - A comment anchored anywhere in the cell marks the whole answer.
 
-**The answer gets into the cell through the editor's hint** (`cell-hint.ts`): while the overlay's text is `<expr> =` + spaces with the caret at the end, a muted chip `= 439.4 ⇥` sits at its right edge, in room the field reserves with its right padding. `showCellEditor`'s keydown asks the hint first: Tab → `accept()` (a narrowed `insertText` through `applyTextareaEdit`, never `.value`), Escape → `dismiss()` (until the text changes); both return `false` without a chip, so every key keeps its table meaning — the next Tab moves on.
+**The answer gets into the cell through the editor's hint** (`cell-hint.ts`): while the overlay's text is `<expr> =` + spaces with the caret at the end, a muted chip `= 439.4 ⇥` sits at its right edge, in room the field reserves with its right padding. `showCellEditor`'s keydown asks the hint first: Tab → `accept()` (re-checks the text, then a narrowed `insertText` through `applyTextareaEdit`, never `.value`), Escape → `dismiss()` (until the text changes); both return `false` without a chip, so every key keeps its table meaning — the next Tab, and Shift+Tab always, move on. On input the field calls `hint.update()` and reflows once. A new overlay removes the old one's chip: the old field is dropped without its `destroy`.
 
 ## Mermaid Pan/Zoom (`mermaid-viewport.ts`, `mermaid-state.ts`)
 

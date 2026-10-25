@@ -156,6 +156,19 @@ describe('evaluate', () => {
   });
 });
 
+describe('evaluate: fractional', () => {
+  it.each([
+    ['1.5 * 3', true],
+    ['1,5 * 3', true],
+    ['9 / 2', false],
+    ['1 200 * 3', false],
+    ['10 / 3', false],
+    ['1 + 0.0', true],
+  ])('%j → %s', (expr, fractional) => {
+    expect(evaluate(expr)?.fractional).toBe(fractional);
+  });
+});
+
 describe('parseNumberLiteral', () => {
   it.each([
     ['439.4', 439.4, false, false],
@@ -167,7 +180,11 @@ describe('parseNumberLiteral', () => {
     ['0', 0, false, false],
     ['1234567890124', 1234567890124, false, false],
   ])('%j → %d', (text, value, decimalComma, thousandsSpace) => {
-    expect(parseNumberLiteral(text)).toEqual({ value, style: { decimalComma, thousandsSpace } });
+    expect(parseNumberLiteral(text)).toEqual({
+      value,
+      style: { decimalComma, thousandsSpace },
+      fractional: /[.,]/.test(text),
+    });
   });
 
   it.each([

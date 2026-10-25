@@ -23,8 +23,12 @@ const CHIP_GAP = 6;
 const CARET_EVENTS = ['selectionchange', 'select', 'keyup', 'mouseup', 'focus'] as const;
 
 export interface CellHint {
-  /** Re-evaluate after an edit or a caret move. Idempotent. */
-  update(): void;
+  /**
+   * Re-evaluate after an edit. `true` when the chip appeared, went or changed
+   * — the field then has to reflow (its right padding holds the chip's room);
+   * the caller does that once, with whatever else it reflows for. Idempotent.
+   */
+  update(): boolean;
   /** Place the chip over the field's current box — after every reflow. */
   position(): void;
   /** Tab: write the answer if a chip is shown. `false` = no chip, key not taken. */
@@ -42,8 +46,9 @@ export function hintFor(value: string, selectionStart: number, selectionEnd: num
 
 /**
  * Attach the hint to a cell editor. `onLayout` runs when the chip appears or
- * goes, since the field reserves room for it (its right padding) and has to
- * reflow.
+ * goes on the hint's own initiative (a caret move, Esc, Tab), since the field
+ * reserves room for it (its right padding) and has to reflow. After an edit
+ * the caller calls {@link CellHint.update} and reflows itself — once.
  */
 export function attachCellHint(ta: HTMLTextAreaElement, onLayout: () => void): CellHint {
   let answer: string | null = null;
@@ -78,14 +83,14 @@ export function attachCellHint(ta: HTMLTextAreaElement, onLayout: () => void): C
     ta.style.paddingRight = `calc(${base} + ${chip.offsetWidth + CHIP_GAP}px)`;
   };
 
-  const update = (): void => {
+  const update = (): boolean => {
     if (dismissedOn !== null && ta.value !== dismissedOn) dismissedOn = null;
     const next =
       dismissedOn === null ? hintFor(ta.value, ta.selectionStart, ta.selectionEnd) : null;
-    if (next === answer) return;
+    if (next === answer) return false;
     answer = next;
     render();
-    onLayout();
+    return true;
   };
 
   const position = (): void => {
@@ -102,13 +107,18 @@ export function attachCellHint(ta: HTMLTextAreaElement, onLayout: () => void): C
     chip.style.top = `${bottom - lineHeight}px`;
   };
 
-  const onCaret = (): void => update();
+  const onCaret = (): void => {
+    if (update()) onLayout();
+  };
   for (const name of CARET_EVENTS) ta.addEventListener(name, onCaret);
 
   return {
     update,
     position,
     accept(): boolean {
+      // The text may have changed without an event the chip heard; never write
+      // an answer to a question that is no longer there.
+      if (update()) onLayout();
       if (answer === null) return false;
       const value = ta.value;
       const head = value.slice(0, value.lastIndexOf('=') + 1);
@@ -117,7 +127,7 @@ export function attachCellHint(ta: HTMLTextAreaElement, onLayout: () => void): C
       // wipe the field's undo stack (root CLAUDE.md). The spaces after `=`
       // collapse into the one written here.
       applyTextareaEdit(ta, next, next.length, next.length);
-      update();
+      if (update()) onLayout();
       return true;
     },
     dismiss(): boolean {

@@ -88,10 +88,15 @@ function dblclick(el: HTMLElement): void {
   cell.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
 }
 
-function press(ta: HTMLTextAreaElement, key: string, mods: { meta?: boolean } = {}): KeyboardEvent {
+function press(
+  ta: HTMLTextAreaElement,
+  key: string,
+  mods: { meta?: boolean; shift?: boolean } = {}
+): KeyboardEvent {
   const e = new KeyboardEvent('keydown', {
     key,
     metaKey: mods.meta ?? false,
+    shiftKey: mods.shift ?? false,
     bubbles: true,
     cancelable: true,
   });
@@ -309,6 +314,48 @@ describe('the cell editor hint', () => {
     expect(tableLines(view)[6]).toBe('| Пусто | 338 * 1.3 = 439.4 |');
     expect(overlay()).not.toBe(ta);
     expect(overlay().value).toBe('Пусто');
+  });
+
+  it('Shift+Tab with a chip shown is the table’s: commits the question unchanged and moves back', () => {
+    const view = makeView();
+    dblclick(cellBySource(view, '-'));
+    const ta = overlay();
+    typeInto(ta, '338 * 1.3 =');
+    expect(chip()).not.toBeNull();
+
+    press(ta, 'Tab', { shift: true });
+
+    expect(tableLines(view)[6]).toBe('| Пусто | 338 * 1.3 = |');
+    expect(overlay()).not.toBe(ta);
+    expect(overlay().value).toBe('Пусто');
+    expect(chip()).toBeNull();
+  });
+
+  it('a chip never outlives its editor when another cell is double-clicked', () => {
+    const view = makeView();
+    dblclick(cellBySource(view, '-'));
+    typeInto(overlay(), '338 * 1.3 =');
+    expect(chip()).not.toBeNull();
+
+    dblclick(cellBySource(view, 'просто текст'));
+
+    expect(document.querySelectorAll('.cm-md-table-editor')).toHaveLength(1);
+    expect(chip()).toBeNull();
+  });
+
+  it('Tab re-checks the text before writing: a stale chip writes nothing', () => {
+    const view = makeView();
+    dblclick(cellBySource(view, '-'));
+    const ta = overlay();
+    typeInto(ta, '338 * 1.3 =');
+    // The text changes without an event the chip hears (a script, an IME).
+    ta.value = '338 * 1.3 = 1';
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+
+    press(ta, 'Tab');
+
+    // No answer appended: the Tab was the table's.
+    expect(tableLines(view)[6]).toBe('| Пусто | 338 * 1.3 = 1 |');
   });
 
   it('Tab without a chip moves to the next cell exactly as before', () => {

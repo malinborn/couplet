@@ -44,7 +44,7 @@ import {
 } from '../ai-comment';
 import { t } from '../../i18n';
 import { verifiedCell, COMPUTED_CELL_CLASS } from '../math/cell';
-import { attachCellHint } from './cell-hint';
+import { attachCellHint, CELL_HINT_CLASS } from './cell-hint';
 
 /** Class of the per-cell nested editing host that carries the cell's text. */
 export const CELL_TEXT_CLASS = 'cm-md-table-celltext';
@@ -1420,6 +1420,9 @@ function showCellEditor(
   place?: CellPlace
 ): void {
   document.querySelector('.cm-md-table-editor')?.remove();
+  // The old field is removed without its `destroy` (that runs on its blur
+  // commit, if a blur ever comes): its answer chip must not stay behind.
+  document.querySelectorAll(`.${CELL_HINT_CLASS}`).forEach((el) => el.remove());
 
   /**
    * Where the field writes: the cell's range as it opened, mapped through every
@@ -1501,7 +1504,8 @@ function showCellEditor(
     hint.position();
   };
   // The answer chip (`= 439.4 ⇥`, `cell-hint.ts`). It reserves room in the
-  // field's padding, so its appearing reflows the field.
+  // field's padding, so its appearing reflows the field — on input together
+  // with the field's own growth, in one reflow.
   const hint = attachCellHint(ta, () => reflow());
   const onInput = (): void => {
     hint.update();

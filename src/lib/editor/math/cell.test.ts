@@ -8,9 +8,14 @@ describe('verifiedCell', () => {
     ['1 200 * 3 = 3600', '3600'],
     ['1 200 * 3 = 3 600', '3 600'],
     ['1,5 * 3 = 4,5', '4,5'],
-    // Values are compared, not strings: the answer's own style is the human's.
-    ['1,5 * 3 = 4.5', '4.5'],
+    ['1.5 * 3 = 4.5', '4.5'],
+    // No fractional literal in the expression: either separator is the human's.
+    ['9 / 2 = 4,5', '4,5'],
+    ['9 / 2 = 4.5', '4.5'],
+    // Trailing fraction zeros and a then-bare separator are not a different number.
     ['338 * 1.3 = 439.40', '439.40'],
+    ['1.5 * 2 = 3.0', '3.0'],
+    ['1,5 * 2 = 3,00', '3,00'],
     ['3 600 + 439,4 = 4 039,4', '4 039,4'],
     ['1200 + 10% = 1320', '1320'],
     ['0.1 + 0.2 = 0.3', '0.3'],
@@ -36,6 +41,22 @@ describe('verifiedCell', () => {
     ['a stale answer', '338 * 1.3 = 500'],
     ['an answer rounded by hand', '10 / 3 = 3.33'],
     ['an answer off by a little', '0.1 + 0.2 = 0.30000001'],
+    // The stored number is never rounded: only what Tab would write verifies.
+    ['a half off a big integer', '100000000000 - 0 = 99999999999.5'],
+    ['a fraction on an exact integer', '123456789012 * 1 = 123456789012.4'],
+    ['more digits than the answer has', '10 / 3 = 3.3333333333999'],
+    ['the last digit rounded the other way', '1 / 3 = 0.33333333334'],
+    // The expression's decimal separator is the answer's.
+    ['a comma answer to a dot expression', '1.5 * 3 = 4,5'],
+    ['a comma answer with zeros to a dot expression', '1.5 * 3 = 4,500'],
+    ['a dot answer to a comma expression', '1,5 * 3 = 4.5'],
+    ['a comma read as thousands', '9000 / 2 = 4,500'],
+    // Only spaces and fraction zeros are forgiven.
+    ['a leading zero', '3 + 3 = 06'],
+    ['minus zero', '1 - 1 = -0'],
+    ['leading and trailing zeros', '3 + 3 = 0006.000'],
+    ['a Unicode minus', '2 - 4 = −2'],
+    ['thousands spaces in the wrong places', '1 200 * 3 = 36 00'],
     ['no answer', '338 * 1.3 ='],
     ['no answer, trailing spaces', '338 * 1.3 =   '],
     ['no "="', '5 + 3'],
