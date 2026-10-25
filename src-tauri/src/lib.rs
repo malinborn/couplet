@@ -16,6 +16,8 @@ mod commands;
 mod dock_icon;
 mod git_info;
 mod i18n;
+mod link_walk;
+mod links;
 mod locale;
 pub mod mcp_server;
 mod menu;
@@ -27,6 +29,7 @@ mod paths;
 mod preferences;
 mod recent;
 mod recovery;
+mod reveal;
 mod routing;
 mod session;
 mod stash;
@@ -169,6 +172,11 @@ pub fn run() {
             commands::read_file,
             commands::write_file,
             commands::file_exists,
+            links::path_kinds,
+            links::link_candidates,
+            links::link_project,
+            reveal::reveal_in_finder,
+            reveal::current_modifiers,
             commands::comment_threads,
             commands::comment_reply,
             commands::comment_resolve,

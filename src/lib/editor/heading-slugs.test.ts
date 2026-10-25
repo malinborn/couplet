@@ -196,3 +196,28 @@ describe('isAnchor', () => {
     expect(isAnchor('https://couplet.pro')).toBe(false);
   });
 });
+
+describe('navigateToHeading — slug index that does not know the heading', () => {
+  it('finds the heading from a full parse when the index misses it', () => {
+    // No headingSlugsField at all: the index lookup misses, exactly as it does
+    // for a heading below the part of a freshly opened file that was parsed
+    // when its state was created.
+    const state = EditorState.create({
+      doc: '# Intro\n\ntext\n\n## Risks\n\nmore\n',
+      extensions: [markdown({ base: markdownLanguage, codeLanguages: languages, extensions: [Strikethrough, Table] })],
+    });
+    const { view, calls } = makeView(state);
+    navigateToHeading(view, 'risks');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('is still a no-op for a slug no heading has', () => {
+    const state = EditorState.create({
+      doc: '# Intro\n',
+      extensions: [markdown({ base: markdownLanguage, codeLanguages: languages, extensions: [Strikethrough, Table] })],
+    });
+    const { view, calls } = makeView(state);
+    navigateToHeading(view, 'nope');
+    expect(calls).toHaveLength(0);
+  });
+});

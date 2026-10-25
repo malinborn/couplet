@@ -7,6 +7,7 @@ import { addAiComment, aiCommentField, type CommentActions } from '../editor/ai-
 import { jsonOfferField, setJsonOffer } from '../editor/json-paste';
 import { aiHighlightField, aiHighlightRanges, setAiHighlights } from '../editor/ai-highlight';
 import { decideEnter, leaveEffects, stripLeavingState } from './tab-cache';
+import { linkDropCaretField, setLinkDropCaret } from '../editor/links/link-drop';
 import { EditorView } from '@codemirror/view';
 import { completionStatus, currentCompletions, setSelectedCompletion } from '@codemirror/autocomplete';
 import { createDocumentState } from '../editor/state-factory';
@@ -60,6 +61,13 @@ describe('leaveEffects', () => {
     expect(activeAskIds(after)).toEqual([]);
     expect(after.field(aiCommentField).size).toBe(0);
     expect(after.field(jsonOfferField)).toBeNull();
+  });
+
+  it('ClearsALinkDropCaret_SoADropStillInFlightNeverLandsInTheCachedState', () => {
+    const before = EditorState.create({ doc: 'hello', extensions: [linkDropCaretField] }).update({
+      effects: setLinkDropCaret.of(3),
+    }).state;
+    expect(before.update({ effects: leaveEffects() }).state.field(linkDropCaretField)).toBeNull();
   });
 
   it('KeepsTheTextTheCaretTheUndoHistoryAndAiHighlights', () => {

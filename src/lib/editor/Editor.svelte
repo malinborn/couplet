@@ -7,6 +7,7 @@
   import { latestOnly } from './latest-only';
   import { themePickerField, type ThemeControl } from './slash-theme';
   import type { StashControl } from './slash-stash';
+  import type { LinkControl } from './links/open-link';
   import { languages } from '@codemirror/language-data';
   import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
   import { findCodeLanguage } from './file-language';
@@ -77,6 +78,7 @@
     onJsonOfferWithdrawn,
     themeControl,
     stashControl,
+    linkControl,
     handle = $bindable(),
   }: {
     /** `update` says who changed it — see `human-edit.ts`. */
@@ -94,6 +96,8 @@
     themeControl?: ThemeControl;
     /** Enables `/stash` (⌃T's put-away). Omitted by the landing's demo cards. */
     stashControl?: StashControl;
+    /** File links (⌘-click opens files). Omitted by the landing's demo cards. */
+    linkControl?: LinkControl;
     handle?: EditorHandle;
   } = $props();
 
@@ -128,7 +132,7 @@
         return view;
       },
       createState(doc: string, cursor: number | null) {
-        return createDocumentState(doc, cursor, extras, { themeControl, stashControl });
+        return createDocumentState(doc, cursor, extras, { themeControl, stashControl, linkControl });
       },
       swapState(state: EditorState, opts?: SwapOptions) {
         if (!view) return;
@@ -238,7 +242,7 @@
 
   onMount(() => {
     view = new EditorView({
-      state: createDocumentState('', 0, extras, { themeControl, stashControl }),
+      state: createDocumentState('', 0, extras, { themeControl, stashControl, linkControl }),
       parent: editorContainer,
     });
 

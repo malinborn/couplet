@@ -5,7 +5,6 @@ import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/
 import { searchKeymap } from '@codemirror/search';
 import { Compartment, EditorState, type Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
-import { syntaxTree } from '@codemirror/language';
 import { codeFolding, foldKeymap, syntaxHighlighting } from '@codemirror/language';
 import { classHighlighter } from '@lezer/highlight';
 import { editorTheme } from '../theme/editor-theme';
@@ -25,7 +24,12 @@ import { tableSelectionSnapOut } from './preview/table-selection';
 import { hoverBlockMenu } from './hover-menu';
 import { markdownFoldService, headingFoldClick, headingFoldStatePlugin } from './folding';
 import { foldMemory } from './fold-memory';
-import { headingSlugsField, isAnchor, navigateToHeading } from './heading-slugs';
+import { headingSlugsField } from './heading-slugs';
+import { linkControlFacet, linkUrlAt, openLink, type LinkControl } from './links/open-link';
+import { linkExistence } from './links/link-existence';
+import { createFileLinkSource } from './links/file-link-source';
+import { linkAction } from './links/slash-link';
+import { linkDropCaret } from './links/link-drop';
 import { aiHighlightField, aiHighlightKeymap } from './ai-highlight';
 import { aiAskField } from './ai-ask';
 import { aiCommentAttention, aiCommentField } from './ai-comment';
@@ -49,19 +53,9 @@ export const lineGlowCompartment = new Compartment();
 /** View → Lists: `listLayoutExtension(layout)`. */
 export const listLayoutCompartment = new Compartment();
 
-/**
- * Opens a rendered link. Uses the Tauri shell plugin in the app; falls back to
- * a browser tab when that plugin has no backend (the landing page embeds this
- * same editor). The plugin call must be returned so its rejection reaches the
- * catch — otherwise the fallback never runs.
- */
-export function openExternalUrl(url: string): Promise<void> {
-  return import('@tauri-apps/plugin-shell')
-    .then(({ open }) => open(url))
-    .catch(() => {
-      window.open(url, '_blank');
-    });
-}
+// Moved to `links/open-link.ts`, where the link router lives; re-exported for
+// existing importers.
+export { openExternalUrl } from './links/open-link';
 
 /**
  * Injected rather than imported: `createExtensions()` is called by both
@@ -76,13 +70,20 @@ export interface EditorDeps {
   themeControl?: ThemeControl;
   /** Enables `/stash` (⌃T's put-away). Omitted by the landing's demo cards. */
   stashControl?: StashControl;
+  /**
+   * File links (file-links D3): ⌘-click on `[x](plan.md)` opens the file, the
+   * existence check marks missing targets. Omitted by the landing's demo
+   * cards, which keep the old external-only behaviour.
+   */
+  linkControl?: LinkControl;
 }
 
 export function createExtensions(deps: EditorDeps = {}): Extension[] {
-  const { themeControl, stashControl } = deps;
+  const { themeControl, stashControl, linkControl } = deps;
   const actions: SlashAction[] = [
     ...(themeControl ? [themeAction(themeControl), toneAction(themeControl)] : []),
     ...(stashControl ? [stashAction(stashControl)] : []),
+    ...(linkControl ? [linkAction()] : []),
   ];
 
   return [
@@ -105,6 +106,8 @@ export function createExtensions(deps: EditorDeps = {}): Extension[] {
     codeBlockExitKeymap,
     listContinuation(),
     slashCommands(actions),
+    // `[[` file picker (file-links D5). One source per state, built here once.
+    ...(linkControl ? [createFileLinkSource(linkControl).extension] : []),
     ...(themeControl ? themePickerExtensions(themeControl) : []),
     ...(themeControl ? tonePickerExtensions(themeControl) : []),
     autocompletion(
@@ -142,6 +145,7 @@ export function createExtensions(deps: EditorDeps = {}): Extension[] {
     headingFoldStatePlugin,
     syntaxHighlighting(classHighlighter),
     previewCompartment.of(livePreviewPlugin),
+    ...(linkControl ? [linkControlFacet.of(linkControl), linkExistence, linkDropCaret] : []),
     listLayoutCompartment.of(listLayoutExtension(DEFAULT_LIST_LAYOUT)),
     tableSelectionSnapOut,
     hoverBlockMenu(),
@@ -193,33 +197,13 @@ export function createExtensions(deps: EditorDeps = {}): Extension[] {
         const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
         if (pos === null) return false;
 
-        const tree = syntaxTree(view.state);
-        let url = '';
-        tree.iterate({
-          from: Math.max(0, pos - 500),
-          to: Math.min(view.state.doc.length, pos + 500),
-          enter(node) {
-            if (node.name === 'Link' && node.from <= pos && node.to >= pos) {
-              const c = node.node.cursor();
-              if (c.firstChild()) {
-                do {
-                  if (c.name === 'URL') {
-                    url = view.state.doc.sliceString(c.from, c.to);
-                  }
-                } while (c.nextSibling());
-              }
-            }
-          },
-        });
-
+        const url = linkUrlAt(view.state, pos);
         if (url) {
           event.preventDefault();
           event.stopPropagation();
-          if (isAnchor(url)) {
-            navigateToHeading(view, url.slice(1));
-            return true;
-          }
-          openExternalUrl(url);
+          // One router for every gesture (file-links D3): anchors, URLs,
+          // files, missing files — see `links/open-link.ts`.
+          void openLink(view, url);
           return true;
         }
         return false;

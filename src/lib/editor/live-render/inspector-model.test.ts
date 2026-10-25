@@ -92,6 +92,33 @@ describe('detectInspectorTarget — link', () => {
     }
   });
 
+  it('edits the destination of a link whose text is a URL', () => {
+    const urlDoc = '[https://a.test](https://b.test)\n';
+    const link = detectInspectorTarget(makeState(urlDoc), 3) as LinkTarget;
+    expect(urlDoc.slice(link.url.from, link.url.to)).toBe('https://b.test');
+  });
+
+  it('stays out of a [[ picker query — the picker owns it (file-links D5)', () => {
+    // Lezer reads `[[pl]]` as a Link (shortcut reference); with the caret
+    // in the query the URL panel would cover the picker's popup.
+    expect(detectInspectorTarget(makeState('[[pl]]\n'), 4)).toBeNull();
+    expect(detectInspectorTarget(makeState('see [[]]\n'), 6)).toBeNull();
+    expect(detectInspectorTarget(makeState('[[pl]] [text](url)\n'), 9)?.kind).toBe('link');
+  });
+
+  it('a bracket pair with no (…) is not an inline link — no inverted URL range', () => {
+    // `closeParen` used to fall back to the `]`, so the URL range ran
+    // backwards and setLinkUrl threw `RangeError: Invalid change range`.
+    expect(detectInspectorTarget(makeState('see [1] here\n'), 5)).toBeNull();
+    expect(detectInspectorTarget(makeState('[1]\n'), 1)).toBeNull();
+    // `[[x]|]`: past the query's own `]`, so not a picker query any more.
+    expect(detectInspectorTarget(makeState('[[x]]\n'), 4)).toBeNull();
+  });
+
+  it('a reference link is not an inline link either', () => {
+    expect(detectInspectorTarget(makeState('[a][ref]\n\n[ref]: /x\n'), 1)).toBeNull();
+  });
+
   it('returns null for a position outside any link', () => {
     expect(detectInspectorTarget(makeState('plain text\n'), 3)).toBeNull();
   });

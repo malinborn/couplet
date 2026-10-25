@@ -161,6 +161,15 @@
   cursor: pointer;
 }
 
+/* A file link whose target does not exist (file-links D4): dashed and muted,
+ * so a typo in a path is visible before anyone ⌘-clicks it. Two classes, so
+ * it outranks `.cm-md-link` without `!important`. */
+.cm-md-link.cm-md-link-missing {
+  color: var(--text-subtle);
+  text-decoration-style: dashed;
+  text-decoration-color: var(--text-subtle);
+}
+
 /* Formatting inside a quote is muted: every accent is pulled 80% of the way to the
  * quote's own grey text, so `**bold**` in a quote reads a shade apart from
  * `**bold**` in the body. A mix rather than `filter: saturate()` because a

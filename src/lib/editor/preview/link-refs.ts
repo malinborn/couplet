@@ -144,3 +144,16 @@ export function isRenderedLink(doc: Text, node: SyntaxNode): boolean {
   if (!normalized) return false;
   return linkReferenceLabels(doc).has(normalized);
 }
+
+/**
+ * The destination `URL` of a `Link` node: the one after the `]` that closes
+ * the text, never `getChild('URL')`. GFM autolinks a URL in the text, so
+ * `[https://a.test](https://b.test)` has two `URL` children and the first is
+ * the text — which the `[[` picker's «Link to» writes on every use. `null`
+ * for `[text]()` and the reference shapes.
+ */
+export function linkDestinationNode(node: SyntaxNode): SyntaxNode | null {
+  const close = node.getChildren('LinkMark').find((m) => m.from > node.from);
+  if (!close) return null;
+  return node.getChildren('URL').find((url) => url.from >= close.to) ?? null;
+}

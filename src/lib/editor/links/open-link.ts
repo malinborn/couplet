@@ -1,0 +1,201 @@
+import { Facet, type EditorState } from '@codemirror/state';
+import { syntaxTree } from '@codemirror/language';
+import type { EditorView } from '@codemirror/view';
+import { documentPathField } from '../json-fence';
+import { navigateToHeading } from '../heading-slugs';
+import { resolveLinkTarget, type ResolvedLink, type UnresolvableReason } from '../../links/link-target';
+import { opensAsDocument } from '../../links/link-kind';
+import type { LinkCandidates, LinkProject, PathKind } from '../../links/types';
+import { t } from '../../i18n';
+import { linkDestinationNode } from '../preview/link-refs';
+
+/**
+ * What a link needs from the app (file-links D3). Injected through
+ * `linkControlFacet` like `stashControl`: `createExtensions()` is shared with
+ * the couplet.pro landing's demo cards, which get no control and keep the old
+ * external-only behaviour. Pass ONE object per window.
+ *
+ * The last three members serve the `[[` picker and drops (plans 02, 03).
+ */
+export interface LinkControl {
+  /** The home folder for `~/` links; `null` while unknown (or outside Tauri). */
+  home(): string | null;
+  /** What each path is on disk, in order. Rejects when the IPC fails. */
+  pathKinds(paths: readonly string[]): Promise<PathKind[]>;
+  /** Open `path` as a document — the tab/window that holds it, or a new tab — then jump to `fragment`. */
+  openFile(path: string, fragment: string | null): Promise<void>;
+  /** Select `path` in Finder. Never opens it. */
+  reveal(path: string): Promise<void>;
+  /**
+   * Does a tab — in this window or another — hold `path`? A path «Create»
+   * opened is held by an unsaved tab before it exists on disk: a link to it
+   * opens that tab instead of offering «Create» again. Rejects when the IPC
+   * fails (treated as "no").
+   */
+  holds(path: string): Promise<boolean>;
+  /** The link's target does not exist: the `link-missing` toast with «Create». */
+  missing(path: string): void;
+  /**
+   * A link that resolves to no path: `untitled` — relative, in a document
+   * with no path yet; `no-home` — `~/` before the home folder is known. An
+   * empty destination never gets here: a click on it does nothing.
+   */
+  unresolvable(url: string, reason: Exclude<UnresolvableReason, 'empty'>): void;
+  /** Picker candidates for the document at `docPath` (`null`: untitled) — `link_candidates`. Rejects when the IPC fails. */
+  candidates(docPath: string | null): Promise<LinkCandidates>;
+  /** What a link written into `docPath` is relative to — `link_project` (a dropped link, plan 03). */
+  project(docPath: string | null): Promise<LinkProject>;
+  /** The system open dialog (`FILE_FILTERS`); `null` when cancelled. */
+  chooseFile(): Promise<string | null>;
+}
+
+export const linkControlFacet = Facet.define<LinkControl, LinkControl | null>({
+  combine: (values) => values[0] ?? null,
+});
+
+export function linkControlOf(state: EditorState): LinkControl | null {
+  return state.facet(linkControlFacet);
+}
+
+/**
+ * The destination of the inline link at `pos` — what a ⌘-click opens. The
+ * same `linkDestinationNode` the preview, the existence check and the
+ * inspector read, so every gesture agrees on where a link goes (a URL in the
+ * link text is not the destination). `null` off a link or for a link with no
+ * `(…)`.
+ */
+export function linkUrlAt(state: EditorState, pos: number): string | null {
+  for (let node = syntaxTree(state).resolveInner(pos, 1); ; ) {
+    if (node.name === 'Link') {
+      const dest = linkDestinationNode(node);
+      return dest ? state.sliceDoc(dest.from, dest.to) : null;
+    }
+    if (!node.parent) return null;
+    node = node.parent;
+  }
+}
+
+/** `resolveLinkTarget` against this state's document path and the control's home. */
+export function resolveInState(state: EditorState, url: string): ResolvedLink {
+  const control = linkControlOf(state);
+  return resolveLinkTarget(url, state.field(documentPathField, false) ?? null, control?.home() ?? null);
+}
+
+/** What a click on the link will do, judged by name — no disk access. */
+export type LinkAction = 'heading' | 'external' | 'open-file' | 'reveal' | 'unresolvable';
+
+export function linkActionFor(target: ResolvedLink, hasControl: boolean): LinkAction {
+  if (target.kind === 'anchor') return 'heading';
+  if (target.kind === 'external' || !hasControl) return 'external';
+  if (target.kind === 'unresolvable') return 'unresolvable';
+  return opensAsDocument(target.path) ? 'open-file' : 'reveal';
+}
+
+/** The inspector's Open button for `action` (D3): visible text and aria-label. */
+export function openButtonLabel(action: LinkAction): { text: string; aria: string } {
+  switch (action) {
+    case 'heading':
+      return { text: t('editor.inspector.jump'), aria: t('editor.inspector.jump_to_heading') };
+    case 'open-file':
+    case 'unresolvable':
+      return { text: t('editor.inspector.open_file'), aria: t('editor.inspector.open_file') };
+    case 'reveal':
+      return { text: t('editor.inspector.show_in_finder'), aria: t('editor.inspector.show_in_finder') };
+    case 'external':
+      return { text: t('editor.inspector.open'), aria: t('editor.inspector.open_in_browser') };
+  }
+}
+
+/**
+ * Opens a URL outside the app. Uses the Tauri shell plugin in the app; falls
+ * back to a browser tab when that plugin has no backend (the landing page
+ * embeds this same editor). The plugin call must be returned so its rejection
+ * reaches the catch — otherwise the fallback never runs.
+ */
+export function openExternalUrl(url: string): Promise<void> {
+  return import('@tauri-apps/plugin-shell')
+    .then(({ open }) => open(url))
+    .catch(() => {
+      window.open(url, '_blank');
+    });
+}
+
+/**
+ * The one router behind every link gesture (D3): ⌘-click in either engine,
+ * the inspector's Open, a click on a link in a table cell.
+ *
+ * - `#slug` → the heading in this document.
+ * - a URL with a scheme → the OS (`openExternalUrl`), as before.
+ * - a file → asked on disk first: missing → `control.missing`, unless a tab
+ *   already holds it (an unsaved «Create») → `control.openFile`; a regular
+ *   file couplet renders → `control.openFile` (with the fragment); anything
+ *   else — a folder, an image, `run.command` — → `control.reveal`. Never
+ *   executed.
+ *
+ * Without a control (the landing) a non-anchor goes to `openExternalUrl`
+ * unchanged.
+ *
+ * Never rejects: every gesture fires it and forgets (`void openLink(…)`), so
+ * a failure here would be an unhandled rejection. The app's control reports
+ * its own failures (an `open-error` toast); anything left is logged.
+ */
+export async function openLink(view: EditorView, url: string): Promise<void> {
+  try {
+    await routeLink(view, url);
+  } catch (err) {
+    console.error('Opening a link failed:', err);
+  }
+}
+
+/** `control.holds`, with a failed ask read as "no". */
+export async function heldByATab(control: LinkControl, path: string): Promise<boolean> {
+  try {
+    return await control.holds(path);
+  } catch (err) {
+    console.warn('could not ask which tab holds a link target:', err);
+    return false;
+  }
+}
+
+async function routeLink(view: EditorView, url: string): Promise<void> {
+  const control = linkControlOf(view.state);
+  const target = resolveInState(view.state, url);
+  if (target.kind === 'anchor') {
+    navigateToHeading(view, target.slug);
+    return;
+  }
+  if (target.kind === 'external') {
+    await openExternalUrl(target.url);
+    return;
+  }
+  if (!control) {
+    await openExternalUrl(url);
+    return;
+  }
+  if (target.kind === 'unresolvable') {
+    if (target.reason !== 'empty') control.unresolvable(url, target.reason);
+    return;
+  }
+  let kind: PathKind;
+  try {
+    const kinds = await control.pathKinds([target.path]);
+    kind = kinds[0] ?? 'file';
+  } catch (err) {
+    console.warn('path_kinds failed, opening by name:', err);
+    kind = 'file';
+  }
+  if (kind === 'missing' && !(await heldByATab(control, target.path))) {
+    control.missing(target.path);
+    return;
+  }
+  if (kind === 'missing') {
+    // Not on disk yet, but a tab holds it (an unsaved «Create»): open that tab.
+    await control.openFile(target.path, target.fragment);
+    return;
+  }
+  if (kind === 'file' && opensAsDocument(target.path)) {
+    await control.openFile(target.path, target.fragment);
+    return;
+  }
+  await control.reveal(target.path);
+}

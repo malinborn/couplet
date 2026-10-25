@@ -1578,10 +1578,8 @@ export function createTabController(deps: TabControllerDeps) {
     },
     init: (tabs: readonly InitTab[], activeTabId: string | null) =>
       queue.run(() => initNow(tabs, activeTabId)),
-    openPath: (path: string, position?: Position) =>
-      queue.run(async () => {
-        await openNow(path, position ?? null);
-      }),
+    /** Resolves with where the file ended up — a link's `#fragment` jumps only if it is shown here. */
+    openPath: (path: string, position?: Position) => queue.run(() => openNow(path, position ?? null)),
     activate: (tabId: string) => queue.run(() => activateNow(tabId)),
     newTab: () => queue.run(newTabNow),
     closeActive: () =>
