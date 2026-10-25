@@ -7,6 +7,7 @@ import type { Decoration } from '@codemirror/view';
 import type { EditorView } from '@codemirror/view';
 import { flavourFacet, LIVE_PREVIEW, LIVE_RENDER, type Flavour } from './flavour.js';
 import { decorateListItem, listItemDepth, listMarkColumns } from './lists.js';
+import { listLayoutFacet } from './explicit-lists.js';
 
 function makeState(doc: string): EditorState {
   return EditorState.create({
@@ -203,6 +204,39 @@ describe('decorateListItem', () => {
     const preview = emitted(doc, 2, caretAway, LIVE_PREVIEW);
     const render = emitted(doc, 2, caretAway, LIVE_RENDER);
     expect(render).toEqual(preview);
+  });
+
+  // A lone `-` is an empty list item to Lezer, but the person is mid-typing:
+  // turning it into a bullet invites typing the text straight after it, and
+  // `-text` is no list item at all. The bullet waits for the space.
+  it('keeps a bare marker a hyphen until a space follows it', () => {
+    expect(emitted('-', 1, 0, LIVE_RENDER).some((r) => r.spec === 'BulletWidget')).toBe(false);
+    expect(emitted('- ', 1, 0, LIVE_RENDER).some((r) => r.spec === 'BulletWidget')).toBe(true);
+    expect(emitted('- a', 1, 0, LIVE_RENDER).some((r) => r.spec === 'BulletWidget')).toBe(true);
+  });
+
+  it('keeps a bare marker a hyphen under explicit lists too', () => {
+    const state = EditorState.create({
+      doc: '-',
+      extensions: [
+        markdown({ base: markdownLanguage, extensions: [Strikethrough, Table] }),
+        flavourFacet.of(LIVE_RENDER),
+        listLayoutFacet.of({ guides: true, strict: true, guideStyle: 'solid', density: 'standard' }),
+      ],
+    });
+    const out: string[] = [];
+    const sink = {
+      add(_f: number, _t: number, value: Decoration) {
+        const spec = value.spec as { widget?: { constructor: { name: string } } };
+        if (spec.widget) out.push(spec.widget.constructor.name);
+      },
+    };
+    syntaxTree(state).iterate({
+      enter(node) {
+        if (node.name === 'ListItem') decorateListItem({ state } as unknown as EditorView, node.node, sink);
+      },
+    });
+    expect(out).not.toContain('BulletWidget');
   });
 
   it('keeps the bullet up under live-render even with the caret on the line', () => {

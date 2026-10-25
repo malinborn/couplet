@@ -50,6 +50,11 @@ function lineStyles(doc: string, layout: ListLayout): Map<number, string> {
 
 const guideCount = (style: string | undefined): number =>
   (style?.match(/var\(--xl-guide\)/g) ?? []).length;
+/** Guides that start below the line's first visual line: seen only when the text wraps. */
+const wrapGuides = (style: string | undefined): number =>
+  (style?.match(/var\(--xl-first-/g) ?? []).length;
+/** Guides that run through the whole line: an ancestor's, or the item's own below its marker line. */
+const throughGuides = (style: string | undefined): number => guideCount(style) - wrapGuides(style);
 
 describe('presets', () => {
   it('explicit turns both switches on, standard both off, and leave the looks alone', () => {
@@ -108,29 +113,51 @@ describe('normalizeListLayout', () => {
 });
 
 describe('layoutExplicitList', () => {
-  it('draws no guide for an item with one line under its marker', () => {
-    const styles = lineStyles(['- parent', '  - only child', '- next'].join('\n'), EXPLICIT);
-    expect(guideCount(styles.get(2))).toBe(0);
+  // A guide is drawn by visual lines: an item that is one line on screen has
+  // none; one whose text wraps, or that has a child or continuation, has one.
+  it('gives a one-line item only a guide below its first visual line, which one line clips', () => {
+    const styles = lineStyles(['- alone', '- next'].join('\n'), EXPLICIT);
+    expect(throughGuides(styles.get(1))).toBe(0);
+    expect(wrapGuides(styles.get(1))).toBe(1);
+    expect(styles.get(1)).toContain('var(--xl-first-bullet)');
+    expect(throughGuides(styles.get(2))).toBe(0);
   });
 
-  it('draws a guide from two lines under the marker on, through every line it covers', () => {
+  it('starts that guide one line height down for a task or a number, 1.2 for a bullet', () => {
+    expect(lineStyles('- [ ] task', EXPLICIT).get(1)).toContain('var(--xl-first-line)');
+    expect(lineStyles('1. one', EXPLICIT).get(1)).toContain('var(--xl-first-line)');
+    expect(lineStyles('- bullet', EXPLICIT).get(1)).toContain('var(--xl-first-bullet)');
+  });
+
+  it('carries the guide down through a single child', () => {
+    const styles = lineStyles(['- parent', '  - only child', '- next'].join('\n'), EXPLICIT);
+    expect(throughGuides(styles.get(2))).toBe(1);
+    expect(throughGuides(styles.get(3))).toBe(0);
+  });
+
+  it('draws a guide through every line it covers', () => {
     const doc = ['- parent', '  - one', '  - two', '- next'].join('\n');
     const styles = lineStyles(doc, EXPLICIT);
-    expect(guideCount(styles.get(1))).toBe(1); // starts below the marker's first visual line
-    expect(guideCount(styles.get(2))).toBe(1);
-    expect(guideCount(styles.get(3))).toBe(1);
-    expect(guideCount(styles.get(4))).toBe(0);
+    expect(throughGuides(styles.get(1))).toBe(0);
+    expect(wrapGuides(styles.get(1))).toBe(1);
+    expect(throughGuides(styles.get(2))).toBe(1);
+    expect(throughGuides(styles.get(3))).toBe(1);
+    expect(throughGuides(styles.get(4))).toBe(0);
   });
 
-  it('does not count blank lines toward the two', () => {
+  it('counts a continuation paragraph, after a blank line too', () => {
     const doc = ['- parent', '', '  continuation', '- next'].join('\n');
-    expect(guideCount(lineStyles(doc, EXPLICIT).get(3))).toBe(0);
+    expect(throughGuides(lineStyles(doc, EXPLICIT).get(3))).toBe(1);
   });
 
   it('passes every ancestor guide through a deep line', () => {
     const doc = ['- a', '  - b', '    - c', '      - d', '      - e', '    - f', '  - g'].join('\n');
-    // d sits under a, b and c — all three span two lines or more.
-    expect(guideCount(lineStyles(doc, EXPLICIT).get(4))).toBe(3);
+    expect(throughGuides(lineStyles(doc, EXPLICIT).get(4))).toBe(3);
+  });
+
+  it('draws no below-the-first-line guide when not strict: a wrap goes under the marker', () => {
+    const styles = lineStyles(['- alone', '- next'].join('\n'), { ...EXPLICIT, strict: false });
+    expect(guideCount(styles.get(1))).toBe(0);
   });
 
   it('hangs the marker line only under strict', () => {
@@ -160,7 +187,10 @@ function collapsedByLine(doc: string): [number, number][] {
     enter(node) {
       if (node.name !== 'BulletList' && node.name !== 'OrderedList') return;
       const plan = planExplicitList(state.doc, node.node, EXPLICIT, (item) => listMarkColumns(item, state.doc));
-      out = plan.collapsed.map((r) => [state.doc.lineAt(r.from).number, r.to - r.from]);
+      out = [...plan.hidden, ...plan.gaps]
+        .filter((r) => r.to > r.from)
+        .sort((a, b) => a.from - b.from)
+        .map((r) => [state.doc.lineAt(r.from).number, r.to - r.from]);
       return false;
     },
   });
@@ -178,6 +208,49 @@ describe('planExplicitList — collapsed whitespace', () => {
   it('hides the gap after a marker, after the checkbox for a task', () => {
     expect(collapsedByLine('- a')).toEqual([[1, 1]]);
     expect(collapsedByLine('- [ ]  todo')).toEqual([[1, 2]]);
+  });
+});
+
+/** Every non-line decoration the layout pass emits, with its spec. */
+function layoutSpecs(doc: string): { from: number; to: number; spec: Record<string, unknown> }[] {
+  const state = makeState(doc);
+  const out: { from: number; to: number; spec: Record<string, unknown> }[] = [];
+  const sink = {
+    add(from: number, to: number, value: Decoration) {
+      const spec = value.spec as Record<string, unknown>;
+      if (!(spec.attributes as { style?: string } | undefined)?.style) out.push({ from, to, spec });
+    },
+  };
+  syntaxTree(state).iterate({
+    enter(node) {
+      if ((node.name === 'BulletList' || node.name === 'OrderedList') && node.node.parent?.name !== 'ListItem') {
+        layoutExplicitList(state.doc, node.node, EXPLICIT, (item) => listMarkColumns(item, state.doc), sink);
+        return false;
+      }
+    },
+  });
+  return out;
+}
+
+describe('layoutExplicitList — no zero-size text in a line', () => {
+  // A `font-size: 0` span between the marker and the text made CM6 map a click
+  // right of the line to the marker's end, and drew the caret there 0px tall.
+  it('hides whitespace by replacing it, never by shrinking its font', () => {
+    const specs = layoutSpecs(['- a', '  - b', '  continued'].join('\n'));
+    expect(specs.some((s) => s.spec.class === 'cm-md-list-indent')).toBe(false);
+    // `  ` before the nested marker and before the continuation: replaced.
+    expect(specs.filter((s) => s.to - s.from === 2 && !s.spec.widget)).toHaveLength(2);
+  });
+
+  it('draws no gap after a bare marker: nothing typed yet, nothing to space', () => {
+    expect(layoutSpecs('-').some((s) => s.spec.widget)).toBe(false);
+  });
+
+  it('turns the gap after a marker into a widget of its own width', () => {
+    const specs = layoutSpecs('- a');
+    expect(specs).toHaveLength(1);
+    expect(specs[0]).toMatchObject({ from: 1, to: 2 });
+    expect(specs[0].spec.widget).toBeDefined();
   });
 });
 
@@ -205,7 +278,8 @@ describe('markerKind', () => {
 
 describe('guide threshold', () => {
   it('does not count fence lines as lines under the marker', () => {
-    const doc = ['- item', '  ```', '  one line of code', '  ```', '- next'].join('\n');
-    expect(guideCount(lineStyles(doc, EXPLICIT).get(3))).toBe(0);
+    // An empty fenced block: two hidden fence lines, nothing on screen.
+    const doc = ['- item', '  ```', '  ```', '- next'].join('\n');
+    expect(throughGuides(lineStyles(doc, EXPLICIT).get(2))).toBe(0);
   });
 });

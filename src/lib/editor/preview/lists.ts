@@ -285,6 +285,7 @@ export function decorateListItem(
 
   // Bullet markers: only replace when cursor is NOT in range
   if (shouldReveal(view, 'listBullet', node.from, node.to)) return;
+  if (isBareMarker(doc, listMark)) return;
 
   const markText = doc.sliceString(listMark.from, listMark.to);
   if (markText === '-' || markText === '*' || markText === '+') {
@@ -312,9 +313,9 @@ function xlBox(kind: 'bullet' | 'ordered', width: string): Decoration {
 
 /**
  * The marker of an item under explicit lists. Line geometry (padding, hanging
- * indent, guides) and the gap after the marker are `layoutExplicitList`'s;
- * here only the marker itself — a box of the width the layout reckoned with —
- * and the source indent before it.
+ * indent, guides), the indent before the marker and the gap after it are
+ * `layoutExplicitList`'s; here only the marker itself — a box of the width the
+ * layout reckoned with.
  */
 function decorateExplicitMarker(
   view: EditorView,
@@ -323,9 +324,6 @@ function decorateExplicitMarker(
   builder: DecoSink
 ): void {
   const doc = view.state.doc;
-  const indent = sourceIndentRange(doc, listMark.from);
-  if (indent.to > indent.from) builder.add(indent.from, indent.to, indentMark);
-
   const kind = markerKind(node, doc, listMarkColumns(node, doc));
   if (kind.kind === 'task') {
     const isChecked = doc.sliceString(listMark.to + 2, listMark.to + 3) === 'x';
@@ -341,9 +339,24 @@ function decorateExplicitMarker(
     return;
   }
   builder.add(listMark.from, listMark.to, xlBox(kind.kind, markerBox(kind)));
-  if (kind.kind === 'bullet' && !shouldReveal(view, 'listBullet', node.from, node.to)) {
+  if (
+    kind.kind === 'bullet' &&
+    !isBareMarker(doc, listMark) &&
+    !shouldReveal(view, 'listBullet', node.from, node.to)
+  ) {
     builder.add(listMark.from, listMark.to, Decoration.replace({ widget: new BulletWidget(0) }));
   }
+}
+
+/**
+ * A marker with nothing after it on its line: a `-` just typed. Lezer already
+ * reads it as an empty list item, but drawing it as a bullet invites typing
+ * the text straight after it — and `-text` is no list item, so the bullet
+ * turns back into a hyphen under the first letter. It stays a hyphen until
+ * the space; `live-render/atomic.ts` keeps it un-atomic by the same test.
+ */
+export function isBareMarker(doc: Text, listMark: SyntaxNode): boolean {
+  return listMark.to === doc.lineAt(listMark.from).to;
 }
 
 /** True when `node` sits inside a blockquote, at any distance. */

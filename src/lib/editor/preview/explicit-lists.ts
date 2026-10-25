@@ -1,12 +1,13 @@
 import { Facet, type EditorState, type Extension, type Text } from '@codemirror/state';
-import { Decoration, EditorView } from '@codemirror/view';
+import { Decoration, EditorView, WidgetType } from '@codemirror/view';
 import type { SyntaxNode } from '@lezer/common';
 import type { DecoSink } from './utils';
 
 /**
  * View → Lists. Two switches and two looks:
  *
- * - `guides` — an item with at least `GUIDE_MIN_LINES` lines under its marker
+ * - `guides` — an item that takes more than one line on screen (its text
+ *   wraps, or it has a child or continuation)
  *   draws a line from the marker down to its block's last line. Every
  *   ancestor's line passes through every line it covers, so the number of
  *   lines left of a line is its depth.
@@ -97,8 +98,11 @@ export function listLayoutFromMenu(layout: ListLayout, id: string): ListLayout |
   return null;
 }
 
-/** Fewer lines than this under a marker draw no guide: one line needs no line. */
-export const GUIDE_MIN_LINES = 2;
+/**
+ * Lines under a marker (non-blank, not a fence) it takes to draw a guide: any
+ * child or continuation does — only an item that is one line has none.
+ */
+export const GUIDE_MIN_LINES = 1;
 
 export const listLayoutFacet: Facet<ListLayout, ListLayout> = Facet.define({
   combine: (values) => (values.length ? values[values.length - 1] : DEFAULT_LIST_LAYOUT),
@@ -195,8 +199,24 @@ export function markerEnd(kind: MarkerKind, mark: SyntaxNode): number {
 interface Guide {
   /** Terms of the guide's x, summed after the base line padding. */
   x: string[];
-  /** Starts below the first visual line rather than at the top: the marker's own line. */
-  belowFirst: boolean;
+  /**
+   * `null`: runs through the whole line. Otherwise where it starts on the
+   * item's own marker line — below that line's first visual line, so it shows
+   * exactly when the text wraps (`markerLineHeight`).
+   */
+  start: string | null;
+}
+
+/**
+ * The height of an item's first visual line, which its own guide starts
+ * below. A bullet's glyph is 1.2em at the line's own line-height ratio, so its
+ * line is 1.2lh tall; a checkbox, a number and plain text keep 1lh (measured
+ * in Chrome at every density: 30.72 / 25.6 px). Start any higher and a
+ * one-line bullet item shows a stub of guide under its text; any lower and a
+ * wrapped one's guide hangs away from the first line.
+ */
+function markerLineHeight(m: MarkerKind): string {
+  return m.kind === 'bullet' ? 'var(--xl-first-bullet)' : 'var(--xl-first-line)';
 }
 
 interface LineLayout {
@@ -221,7 +241,7 @@ function lineStyle(l: LineLayout): string {
       `background-position: ${l.guides
         .map(
           (g) =>
-            `calc(var(--xl-base) + ${sum(g.x)} - var(--xl-guide-w) / 2) ${g.belowFirst ? 'var(--xl-guide-start)' : '0'}`
+            `calc(var(--xl-base) + ${sum(g.x)} - var(--xl-guide-w) / 2) ${g.start ?? '0'}`
         )
         .join(', ')}`
     );
@@ -269,12 +289,20 @@ function contentColumn(doc: Text, mark: SyntaxNode): number {
 export interface ExplicitListPlan {
   lines: Map<number, LineLayout>;
   /**
-   * Source whitespace drawn at zero width: the gap after each marker (the box
-   * carries `--xl-gap` instead) and continuation indents up to the item's
-   * content column (the padding draws them). `live-render/atomic.ts` makes the
-   * same ranges atomic, so the caret never stops inside a run it cannot see.
+   * Source indents the padding draws instead: before each marker, and on a
+   * continuation line up to the item's content column. Replaced, never shrunk
+   * to `font-size: 0` — a zero-size node in a line makes CM6 map a click right
+   * of the line onto it and draw the caret there 0px tall.
    */
-  collapsed: { from: number; to: number }[];
+  hidden: { from: number; to: number }[];
+  /**
+   * The whitespace after each marker, drawn as one `--xl-gap`-wide widget
+   * whatever the source holds. None for a bare marker (`isBareMarker`): a gap
+   * there would look like the space nobody typed yet.
+   * `live-render/atomic.ts` makes `hidden` and the gaps atomic, from this
+   * same plan.
+   */
+  gaps: { from: number; to: number }[];
 }
 
 export function planExplicitList(
@@ -284,7 +312,8 @@ export function planExplicitList(
   columnsOf: (item: SyntaxNode) => number
 ): ExplicitListPlan {
   const lines = new Map<number, LineLayout>();
-  const collapsed: { from: number; to: number }[] = [];
+  const hidden: { from: number; to: number }[] = [];
+  const gaps: { from: number; to: number }[] = [];
   /** Per continuation line: the content column of the innermost item holding it. */
   const continuation = new Map<number, number>();
   const codeLines = new Set<number>();
@@ -305,23 +334,28 @@ export function planExplicitList(
       const last = lastLine(doc, item);
       const firstLine = doc.line(first);
 
+      const lead = firstLine.text.slice(0, mark.from - firstLine.from);
+      if (lead.length > 0 && /^[ \t]*$/.test(lead)) hidden.push({ from: firstLine.from, to: mark.from });
       const end = markerEnd(kind, mark);
       const gap = firstLine.text.slice(end - firstLine.from).match(/^[ \t]*/)?.[0].length ?? 0;
-      if (gap > 0) collapsed.push({ from: end, to: end + gap });
+      if (gap > 0) gaps.push({ from: end, to: end + gap });
 
       let below = 0;
       for (let n = first + 1; n <= last && below < GUIDE_MIN_LINES; n++) {
         if (!isBlank(doc, n) && !isFenceLine(doc, n)) below++;
       }
-      const own: Guide | null =
-        layout.guides && below >= GUIDE_MIN_LINES
-          ? { x: [...outer, markerAnchor(kind)], belowFirst: false }
-          : null;
+      const x = [...outer, markerAnchor(kind)];
+      const own: Guide | null = layout.guides && below >= GUIDE_MIN_LINES ? { x, start: null } : null;
+      // Guides follow visual lines: under strict, every item draws its guide
+      // along its own wrapped text, and a single visual line clips it to
+      // nothing. Not strict, a wrap goes back under the marker — no guide.
+      const wrap: Guide | null =
+        layout.guides && layout.strict ? { x, start: markerLineHeight(kind) } : null;
 
       lines.set(first, {
         content: layout.strict ? content : outer,
         hang: layout.strict ? gutter : null,
-        guides: own && layout.strict ? [...guides, { ...own, belowFirst: true }] : guides,
+        guides: wrap ? [...guides, wrap] : guides,
         code: false,
       });
       continuation.delete(first);
@@ -348,23 +382,42 @@ export function planExplicitList(
     const line = doc.line(n);
     const ws = line.text.match(/^[ \t]*/)?.[0].length ?? 0;
     const hide = Math.min(ws, column);
-    if (hide > 0 && ws < line.length) collapsed.push({ from: line.from, to: line.from + hide });
+    if (hide > 0 && ws < line.length) hidden.push({ from: line.from, to: line.from + hide });
   }
   for (const n of codeLines) {
     const l = lines.get(n);
     if (l) l.code = true;
   }
-  collapsed.sort((a, b) => a.from - b.from);
-  return { lines, collapsed };
+  hidden.sort((a, b) => a.from - b.from);
+  return { lines, hidden, gaps };
 }
 
-const collapse = Decoration.mark({ class: 'cm-md-list-indent' });
+/**
+ * The gap between a marker and its text: a real box, line-high (the zero-width
+ * space gives it a line box), so the caret on either side of it is drawn at
+ * full height and a click lands where it points.
+ */
+class GapWidget extends WidgetType {
+  toDOM(): HTMLElement {
+    const span = document.createElement('span');
+    span.className = 'cm-md-xl-gap';
+    span.textContent = '\u200b';
+    return span;
+  }
+
+  eq(): boolean {
+    return true;
+  }
+}
+
+const hide = Decoration.replace({});
+const gapOver = Decoration.replace({ widget: new GapWidget() });
 
 /**
  * Lays out one top-level list and everything nested in it. Marker boxes and
  * widgets are still `decorateListItem`'s; this pass owns the line geometry —
- * padding, the hanging indent, the guides — and the whitespace it draws at
- * zero width (`ExplicitListPlan.collapsed`).
+ * padding, the hanging indent, the guides — and the source whitespace that
+ * geometry stands in for (`ExplicitListPlan.hidden`, `.gaps`).
  */
 export function layoutExplicitList(
   doc: Text,
@@ -382,7 +435,8 @@ export function layoutExplicitList(
       Decoration.line({ class: 'cm-md-xl-line', attributes: { style: lineStyle(geometry) } })
     );
   }
-  for (const r of plan.collapsed) builder.add(r.from, r.to, collapse);
+  for (const r of plan.hidden) builder.add(r.from, r.to, hide);
+  for (const g of plan.gaps) builder.add(g.from, g.to, gapOver);
 }
 
 /** True for a list the layout pass starts from: outermost, and not in a quote. */
