@@ -1,0 +1,291 @@
+# Inline arithmetic: a ghost answer after `=`
+
+## Goal
+
+The human types `338 * 1.3 =` and sees `439.4` in grey right after the caret.
+Tab writes it into the document; anything else leaves the text as typed. Like
+Math Notes in Apple Notes — never in the way of typing.
+
+## Principle: a parser, never an evaluator
+
+No `eval`, no `Function`, no dependency. A tokenizer plus a recursive-descent
+parser accept exactly numbers, the operators below and parentheses; any other
+character means "not an expression" and there is no answer. A pure function,
+tested as a table of input → output.
+
+Rejected alternatives:
+
+- **`mathjs` / `expr-eval`.** ~600 KB for five operators (mathjs); expr-eval
+  has had prototype-pollution CVEs. Too much surface for the job.
+- **Evaluate in Rust over IPC.** Latency on every keystroke, nothing gained.
+- **Completion popup (CM6 autocomplete).** Enter conflicts with a new line, and
+  a popup is louder than the feature deserves (owner chose the ghost).
+- **Always-visible result widget (Soulver).** The answer would never reach the
+  file and is invisible outside couplet.
+
+## Scope decisions (agreed)
+
+| Question | Decision |
+|----------|----------|
+| Presentation | Ghost text after the caret, Tab accepts |
+| Decimal comma | Yes: `1,5 * 2 =` → `3`. A comma is **always** decimal — `1,000` is 1 |
+| Thousands | Space only: `1 500 000 / 12 =` → `125 000` |
+| Percent | Calculator semantics (below) |
+| Power, `×` `÷` | Yes |
+| Settings toggle | None for now; Esc hides an answer |
+| Bring back a dismissed answer | Any human edit re-evaluates: type a space after `=`, or delete `=` and type it again |
+
+## Modules
+
+| File | Purpose |
+|------|---------|
+| `src/lib/editor/math/evaluate.ts` | `evaluate(expr: string): MathResult \| null` — tokenizer, parser, value. Pure |
+| `src/lib/editor/math/format.ts` | `formatResult(value, style): string \| null` — rounding and the input's number style. Pure |
+| `src/lib/editor/math/trigger.ts` | `findExpression(state, pos): Candidate \| null` — is there an `expr =` ending at the caret, and where does the expression start. Pure over `EditorState` |
+| `src/lib/editor/math/ghost.ts` | `mathGhost()` extension: `StateField` holding the current answer, the widget decoration, the Tab/Esc keymap, the update listener |
+
+`setup.ts` adds `mathGhost()` to the extension list. No Svelte, no stores, no
+Rust.
+
+## Grammar and semantics
+
+```
+expr    := term (('+' | '-') term)*
+term    := unary (('*' | '/') unary)*
+unary   := '-' unary | power
+power   := postfix ('^' unary)?          -- right-associative; -2^2 = -4
+postfix := primary '%'?
+primary := number | '(' expr ')'
+number  := digit{1,3} (SP digit{3})* ([.,] digit+)?
+         | digit+ ([.,] digit+)?
+SP      := ' ' | U+00A0 (no-break space) | U+202F (narrow no-break space)
+```
+
+- Synonyms, normalised by the tokenizer: `×` `·` → `*`; `÷` → `/`;
+  `−` (U+2212) `–` (U+2013) → `-`.
+- Whitespace between tokens (`SP`) is ignored. Inside a number an `SP` is a
+  thousands separator only when followed by exactly three digits that are not
+  followed by a fourth, and only after a leading group of one to three digits
+  (`1 500` is 1500; `15 + 2` stays two numbers; `12345 678` is two adjacent
+  numbers, so no answer). The no-break spaces count exactly like a space; the
+  answer always uses a plain space.
+- A number literal with more than 15 significant digits is refused (leading
+  zeros and trailing fraction zeros do not count): a double cannot hold it
+  exactly, so `9007199254740993 - 9007199254740992 =` gives nothing rather
+  than a wrong `0`.
+- Percent (calculator rules):
+  - `a + b%` = a·(1 + b/100), `a - b%` = a·(1 − b/100) — only when the
+    **direct** right operand of `+`/`-` is a `%` postfix;
+  - `a * b%` = a·b/100, `a / b%` = a / (b/100) — `%` is just ÷100;
+  - a lone `b%` = b/100.
+  - In any other context `%` is just ÷100: `100 + (10%)` = 100.1 (the
+    parentheses make it a plain operand), `200 + 10% * 2` = 200.2 (the right
+    operand of `+` is the product, not the percent).
+- An expression must contain at least one binary operator or `%`: `2024 =`
+  gives nothing.
+- Implementation limits: input length ≤ 200 characters, nesting depth ≤ 32
+  (one unit per paren level and per unary minus). Past either → `null` (no
+  answer), never an exception.
+
+`MathResult` = `{ value: number, style: { decimalComma: boolean, thousandsSpace: boolean } }`,
+where the style records how the **input** wrote its numbers.
+
+## Formatting the answer
+
+- `null` (no answer) for `NaN`, `±Infinity` (division by zero), |x| ≥ 1e15
+  and 0 < |x| < 1e-10: no exponent notation is ever shown.
+- The integer part is never rounded: `1234567890123 + 1 =` → `1234567890124`.
+  Only the fraction is rounded, so that the answer has at most 10 significant
+  digits (`toFixed(max(0, 9 − magnitude))`), then trailing zeros and a
+  trailing separator are dropped: `0.1 + 0.2 =` → `0.3`, `10 / 3 =` →
+  `3.333333333`. An answer that reads as zero prints as `0` (never `-0`); a
+  fraction rounded up into 1e15 is refused like any other |x| ≥ 1e15.
+- Mirror the input: decimal comma if any input number used one; thousands
+  spaces (groups of three in the integer part) if any input number used them.
+  `1 500,5 * 2 =` → `3 001`.
+
+## When the ghost appears
+
+Evaluated on every update where `isHumanEdit(update)` is true (keys, paste,
+undo/redo — not an agent's edit, not a reload) and the selection is a single
+empty cursor, not during IME composition. The answer shows only if **all** hold:
+
+0. The document is markdown (`state.facet(language)?.name === 'markdown'`).
+   A code file, JSON, `.env` or a state with no language never gets a ghost:
+   there `=` is assignment, not a question.
+1. The text of the caret's line **right of the caret** is empty or whitespace.
+2. The text **left of the caret** ends with `=` followed by zero or more
+   spaces, and the character before that `=` is not `=`, `<`, `>`, `!`
+   (`a == b`, `x >= 3` are not questions).
+3. The caret is not inside `FencedCode`, `CodeBlock`, `InlineCode`, a table
+   (`Table`) — checked on the syntax tree (`ensureSyntaxTree`
+   for the caret's line).
+4. The block prefix of the line is cut off first: indentation, `#…# `, `> `
+   (repeated), list markers `- ` `* ` `+ ` `1. ` `1) `, and a task box
+   `[ ] ` / `[x] `. Otherwise `- 5 + 3 =` would read as minus five.
+5. The expression is the **longest suffix** of the remaining text before `=`
+   made of allowed characters (digits, the three `SP` spaces,
+   `.,+-*/^%()×·÷−–`), trimmed, that `evaluate` accepts. In
+   `Итого: 338 * 1.3 =` it is `338 * 1.3`. Scanning stops at the first
+   disallowed character, then shrinks from the left until it parses (so
+   `шаг 2) (3+4) =` still finds `(3+4)`).
+   - If that run, without spaces at its ends, is longer than 200 characters
+     there is no answer — it is never cut to its last 200. The scan back stops
+     as soon as the run passes the limit.
+   - Only the last 512 characters before the caret are looked at. On a longer
+     line that tail is used as is (no block-prefix stripping: a run of at most
+     200 characters cannot reach the line start), and a run that reaches the
+     start of the tail is no answer, since it may go on past it. So the
+     string work per keystroke — the `=` regex, the scan, the `evaluate`
+     calls — is bounded by 512 characters whatever the line length. Taking
+     the caret's line out of the document is still O(line), and the
+     syntax-tree lookup is CodeMirror's normal incremental parse
+     (`ensureSyntaxTree` up to the caret's line).
+   - Shrinking tries only starts at a **token boundary**:
+     - the character right before the start (inside or outside the run) is
+       not a digit, `.`, `,`, a letter or a non-ASCII space — the two no-break
+       spaces excepted, they count as spaces;
+     - the nearest non-space character before the start is not a digit
+       (two adjacent numbers);
+     - if that nearest character is inside the run, it is `)`, `,` or `.` —
+       after an operator, `(` or `%` the start would be the tail of an
+       unfinished expression. After `)` at least one space must separate it
+       from the start: `(1+2)3 + 1 =` gives nothing, `(1+2) 3 + 1 =` → `4`.
+
+     So `1e5 + 1 =`, `0x10 + 1 =`, `v1.2.3 + 1 =`, `.5 + 1 =`, `1,5,5 + 1 =`,
+     `12 34 + 1 =`, `1 5000 + 1 =`, `1,500 000 + 1 =`, `шаг 2 (3+4) =`,
+     `5 * (3 + 4 =`, `10 / (2 + 3 =`, `(1 + 2) * (3 + 4 =`,
+     `100 - (20 + 5 =`, `2 + + 3 + 4 =` and `x-5 + 3 =` all give nothing
+     instead of an answer for their tail; `шаг 2) (3+4) =` → `7`,
+     `Например, 5 + 3 =` → `8`, `(см. 5 + 3 =` → `8`, `x = 5 + 3 =` → `8`
+     and `Итого:` + no-break space + `5 + 3 =` → `8` still work.
+6. `formatResult` returns a string.
+
+Any other update clears the ghost: a selection change without an edit, Esc, a
+blur, a human edit after which the rules above no longer hold. An update that
+is not a human edit (agent, reload) clears it too.
+
+**Bringing it back** needs no extra mechanism: Esc hides the answer only until
+the next human edit. Typing a space after `=` (rule 2 allows trailing spaces),
+or deleting `=` and typing it again, re-evaluates — this works on any old line
+too: put the caret at the end of `338 * 1.3 =`, press Space.
+
+## Keys
+
+`Prec.highest` keymap, active only while a ghost is shown (the commands return
+`false` otherwise, so Tab keeps indenting lists and everything else is
+untouched):
+
+- **Tab** — replace everything between the `=` and the caret with
+  `' ' + answer` (so `=` + any number of spaces becomes `= 439.4`), put the
+  caret after it, clear the ghost. One transaction, its own undo step
+  (`isolateHistory`), `userEvent: 'input.complete'`.
+- **Esc** — clear the ghost, consume the key. When no ghost is shown Esc is not
+  consumed (AI-highlight Esc, search panel, etc. keep working).
+
+Undoing an accepted answer restores `338 * 1.3 = ` — an undo is a human edit,
+so the ghost reappears; that is intended.
+
+## Rendering
+
+`Decoration.widget({ widget: GhostWidget(text), side: 1 })` at the caret. The
+widget is an inline `<span class="cm-math-ghost" aria-hidden="true">` with
+`color: var(--text-muted)`, `pointer-events: none`, no margins — an existing
+token, so no theme needs a new colour (`theme-tokens.test.ts` stays green).
+`eq()` compares the text. Works in both `live-preview` and `live-render`;
+verify in the browser that the live-render caret filter does not move the
+caret around the widget.
+
+## Testing
+
+- `evaluate.test.ts` — precedence, associativity of `^`, unary minus, each
+  percent rule and percent in context, comma decimal, thousands spaces
+  (`1 500` vs `15 + 2`, no-break spaces, leading group of 1–3 digits), the
+  15-significant-digit refusal, Unicode operators, garbage / letters / empty /
+  unbalanced parens → `null`, length and depth limits.
+- `format.test.ts` — rounding noise, trailing zeros, `-0`, exact integers,
+  ±∞/NaN/≥1e15 → `null`, comma and thousands mirroring.
+- `trigger.test.ts` — every list/quote/heading/task prefix, code (fenced,
+  indented, inline), table, `==`/`>=`/`<=`/`!=`, text right of caret, longest
+  valid suffix, `Итого: 338 * 1.3 =`, token boundaries, a run past the length
+  limit, markdown only.
+- `ghost.test.ts` — an `EditorView` in jsdom: typing `=` shows the field's
+  answer; a caret move clears it; Tab inserts `= 439.4` and is one undo step;
+  Tab without a ghost falls through (list indent still works); Esc clears;
+  a space after `=` brings it back; an `aiEditTransaction` never shows a ghost.
+- Visual check in `npm run dev` (both preview modes, a light and a dark theme).
+
+## Computed table cells (agreed 2026-10-24)
+
+The text ghost is never shown inside a table: a cell is edited in its own
+overlay (`showCellEditor`), not at a CodeMirror caret, and a raw table row is
+markdown syntax. Tables get their own form — a computed cell.
+
+**Revised 2026-10-25 (owner): the answer is stored in the cell.** The first
+version stored only `338 * 1.3 =` and computed the answer on screen; ⌘F then
+could not find `439.4`. Storing `expr = answer` puts all three numbers in the
+source, so search, copy, GitHub and Excel need no special case.
+
+| Question | Decision |
+|----------|----------|
+| What is stored | Expression and answer: `| Еда | 338 * 1.3 = 439.4 |` |
+| How the answer gets there | The cell editor offers it: typing `338 * 1.3 =` shows a hint `= 439.4 ⇥` inside the editor; Tab accepts (writes ` 439.4`), or the human types the answer |
+| What the view shows | A *verified* cell shows the answer + a small muted marker (`439.4 ƒ`), the whole text as tooltip |
+| Verified | The cell is exactly `<expr> = <number>` and `<number>` equals our formatted answer for `<expr>` |
+| Not verified | Shown as plain text, everything visible: a wrong/stale answer (`338 * 1.3 = 500`), or no answer (`338 * 1.3 =`) |
+| Editing | The cell editor opens the stored text (`338 * 1.3 = 439.4`), as for any cell |
+| References | None: a cell computes only its own text |
+| Where | Markdown tables and CSV documents (one widget) |
+
+- **The marker means one thing:** "the stored answer was checked". A wrong
+  number is never dressed up as computed; an unanswered expression is not
+  silently computed either.
+- **Verification:** split on the last `=`; `<expr>` must satisfy the strict
+  whole-cell rule (no prose, no prefix, no comparison before `=`); `<number>`
+  must be one literal as the tokenizer reads them (valid thousands groups, one
+  separator, an optional leading `-`). Then **text** is compared — the stored
+  number is never rounded:
+  - expected = `formatResult(value, { decimalComma: <expr's>, thousandsSpace:
+    false })`, exactly what Tab writes minus thousands spaces;
+  - the stored number is normalised only by dropping spaces (plain, NBSP,
+    U+202F) and trailing fraction zeros with a then-bare separator
+    (`439.40` → `439.4`, `3 600` → `3600`). Leading zeros, `-0`, a sign stay
+    as written: `06`, `-0`, `0006.000` stay text;
+  - equal → verified. So `1 200 * 3 = 3 600` and `= 3600` verify, while
+    `100000000000 - 0 = 99999999999.5`, `10 / 3 = 3.3333333333999`,
+    `1 / 3 = 0.33333333334` and `10 / 3 = 3.33` stay text.
+  - **Separator:** if `<expr>` wrote a fraction (`1.5`, `1,5`), the answer must
+    use that separator (`1,5 * 3 = 4,5` ✓, `1.5 * 3 = 4,5` and `= 4,500` stay
+    text). Without one either separator is accepted (`9 / 2 = 4,5` and `= 4.5`
+    ✓); `9000 / 2 = 4,500` stays text — it normalises to `4,5`, not `4500`.
+- **The hint in the cell editor:** shown while the editor's text (before the
+  caret, caret at the end) is `<expr> =` + optional spaces and `cellHint`
+  of that would give an answer — same rules as the text ghost, applied to the
+  editor's text. Rendered as a muted chip at the right edge inside the editor
+  (`= 439.4 ⇥`), `aria-hidden`, no pointer events. **Tab** accepts while the
+  hint is shown (inserts `' ' + answer`, collapsing spaces after `=`, as one
+  native undo step via `execCommand('insertText')` — never assigning
+  `.value`); the next Tab moves to the next cell as before. **Esc** hides the
+  hint; a second Esc closes the editor as before. Any further typing
+  re-evaluates (a space after `=` brings it back).
+- **One rendering path:** `renderCellContent` asks the pure
+  `verifiedCell(text)`; on success it renders the answer (`textContent`) + the
+  marker, with the whole text in `title`.
+- **Search, copy:** the source holds all three numbers, so ⌘F finds `338`,
+  `1.3` and `439.4`. Highlights in a verified cell cover the whole answer
+  (the rendered text is not the source).
+- **No leading `=`:** Excel-style `=A1+B1` is a CSV formula (and a known
+  injection vector); the trailing `=` keeps one syntax across text and tables.
+- **Security:** the operator synonym table is a `Map`; every user string goes
+  through `textContent` / `title`.
+- **Tests:** `verifiedCell` table (correct answer, stale, wrong, missing,
+  thousands/comma forms, comparisons, prose); cell-editor hint (shown / hidden,
+  Tab accepts once then navigates, Esc, undo); widget DOM (verified shows
+  answer + marker + title, stale shows text, plain unchanged); browser check
+  on a markdown table and a CSV file.
+
+## Out of scope
+
+Variables (`x = 5`), units/currencies, functions (`sqrt`), multi-line sums,
+cell references, a settings toggle. Each can come later without changing the
+parser's contract.

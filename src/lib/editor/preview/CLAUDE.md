@@ -608,8 +608,17 @@ visible row used to open a field nobody could see). The column controls live in
 the strip *above* the header's natural place, so while the header is stuck they
 are off screen; hover the header in place to use them.
 
-Known gap, older than the sticky header: ⌘F does not scroll to a match inside
-a rendered table — CM6 scrolls to the widget, not the cell.
+**Scrolling to a position in a table goes to the cell** (`table-scroll.ts`,
+an `EditorView.scrollHandler` installed in `setup.ts`). CM6's own target for a
+body-row position is `coordsAt(pos)` — a zero-height rect at the table's
+*bottom edge*, since every body row is a hidden line right below the widget
+(measured: row 2 of 12 resolved to y 509, its cell sat at y 171). So ⌘G/⇧⌘G
+counted and selected a match in a cell but scrolled the table's bottom into
+view, and ⇧⌘G left the cell above the window. The handler runs in the measure
+phase (the table's DOM exists by then), finds the cell by `data-source-from/-to`
+and scrolls it into view below the sticky header's height; a range outside one
+rendered cell falls through to CM6. It was a gap on `main` for every cell, not
+only computed ones.
 
 ### CSV documents
 
@@ -632,6 +641,19 @@ The plugin has one more CSV-facing knob, outside table code — the `previewRebu
 - Providers combine with OR — any one asking for a rebuild gets it. A new document kind that needs view-driven rebuilds back simply does not opt out.
 
 **Never branch on "is this CSV" inside `tables.ts`** — a CSV need that the facet cannot express is a new facet field with a markdown default, not an `if`. Keeping the buffer one table (no text around it, undo across a reload) is `csv-guard.ts`'s job, outside table code; the ⇔ toggle and the hover "+" gutter are hidden in a CSV tab by CSS (`cm-csv-file-mode`).
+
+### Computed Cells Break "the DOM Reads as the Source"
+
+A cell stores `<expr> = <answer>` (`338 * 1.3 = 439.4`). When `verifiedCell` (`math/cell.ts`) confirms the answer — exactly what Tab would have written, compared as **text** (spaces and trailing fraction zeros dropped, never rounded; the expression's decimal separator when it wrote a fraction) — `renderCellContent` draws only the stored answer + a `ƒ` marker, with `cm-md-cell-computed` and the whole text as `title` on the text element. A stale (`= 500`) or missing (`=`) answer stays plain text. Nothing is computed into the buffer, so search, copy of the source and CSV see all three numbers. What the view shows is the answer alone, so everything that maps rendered characters to source offsets must not trust such a cell:
+
+- `renderCellContent` resets the class and `title` first — `updateDOM` reuses the element when a cell turns plain.
+- ⌘F: the counter counts source matches; any match inside a verified cell highlights the whole answer (`widgetMatchRanges`), so `439.4` and `1.3` both light up the cell. The spotlight's hole falls back to the cell box.
+- A caret or selection in it maps to the **end of the cell text** (`cellCaretPos`, `hostSelectionAsSource`), so typing appends (`439.45` — no longer verified, plain text until fixed) and Backspace edits the answer. Current behaviour; an owner decision is pending (Excel-style replace-on-first-key is the alternative).
+- Copying a selection inside it copies the visible answer (the host exemption above); whether WKWebView leaves the `user-select: none` marker out is unverified.
+- The live-render format toolbar refuses it (`widgetTarget`); format or comment through the overlay, which holds the source.
+- A comment anchored anywhere in the cell marks the whole answer.
+
+**The answer gets into the cell through the editor's hint** (`cell-hint.ts`): while the overlay's text is `<expr> =` + spaces with the caret at the end, a muted chip `= 439.4 ⇥` sits at its right edge, in room the field reserves with its right padding. `showCellEditor`'s keydown asks the hint first: Tab → `accept()` (re-checks the text, then a narrowed `insertText` through `applyTextareaEdit`, never `.value`), Escape → `dismiss()` (until the text changes); both return `false` without a chip, so every key keeps its table meaning — the next Tab, and Shift+Tab always, move on. On input the field calls `hint.update()` and reflows once. A new overlay removes the old one's chip: the old field is dropped without its `destroy`.
 
 ## Mermaid Pan/Zoom (`mermaid-viewport.ts`, `mermaid-state.ts`)
 

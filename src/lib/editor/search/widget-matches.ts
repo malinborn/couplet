@@ -1,5 +1,6 @@
 import { ViewPlugin, type EditorView, type ViewUpdate } from '@codemirror/view';
-import { matchIndexAt, searchMatches, searchMatchesField } from './match-count';
+import { matchIndexAt, searchMatches, searchMatchesField, type MatchList } from './match-count';
+import { COMPUTED_CELL_CLASS } from '../math/cell';
 
 /**
  * Highlights for matches inside table cells.
@@ -21,7 +22,9 @@ import { matchIndexAt, searchMatches, searchMatchesField } from './match-count';
  *
  * Feature-detected: without `CSS.highlights` (WebKit before 17.2) the cells
  * stay unhighlighted. Cells with inline formatting render something other than
- * their source and are skipped.
+ * their source and are skipped. A verified computed cell (`math/cell.ts`)
+ * renders only its answer: any match inside its source highlights the whole
+ * answer, so `439.4` — or `1.3` of `338 * 1.3 = 439.4` — is visibly found.
  */
 
 const HIGHLIGHT = 'cm-md-search-widget-match';
@@ -40,9 +43,11 @@ function registry(): { highlights: HighlightRegistry; Highlight: HighlightCtor }
   return css?.highlights && ctor ? { highlights: css.highlights, Highlight: ctor } : null;
 }
 
-/** DOM ranges over the cell text of every match inside a rendered cell, and the current one's. */
-function cellRanges(view: EditorView): { all: Range[]; current: Range[] } {
-  const matches = searchMatches(view.state);
+/**
+ * DOM ranges over the cell text of every match inside a rendered cell, and the
+ * current one's (the match the main selection is exactly on).
+ */
+export function widgetMatchRanges(view: EditorView, matches: MatchList): { all: Range[]; current: Range[] } {
   const out = { all: [] as Range[], current: [] as Range[] };
   if (matches.from.length === 0) return out;
   const main = view.state.selection.main;
@@ -51,8 +56,16 @@ function cellRanges(view: EditorView): { all: Range[]; current: Range[] } {
     const srcFrom = Number(cell.dataset.sourceFrom);
     const srcTo = Number(cell.dataset.sourceTo);
     const text = cell.firstChild;
-    if (!(text instanceof Text) || cell.childNodes.length !== 1) continue;
-    if (text.data !== view.state.sliceDoc(srcFrom, srcTo)) continue;
+    const computed = cell.classList.contains(COMPUTED_CELL_CLASS);
+    if (computed) {
+      // The answer: a text node, or the comment highlight wrapping it.
+      if (!text) continue;
+    } else {
+      if (!(text instanceof Text) || cell.childNodes.length !== 1) continue;
+      if (text.data !== view.state.sliceDoc(srcFrom, srcTo)) continue;
+    }
+    let hit = false;
+    let hitCurrent = false;
     // First match ending after the cell starts.
     let lo = 0;
     let hi = matches.to.length;
@@ -65,10 +78,20 @@ function cellRanges(view: EditorView): { all: Range[]; current: Range[] } {
       const from = matches.from[i];
       const to = matches.to[i];
       if (from < srcFrom || to > srcTo || to === from) continue;
+      if (computed) {
+        hit = true;
+        if (i === current) hitCurrent = true;
+        continue;
+      }
       const range = document.createRange();
       range.setStart(text, from - srcFrom);
       range.setEnd(text, to - srcFrom);
       (i === current ? out.current : out.all).push(range);
+    }
+    if (hit && text) {
+      const range = document.createRange();
+      range.selectNodeContents(text);
+      (hitCurrent ? out.current : out.all).push(range);
     }
   }
   return out;
@@ -124,7 +147,7 @@ export const widgetMatchHighlights = ViewPlugin.fromClass(
       }
       this.view.requestMeasure({
         key: this,
-        read: (view) => cellRanges(view),
+        read: (view) => widgetMatchRanges(view, searchMatches(view.state)),
         write: ({ all, current }) => {
           if (!this.api) return;
           if (all.length === 0 && current.length === 0) {

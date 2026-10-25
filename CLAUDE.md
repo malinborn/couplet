@@ -115,6 +115,7 @@ src/                    # Frontend (Svelte + TypeScript)
     ai-mark-nav.ts      # ⌘' / ⌘⇧' cycle the caret through AI marks (edit highlights, comment anchors, asks); menu ids ai_next_mark / ai_prev_mark
     links/              # File links in the editor: LinkControl facet + ⌘-click router (open-link.ts), existence cache (link-existence.ts), `[[` / `/link` picker (file-link-source.ts, link-query.ts, slash-link.ts), drop caret + insertion (link-drop.ts)
     human-edit.ts       # isHumanEdit: did the human change the document (not an agent's edit, not a reload) — a quick look's «Keep»
+    math/               # `338 * 1.3 =` → ghost `439.4`, Tab writes it: evaluate.ts (parser, no eval), format.ts (input's number style), trigger.ts (expr = at the caret, not in code/tables), ghost.ts (field + widget + Tab/Esc), cell.ts (`verifiedCell`: a table cell storing `<expr> = <answer>` with the right answer shows the answer + `ƒ`, whole text in `title` — drawn by `renderCellContent` in preview/tables.ts; `cellHint`: the answer the cell editor offers as a Tab chip, preview/cell-hint.ts)
   lib/links/            # File links, pure + IPC: link-target (resolve a URL against the document), link-destination (the one `[label](dest)` writer), link-kind, link-filter, types/ipc
   lib/ai-commands.ts    # Pure helpers for AI commands (show target resolution, changed-line ranges)
   lib/csv/              # CSV documents: the buffer is a GFM table, CSV only at the disk boundary

@@ -25,7 +25,7 @@ import {
   encodedOffset,
   decodedOffset,
 } from './table-encoding';
-import { docPosForCaretIn, placeCaretFromPoint, visibleOffsetIn } from './cell-caret';
+import { caretOffsetIn, docPosForCaretIn, placeCaretFromPoint, visibleOffsetIn } from './cell-caret';
 import {
   activeCellEditSession,
   applyTextareaEdit,
@@ -46,6 +46,8 @@ import {
   type CommentAnchorSpan,
 } from '../ai-comment';
 import { t } from '../../i18n';
+import { verifiedCell, COMPUTED_CELL_CLASS } from '../math/cell';
+import { attachCellHint, CELL_HINT_CLASS } from './cell-hint';
 
 /** Class of the per-cell nested editing host that carries the cell's text. */
 export const CELL_TEXT_CLASS = 'cm-md-table-celltext';
@@ -960,14 +962,61 @@ function appendCellText(
   }
 }
 
-/** Render inline markdown (code, bold, italic, strikethrough, links) into a cell element. */
+/**
+ * Draw a verified cell (`338 * 1.3 = 439.4`): the stored answer, then a small
+ * marker; the whole text is the tooltip. The rendered text is the answer alone,
+ * not the source, so a comment anchored anywhere in the cell marks the whole
+ * answer (the first thread's id), and so does a ⌘F match
+ * (`search/widget-matches.ts`).
+ */
+function renderComputedCell(
+  cellEl: HTMLElement,
+  answer: string,
+  title: string,
+  highlights: CellHighlight[]
+): void {
+  cellEl.classList.add(COMPUTED_CELL_CLASS);
+  cellEl.title = title;
+  if (highlights.length > 0) {
+    const span = document.createElement('span');
+    span.className = COMMENT_ANCHOR_CLASS;
+    span.setAttribute(COMMENT_ANCHOR_ATTR, highlights[0].id);
+    span.textContent = answer;
+    cellEl.appendChild(span);
+  } else {
+    cellEl.appendChild(document.createTextNode(answer));
+  }
+  const mark = document.createElement('span');
+  mark.className = 'cm-md-cell-computed-mark';
+  mark.setAttribute('aria-hidden', 'true');
+  mark.textContent = 'ƒ';
+  cellEl.appendChild(mark);
+}
+
+/**
+ * Render a cell's text into its element — the one place a cell's view is
+ * drawn (`toDOM` and `updateDOM` both come here). Inline markdown (code, bold,
+ * italic, strikethrough, links), or the answer of a verified cell
+ * (`math/cell.ts`). `updateDOM` reuses the element, so the computed state is
+ * reset first.
+ */
 function renderCellContent(
   cellEl: HTMLElement,
   text: string,
   view: EditorView,
   highlights: CellHighlight[] = []
 ): void {
+  if (cellEl.classList.contains(COMPUTED_CELL_CLASS)) {
+    cellEl.classList.remove(COMPUTED_CELL_CLASS);
+    cellEl.removeAttribute('title');
+  }
   if (!text) return;
+
+  const verified = verifiedCell(text);
+  if (verified) {
+    renderComputedCell(cellEl, verified.answer, verified.title, highlights);
+    return;
+  }
 
   const tokens = parseInlineMarkdown(text);
 
@@ -1382,6 +1431,9 @@ function showCellEditor(
   place?: CellPlace
 ): void {
   document.querySelector('.cm-md-table-editor')?.remove();
+  // The old field is removed without its `destroy` (that runs on its blur
+  // commit, if a blur ever comes): its answer chip must not stay behind.
+  document.querySelectorAll(`.${CELL_HINT_CLASS}`).forEach((el) => el.remove());
 
   /**
    * Where the field writes: the cell's range as it opened, mapped through every
@@ -1460,14 +1512,24 @@ function showCellEditor(
     const live = cellEl.getBoundingClientRect();
     ta.style.left = `${live.left}px`;
     ta.style.top = `${live.top}px`;
+    hint.position();
   };
-  ta.addEventListener('input', reflow);
+  // The answer chip (`= 439.4 ⇥`, `cell-hint.ts`). It reserves room in the
+  // field's padding, so its appearing reflows the field — on input together
+  // with the field's own growth, in one reflow.
+  const hint = attachCellHint(ta, () => reflow());
+  const onInput = (): void => {
+    hint.update();
+    reflow();
+  };
+  ta.addEventListener('input', onInput);
 
   let committed = false;
 
   const destroy = (): void => {
     openOverlayRanges.delete(range);
-    ta.removeEventListener('input', reflow);
+    ta.removeEventListener('input', onInput);
+    hint.destroy();
     endCellEditSession(ta);
     ta.remove();
     cellEl.classList.remove('cm-md-table-cell-editing');
@@ -1548,6 +1610,15 @@ function showCellEditor(
       // cheatsheet can say so.
       return;
     }
+    // The answer chip takes Tab (accept) and Escape (hide) while it is shown;
+    // without one both answer `false` and the key does what it always did.
+    if (
+      (binding.action === 'col-next' && hint.accept()) ||
+      (binding.action === 'cancel' && hint.dismiss())
+    ) {
+      e.preventDefault();
+      return;
+    }
     e.preventDefault();
     switch (binding.action) {
       case 'commit':
@@ -1587,12 +1658,14 @@ function showCellEditor(
       decodedOffset(cell.text, selectSrc.to)
     );
   }
+  hint.update(); // the caret is where it will start: after focus and selection
   reflow(); // initial size
 
   setCellEditSession({
     textarea: ta,
     replace: (text, from, to) => {
       applyTextareaEdit(ta, text, from, to);
+      hint.update();
       // Формат мог удлинить текст — поле и ячейка должны за этим успеть.
       // `applyTextareaEdit` не всегда проходит через `input` (fallback —
       // прямое присваивание), поэтому reflow зовём явно.
@@ -1624,6 +1697,21 @@ function cellEditorOpen(): boolean {
 }
 
 /**
+ * Document position of the collapsed DOM caret in a cell, or `null`.
+ *
+ * A verified cell shows only its answer, whose offsets do not line up with
+ * the source (`338 * 1.3 = 439.4`), so any caret in it stands for the end of
+ * the cell text — appending is the harmless answer, as for text that does not
+ * reconstruct.
+ */
+function cellCaretPos(textEl: HTMLElement, cell: CellInfo): number | null {
+  if (textEl.classList.contains(COMPUTED_CELL_CLASS)) {
+    return caretOffsetIn(textEl) === null ? null : cell.from + cell.text.length;
+  }
+  return docPosForCaretIn(textEl, cell.text, cell.from);
+}
+
+/**
  * Move the document selection to wherever the caret is sitting in this cell.
  *
  * The DOM caret is the one the user sees; this is the other half — everything
@@ -1636,7 +1724,7 @@ function cellEditorOpen(): boolean {
  * it from the DOM rather than from `state.selection`.
  */
 function syncDocCaret(view: EditorView, textEl: HTMLElement, cell: CellInfo): void {
-  const pos = docPosForCaretIn(textEl, cell.text, cell.from);
+  const pos = cellCaretPos(textEl, cell);
   if (pos === null) return;
   const main = view.state.selection.main;
   if (main.empty && main.head === pos) return;
@@ -1752,10 +1840,14 @@ function hostSelectionAsSource(
   textEl: HTMLElement,
   cell: CellInfo
 ): { from: number; to: number } | undefined {
-  const caret = docPosForCaretIn(textEl, cell.text, cell.from);
+  const caret = cellCaretPos(textEl, cell);
   if (caret !== null) {
     const at = caret - cell.from;
     return { from: at, to: at };
+  }
+  // A selection over an answer does not map onto the source: the end.
+  if (textEl.classList.contains(COMPUTED_CELL_CLASS)) {
+    return { from: cell.text.length, to: cell.text.length };
   }
   const range = hostSelectionRange(textEl, cell.text);
   return range ?? undefined;
