@@ -1,6 +1,15 @@
 import { keymap } from '@codemirror/view';
-import { Prec, type ChangeSpec, type Extension, type Text } from '@codemirror/state';
+import {
+  Prec,
+  type ChangeSet,
+  type ChangeSpec,
+  type EditorState,
+  type Extension,
+  type Text,
+} from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
+import { ensureSyntaxTree, syntaxTree } from '@codemirror/language';
+import type { SyntaxNode } from '@lezer/common';
 
 function handleEnterInList(view: EditorView): boolean {
   const { state } = view;
@@ -41,18 +50,16 @@ function handleEnterInList(view: EditorView): boolean {
   }
 
   if (numberedMatch) {
-    const [, indent, num, content] = numberedMatch;
+    const [, , , content] = numberedMatch;
     if (content.trim() === '') {
       view.dispatch({ changes: { from: line.from, to: line.to, insert: '' } });
       return true;
     }
-    const next = parseInt(num, 10) + 1;
-    const continuation = `\n${indent}${next}. `;
-    view.dispatch({
-      changes: { from, insert: continuation },
-      selection: { anchor: from + continuation.length },
-    });
-    return true;
+    const next = continueOrderedItem(state, from);
+    if (next) {
+      view.dispatch({ changes: next.changes, selection: { anchor: next.anchor } });
+      return true;
+    }
   }
 
   // Code fence auto-close
@@ -250,6 +257,65 @@ function handleTabInList(view: EditorView, indent: boolean): boolean {
 
   renumberOrderedListAround(view);
   return true;
+}
+
+/**
+ * Enter in a numbered item: the next number on a new line at `from`, and every
+ * later item of the same list counted on from it — one change set, so one ⌘Z
+ * takes back the new item and the renumbering together. `null` for anything
+ * but a numbered item with text.
+ */
+export function continueOrderedItem(
+  state: EditorState,
+  from: number
+): { changes: ChangeSet; anchor: number } | null {
+  const line = state.doc.lineAt(from);
+  const m = line.text.match(/^(\s*)(\d+)\.\s(.*)$/);
+  if (!m || m[3].trim() === '') return null;
+  const continuation = `\n${m[1]}${parseInt(m[2], 10) + 1}. `;
+  const insert = state.changes({ from, insert: continuation });
+  const anchor = from + continuation.length;
+  const after = state.update({ changes: insert }).state;
+  const renumber = after.changes(renumberOrderedList(after, anchor));
+  return { changes: insert.compose(renumber), anchor: renumber.mapPos(anchor, 1) };
+}
+
+/**
+ * Counts the items of the ordered list holding `pos` up from its first item's
+ * number. Read from the syntax tree, unlike `computeOrderedListRenumberChanges`
+ * (the Tab path): a continuation line is part of its item, a nested list is
+ * its own list, and a list that starts at 5 keeps starting at 5. A list whose
+ * other items all carry one number (`1. 1. 1.`, numbered that way on purpose)
+ * is left alone.
+ */
+export function renumberOrderedList(state: EditorState, pos: number): ChangeSpec[] {
+  const doc = state.doc;
+  const tree = ensureSyntaxTree(state, doc.length, 200) ?? syntaxTree(state);
+  const line = doc.lineAt(pos);
+  const markAt = line.from + (line.text.match(/^\s*/)?.[0].length ?? 0);
+  let item: SyntaxNode | null = tree.resolveInner(markAt, 1);
+  while (item && !(item.name === 'ListItem' && item.parent?.name === 'OrderedList')) {
+    item = item.parent;
+  }
+  const list = item?.parent;
+  if (!item || !list) return [];
+
+  const marks: { from: number; digits: number; num: number; isHere: boolean }[] = [];
+  for (const it of list.getChildren('ListItem')) {
+    const mark = it.getChild('ListMark');
+    const digits = mark ? doc.sliceString(mark.from, mark.to).match(/^\d+/)?.[0] : undefined;
+    if (!mark || !digits) return [];
+    marks.push({ from: mark.from, digits: digits.length, num: Number(digits), isHere: it.from === item.from });
+  }
+  const others = marks.filter((x) => !x.isHere);
+  if (others.length > 1 && others.every((x) => x.num === others[0].num)) return [];
+
+  const changes: ChangeSpec[] = [];
+  marks.forEach((x, i) => {
+    const want = marks[0].num + i;
+    if (x.num !== want) changes.push({ from: x.from, to: x.from + x.digits, insert: String(want) });
+  });
+  return changes;
 }
 
 export function computeOrderedListRenumberChanges(

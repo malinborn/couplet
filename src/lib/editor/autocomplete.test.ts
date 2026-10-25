@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { EditorState } from '@codemirror/state';
+import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
+import { Strikethrough, Table } from '@lezer/markdown';
 import {
+  continueOrderedItem,
   computeFenceAutoClose,
   computeOrderedListRenumberChanges,
   computeListIndentChanges,
@@ -312,5 +315,68 @@ describe('computeFenceAutoClose', () => {
   it('declines anywhere but the end of a fence line', () => {
     expect(computeFenceAutoClose('```js', 3)).toBeNull();
     expect(computeFenceAutoClose('> text', 6)).toBeNull();
+  });
+});
+
+/**
+ * Enter at the end of `line` (1-based) of `doc`, the numbered-item way, with
+ * `|` marking where the caret lands.
+ */
+function enterAtEndOf(doc: string, line: number): string {
+  const state = EditorState.create({
+    doc,
+    extensions: [markdown({ base: markdownLanguage, extensions: [Strikethrough, Table] })],
+  });
+  const r = continueOrderedItem(state, state.doc.line(line).to);
+  if (!r) return 'no change';
+  const next = state.update({ changes: r.changes, selection: { anchor: r.anchor } }).state;
+  const s = next.doc.toString();
+  return s.slice(0, r.anchor) + '|' + s.slice(r.anchor);
+}
+
+describe('continueOrderedItem — Enter renumbers the rest of the list', () => {
+  it('counts the items after the new one up', () => {
+    expect(enterAtEndOf(['1. A', '2. B', '3. C'].join('\n'), 1)).toBe(
+      ['1. A', '2. |', '3. B', '4. C'].join('\n')
+    );
+  });
+
+  it('reads a continuation line as part of its item, not the end of the list', () => {
+    expect(enterAtEndOf(['1. A', '   more', '2. B', '3. C'].join('\n'), 1)).toBe(
+      ['1. A', '2. |', '   more', '3. B', '4. C'].join('\n')
+    );
+  });
+
+  it('keeps the number a list starts at', () => {
+    expect(enterAtEndOf(['5. A', '6. B'].join('\n'), 1)).toBe(['5. A', '6. |', '7. B'].join('\n'));
+  });
+
+  it('renumbers only the list the caret is in, not its parent', () => {
+    expect(enterAtEndOf(['1. A', '   1. x', '   2. y', '2. B'].join('\n'), 2)).toBe(
+      ['1. A', '   1. x', '   2. |', '   3. y', '2. B'].join('\n')
+    );
+  });
+
+  it('leaves a list numbered 1. 1. 1. on purpose as it is', () => {
+    expect(enterAtEndOf(['1. A', '1. B', '1. C'].join('\n'), 1)).toBe(
+      ['1. A', '2. |', '1. B', '1. C'].join('\n')
+    );
+  });
+
+  it('does not touch another list further down', () => {
+    expect(enterAtEndOf(['1. A', '2. B', '', 'text', '', '1. X'].join('\n'), 2)).toBe(
+      ['1. A', '2. B', '3. |', '', 'text', '', '1. X'].join('\n')
+    );
+  });
+
+  it('renumbers a list indented under a paragraph line', () => {
+    expect(enterAtEndOf(['б)', '   1. A', '   2. B'].join('\n'), 2)).toBe(
+      ['б)', '   1. A', '   2. |', '   3. B'].join('\n')
+    );
+  });
+
+  it('is not for a bullet or an empty item', () => {
+    expect(enterAtEndOf('- A', 1)).toBe('no change');
+    expect(enterAtEndOf(['1. A', '2. '].join('\n'), 2)).toBe('no change');
   });
 });
