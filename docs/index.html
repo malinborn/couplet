@@ -53,7 +53,7 @@
     "url": "https://couplet.pro/",
     "downloadUrl": "https://github.com/malinborn/couplet/releases",
     "sameAs": ["https://github.com/malinborn/couplet"],
-    "softwareVersion": "2.4.2",
+    "softwareVersion": "2.4.3",
     "license": "https://opensource.org/licenses/GPL-3.0"
   }
   </script>
@@ -62,8 +62,8 @@
   <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 
-  <script type="module" crossorigin src="/assets/index-EegzgIX3.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-EyzrsmDE.css">
+  <script type="module" crossorigin src="/assets/index-B8eOf8cv.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-DagADO18.css">
 </head>
 <body>
 
@@ -458,6 +458,19 @@
       <div class="changelog-list">
 
         <details class="changelog-entry" open>
+          <summary class="changelog-summary">
+            <span class="changelog-version">v2.4.3</span>
+            <span class="changelog-date">2026-10-27</span>
+            <span class="changelog-tag fix">fix</span>
+            <span class="changelog-title">Selection shows through code</span>
+          </summary>
+          <ul class="changelog-body-list">
+            <li><strong>Selected code looks selected</strong> &mdash; a selection that ran into <code>inline code</code> or a code block stopped at its edge, as if the code were not part of it. The editor draws the selection on a layer behind the text, and the code&rsquo;s own background, being opaque, covered it &mdash; most visibly in Live Render, where code never turns back into raw markdown. Now the selected part of the code is painted on top of that background</li>
+            <li><strong>Whole lines in a block</strong> &mdash; a code-block line selected through its end fills across the block, empty lines included, the way lines in the middle of a selection do elsewhere; the language label and Copy stay as they are. A search match inside code still shows over the selection</li>
+          </ul>
+        </details>
+
+        <details class="changelog-entry">
           <summary class="changelog-summary">
             <span class="changelog-version">v2.4.2</span>
             <span class="changelog-date">2026-10-25</span>
