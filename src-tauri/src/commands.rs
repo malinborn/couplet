@@ -126,6 +126,18 @@ pub async fn sync_tabs_dates_menu(
     Ok(())
 }
 
+/// Sets AI → «Comments: Live Box (Auto-send)» to the frontend's persisted
+/// comment mode (checked = the legacy live box) — the same start-up sync as
+/// `sync_tabs_dates_menu`.
+#[command]
+pub async fn sync_comment_live_menu(
+    state: tauri::State<'_, crate::menu::ViewToggleItems>,
+    enabled: bool,
+) -> Result<(), String> {
+    state.sync_comment_live(enabled);
+    Ok(())
+}
+
 /// Sets File → quick looks' radio pair to the frontend's policy (`"keep"` |
 /// `"close"`). Called at start and after every click: macOS toggles the
 /// clicked item natively, and this corrects the pair.
@@ -227,12 +239,26 @@ pub async fn comment_threads(path: String) -> Result<Vec<crate::comments::Thread
 /// `append_reply` sets `answered`, which is right for an agent but wrong here:
 /// the user replying again means they are waiting once more, and `open` is
 /// exactly what `couplet watch` emits an event for — so this is what wakes the
-/// agent for a follow-up question.
+/// agent for a follow-up question. This is the chat mode's "send": one write,
+/// reply and status together (`append_own_reply`).
 #[command]
 pub async fn comment_reply(path: String, id: String, text: String) -> Result<(), String> {
-    let doc = std::path::Path::new(&path);
-    crate::comments::append_reply(doc, &id, crate::comments::SELF_AUTHOR, &text)?;
-    crate::comments::set_status(doc, &id, crate::comments::Status::Open)
+    crate::comments::append_own_reply(std::path::Path::new(&path), &id, &text)
+}
+
+/// The user revised an earlier message of theirs (chat mode, double-click):
+/// the new text is appended at the end of the thread as `**You** · <now> ·
+/// edited (replaces <original_at>)` and the thread goes back to `open`. The
+/// original stays where it is — the file is append-only, and the agent needs
+/// both to see what changed.
+#[command]
+pub async fn comment_edit(
+    path: String,
+    id: String,
+    original_at: String,
+    text: String,
+) -> Result<(), String> {
+    crate::comments::append_edit(std::path::Path::new(&path), &id, &original_at, &text)
 }
 
 /// Marks a thread `resolved`. It stays in the file as history — threads are

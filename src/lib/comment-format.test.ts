@@ -9,7 +9,9 @@ import {
   escapeAttr,
   isAwaiting,
   parseComments,
+  parseEditedAt,
   quotePreview,
+  withEditMarks,
   unescapeAttr,
   COMMENT_PAUSE_SECONDS,
   type CommentThread,
@@ -419,5 +421,63 @@ describe('countdownLabel', () => {
     // there would repeat the verb the button already carries, and the pair
     // that has to read as one sentence is button + number.
     expect(countdownLabel(13_000)).not.toMatch(/sending/);
+  });
+});
+
+describe('edited replies (chat mode)', () => {
+  it('takes the edited tail apart into the plain time and the time it replaces', () => {
+    expect(
+      parseEditedAt('2026-08-24 17:03:00 UTC · edited (replaces 2026-08-24 17:00:00 UTC)')
+    ).toEqual({ at: '2026-08-24 17:03:00 UTC', replaces: '2026-08-24 17:00:00 UTC' });
+  });
+
+  it('leaves an ordinary timestamp alone', () => {
+    expect(parseEditedAt('2026-08-24 17:03:00 UTC')).toEqual({ at: '2026-08-24 17:03:00 UTC' });
+    expect(parseEditedAt('14:02')).toEqual({ at: '14:02' });
+  });
+
+  it('is tolerant: a half-written tail is just part of the time', () => {
+    expect(parseEditedAt('17:03 · edited (replaces )')).toEqual({ at: '17:03 · edited (replaces )' });
+    expect(parseEditedAt('17:03 · edited')).toEqual({ at: '17:03 · edited' });
+  });
+
+  it('parses an edited header in a thread', () => {
+    const [thread] = parseComments(`<!-- mdmini:c id=c-aaaaaa status=open line=1 -->
+> q
+
+**You** · 17:00
+Успеем к пятнице?
+
+**You** · 17:03 · edited (replaces 17:00)
+Успеем к четвергу?
+`);
+    expect(thread.replies).toHaveLength(2);
+    expect(thread.replies[0]).toEqual({ author: 'You', at: '17:00', text: 'Успеем к пятнице?' });
+    expect(thread.replies[1]).toEqual({
+      author: 'You',
+      at: '17:03',
+      replaces: '17:00',
+      text: 'Успеем к четвергу?',
+    });
+  });
+
+  it('marks threads that came from Rust, whose parser keeps the tail in `at`', () => {
+    const fromRust: CommentThread[] = [
+      {
+        id: 'c-aaaaaa',
+        status: 'open',
+        line: 1,
+        quote: 'q',
+        replies: [
+          { author: 'You', at: '17:00', text: 'a' },
+          { author: 'You', at: '17:03 · edited (replaces 17:00)', text: 'b' },
+        ],
+      },
+    ];
+    const [thread] = withEditMarks(fromRust);
+    expect(thread.replies[0]).toEqual({ author: 'You', at: '17:00', text: 'a' });
+    expect(thread.replies[1]).toEqual({ author: 'You', at: '17:03', replaces: '17:00', text: 'b' });
+    // The input is not mutated.
+    expect(fromRust[0].replies[1].at).toBe('17:03 · edited (replaces 17:00)');
   });
 });

@@ -669,6 +669,77 @@ pub fn append_reply(doc: &Path, id: &str, author: &str, text: &str) -> Result<()
 
 /// Like [`append_reply`], but the timestamp is given explicitly — see [`append_thread_at`].
 pub fn append_reply_at(doc: &Path, id: &str, author: &str, text: &str, at: &str) -> Result<(), String> {
+    append_reply_full(doc, id, author, at, text, Status::Answered)
+}
+
+/// The user's own message in chat mode: appended under the thread as
+/// [`SELF_AUTHOR`] and the thread set `open`, in one write.
+///
+/// One write rather than [`append_reply`] followed by [`set_status`]: between
+/// those two the file says `answered` under a reply by the user, and a
+/// watcher reading it then has nothing to wake anyone for.
+pub fn append_own_reply(doc: &Path, id: &str, text: &str) -> Result<(), String> {
+    append_own_reply_at(doc, id, text, &fmt_utc(now_epoch()))
+}
+
+/// [`append_own_reply`] with the timestamp given explicitly — see [`append_thread_at`].
+pub fn append_own_reply_at(doc: &Path, id: &str, text: &str, at: &str) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("refusing to write an empty comment".to_string());
+    }
+    append_reply_full(doc, id, SELF_AUTHOR, at, text, Status::Open)
+}
+
+/// The header text after `· ` of a reply that revises an earlier one:
+/// `<at> · edited (replaces <original_at>)`.
+///
+/// Both parsers read everything after the first `·` as the timestamp, so an
+/// older build shows this as one long timestamp and loses nothing — no format
+/// version bump. `parseEditedAt` in `src/lib/comment-format.ts` takes it apart.
+pub fn edited_at(at: &str, original_at: &str) -> String {
+    format!("{at} · edited (replaces {original_at})")
+}
+
+/// The user's revision of an earlier message of theirs, in chat mode.
+///
+/// Appended at the end of the thread — the file is append-only, so the
+/// original stays where it was and the agent sees both, before and after —
+/// with the header `**You** · <now> · edited (replaces <original_at>)`, and
+/// the thread set `open`: the user is waiting for the agent to look again.
+pub fn append_edit(doc: &Path, id: &str, original_at: &str, text: &str) -> Result<(), String> {
+    append_edit_at(doc, id, original_at, text, &fmt_utc(now_epoch()))
+}
+
+/// [`append_edit`] with the timestamp given explicitly — see [`append_thread_at`].
+pub fn append_edit_at(
+    doc: &Path,
+    id: &str,
+    original_at: &str,
+    text: &str,
+    at: &str,
+) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("refusing to write an empty comment".to_string());
+    }
+    let original_at = original_at.trim();
+    // The value lands inside a header line: a line break would split the reply.
+    if original_at.is_empty() || original_at.contains(['\n', '\r']) {
+        return Err("bad timestamp of the edited message".to_string());
+    }
+    append_reply_full(doc, id, SELF_AUTHOR, &edited_at(at, original_at), text, Status::Open)
+}
+
+/// The one that does the work for every appended reply: inserts
+/// `**author** · at` and `text` at the end of thread `id` and rewrites its
+/// marker to `status` (dropping any pause deadline), in a single write.
+fn append_reply_full(
+    doc: &Path,
+    id: &str,
+    author: &str,
+    at: &str,
+    text: &str,
+    status: Status,
+) -> Result<(), String> {
     let path = sidecar_path(doc).ok_or_else(|| "bad document path".to_string())?;
     let existing = std::fs::read_to_string(&path)
         .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
@@ -687,7 +758,9 @@ pub fn append_reply_at(doc: &Path, id: &str, author: &str, text: &str, at: &str)
     // An answer ends whatever the thread was waiting for, including a pause
     // the human left half-typed — so the deadline goes with it. Leaving
     // `until=` behind would make the thread look pausable to a later reader.
-    out[start] = rewrite_marker(&out[start], Status::Answered, None);
+    // The user's own message (chat mode) ends a pause just the same: it is
+    // sent, so the thread is `open`, never paused.
+    out[start] = rewrite_marker(&out[start], status, None);
 
     let block = format!("\n**{author}** · {at}\n{text}");
     let mut insert_at = end;
@@ -1189,6 +1262,102 @@ Nginx там был сломан.
         assert_eq!(threads[1].status, Status::Open);
     }
 
+    // --- chat mode: sending and editing (append-only) ---
+
+    #[test]
+    fn an_own_reply_sets_open_in_the_same_write() {
+        let doc = temp_doc("spec.md");
+        append_thread_at(&doc, "c-aaaaaa", 1, "q", SELF_AUTHOR, "Вопрос?", "2026-08-24 14:00:00 UTC")
+            .unwrap();
+        append_reply_at(&doc, "c-aaaaaa", "agent", "Ответ.", "2026-08-24 14:01:00 UTC").unwrap();
+
+        append_own_reply_at(&doc, "c-aaaaaa", "А ещё?", "2026-08-24 14:02:00 UTC").unwrap();
+
+        let thread = &load(&doc).unwrap()[0];
+        assert_eq!(thread.status, Status::Open);
+        assert_eq!(thread.replies.len(), 3);
+        assert_eq!(thread.replies[2].author, SELF_AUTHOR);
+        assert_eq!(thread.replies[2].text, "А ещё?");
+    }
+
+    #[test]
+    fn an_own_reply_ends_a_pause_too() {
+        let doc = temp_doc("spec.md");
+        append_thread_paused(&doc, "c-aaaaaa", 1, "q", Context::default(), SELF_AUTHOR, "Почему")
+            .unwrap();
+        append_own_reply(&doc, "c-aaaaaa", "дополнение").unwrap();
+        let thread = &load(&doc).unwrap()[0];
+        assert_eq!(thread.status, Status::Open);
+        assert_eq!(thread.until, None, "no deadline left behind");
+    }
+
+    #[test]
+    fn an_empty_own_reply_or_edit_is_refused() {
+        let doc = temp_doc("spec.md");
+        append_thread(&doc, "c-aaaaaa", 1, "q", SELF_AUTHOR, "Вопрос?").unwrap();
+        assert!(append_own_reply(&doc, "c-aaaaaa", " \n").is_err());
+        assert!(append_edit(&doc, "c-aaaaaa", "2026-08-24 14:00:00 UTC", "").is_err());
+        assert!(append_edit(&doc, "c-aaaaaa", "two\nlines", "текст").is_err());
+        assert_eq!(load(&doc).unwrap()[0].replies.len(), 1);
+    }
+
+    /// The edit is appended at the end of its thread with the header naming
+    /// the message it revises, the marker goes back to `open`, and every other
+    /// byte of the file stays exactly where it was — couplet only ever appends
+    /// a reply or rewrites one marker line.
+    #[test]
+    fn an_edit_is_appended_with_its_header_sets_open_and_touches_nothing_else() {
+        let doc = temp_doc("spec.md");
+        append_thread_at(&doc, "c-aaaaaa", 1, "q1", SELF_AUTHOR, "Успеем к пятнице?", "2026-08-24 17:00:00 UTC")
+            .unwrap();
+        append_reply_at(&doc, "c-aaaaaa", "agent", "Да.", "2026-08-24 17:02:00 UTC").unwrap();
+        append_thread_at(&doc, "c-bbbbbb", 9, "q2", SELF_AUTHOR, "Второй?", "2026-08-24 17:05:00 UTC")
+            .unwrap();
+        let before = std::fs::read_to_string(sidecar_path(&doc).unwrap()).unwrap();
+
+        append_edit_at(
+            &doc,
+            "c-aaaaaa",
+            "2026-08-24 17:00:00 UTC",
+            "Успеем к четвергу?\nИли хотя бы к пятнице.",
+            "2026-08-24 17:03:00 UTC",
+        )
+        .unwrap();
+
+        let after = std::fs::read_to_string(sidecar_path(&doc).unwrap()).unwrap();
+        let expected = before
+            .replace(
+                "<!-- mdmini:c id=c-aaaaaa status=answered line=1 -->",
+                "<!-- mdmini:c id=c-aaaaaa status=open line=1 -->",
+            )
+            .replace(
+                "Да.\n",
+                "Да.\n\n**You** · 2026-08-24 17:03:00 UTC · edited (replaces 2026-08-24 17:00:00 UTC)\nУспеем к четвергу?\nИли хотя бы к пятнице.\n",
+            );
+        assert_eq!(after, expected);
+
+        let threads = load(&doc).unwrap();
+        assert_eq!(threads[0].status, Status::Open);
+        let edit = threads[0].replies.last().unwrap();
+        assert_eq!(edit.author, SELF_AUTHOR);
+        assert_eq!(
+            edit.at,
+            "2026-08-24 17:03:00 UTC · edited (replaces 2026-08-24 17:00:00 UTC)",
+            "an older reader sees it as one long timestamp"
+        );
+        assert_eq!(threads[0].replies[0].text, "Успеем к пятнице?", "the original stays");
+        assert_eq!(threads[1].replies.len(), 1, "the next thread is untouched");
+    }
+
+    #[test]
+    fn editing_an_unknown_thread_is_an_error_and_leaves_the_file_alone() {
+        let doc = temp_doc("spec.md");
+        append_thread(&doc, "c-aaaaaa", 1, "q", SELF_AUTHOR, "Вопрос?").unwrap();
+        let before = std::fs::read_to_string(sidecar_path(&doc).unwrap()).unwrap();
+        assert!(append_edit(&doc, "c-nope00", "x", "текст").is_err());
+        assert_eq!(std::fs::read_to_string(sidecar_path(&doc).unwrap()).unwrap(), before);
+    }
+
     #[test]
     fn set_status_rewrites_only_the_marker() {
         let doc = temp_doc("spec.md");
@@ -1421,6 +1590,28 @@ Nginx там был сломан.
             "agent",
             "Nginx на этом хосте был сломан.\nПоэтому переехали на Caddy.",
             "2026-08-24 14:05:00 UTC",
+        )
+        .unwrap();
+        // Chat mode: a message, an answer, then the user's revision of the
+        // message — appended after the answer, naming the original's time.
+        append_thread_at(
+            &doc,
+            "c-dddddd",
+            40,
+            "Сроки",
+            SELF_AUTHOR,
+            "Успеем к пятнице?",
+            "2026-08-24 17:00:00 UTC",
+        )
+        .unwrap();
+        append_reply_at(&doc, "c-dddddd", "agent", "Да, если без ревью.", "2026-08-24 17:02:00 UTC")
+            .unwrap();
+        append_edit_at(
+            &doc,
+            "c-dddddd",
+            "2026-08-24 17:00:00 UTC",
+            "Успеем к четвергу?",
+            "2026-08-24 17:03:00 UTC",
         )
         .unwrap();
 

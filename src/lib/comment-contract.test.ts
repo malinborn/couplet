@@ -22,7 +22,7 @@ import { parseComments } from './comment-format';
 describe('comment file format — cross-language contract', () => {
   it('parses every thread the fixture declares', () => {
     const threads = parseComments(FIXTURE);
-    expect(threads.map((t) => t.id)).toEqual(['c-aaaaaa', 'c-bbbbbb', 'c-cccccc']);
+    expect(threads.map((t) => t.id)).toEqual(['c-aaaaaa', 'c-bbbbbb', 'c-cccccc', 'c-dddddd']);
   });
 
   it('reads the status written by the Rust side', () => {
@@ -68,6 +68,23 @@ describe('comment file format — cross-language contract', () => {
     const [, , contextual] = parseComments(FIXTURE);
     expect(contextual.prefix).toBe('в таблице горячих клавиш: ');
     expect(contextual.suffix).toBe(' и отступы в списках');
+  });
+
+  it('reads the user\'s revision Rust appended after the answer (chat mode)', () => {
+    // `append_edit_at` in Rust wrote it: the header carries the edit's own
+    // time and the time of the message it replaces. The original stays where
+    // it was — before and after, both in the file.
+    const edited = parseComments(FIXTURE)[3];
+    expect(edited.status).toBe('open');
+    expect(edited.replies.map((r) => r.author)).toEqual(['You', 'agent', 'You']);
+    expect(edited.replies[0].replaces).toBeUndefined();
+    expect(edited.replies[2]).toEqual({
+      author: 'You',
+      at: '2026-08-24 17:03:00 UTC',
+      replaces: '2026-08-24 17:00:00 UTC',
+      text: 'Успеем к четвергу?',
+    });
+    expect(edited.replies[2].replaces).toBe(edited.replies[0].at);
   });
 
   it('does not leak the file header into the first thread', () => {

@@ -39,28 +39,86 @@ pub async fn comment_start(
     prefix: Option<String>,
     suffix: Option<String>,
 ) -> Result<StartedComment, String> {
-    let doc = Path::new(&path);
+    let thread = NewThread { line, quote: &quote, text: &text, prefix, suffix };
+    let (id, until) = create_thread(Path::new(&path), thread, true)?;
+    // `create_thread(.., true)` always records a deadline.
+    Ok(StartedComment { id, until: until.unwrap_or_default() })
+}
+
+/// Create a thread that is already sent — chat mode's first message.
+///
+/// The opposite of [`comment_start`]: there is no "still typing" here, the
+/// text arrives with the press of Send, so the thread is born `open` and the
+/// agent may be woken at once. Same id rule, same write path
+/// ([`comments::append_thread_ctx`]). Returns the id the file gave it.
+#[tauri::command]
+pub async fn comment_create(
+    path: String,
+    line: usize,
+    quote: String,
+    text: String,
+    prefix: Option<String>,
+    suffix: Option<String>,
+) -> Result<String, String> {
+    let thread = NewThread { line, quote: &quote, text: &text, prefix, suffix };
+    create_thread(Path::new(&path), thread, false).map(|(id, _)| id)
+}
+
+/// What [`create_thread`] writes.
+pub struct NewThread<'a> {
+    pub line: usize,
+    pub quote: &'a str,
+    pub text: &'a str,
+    pub prefix: Option<String>,
+    pub suffix: Option<String>,
+}
+
+/// The one place a thread is created from the app: picks an id no thread in
+/// the file has, then appends it `paused` (live box, the human is still typing)
+/// or `open` (chat, the message was sent). Returns the id and, when paused,
+/// the epoch second the pause runs out.
+pub fn create_thread(
+    doc: &Path,
+    thread: NewThread<'_>,
+    paused: bool,
+) -> Result<(String, Option<u64>), String> {
+    if thread.text.trim().is_empty() {
+        // An empty thread would reach an agent as an empty question.
+        return Err("refusing to write an empty comment".to_string());
+    }
     let taken: Vec<String> = comments::load(doc)?
         .into_iter()
         .map(|thread| thread.id)
         .collect();
     let id = comments::new_id_avoiding(doc, comments::now_epoch(), &taken);
-    let prefix = prefix.unwrap_or_default();
-    let suffix = suffix.unwrap_or_default();
+    let prefix = thread.prefix.unwrap_or_default();
+    let suffix = thread.suffix.unwrap_or_default();
     let context = comments::Context {
         prefix: &prefix,
         suffix: &suffix,
     };
-    let until = comments::append_thread_paused(
+    if paused {
+        let until = comments::append_thread_paused(
+            doc,
+            &id,
+            thread.line,
+            thread.quote,
+            context,
+            comments::SELF_AUTHOR,
+            thread.text,
+        )?;
+        return Ok((id, Some(until)));
+    }
+    comments::append_thread_ctx(
         doc,
         &id,
-        line,
-        &quote,
+        thread.line,
+        thread.quote,
         context,
         comments::SELF_AUTHOR,
-        &text,
+        thread.text,
     )?;
-    Ok(StartedComment { id, until })
+    Ok((id, None))
 }
 
 /// What [`comment_start`] hands back.
@@ -225,6 +283,62 @@ mod tests {
             threads[0].replies[0].text, "Почему не ng",
             "half a sentence is still handed over — better early than never"
         );
+    }
+
+    fn new_thread(text: &str) -> NewThread<'_> {
+        NewThread {
+            line: 3,
+            quote: "цитата",
+            text,
+            prefix: Some("до ".to_string()),
+            suffix: None,
+        }
+    }
+
+    /// Chat mode's first message: sent, so `open` with no deadline — the
+    /// opposite of the live box's start, which must be paused.
+    #[test]
+    fn a_thread_created_by_send_is_open_from_its_first_write() {
+        let doc = temp_doc("spec.md");
+        let (id, until) = create_thread(&doc, new_thread("Готово к ревью?"), false).unwrap();
+
+        assert_eq!(until, None);
+        let threads = load(&doc).unwrap();
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].id, id);
+        assert_eq!(threads[0].status, Status::Open);
+        assert_eq!(threads[0].until, None);
+        assert_eq!(threads[0].prefix.as_deref(), Some("до "));
+        assert_eq!(threads[0].replies[0].author, SELF_AUTHOR);
+        assert_eq!(threads[0].replies[0].text, "Готово к ревью?");
+    }
+
+    #[test]
+    fn a_thread_started_in_the_live_box_is_still_paused() {
+        let doc = temp_doc("spec.md");
+        let (id, until) = create_thread(&doc, new_thread("Почему"), true).unwrap();
+
+        let threads = load(&doc).unwrap();
+        assert_eq!(threads[0].id, id);
+        assert_eq!(threads[0].status, Status::Paused);
+        assert!(until.is_some());
+        assert_eq!(threads[0].until, until);
+    }
+
+    #[test]
+    fn the_second_thread_gets_an_id_of_its_own() {
+        let doc = temp_doc("spec.md");
+        let (a, _) = create_thread(&doc, new_thread("раз"), false).unwrap();
+        let (b, _) = create_thread(&doc, new_thread("два"), false).unwrap();
+        assert_ne!(a, b);
+        assert_eq!(load(&doc).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn an_empty_message_creates_nothing() {
+        let doc = temp_doc("spec.md");
+        assert!(create_thread(&doc, new_thread("  \n "), false).is_err());
+        assert!(!sidecar_path(&doc).unwrap().exists(), "no file conjured up");
     }
 
     #[test]

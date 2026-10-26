@@ -114,6 +114,12 @@ pub struct ViewToggleItems {
     /// View → Tabs → Show Dates: the time on each drawer card. On by default.
     pub tabs_dates: CheckMenuItem<Wry>,
     pub dates_enabled: Toggle,
+    /// AI → «Comments: Live Box (Auto-send)»: the legacy always-editable
+    /// comment box. Off by default — the default is the chat (Send) mode.
+    /// Lives here, not in an AI-menu struct of its own, because it is the same
+    /// kind of thing: a persisted toggle the frontend syncs at start.
+    pub comment_live: CheckMenuItem<Wry>,
+    pub comment_live_enabled: Toggle,
 }
 
 /// View → Lists: two presets, two switches, the guide style, the density.
@@ -239,6 +245,11 @@ impl ViewToggleItems {
     pub fn sync_tabs_dates(&self, enabled: bool) {
         let _ = self.tabs_dates.set_checked(enabled);
         self.dates_enabled.set(enabled);
+    }
+
+    pub fn sync_comment_live(&self, enabled: bool) {
+        let _ = self.comment_live.set_checked(enabled);
+        self.comment_live_enabled.set(enabled);
     }
 }
 
@@ -643,6 +654,10 @@ pub fn build_menu(
     // оставлял сборку человеку — владелец, подключая себе, в итоге составлял
     // из них солянку вручную. Теперь документ выдаёт промпт, а сборку делает
     // агент: см. `onboarding::connect_doc`.
+    // Unchecked from the start: the frontend's default is the chat mode, and
+    // its start-up `sync_comment_live_menu` corrects it either way.
+    let comment_live =
+        CheckMenuItemBuilder::with_id("toggle_comment_live", t("menu.ai.comment_live")).build(app)?;
     let ai_menu = SubmenuBuilder::new(app, t("menu.ai.title"))
         .item(&MenuItemBuilder::with_id("ai_connect", t("menu.ai.connect")).build(app)?)
         .separator()
@@ -659,6 +674,10 @@ pub fn build_menu(
                 .accelerator("CmdOrCtrl+Shift+M")
                 .build(app)?,
         )
+        // How a comment card takes text: a chat (type, press Send — the
+        // default) or, checked, the legacy live box that saves as you type and
+        // hands itself over after a pause. Synced by `sync_comment_live_menu`.
+        .item(&comment_live)
         // Walk the places an AI left in the document — edits, comment
         // threads, questions — in a cycle (`ai-mark-nav.ts`). Menu keys, not
         // a CM6 keymap, so they also work with focus in a comment box.
@@ -733,6 +752,8 @@ pub fn build_menu(
             on.set(true);
             on
         },
+        comment_live,
+        comment_live_enabled: Toggle::default(),
     };
 
     let session_items = SessionMenuItems {

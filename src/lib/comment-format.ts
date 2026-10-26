@@ -16,8 +16,58 @@ export type CommentStatus = 'open' | 'paused' | 'answered' | 'resolved';
 
 export interface CommentReply {
   author: string;
+  /** When it was written — the plain timestamp, without an `edited (…)` tail. */
   at: string;
   text: string;
+  /**
+   * Set on the user's revision of an earlier message (chat mode): the `at` of
+   * the message it replaces. Written as `**You** · <at> · edited (replaces
+   * <original at>)` — see {@link parseEditedAt}.
+   */
+  replaces?: string;
+}
+
+/**
+ * How a comment card takes text.
+ *
+ * `chat` (the default): ordinary messages — type, press Send, the agent gets
+ * it. `live`: the legacy always-editable box that saves as you type and hands
+ * itself to the agent after a pause (#23, #36).
+ */
+export type CommentMode = 'chat' | 'live';
+
+/** The tail that marks a reply as the revision of an earlier one. */
+const EDITED_AT = /^(.*?)\s+·\s+edited \(replaces (.+)\)$/u;
+
+/**
+ * Take a reply header's timestamp apart: `<at> · edited (replaces <orig>)`
+ * gives `{ at, replaces: orig }`; anything else comes back as it was.
+ *
+ * Both parsers (this one and Rust's) read everything after the header's first
+ * `·` as the timestamp, so a build that knows nothing of edits shows the tail
+ * as part of the time and loses nothing. Tolerant on purpose: no match, or an
+ * empty part, is just a timestamp.
+ */
+export function parseEditedAt(at: string): { at: string; replaces?: string } {
+  const match = EDITED_AT.exec(at.trim());
+  if (!match || !match[1].trim() || !match[2].trim()) return { at };
+  return { at: match[1].trim(), replaces: match[2].trim() };
+}
+
+/**
+ * The same, over threads that came from Rust (`comment_threads`): its parser
+ * leaves the tail in `at`, which is what an agent reading `question` should
+ * see, while the card needs the two apart.
+ */
+export function withEditMarks(threads: CommentThread[]): CommentThread[] {
+  return threads.map((thread) => ({
+    ...thread,
+    replies: thread.replies.map((reply) => {
+      if (reply.replaces !== undefined) return reply;
+      const parsed = parseEditedAt(reply.at);
+      return parsed.replaces === undefined ? reply : { ...reply, ...parsed };
+    }),
+  }));
 }
 
 export interface CommentThread {
@@ -184,10 +234,12 @@ function parseMarker(
   return { id, status, line: lineNumber, prefix, suffix, until };
 }
 
-function parseReplyHeader(line: string): { author: string; at: string } | null {
+function parseReplyHeader(
+  line: string
+): { author: string; at: string; replaces?: string } | null {
   const match = /^\*\*([^*]+)\*\*\s+·\s+(.+)$/.exec(line);
   if (!match) return null;
-  return { author: match[1], at: match[2].trim() };
+  return { author: match[1], ...parseEditedAt(match[2].trim()) };
 }
 
 /** Parse the contents of a comment file. */

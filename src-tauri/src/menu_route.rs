@@ -18,12 +18,13 @@ pub enum MenuRoute {
 }
 
 pub fn menu_route(id: &str) -> MenuRoute {
-    const BROADCAST_PREFIXES: [&str; 8] = [
+    const BROADCAST_PREFIXES: [&str; 9] = [
         "engine_",
         "theme_",
         "toggle_ocd_alignment",
         "toggle_tabs_compact",
         "toggle_tabs_dates",
+        "toggle_comment_live",
         "transient_ignored_",
         "list_",
         "toggle_list_",
@@ -117,6 +118,8 @@ mod tests {
             "toggle_tabs_compact:off",
             "toggle_tabs_dates:on",
             "toggle_tabs_dates:off",
+            "toggle_comment_live:on",
+            "toggle_comment_live:off",
             "theme_family_aurora",
             "theme_half_dark",
             "theme_system:off",

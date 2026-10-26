@@ -69,6 +69,7 @@
   "menu.ai.title": "IA",
   "menu.ai.connect": "Apprends couplet à ton IA",
   "menu.ai.comment": "Commenter la sélection",
+  "menu.ai.comment_live": "Commentaires : champ en direct (envoi auto)",
   "menu.ai.next_mark": "Marque IA suivante",
   "menu.ai.prev_mark": "Marque IA précédente",
   "menu.ai.watch_command": "Connecter l'agent aux questions du document",

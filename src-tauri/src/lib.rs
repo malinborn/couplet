@@ -53,7 +53,7 @@ use window::{FileWatchers, OpenFiles, PendingFiles, PendingTab};
 /// `None` для всего, что тумблером не является: такие события уходят как есть.
 /// Здесь только пункты, чьё значение фронтенд сообщает при старте
 /// (`sync_theme_menu`, `sync_ocd_alignment_menu`, `sync_tabs_compact_menu`,
-/// `sync_tabs_dates_menu`, `sync_list_menu`) —
+/// `sync_tabs_dates_menu`, `sync_list_menu`, `sync_comment_live_menu`) —
 /// без этого `Toggle` не с чего было бы начинать. `toggle_line_glow` такой
 /// синхронизации не имеет и
 /// потому сюда не включён; он до сих пор рассылает «переключи» и ведёт себя
@@ -72,6 +72,9 @@ fn toggle_value(app: &tauri::AppHandle, id: &str) -> Option<bool> {
         "toggle_tabs_dates" => app
             .try_state::<menu::ViewToggleItems>()
             .map(|s| s.dates_enabled.flip()),
+        "toggle_comment_live" => app
+            .try_state::<menu::ViewToggleItems>()
+            .map(|s| s.comment_live_enabled.flip()),
         "toggle_list_guides" => app
             .try_state::<menu::ListMenuItems>()
             .map(|s| s.guides_on.flip()),
@@ -179,8 +182,10 @@ pub fn run() {
             reveal::current_modifiers,
             commands::comment_threads,
             commands::comment_reply,
+            commands::comment_edit,
             commands::comment_resolve,
             comment_pause::comment_start,
+            comment_pause::comment_create,
             comment_pause::comment_write_reply,
             comment_pause::comment_commit,
             comment_pause::commit_document_pauses,
@@ -247,6 +252,7 @@ pub fn run() {
             commands::sync_list_menu,
             commands::sync_tabs_compact_menu,
             commands::sync_tabs_dates_menu,
+            commands::sync_comment_live_menu,
             commands::sync_transient_menu,
             commands::broadcast_theme,
             i18n::resolved_language,
