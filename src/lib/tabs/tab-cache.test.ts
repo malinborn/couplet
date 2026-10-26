@@ -24,6 +24,10 @@ const actions: CommentActions = {
   resolve: vi.fn(),
   handoff: vi.fn(),
   insertIntoText: vi.fn(),
+  compose: vi.fn(),
+  send: vi.fn(() => Promise.resolve(false)),
+  edit: vi.fn(() => Promise.resolve(false)),
+  editing: vi.fn(),
 };
 
 function busyState(): EditorState {

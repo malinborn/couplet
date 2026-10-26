@@ -44,6 +44,10 @@ function noopActions(): CommentActions {
     resolve: () => {},
     handoff: () => {},
     insertIntoText: () => {},
+    compose: () => {},
+    send: () => Promise.resolve(false),
+    edit: () => Promise.resolve(false),
+    editing: () => {},
   };
 }
 

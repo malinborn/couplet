@@ -208,6 +208,10 @@ describe('verified cells in the table widget', () => {
       resolve: () => {},
       handoff: () => {},
       insertIntoText: () => {},
+      compose: () => {},
+      send: () => Promise.resolve(false),
+      edit: () => Promise.resolve(false),
+      editing: () => {},
     };
     view.dispatch({
       effects: addAiComment.of({

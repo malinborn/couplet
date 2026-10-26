@@ -7,8 +7,16 @@ import {
   type ViewUpdate,
   WidgetType,
 } from '@codemirror/view';
-import { quotePreview, splitThread, type CommentThread } from '../comment-format';
+import {
+  quotePreview,
+  splitThread,
+  SELF_AUTHOR,
+  type CommentMode,
+  type CommentReply,
+  type CommentThread,
+} from '../comment-format';
 import { makeWidgetTextSelectable } from './widget-text-selection';
+import { renderCommentMarkdown, COMMENT_MD_CLASS } from './comment-markdown';
 import { t } from '../i18n';
 
 /**
@@ -38,6 +46,40 @@ export interface CommentActions {
   resolve: (id: string) => void;
   handoff: (id: string) => void;
   insertIntoText: (id: string, text: string) => void;
+  /**
+   * Chat mode: the composer's text changed. Nothing is written to the sidecar
+   * — in chat mode only Send writes — so the app keeps it itself (in memory
+   * and in `localStorage`), or a rebuild, a tab switch or a restart would lose
+   * a message the user has not sent yet.
+   */
+  compose: (id: string, text: string) => void;
+  /**
+   * Chat mode: hand `text` to the agent — a new thread for a draft card, a
+   * reply on an existing one. Resolves to whether it was written; on `false`
+   * the text stays in the composer (the app has already said why).
+   */
+  send: (id: string, text: string) => Promise<boolean>;
+  /**
+   * Chat mode: the user revised their message written at `originalAt`. The
+   * revision is appended at the end of the thread (the original stays), and
+   * resolves to whether it was written.
+   */
+  edit: (id: string, originalAt: string, text: string) => Promise<boolean>;
+  /**
+   * Chat mode: an inline edit was opened or typed into (`state`), or closed
+   * (`null`). Kept by the app so a rebuild — the agent answering mid-edit —
+   * brings the edit back instead of dropping it (see `CommentSpec.edit`).
+   */
+  editing: (id: string, state: { at: string; text: string } | null) => void;
+}
+
+/** An inline edit of one of the user's own messages, in flight (chat mode). */
+export interface CommentEditState {
+  /** `at` of the message being edited — the one the revision replaces. */
+  at: string;
+  text: string;
+  /** Put the caret back in it — it had focus when the card was rebuilt. */
+  focus?: boolean;
 }
 
 export interface CommentSpec {
@@ -59,6 +101,15 @@ export interface CommentSpec {
    * under the user's hands, put them back where they were".
    */
   focusAt?: number;
+  /**
+   * `chat` (the app's default): every turn is a message, the box at the bottom
+   * is a composer with a Send button. `live` — also what an absent value
+   * means — is the legacy always-editable box with autosave and a pause.
+   */
+  mode?: CommentMode;
+  /** Chat mode: an inline edit to reopen after a rebuild. Excluded from `eq()`
+   * for the same reason as `draft`. */
+  edit?: CommentEditState;
 }
 
 /** Adds a comment-thread widget, anchored at the end of the line containing `pos`. */
@@ -74,6 +125,10 @@ export const addAiComment = StateEffect.define<{
   draft?: string;
   /** Caret offset to focus the box at — see `CommentSpec.focusAt`. */
   focusAt?: number;
+  /** See `CommentSpec.mode`. */
+  mode?: CommentMode;
+  /** See `CommentSpec.edit`. */
+  edit?: CommentEditState;
 }>();
 
 /**
@@ -238,8 +293,12 @@ export class CommentWidget extends WidgetType {
   eq(other: CommentWidget): boolean {
     const a = this.spec.thread;
     const b = other.spec.thread;
-    const mine = splitThread(a).frozen;
-    const theirs = splitThread(b).frozen;
+    const mode = this.mode;
+    if (mode !== other.mode) return false;
+    // In chat mode every reply is a finished message — a sent one included —
+    // so the whole thread is compared: a send has to rebuild the card.
+    const mine = mode === 'chat' ? a.replies : splitThread(a).frozen;
+    const theirs = mode === 'chat' ? b.replies : splitThread(b).frozen;
     return (
       a.id === b.id &&
       a.status === b.status &&
@@ -250,9 +309,15 @@ export class CommentWidget extends WidgetType {
         (reply, i) =>
           reply.author === theirs[i].author &&
           reply.at === theirs[i].at &&
+          reply.replaces === theirs[i].replaces &&
           reply.text === theirs[i].text
       )
     );
+  }
+
+  /** The card's mode; an absent one is the legacy live box. */
+  get mode(): CommentMode {
+    return this.spec.mode ?? 'live';
   }
 
   toDOM(view?: EditorView): HTMLElement {
@@ -292,6 +357,12 @@ export class CommentWidget extends WidgetType {
     makeWidgetTextSelectable(head, { swallowKeys: true });
     card.appendChild(head);
 
+    if (this.mode === 'chat') {
+      this.chatBody(card, view);
+      wrap.appendChild(card);
+      return wrap;
+    }
+
     // Finished turns. Outlined and left alone — the visual difference from the
     // live box below is the whole signal that a turn has been answered and can
     // no longer be edited.
@@ -305,13 +376,7 @@ export class CommentWidget extends WidgetType {
       makeWidgetTextSelectable(who, { swallowKeys: true });
       item.appendChild(who);
 
-      const body = document.createElement('div');
-      body.className = 'cm-ai-comment-text';
-      body.textContent = reply.text;
-      // The formulation in here is the thing people want to carry off into a
-      // task, a chat or a commit message.
-      makeWidgetTextSelectable(body, { swallowKeys: true });
-      item.appendChild(body);
+      item.appendChild(messageBody(reply));
 
       card.appendChild(item);
     }
@@ -485,15 +550,384 @@ export class CommentWidget extends WidgetType {
     return wrap;
   }
 
+  /**
+   * Chat mode: every turn a message, a composer at the bottom, Send.
+   *
+   * What changes against the live box is who decides when the agent is told:
+   * here only Send writes, so the card says so — the button names the agent,
+   * the placeholder names the agent, and a hint next to it says the agent
+   * waits for what is sent. Nothing typed is written until then; the app
+   * keeps the composer's text itself (`actions.compose`).
+   */
+  private chatBody(card: HTMLElement, view?: EditorView): void {
+    const { thread, actions } = this.spec;
+    const replies = thread.replies;
+    const items: Array<{ item: HTMLElement; reply: CommentReply; body: HTMLElement }> = [];
+    /** The one inline edit open in this card, if any. */
+    let openEdit: { close: () => void } | null = null;
+
+    const openEditor = (
+      item: HTMLElement,
+      body: HTMLElement,
+      reply: CommentReply,
+      initial: string,
+      focus: boolean
+    ): void => {
+      openEdit?.close();
+      const box = document.createElement('div');
+      box.className = 'cm-ai-comment-edit';
+      const area = document.createElement('textarea');
+      area.className = 'cm-ai-comment-input cm-ai-comment-edit-input';
+      area.rows = 1;
+      area.value = initial;
+      area.setAttribute('data-comment-edit', thread.id);
+      const row = document.createElement('div');
+      row.className = 'cm-ai-comment-actions';
+      const save = chatButton(t('editor.ai_comment.edit_save'), 'cm-ai-comment-button cm-ai-comment-primary');
+      const cancel = chatButton(t('editor.ai_comment.edit_cancel'));
+      row.appendChild(save);
+      row.appendChild(cancel);
+      box.appendChild(area);
+      box.appendChild(row);
+
+      const grow = growTextarea(area, view);
+      let saving = false;
+      const handle = {
+        close: (): void => {
+          if (openEdit !== handle) return;
+          openEdit = null;
+          if (box.parentNode === item) item.replaceChild(body, box);
+          actions.editing(thread.id, null);
+        },
+      };
+      const commit = (): void => {
+        if (saving) return;
+        const text = area.value;
+        // Nothing changed, or nothing left: there is nothing to tell the
+        // agent, and deleting a message is not what an edit is for.
+        if (!text.trim() || text.trim() === reply.text.trim()) {
+          handle.close();
+          view?.focus();
+          return;
+        }
+        saving = true;
+        save.disabled = true;
+        area.readOnly = true;
+        void actions.edit(thread.id, reply.at, text).then((ok) => {
+          saving = false;
+          save.disabled = false;
+          area.readOnly = false;
+          // On success the app rebuilds the card with the revision in it; on
+          // failure the text stays here, next to the toast that says why.
+          if (ok) handle.close();
+        });
+      };
+
+      swallowPointer(area);
+      area.addEventListener('input', () => {
+        grow();
+        actions.editing(thread.id, { at: reply.at, text: area.value });
+      });
+      area.addEventListener('keydown', (event) => {
+        event.stopPropagation();
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          handle.close();
+          view?.focus();
+          return;
+        }
+        if (isSendKey(event)) {
+          event.preventDefault();
+          commit();
+        }
+      });
+      save.addEventListener('click', commit);
+      cancel.addEventListener('click', () => {
+        handle.close();
+        view?.focus();
+      });
+
+      item.replaceChild(box, body);
+      openEdit = handle;
+      actions.editing(thread.id, { at: reply.at, text: area.value });
+      afterFrame(() => {
+        grow();
+        if (!focus) return;
+        area.focus?.();
+        area.setSelectionRange?.(area.value.length, area.value.length);
+      });
+    };
+
+    replies.forEach((reply, i) => {
+      const own = reply.author === SELF_AUTHOR;
+      // The original of a revision stays on screen — before and after is the
+      // point — but reads as secondary, so the eye lands on what is meant now.
+      const superseded =
+        own &&
+        replies.some(
+          (later, j) => j > i && later.author === SELF_AUTHOR && later.replaces === reply.at
+        );
+      const item = document.createElement('div');
+      item.className = [
+        'cm-ai-comment-reply',
+        own ? 'cm-ai-comment-msg-own' : 'cm-ai-comment-msg-agent',
+        superseded ? 'cm-ai-comment-superseded' : '',
+      ]
+        .filter(Boolean)
+        .join(' ');
+
+      const who = document.createElement('div');
+      who.className = 'cm-ai-comment-author';
+      who.textContent = `${reply.author} · ${reply.at}`;
+      if (reply.replaces !== undefined) {
+        who.appendChild(badge(t('editor.ai_comment.edited'), reply.replaces));
+      }
+      if (superseded) who.appendChild(badge(t('editor.ai_comment.superseded')));
+      makeWidgetTextSelectable(who, { swallowKeys: true });
+      item.appendChild(who);
+
+      const body = messageBody(reply);
+      item.appendChild(body);
+      items.push({ item, reply, body });
+
+      // Only the user's own messages: an agent's answer is not theirs to edit.
+      if (own) {
+        item.title = t('editor.ai_comment.edit_title');
+        item.addEventListener('dblclick', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openEditor(item, body, reply, reply.text, true);
+        });
+      }
+      card.appendChild(item);
+    });
+
+    // The composer. Enter sends — this is a chat — and Shift+Enter is the
+    // newline; the button says the same thing in words, with the agent named.
+    const input = document.createElement('textarea');
+    input.className = 'cm-ai-comment-input cm-ai-comment-composer';
+    input.rows = 1;
+    input.placeholder = t('editor.ai_comment.chat_placeholder');
+    input.value = this.spec.draft ?? '';
+    // Lets the app find this box by thread after a rebuild.
+    input.setAttribute('data-comment-input', thread.id);
+    const grow = growTextarea(input, view);
+
+    const composeRow = document.createElement('div');
+    composeRow.className = 'cm-ai-comment-compose-row';
+    const send = chatButton(
+      t('editor.ai_comment.chat_send'),
+      'cm-ai-comment-button cm-ai-comment-primary cm-ai-comment-send'
+    );
+    send.title = t('editor.ai_comment.chat_send_title');
+    send.setAttribute('data-comment-send', thread.id);
+    const hint = document.createElement('span');
+    hint.className = 'cm-ai-comment-hint';
+    hint.textContent = t('editor.ai_comment.chat_hint');
+    composeRow.appendChild(send);
+    composeRow.appendChild(hint);
+
+    let sending = false;
+    const refresh = (): void => {
+      send.disabled = sending || !input.value.trim();
+    };
+    const doSend = (): void => {
+      const text = input.value;
+      if (sending || !text.trim()) return;
+      sending = true;
+      // Read-only while it is on its way: what was sent is exactly what is in
+      // the box, so nothing typed meanwhile can be cleared along with it.
+      input.readOnly = true;
+      refresh();
+      void actions.send(thread.id, text).then((ok) => {
+        sending = false;
+        input.readOnly = false;
+        if (ok) {
+          input.value = '';
+          grow();
+        }
+        refresh();
+      });
+    };
+
+    swallowPointer(input);
+    input.addEventListener('input', () => {
+      grow();
+      refresh();
+      actions.compose(thread.id, input.value);
+    });
+    input.addEventListener('keydown', (event) => {
+      // Same as the live box: no key typed here may reach a CM6 keymap or a
+      // document-level listener.
+      event.stopPropagation();
+      if (event.key === 'Escape') {
+        input.blur?.();
+        view?.focus();
+        return;
+      }
+      if (isSendKey(event)) {
+        event.preventDefault();
+        doSend();
+      }
+    });
+    send.addEventListener('click', doSend);
+    refresh();
+    card.appendChild(input);
+    card.appendChild(composeRow);
+
+    const row = document.createElement('div');
+    row.className = 'cm-ai-comment-actions';
+    // A card nothing has been sent from yet has no thread an agent could
+    // find, so there is no prompt to copy for it.
+    if (replies.length > 0) {
+      const label = t('editor.ai_comment.handoff_chat');
+      const handoff = chatButton(label);
+      handoff.title = t('editor.ai_comment.handoff_chat_title');
+      confirmOnClick(handoff, label, t('editor.ai_comment.paste_confirm'), () =>
+        actions.handoff(thread.id)
+      );
+      row.appendChild(handoff);
+    }
+    const answer = replies[replies.length - 1];
+    if (thread.status === 'answered' && answer) {
+      const insert = chatButton(t('editor.ai_comment.insert_into_text'));
+      insert.addEventListener('click', () => actions.insertIntoText(thread.id, answer.text));
+      row.appendChild(insert);
+    }
+    if (thread.status !== 'resolved') {
+      const resolve = chatButton(t('editor.ai_comment.resolve'));
+      resolve.addEventListener('click', () => actions.resolve(thread.id));
+      row.appendChild(resolve);
+    }
+    card.appendChild(row);
+
+    // An edit that was open when the card was rebuilt comes back.
+    const pending = this.spec.edit;
+    if (pending) {
+      const target = items.find(
+        ({ reply }) => reply.author === SELF_AUTHOR && reply.at === pending.at
+      );
+      if (target) {
+        openEditor(target.item, target.body, target.reply, pending.text, pending.focus === true);
+      }
+    }
+
+    // Focus only when asked (see the live box below for why).
+    const caret = this.spec.focusAt;
+    afterFrame(() => {
+      if (caret !== undefined) {
+        input.focus?.();
+        const at = Math.min(caret, input.value.length);
+        input.setSelectionRange?.(at, at);
+      }
+      grow();
+    });
+  }
+
   /** The DOM is going away — rebuild, resolve, document switch. Anything still
-   * unwritten is written now rather than lost. */
+   * unwritten is written now rather than lost. Chat mode writes nothing until
+   * Send: its unsent text is already with the app (`actions.compose`). */
   destroy(): void {
+    if (this.mode === 'chat') return;
     this.spec.actions.flush(this.spec.thread.id);
   }
 
   ignoreEvent(): boolean {
     return true;
   }
+}
+
+/**
+ * A message's text, rendered from its markdown — agent and user replies alike,
+ * in both modes.
+ *
+ * Still a nested editing host: the formulation in here is the thing people
+ * want to carry off into a task, a chat or a commit message (#28).
+ */
+function messageBody(reply: CommentReply): HTMLElement {
+  const body = renderCommentMarkdown(reply.text);
+  body.className = `cm-ai-comment-text ${COMMENT_MD_CLASS}`;
+  makeWidgetTextSelectable(body, { swallowKeys: true });
+  return body;
+}
+
+/** A small label after the author line: "edited", "replaced below". */
+function badge(label: string, title?: string): HTMLElement {
+  const el = document.createElement('span');
+  el.className = 'cm-ai-comment-badge';
+  el.textContent = label;
+  if (title) el.title = title;
+  return el;
+}
+
+/** A card button that keeps the editor's selection where it is. */
+function chatButton(label: string, className = 'cm-ai-comment-button'): HTMLButtonElement {
+  const element = document.createElement('button');
+  element.type = 'button';
+  element.className = className;
+  element.textContent = label;
+  element.addEventListener('mousedown', (event) => event.preventDefault());
+  return element;
+}
+
+/** Say on the button itself that an invisible action (the clipboard) happened. */
+function confirmOnClick(
+  element: HTMLButtonElement,
+  label: string,
+  confirmLabel: string,
+  onClick: () => void
+): void {
+  element.addEventListener('click', () => {
+    onClick();
+    element.textContent = confirmLabel;
+    element.className = 'cm-ai-comment-button cm-ai-comment-button-done';
+    setTimeout(() => {
+      element.textContent = label;
+      element.className = 'cm-ai-comment-button';
+    }, 5000);
+  });
+}
+
+/**
+ * Enter sends, Shift+Enter is a newline, ⌘/Ctrl+Enter sends too. Never while
+ * an IME is composing: that Enter confirms the composition (`isComposing`, or
+ * the legacy `keyCode` 229 some engines report instead).
+ */
+export function isSendKey(
+  event: Pick<KeyboardEvent, 'key' | 'isComposing' | 'keyCode' | 'metaKey' | 'ctrlKey' | 'shiftKey'>
+): boolean {
+  if (event.key !== 'Enter') return false;
+  if (event.isComposing || event.keyCode === 229) return false;
+  return event.metaKey || event.ctrlKey || !event.shiftKey;
+}
+
+/**
+ * Keep a box's pointer and key events away from CM6 — see the live box for
+ * why: mousedown stops propagation but is NOT prevented, or the caret could
+ * not be placed in the box at all.
+ */
+function swallowPointer(el: HTMLElement): void {
+  el.addEventListener('mousedown', (event) => event.stopPropagation());
+  el.addEventListener('keypress', (event) => event.stopPropagation());
+  el.addEventListener('keyup', (event) => event.stopPropagation());
+}
+
+/** Grow a textarea to its text. A block widget that changes height behind
+ * CM6's back leaves the height map wrong, hence the requestMeasure. */
+function growTextarea(area: HTMLTextAreaElement, view?: EditorView): () => void {
+  return () => {
+    const style = (area as { style?: { height: string } }).style;
+    if (!style) return; // DOM-less test harness
+    style.height = '0px';
+    style.height = `${Math.max(area.scrollHeight || 0, 24)}px`;
+    view?.requestMeasure();
+  };
+}
+
+/** Run once the widget is in the document — CM6 settles its own focus in the
+ * frame the widget is inserted in (#22). */
+function afterFrame(fn: () => void): void {
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fn);
 }
 
 function isCommentWidget(widget: WidgetType): widget is CommentWidget {
@@ -513,11 +947,11 @@ export const aiCommentField = StateField.define<DecorationSet>({
     deco = deco.map(tr.changes);
     for (const effect of tr.effects) {
       if (effect.is(addAiComment)) {
-        const { thread, pos, to, orphaned, actions, draft, focusAt } = effect.value;
+        const { thread, pos, to, orphaned, actions, draft, focusAt, mode, edit } = effect.value;
         const clamped = Math.max(0, Math.min(pos, tr.state.doc.length));
         const anchor = tr.state.doc.lineAt(clamped).to;
         const widget = Decoration.widget({
-          widget: new CommentWidget({ thread, orphaned, actions, draft, focusAt }),
+          widget: new CommentWidget({ thread, orphaned, actions, draft, focusAt, mode, edit }),
           block: true,
           side: 1,
         });

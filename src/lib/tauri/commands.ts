@@ -3,7 +3,7 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import type { ConcreteTheme, ThemeFamily, ThemeHalf } from '../theme-resolve';
 import type { EditorEngine } from '../stores.svelte';
 import type { ListLayout } from '../editor/preview/explicit-lists';
-import type { CommentThread } from '../comment-format';
+import { withEditMarks, type CommentThread } from '../comment-format';
 import type { InboxItem } from '../tabs/agent-inbox';
 import type { DiskDocument, LineEnding } from '../line-endings';
 import { decodeFromDisk, encodeForDisk, isTableBuffer } from '../csv/csv-codec';
@@ -122,6 +122,11 @@ export function syncTabsDatesMenu(enabled: boolean): void {
   invoke('sync_tabs_dates_menu', { enabled }).catch(() => {});
 }
 
+/** Sets AI → «Comments: Live Box (Auto-send)» (checked = live mode); harmless no-op outside Tauri. */
+export function syncCommentLiveMenu(enabled: boolean): void {
+  invoke('sync_comment_live_menu', { enabled }).catch(() => {});
+}
+
 /** Sets File → quick looks' radio pair; harmless no-op outside Tauri. */
 export function syncTransientMenu(policy: 'keep' | 'close'): void {
   invoke('sync_transient_menu', { policy }).catch(() => {});
@@ -195,7 +200,9 @@ export type TabClaim =
  * have no comments, and the file only appears once the first one is written.
  */
 export async function commentThreads(path: string): Promise<CommentThread[]> {
-  return invoke<CommentThread[]>('comment_threads', { path });
+  // Rust's parser keeps an edited reply's `· edited (replaces …)` tail in `at`
+  // (what an agent reading `question` should see); the card wants it apart.
+  return withEditMarks(await invoke<CommentThread[]>('comment_threads', { path }));
 }
 
 /** What creating a thread hands back: its id, and when its pause runs out. */
@@ -231,6 +238,42 @@ export async function commentStart(
     prefix: context.prefix ?? null,
     suffix: context.suffix ?? null,
   });
+}
+
+/**
+ * Creates a thread that is already sent — chat mode's first message — `open`
+ * from its first write, so the agent may be woken at once. Resolves to the id
+ * the file gave it.
+ */
+export async function commentCreate(
+  path: string,
+  line: number,
+  quote: string,
+  text: string,
+  context: { prefix?: string; suffix?: string } = {}
+): Promise<string> {
+  return invoke<string>('comment_create', {
+    path,
+    line,
+    quote,
+    text,
+    prefix: context.prefix ?? null,
+    suffix: context.suffix ?? null,
+  });
+}
+
+/**
+ * The user's revision of an earlier message of theirs (chat mode): appended at
+ * the end of the thread as `**You** · <now> · edited (replaces <originalAt>)`,
+ * thread back to `open`. The original stays — the agent reads both.
+ */
+export async function commentEdit(
+  path: string,
+  id: string,
+  originalAt: string,
+  text: string
+): Promise<void> {
+  return invoke('comment_edit', { path, id, originalAt, text });
 }
 
 /**

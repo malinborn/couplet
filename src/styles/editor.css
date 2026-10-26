@@ -2257,6 +2257,194 @@
   white-space: pre-wrap;
 }
 
+/* Разметка в сообщениях треда (`comment-markdown.ts`) — и агента, и своих.
+ * Компактно: карточка не документ. Абзацы с маленьким зазором, первый и
+ * последний ребёнок без полей, заголовки почти размером текста.
+ *
+ * `contain: inline-size` — потому что широкий блок кода или таблица иначе
+ * растянули бы `.cm-content` и сломали перенос строк во всём документе (см.
+ * CLAUDE.md); вместо этого они прокручиваются внутри карточки. Поля здесь —
+ * у детей внутри карточки, не у корня виджета: правило про block widget
+ * касается только `.cm-ai-comment-wrap`. */
+.cm-ai-comment-md {
+  contain: inline-size;
+  overflow-wrap: anywhere;
+}
+
+.cm-ai-comment-md > :first-child {
+  margin-top: 0;
+}
+
+.cm-ai-comment-md > :last-child {
+  margin-bottom: 0;
+}
+
+.cm-ai-comment-md :is(p, ul, ol, pre, blockquote, table, h4, h5, h6) {
+  margin: 0.35em 0;
+}
+
+.cm-ai-comment-md :is(h4, h5, h6) {
+  font-size: 1em;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.cm-ai-comment-md :is(h5, h6) {
+  font-weight: 600;
+}
+
+.cm-ai-comment-md :is(ul, ol) {
+  padding-left: 1.4em;
+}
+
+.cm-ai-comment-md li > p,
+.cm-ai-comment-md li > :is(ul, ol) {
+  margin: 0;
+}
+
+.cm-ai-comment-md li + li {
+  margin-top: 0.15em;
+}
+
+.cm-ai-comment-md .cm-ai-comment-md-check {
+  color: var(--color-checkbox);
+}
+
+.cm-ai-comment-md code {
+  font-family: var(--font-code);
+  font-size: 0.9em;
+  color: var(--color-code-text);
+  background: var(--color-code-bg);
+  padding: 0.05em 0.3em;
+  border-radius: 3px;
+}
+
+.cm-ai-comment-md pre {
+  padding: 0.4em 0.55em;
+  border-radius: 4px;
+  background: var(--color-code-bg);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.cm-ai-comment-md pre code {
+  padding: 0;
+  background: none;
+  white-space: pre;
+}
+
+.cm-ai-comment-md blockquote {
+  padding-left: 0.6em;
+  border-left: 2px solid var(--color-blockquote-border);
+  color: var(--text-subtle);
+}
+
+.cm-ai-comment-md hr {
+  margin: 0.5em 0;
+  border: 0;
+  border-top: 1px solid var(--color-hr);
+}
+
+.cm-ai-comment-md a {
+  color: var(--color-link);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.cm-ai-comment-md table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+
+.cm-ai-comment-md :is(th, td) {
+  padding: 0.15em 0.45em;
+  border: 1px solid var(--color-table-border);
+  text-align: left;
+  white-space: normal;
+}
+
+.cm-ai-comment-md th {
+  font-weight: 600;
+}
+
+/* --- Режим чата (по умолчанию) ---
+ *
+ * Каждый ход — сообщение. Ответ агента — поверхность для чтения: нейтральная
+ * полоса. Свои сообщения чуть сдвинуты и с акцентной полосой — отличаются
+ * боковым зрением, но не спорят с ответом за внимание. */
+.cm-ai-comment-msg-agent {
+  border-left-color: var(--ai-ask-border);
+}
+
+.cm-ai-comment-msg-own {
+  margin-left: 1.25rem;
+  border-left-color: var(--ai-ask-accent);
+  background: var(--ai-ask-bg);
+}
+
+/* Оригинал, который заменён правкой ниже: остаётся на месте (до и после —
+ * весь смысл), но читается как второстепенный. */
+.cm-ai-comment-superseded {
+  opacity: 0.55;
+}
+
+.cm-ai-comment-badge {
+  margin-left: 0.4em;
+  padding: 0 0.35em;
+  border: 1px solid var(--ai-ask-border);
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+/* Поле сообщения: сплошная рамка — это поле, из которого отправляют, а не
+ * живое поле для письма, как в режиме автоотправки. */
+.cm-ai-comment-input.cm-ai-comment-composer {
+  border-style: solid;
+}
+
+.cm-ai-comment-input.cm-ai-comment-composer:focus {
+  border-color: var(--ai-ask-accent);
+}
+
+.cm-ai-comment-compose-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.6rem;
+  margin-bottom: 0.45rem;
+}
+
+/* «Отправить агенту ↵» — единственное основное действие карточки. */
+.cm-ai-comment-button.cm-ai-comment-primary {
+  color: var(--ai-ask-accent-text);
+  background: var(--ai-ask-accent);
+  border-color: var(--ai-ask-accent);
+}
+
+.cm-ai-comment-button.cm-ai-comment-primary:hover {
+  background: var(--ai-ask-accent);
+}
+
+.cm-ai-comment-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.cm-ai-comment-hint {
+  opacity: 0.6;
+  font-size: 0.85em;
+}
+
+/* Правка своего сообщения — поле на месте его текста. */
+.cm-ai-comment-edit .cm-ai-comment-input {
+  margin: 0.25rem 0;
+  border-style: solid;
+  border-color: var(--ai-ask-accent);
+}
+
 /* Активная область. Всегда редактируема, отправлять ничего не надо — поэтому
  * выглядит как место для письма, а не как поле формы: без заливки, высота по
  * тексту, рамка тоньше и светлее, чем полоса у зафиксированного блока.

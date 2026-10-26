@@ -54,6 +54,8 @@ export type MenuAction =
   | 'toggle_tabs_compact:off'
   | 'toggle_tabs_dates:on'
   | 'toggle_tabs_dates:off'
+  | 'toggle_comment_live:on'
+  | 'toggle_comment_live:off'
   | 'transient_ignored_keep'
   | 'transient_ignored_close'
   | 'stash_put_away'

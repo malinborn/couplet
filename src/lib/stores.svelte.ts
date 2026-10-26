@@ -16,6 +16,7 @@ import { windowTitle } from './window-title';
 import type { TransientPolicy } from './tabs/controller';
 import type { LineEnding } from './line-endings';
 import type { StashKind } from './stash/types';
+import type { CommentMode } from './comment-format';
 import { listLayoutFromMenu, normalizeListLayout, type ListLayout } from './editor/preview/explicit-lists';
 
 /**
@@ -314,6 +315,26 @@ export function createTabsDatesStore() {
     set(value: boolean) {
       enabled = value;
       saveSetting('tabsDates', enabled);
+    },
+  };
+}
+
+/**
+ * AI → «Comments: Live Box (Auto-send)»: how a comment card takes text.
+ * `chat` by default — type, press Send; `live` is the legacy always-editable
+ * box (checked in the menu). Anything unknown in storage reads as the default.
+ */
+export function createCommentModeStore() {
+  const stored = loadSetting<unknown>('commentMode', 'chat');
+  let mode = $state<CommentMode>(stored === 'live' ? 'live' : 'chat');
+
+  return {
+    get value(): CommentMode {
+      return mode;
+    },
+    set(value: CommentMode) {
+      mode = value;
+      saveSetting('commentMode', mode);
     },
   };
 }

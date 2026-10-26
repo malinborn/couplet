@@ -29,6 +29,10 @@ function makeActions(overrides: Partial<CommentActions> = {}): CommentActions {
     resolve: vi.fn(),
     handoff: vi.fn(),
     insertIntoText: vi.fn(),
+    compose: vi.fn(),
+    send: vi.fn(() => Promise.resolve(true)),
+    edit: vi.fn(() => Promise.resolve(true)),
+    editing: vi.fn(),
     ...overrides,
   };
 }
@@ -338,6 +342,27 @@ function fire(
   return { preventDefault, stopPropagation };
 }
 
+/**
+ * The fake `document`: elements, plus text nodes for the markdown renderer
+ * (`comment-markdown.ts`), which builds message bodies out of both.
+ */
+function stubFakeDocument(): void {
+  vi.stubGlobal('document', {
+    createElement: createFakeElement,
+    createTextNode: (text: string) => {
+      const node = createFakeElement('#text');
+      node.textContent = text;
+      return node;
+    },
+  });
+}
+
+/** All the text under an element, the way the DOM's `textContent` reads it —
+ * the fake models only an element's own text. */
+function textOf(el: FakeElement): string {
+  return el.textContent + el.children.map(textOf).join('');
+}
+
 /** `className` is a real DOM space-separated token list — match by word, not
  * exact string, so a single class name finds it regardless of what else is
  * set alongside it (e.g. `cm-ai-comment cm-ai-comment-orphaned`). */
@@ -361,7 +386,7 @@ describe('CommentWidget.toDOM root element', () => {
     // still pushes lines below the widget down on screen, but CM6 doesn't
     // count it, so `posAtCoords`'s vertical scan walks past every line below
     // the widget. See ai-ask.ts's AskWidget for the original repro.
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const widget = new CommentWidget({ thread: thread(), orphaned: false, actions: makeActions() });
 
     const dom = widget.toDOM() as unknown as FakeElement;
@@ -371,7 +396,7 @@ describe('CommentWidget.toDOM root element', () => {
   });
 
   it('marks an orphaned thread with the orphaned class alongside the base class', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const widget = new CommentWidget({ thread: thread(), orphaned: true, actions: makeActions() });
 
     const dom = widget.toDOM() as unknown as FakeElement;
@@ -387,7 +412,7 @@ describe('CommentWidget.toDOM replies', () => {
   });
 
   it('renders one reply block per reply, with author/timestamp and text', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const withTwo = thread({
       replies: [
         { author: 'Макс', at: '14:02', text: 'Почему не nginx?' },
@@ -400,7 +425,7 @@ describe('CommentWidget.toDOM replies', () => {
     const replies = findByClass(dom, 'cm-ai-comment-reply');
     expect(replies).toHaveLength(2);
     expect(findByClass(replies[0], 'cm-ai-comment-author')[0].textContent).toBe('Макс · 14:02');
-    expect(findByClass(replies[0], 'cm-ai-comment-text')[0].textContent).toBe('Почему не nginx?');
+    expect(textOf(findByClass(replies[0], 'cm-ai-comment-text')[0])).toBe('Почему не nginx?');
     expect(findByClass(replies[1], 'cm-ai-comment-author')[0].textContent).toBe('agent · 14:05');
   });
 });
@@ -411,7 +436,7 @@ describe('CommentWidget.toDOM action buttons', () => {
   });
 
   it('always renders a handoff button, and clicking it calls actions.handoff(id)', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const actions = makeActions();
     const widget = new CommentWidget({ thread: thread({ id: 'c-aaaaaa' }), orphaned: false, actions });
 
@@ -426,7 +451,7 @@ describe('CommentWidget.toDOM action buttons', () => {
   });
 
   it('renders a resolve button for an open thread, and clicking it calls actions.resolve(id)', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const actions = makeActions();
     const widget = new CommentWidget({ thread: thread({ id: 'c-aaaaaa', status: 'open' }), orphaned: false, actions });
 
@@ -438,7 +463,7 @@ describe('CommentWidget.toDOM action buttons', () => {
   });
 
   it('does not render a resolve button once the thread is already resolved', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const widget = new CommentWidget({ thread: thread({ status: 'resolved' }), orphaned: false, actions: makeActions() });
 
     const dom = widget.toDOM() as unknown as FakeElement;
@@ -447,7 +472,7 @@ describe('CommentWidget.toDOM action buttons', () => {
   });
 
   it('renders an insert-into-text button only when answered, calling actions.insertIntoText with the last reply', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const actions = makeActions();
     const answered = thread({
       id: 'c-aaaaaa',
@@ -469,7 +494,7 @@ describe('CommentWidget.toDOM action buttons', () => {
   });
 
   it('does not render an insert-into-text button for an open thread', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const widget = new CommentWidget({ thread: thread({ status: 'open' }), orphaned: false, actions: makeActions() });
 
     const dom = widget.toDOM() as unknown as FakeElement;
@@ -485,7 +510,7 @@ describe('CommentWidget.toDOM action buttons', () => {
     // the button as having no purpose. The app writes the seconds into this
     // span once a second, so it must be reachable from the button and must
     // not be the button's only child: the verb has to survive a tick.
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const widget = new CommentWidget({ thread: thread(), orphaned: false, actions: makeActions() });
 
     const dom = widget.toDOM() as unknown as FakeElement;
@@ -503,7 +528,7 @@ describe('CommentWidget.toDOM action buttons', () => {
   });
 
   it('renders a send-now button and a countdown on every card, both idle until a pause runs (#36)', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const widget = new CommentWidget({ thread: thread(), orphaned: false, actions: makeActions() });
 
     const dom = widget.toDOM() as unknown as FakeElement;
@@ -521,7 +546,7 @@ describe('CommentWidget.toDOM action buttons', () => {
   });
 
   it('clicking send now asks for the pause to end, not just for a write', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const actions = makeActions();
     const widget = new CommentWidget({
       thread: thread({ id: 'c-aaaaaa', status: 'paused' }),
@@ -539,7 +564,7 @@ describe('CommentWidget.toDOM action buttons', () => {
   });
 
   it('action buttons call preventDefault on mousedown, so the editor selection never moves', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const widget = new CommentWidget({ thread: thread(), orphaned: false, actions: makeActions() });
 
     const dom = widget.toDOM() as unknown as FakeElement;
@@ -566,7 +591,7 @@ describe('CommentWidget.toDOM selectable text (#28)', () => {
   }
 
   it('makes the reply text its own editing host — the only thing Chrome will select inside a widget', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const widget = new CommentWidget({ thread: answered(), orphaned: false, actions: makeActions() });
 
     const dom = widget.toDOM() as unknown as FakeElement;
@@ -576,7 +601,7 @@ describe('CommentWidget.toDOM selectable text (#28)', () => {
   });
 
   it('refuses every edit to it, so an answer cannot be typed over', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const widget = new CommentWidget({ thread: answered(), orphaned: false, actions: makeActions() });
 
     const dom = widget.toDOM() as unknown as FakeElement;
@@ -586,7 +611,7 @@ describe('CommentWidget.toDOM selectable text (#28)', () => {
   });
 
   it('keeps its keys away from CM6 keymaps, Escape included', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const widget = new CommentWidget({ thread: answered(), orphaned: false, actions: makeActions() });
 
     const dom = widget.toDOM() as unknown as FakeElement;
@@ -596,7 +621,7 @@ describe('CommentWidget.toDOM selectable text (#28)', () => {
   });
 
   it('covers the author line and the header too — a quote is worth copying as well', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const widget = new CommentWidget({ thread: answered(), orphaned: false, actions: makeActions() });
 
     const dom = widget.toDOM() as unknown as FakeElement;
@@ -611,7 +636,7 @@ describe('CommentWidget.toDOM comment box', () => {
   });
 
   it('is a textarea: a comment is prose, and Enter has to make a new line', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const widget = new CommentWidget({ thread: thread(), orphaned: false, actions: makeActions() });
 
     const dom = widget.toDOM() as unknown as FakeElement;
@@ -620,7 +645,7 @@ describe('CommentWidget.toDOM comment box', () => {
   });
 
   it('reports every keystroke through save — there is no send action', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const actions = makeActions();
     const widget = new CommentWidget({ thread: thread({ id: 'c-aaaaaa' }), orphaned: false, actions });
 
@@ -636,7 +661,7 @@ describe('CommentWidget.toDOM comment box', () => {
   });
 
   it('writes on blur, because clicking away is what used to lose the text', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const actions = makeActions();
     const widget = new CommentWidget({ thread: thread({ id: 'c-aaaaaa' }), orphaned: false, actions });
 
@@ -648,7 +673,7 @@ describe('CommentWidget.toDOM comment box', () => {
   });
 
   it('plain Enter does not write — it is a newline, not a send', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const actions = makeActions();
     const widget = new CommentWidget({ thread: thread(), orphaned: false, actions });
 
@@ -661,7 +686,7 @@ describe('CommentWidget.toDOM comment box', () => {
   });
 
   it('Cmd+Enter writes immediately, for "I am done" without waiting for the debounce', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const actions = makeActions();
     const widget = new CommentWidget({ thread: thread({ id: 'c-aaaaaa' }), orphaned: false, actions });
 
@@ -674,7 +699,7 @@ describe('CommentWidget.toDOM comment box', () => {
   });
 
   it('shows the user\'s unanswered turn in the box, not as a finished block', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const widget = new CommentWidget({
       thread: thread({ replies: [{ author: 'You', at: '14:02', text: 'Почему не nginx?' }] }),
       orphaned: false,
@@ -689,7 +714,7 @@ describe('CommentWidget.toDOM comment box', () => {
   });
 
   it('freezes that turn and comes up empty once an agent has answered', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const widget = new CommentWidget({
       thread: thread({
         status: 'answered',
@@ -709,7 +734,7 @@ describe('CommentWidget.toDOM comment box', () => {
   });
 
   it('prefers in-flight text over what the file says, so a rebuild swallows nothing', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const widget = new CommentWidget({
       thread: thread({ replies: [{ author: 'You', at: '14:02', text: 'сохранённое' }] }),
       orphaned: false,
@@ -723,7 +748,7 @@ describe('CommentWidget.toDOM comment box', () => {
   });
 
   it('writes what is in the box when its DOM goes away', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const actions = makeActions();
     const widget = new CommentWidget({ thread: thread({ id: 'c-aaaaaa' }), orphaned: false, actions });
 
@@ -733,7 +758,7 @@ describe('CommentWidget.toDOM comment box', () => {
   });
 
   it('carries the thread id on the box, so the app can find it after a rebuild', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const widget = new CommentWidget({ thread: thread({ id: 'c-aaaaaa' }), orphaned: false, actions: makeActions() });
 
     const dom = widget.toDOM() as unknown as FakeElement;
@@ -742,7 +767,7 @@ describe('CommentWidget.toDOM comment box', () => {
   });
 
   it('Escape leaves the box alone rather than writing', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const actions = makeActions();
     const widget = new CommentWidget({ thread: thread(), orphaned: false, actions });
 
@@ -754,7 +779,7 @@ describe('CommentWidget.toDOM comment box', () => {
   });
 
   it('keydown, keypress, and keyup on the input stop propagation, so CM6 keymaps never see them', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const widget = new CommentWidget({ thread: thread(), orphaned: false, actions: makeActions() });
 
     const dom = widget.toDOM() as unknown as FakeElement;
@@ -766,7 +791,7 @@ describe('CommentWidget.toDOM comment box', () => {
   });
 
   it('mousedown on the input stops propagation but does not preventDefault, so caret placement still works', () => {
-    vi.stubGlobal('document', { createElement: createFakeElement });
+    stubFakeDocument();
     const widget = new CommentWidget({ thread: thread(), orphaned: false, actions: makeActions() });
 
     const dom = widget.toDOM() as unknown as FakeElement;

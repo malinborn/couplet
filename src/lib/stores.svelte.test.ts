@@ -7,6 +7,7 @@ import {
   createListLayoutStore,
   createTabsCompactStore,
   createTabsDatesStore,
+  createCommentModeStore,
   createTransientPolicyStore,
   createRecentFilesStore,
   createZoomStore,
@@ -224,6 +225,29 @@ describe('createTabsDatesStore', () => {
     expect(store.enabled).toBe(false);
     expect(JSON.parse(localStorage.getItem('md-mini:tabsDates')!)).toBe(false);
     expect(createTabsDatesStore().enabled).toBe(false);
+  });
+});
+
+describe('createCommentModeStore', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('DefaultsToChat', () => {
+    expect(createCommentModeStore().value).toBe('chat');
+  });
+
+  it('SetPersists_AndIsReadBack', () => {
+    const store = createCommentModeStore();
+    store.set('live');
+    expect(store.value).toBe('live');
+    expect(JSON.parse(localStorage.getItem('md-mini:commentMode')!)).toBe('live');
+    expect(createCommentModeStore().value).toBe('live');
+  });
+
+  it('AnUnknownStoredValue_ReadsAsChat', () => {
+    localStorage.setItem('md-mini:commentMode', JSON.stringify('telepathy'));
+    expect(createCommentModeStore().value).toBe('chat');
   });
 });
 

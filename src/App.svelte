@@ -4,9 +4,9 @@
   import type { EditorHandle } from './lib/editor/Editor.svelte';
   import type { ViewUpdate } from '@codemirror/view';
   import { isHumanEdit } from './lib/editor/human-edit';
-  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createListLayoutStore, createTabsCompactStore, createTabsDatesStore, createTransientPolicyStore, createFileState, createRecentFilesStore, setProductName, setWindowNumber, getWindowNumber } from './lib/stores.svelte';
+  import { createThemeStore, createEngineStore, createZoomStore, createLineGlowStore, createOcdAlignmentStore, createListLayoutStore, createTabsCompactStore, createTabsDatesStore, createCommentModeStore, createTransientPolicyStore, createFileState, createRecentFilesStore, setProductName, setWindowNumber, getWindowNumber } from './lib/stores.svelte';
   import { getName } from '@tauri-apps/api/app';
-  import { readDocument, writeDocument, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncDockIcon, syncEngineMenu, syncOcdAlignmentMenu, syncListMenu, broadcastTheme, syncTabsCompactMenu, syncTabsDatesMenu, syncTransientMenu, commentThreads, commentStart, commentResolve, commentWriteReply, commentCommit, type TabClaim, type WindowInit } from './lib/tauri/commands';
+  import { readDocument, writeDocument, fileExists, showOpenDialog, showSaveDialog, syncThemeMenu, syncDockIcon, syncEngineMenu, syncOcdAlignmentMenu, syncListMenu, broadcastTheme, syncTabsCompactMenu, syncTabsDatesMenu, syncCommentLiveMenu, syncTransientMenu, commentThreads, commentStart, commentCreate, commentReply, commentEdit, commentResolve, commentWriteReply, commentCommit, type TabClaim, type WindowInit } from './lib/tauri/commands';
   import { concreteTheme, halfOf, type ThemeFamily } from './lib/theme-resolve';
   import type { ThemeControl } from './lib/editor/slash-theme';
   import {
@@ -137,6 +137,7 @@
   import { stripLeavingState } from './lib/tabs/tab-cache';
   import { decideSaveAs, savedAsReport, type SavedAsReport } from './lib/tabs/save-as';
   import { createCommentWriter, adoptStartedDraft } from './lib/comment-writer';
+  import { createChatDraftStore, freshDraftKey } from './lib/comment-chat-drafts';
   import {
     addAiComment,
     aiCommentField,
@@ -157,6 +158,7 @@
     countdownLabel,
     splitThread,
     type AnchorContext,
+    type CommentMode,
     type CommentThread,
   } from './lib/comment-format';
   import { buildBindPrompt } from './lib/ai-bind';
@@ -235,6 +237,8 @@
   const listLayout = createListLayoutStore();
   const tabsCompact = createTabsCompactStore();
   const tabsDates = createTabsDatesStore();
+  /** AI → «Comments: Live Box (Auto-send)»: chat (default) or the legacy live box. */
+  const commentMode = createCommentModeStore();
   const transientPolicy = createTransientPolicyStore();
   const fileState = createFileState();
   const recentFiles = createRecentFilesStore();
@@ -1434,9 +1438,32 @@
    */
   let commentDrafts = new Map<
     string,
-    { line: number; quote: string; context: AnchorContext }
+    {
+      line: number;
+      quote: string;
+      context: AnchorContext;
+      /**
+       * Where its unsent text is kept in chat mode (`chatDrafts`), which is
+       * also how the card comes back after a tab switch or a restart.
+       */
+      freshKey: string;
+    }
   >();
   let commentDraftSeq = 0;
+
+  /**
+   * Chat mode's unsent text: composers, open edits, new threads nobody has
+   * sent. Not the sidecar — in chat mode only Send writes — so this is the
+   * second copy the data-safety rule asks for (`comment-chat-drafts.ts`).
+   * Keyed by document path, so it outlives `forgetCommentsFor`.
+   */
+  const chatDrafts = createChatDraftStore(() => {
+    try {
+      return localStorage;
+    } catch {
+      return null;
+    }
+  });
 
   /**
    * How long after the last keystroke the comment box is written to the
@@ -1754,6 +1781,9 @@
         armCommentCountdown(realId, entry.path, started.until * 1000);
         adoptStartedDraft(commentPending, id, realId, text);
         commentEditable.set(realId, text);
+        // Typed in chat mode and finished in the live box: the chat copy is
+        // now a thread, and must not come back as a second draft card.
+        chatDrafts.clearFresh(entry.path, draft.freshKey);
         // The card is about to be rebuilt under the id the file gave it; the
         // caret has to come along, or the first save silently ejects the user
         // from the box they are writing in.
@@ -1840,6 +1870,11 @@
     // status back to open — would throw the caret out of the box mid-word.
     const focus = commentFocus ?? focusedCommentBox();
     commentFocus = null;
+    const mode = commentMode.value;
+    const chat = mode === 'chat';
+    // An inline edit that has the caret gets it back after the rebuild.
+    const editFocus =
+      (document.activeElement as HTMLElement | null)?.getAttribute?.('data-comment-edit') ?? null;
     const effects: StateEffect<unknown>[] = [clearAiComments.of(null)];
     for (const thread of threads) {
       if (thread.status === 'resolved') continue;
@@ -1847,7 +1882,8 @@
         prefix: thread.prefix,
         suffix: thread.suffix,
       });
-      commentEditable.set(thread.id, splitThread(thread).editable);
+      const edit = chat ? chatDrafts.edit(path, thread.id) : undefined;
+      if (!chat) commentEditable.set(thread.id, splitThread(thread).editable);
       effects.push(
         addAiComment.of({
           thread,
@@ -1855,15 +1891,37 @@
           to,
           orphaned,
           actions: commentActions,
-          draft: pendingTextFor(thread.id),
+          draft: chat ? chatDrafts.reply(path, thread.id) : pendingTextFor(thread.id),
           focusAt: focus?.id === thread.id ? focus.at : undefined,
+          mode,
+          edit: edit ? { ...edit, focus: editFocus === thread.id } : undefined,
         })
       );
     }
+    // New threads typed in chat mode and never sent live only in `chatDrafts`:
+    // after a tab switch (which empties `commentDrafts`) or a restart their
+    // cards come back from there.
+    const known = new Set([...commentDrafts.values()].map((d) => d.freshKey));
+    for (const fresh of chatDrafts.fresh(path)) {
+      if (known.has(fresh.key)) continue;
+      commentDraftSeq += 1;
+      commentDrafts.set(`draft:${commentDraftSeq}`, {
+        line: fresh.line,
+        quote: fresh.quote,
+        context: { prefix: fresh.prefix, suffix: fresh.suffix },
+        freshKey: fresh.key,
+      });
+    }
     // Drafts are not in the file, so a reload would otherwise silently discard
     // half-typed comments — re-add them on top.
+    const freshText = new Map(chatDrafts.fresh(path).map((d) => [d.key, d.text]));
     for (const [id, draft] of commentDrafts) {
       const { pos, to, orphaned } = anchorPosition(doc, draft.quote, draft.line, draft.context);
+      // Live mode shows a chat draft's text too, so switching modes hides
+      // nothing; typing into it there writes it the live way.
+      const draftText = chat
+        ? freshText.get(draft.freshKey)
+        : (pendingTextFor(id) ?? freshText.get(draft.freshKey));
       effects.push(
         addAiComment.of({
           // `paused`, not `open`: a draft is a comment being typed, which is
@@ -1874,8 +1932,9 @@
           to,
           orphaned,
           actions: commentActions,
-          draft: pendingTextFor(id),
+          draft: draftText,
           focusAt: focus?.id === id ? focus.at : undefined,
+          mode,
         })
       );
     }
@@ -1955,8 +2014,12 @@
       forgetCommentPending(id);
       // A pause on a resolved thread has nothing left to hand over.
       disarmCommentCountdown(id);
-      if (commentDrafts.delete(id)) {
-        // Nothing was ever written; just drop the card.
+      const draft = commentDrafts.get(id);
+      if (draft) {
+        // Nothing was ever written; just drop the card — and its kept text,
+        // which resolving is the explicit way to throw away.
+        commentDrafts.delete(id);
+        chatDrafts.clearFresh(path, draft.freshKey);
         void reloadComments();
         return;
       }
@@ -1977,7 +2040,10 @@
           disarmCommentCountdown(realId);
           // The start failed and put the draft back: still nothing on disk.
           if (commentDrafts.delete(realId)) return;
-          await commentResolve(path, realId).catch((err) => reportCommentError(path, err));
+          await commentResolve(path, realId)
+            // A resolved card is gone from the screen; its unsent text with it.
+            .then(() => chatDrafts.forgetThread(path, realId))
+            .catch((err) => reportCommentError(path, err));
         })
         .then(reloadComments);
     },
@@ -2009,7 +2075,129 @@
         effects: setAiHighlights.of([{ from: at + 1, to: at + 1 + clean.length }]),
       });
     },
+    compose: (cardId, text) => {
+      const path = fileState.filePath;
+      if (!path) return;
+      const draft = commentDrafts.get(cardId);
+      if (draft) {
+        chatDrafts.setFresh(
+          path,
+          {
+            key: draft.freshKey,
+            line: draft.line,
+            quote: draft.quote,
+            prefix: draft.context.prefix,
+            suffix: draft.context.suffix,
+          },
+          text
+        );
+      } else {
+        chatDrafts.setReply(path, commentWriter.idFor(cardId), text);
+      }
+    },
+    send: (cardId, text) => sendChatMessage(cardId, text),
+    edit: (cardId, at, text) => editChatMessage(cardId, at, text),
+    editing: (cardId, state) => {
+      const path = fileState.filePath;
+      if (path) chatDrafts.setEdit(path, commentWriter.idFor(cardId), state);
+    },
   };
+
+  /**
+   * Chat mode's Send: a draft card becomes a thread born `open`, an existing
+   * thread gets the message as the user's reply and goes back to `open` — the
+   * agent is woken either way. One queued write, so it cannot land between
+   * another write's read and its rename.
+   *
+   * Resolves to whether it was written. On failure the text stays in the
+   * composer (and in `chatDrafts`), and the `comment-error` toast says why.
+   */
+  async function sendChatMessage(cardId: string, text: string): Promise<boolean> {
+    const path = fileState.filePath;
+    if (!path || !text.trim()) return false;
+    const draft = commentDrafts.get(cardId);
+    if (draft) {
+      const realId = await commentWriter.enqueue(async () => {
+        try {
+          return await commentCreate(path, draft.line, draft.quote, text, draft.context);
+        } catch (err) {
+          reportCommentError(path, err);
+          return null;
+        }
+      });
+      if (!realId) return false;
+      chatDrafts.clearFresh(path, draft.freshKey);
+      commentDrafts.delete(cardId);
+      commentWriter.redirect(cardId, realId);
+      toasts.dismissKind('comment-error');
+      if (fileState.filePath !== path) return true;
+      // The caret stays in the composer of the card it was typed in — which
+      // now carries the id the file gave the thread.
+      commentFocus = { id: realId, at: 0 };
+      // A brand-new sidecar is not watched yet: re-arm, or the agent's first
+      // answer would arrive with nothing listening (see `writeCommentNow`).
+      const activeTabId = tabs.list.activeId;
+      if (activeTabId !== null) {
+        await invoke('tab_activate', { tabId: activeTabId }).catch(logTabIpc('tab_activate'));
+      }
+      await reloadComments();
+      return true;
+    }
+    const sent = await commentWriter.run(cardId, async (id) => {
+      try {
+        await commentReply(path, id, text);
+        return true;
+      } catch (err) {
+        reportCommentError(path, err);
+        return false;
+      }
+    });
+    if (!sent) return false;
+    chatDrafts.setReply(path, commentWriter.idFor(cardId), '');
+    toasts.dismissKind('comment-error');
+    if (fileState.filePath !== path) return true;
+    commentFocus = { id: commentWriter.idFor(cardId), at: 0 };
+    await reloadComments();
+    return true;
+  }
+
+  /**
+   * Chat mode's edit: the revision is appended at the end of the thread as
+   * `edited (replaces <at>)`, the thread goes back to `open`, and the original
+   * stays where it was — the agent reads both and checks what changed.
+   */
+  async function editChatMessage(cardId: string, at: string, text: string): Promise<boolean> {
+    const path = fileState.filePath;
+    if (!path || !text.trim()) return false;
+    const written = await commentWriter.run(cardId, async (id) => {
+      try {
+        await commentEdit(path, id, at, text);
+        return true;
+      } catch (err) {
+        reportCommentError(path, err);
+        return false;
+      }
+    });
+    if (!written) return false;
+    chatDrafts.setEdit(path, commentWriter.idFor(cardId), null);
+    toasts.dismissKind('comment-error');
+    if (fileState.filePath === path) await reloadComments();
+    return true;
+  }
+
+  /**
+   * Switch how comment cards take text. Leaving the live box writes whatever
+   * it still holds first — nothing typed there may be stranded by the switch.
+   * The store is set before that write so the menu's mark follows at once.
+   */
+  async function setCommentMode(mode: CommentMode): Promise<void> {
+    if (commentMode.value === mode) return;
+    const wasLive = commentMode.value === 'live';
+    commentMode.set(mode);
+    const path = fileState.filePath;
+    if (wasLive && path) await flushCommentsFor(path);
+    await reloadComments();
+  }
 
   /**
    * Put the "here is the document I'm looking at" prompt on the clipboard —
@@ -2095,7 +2283,12 @@
 
     commentDraftSeq += 1;
     const id = `draft:${commentDraftSeq}`;
-    commentDrafts.set(id, { line: line.number, quote, context });
+    commentDrafts.set(id, {
+      line: line.number,
+      quote,
+      context,
+      freshKey: freshDraftKey(line.number, quote, context, Date.now()),
+    });
     view.dispatch({
       effects: addAiComment.of({
         thread: {
@@ -2118,6 +2311,7 @@
         // The point of the hotkey is to start writing. Leaving the caret in
         // the document means every comment costs an extra click (#22).
         focusAt: 0,
+        mode: commentMode.value,
       }),
     });
   }
@@ -2671,6 +2865,12 @@
         case 'toggle_tabs_dates:off':
           tabsDates.set(false);
           break;
+        case 'toggle_comment_live:on':
+          void setCommentMode('live');
+          break;
+        case 'toggle_comment_live:off':
+          void setCommentMode('chat');
+          break;
         case 'transient_ignored_keep':
           transientPolicy.set('keep');
           break;
@@ -2825,6 +3025,9 @@
       }
       if (action.startsWith('toggle_tabs_dates')) {
         syncTabsDatesMenu(tabsDates.enabled);
+      }
+      if (action.startsWith('toggle_comment_live')) {
+        syncCommentLiveMenu(commentMode.value === 'live');
       }
       // macOS flips the clicked radio item by itself, so the pair is always
       // re-set — the click that chose the current value included.
@@ -3047,6 +3250,9 @@
   });
   $effect(() => {
     syncTabsDatesMenu(tabsDates.enabled);
+  });
+  $effect(() => {
+    syncCommentLiveMenu(commentMode.value === 'live');
   });
   $effect(() => {
     syncTransientMenu(transientPolicy.value);

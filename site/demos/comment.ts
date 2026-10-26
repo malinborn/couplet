@@ -227,6 +227,10 @@ const INERT_ACTIONS = {
   resolve: () => {},
   handoff: () => {},
   insertIntoText: () => {},
+  compose: () => {},
+  send: () => Promise.resolve(false),
+  edit: () => Promise.resolve(false),
+  editing: () => {},
 };
 
 export function mount(container: HTMLElement): void {
