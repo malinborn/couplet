@@ -138,6 +138,7 @@
   import { decideSaveAs, savedAsReport, type SavedAsReport } from './lib/tabs/save-as';
   import { createCommentWriter, adoptStartedDraft } from './lib/comment-writer';
   import { createChatDraftStore, freshDraftKey } from './lib/comment-chat-drafts';
+  import { createChatSender, type ChatDraftCard } from './lib/comment-chat-send';
   import {
     addAiComment,
     aiCommentField,
@@ -157,7 +158,6 @@
     buildWatchPrompt,
     countdownLabel,
     splitThread,
-    type AnchorContext,
     type CommentMode,
     type CommentThread,
   } from './lib/comment-format';
@@ -1436,19 +1436,9 @@
    * Keyed by the synthetic id the draft widget carries; `commentActions.reply`
    * uses the presence of a key here to decide "create" versus "append".
    */
-  let commentDrafts = new Map<
-    string,
-    {
-      line: number;
-      quote: string;
-      context: AnchorContext;
-      /**
-       * Where its unsent text is kept in chat mode (`chatDrafts`), which is
-       * also how the card comes back after a tab switch or a restart.
-       */
-      freshKey: string;
-    }
-  >();
+  // `freshKey` is where its unsent text is kept in chat mode (`chatDrafts`),
+  // which is also how the card comes back after a tab switch or a restart.
+  let commentDrafts = new Map<string, ChatDraftCard>();
   let commentDraftSeq = 0;
 
   /**
@@ -1895,6 +1885,7 @@
           focusAt: focus?.id === thread.id ? focus.at : undefined,
           mode,
           edit: edit ? { ...edit, focus: editFocus === thread.id } : undefined,
+          sending: chat && chatSender.isSending(path, thread.id),
         })
       );
     }
@@ -1903,7 +1894,8 @@
     // cards come back from there.
     const known = new Set([...commentDrafts.values()].map((d) => d.freshKey));
     for (const fresh of chatDrafts.fresh(path)) {
-      if (known.has(fresh.key)) continue;
+      // Its first message is on its way: that write is the card's fate now.
+      if (known.has(fresh.key) || chatSender.isFreshSending(fresh.key)) continue;
       commentDraftSeq += 1;
       commentDrafts.set(`draft:${commentDraftSeq}`, {
         line: fresh.line,
@@ -1935,6 +1927,7 @@
           draft: draftText,
           focusAt: focus?.id === id ? focus.at : undefined,
           mode,
+          sending: chat && chatSender.isSending(path, id),
         })
       );
     }
@@ -2008,44 +2001,10 @@
       void fireCommentCountdown(commentWriter.idFor(id));
     },
     resolve: (cardId) => {
-      const path = fileState.filePath;
-      if (!path) return;
-      const id = commentWriter.idFor(cardId);
-      forgetCommentPending(id);
-      // A pause on a resolved thread has nothing left to hand over.
-      disarmCommentCountdown(id);
-      const draft = commentDrafts.get(id);
-      if (draft) {
-        // Nothing was ever written; just drop the card — and its kept text,
-        // which resolving is the explicit way to throw away.
-        commentDrafts.delete(id);
-        chatDrafts.clearFresh(path, draft.freshKey);
-        void reloadComments();
-        return;
-      }
-      // Resolving is a sidecar write like any other, and it had no failure
-      // path at all: a refused write left the thread open on disk while the
-      // card disappeared from the screen, so it came back on the next reload
-      // with no explanation. `reloadComments` still runs, which is what puts
-      // the card back — now with a toast saying why.
-      //
-      // Queued: a draft whose first write is in flight is no longer in
-      // `commentDrafts` but has no real id yet either, and resolving it by its
-      // draft id is a write the sidecar rejects. Behind that write it runs
-      // under the id the file gave the thread — and forgets again under that
-      // id, because the start moved the pending entry there.
-      void commentWriter
-        .run(cardId, async (realId) => {
-          forgetCommentPending(realId);
-          disarmCommentCountdown(realId);
-          // The start failed and put the draft back: still nothing on disk.
-          if (commentDrafts.delete(realId)) return;
-          await commentResolve(path, realId)
-            // A resolved card is gone from the screen; its unsent text with it.
-            .then(() => chatDrafts.forgetThread(path, realId))
-            .catch((err) => reportCommentError(path, err));
-        })
-        .then(reloadComments);
+      // Both modes: the sender's resolve is the old one plus what chat adds —
+      // a draft whose first Send is in flight is resolved behind that write
+      // (`comment-chat-send.ts`).
+      void chatSender.resolve(cardId);
     },
     handoff: (id) => {
       const path = fileState.filePath;
@@ -2095,8 +2054,8 @@
         chatDrafts.setReply(path, commentWriter.idFor(cardId), text);
       }
     },
-    send: (cardId, text) => sendChatMessage(cardId, text),
-    edit: (cardId, at, text) => editChatMessage(cardId, at, text),
+    send: (cardId, text) => chatSender.send(cardId, text),
+    edit: (cardId, at, text) => chatSender.edit(cardId, at, text),
     editing: (cardId, state) => {
       const path = fileState.filePath;
       if (path) chatDrafts.setEdit(path, commentWriter.idFor(cardId), state);
@@ -2104,86 +2063,41 @@
   };
 
   /**
-   * Chat mode's Send: a draft card becomes a thread born `open`, an existing
-   * thread gets the message as the user's reply and goes back to `open` — the
-   * agent is woken either way. One queued write, so it cannot land between
-   * another write's read and its rename.
-   *
-   * Resolves to whether it was written. On failure the text stays in the
-   * composer (and in `chatDrafts`), and the `comment-error` toast says why.
+   * Chat mode's Send, edit and resolve (resolve serves the live box too), and
+   * what of it is in flight — `comment-chat-send.ts`. Every write goes through
+   * the same serialized `commentWriter` queue as the live box's.
    */
-  async function sendChatMessage(cardId: string, text: string): Promise<boolean> {
-    const path = fileState.filePath;
-    if (!path || !text.trim()) return false;
-    const draft = commentDrafts.get(cardId);
-    if (draft) {
-      const realId = await commentWriter.enqueue(async () => {
-        try {
-          return await commentCreate(path, draft.line, draft.quote, text, draft.context);
-        } catch (err) {
-          reportCommentError(path, err);
-          return null;
-        }
-      });
-      if (!realId) return false;
-      chatDrafts.clearFresh(path, draft.freshKey);
-      commentDrafts.delete(cardId);
-      commentWriter.redirect(cardId, realId);
-      toasts.dismissKind('comment-error');
-      if (fileState.filePath !== path) return true;
-      // The caret stays in the composer of the card it was typed in — which
-      // now carries the id the file gave the thread.
-      commentFocus = { id: realId, at: 0 };
+  const chatSender = createChatSender({
+    writer: commentWriter,
+    drafts: chatDrafts,
+    cards: () => commentDrafts,
+    path: () => fileState.filePath,
+    create: commentCreate,
+    reply: commentReply,
+    edit: commentEdit,
+    resolve: commentResolve,
+    reportError: reportCommentError,
+    written: () => toasts.dismissKind('comment-error'),
+    forgetLive: (id) => {
+      forgetCommentPending(id);
+      // A pause on a resolved thread has nothing left to hand over.
+      disarmCommentCountdown(id);
+    },
+    created: async () => {
       // A brand-new sidecar is not watched yet: re-arm, or the agent's first
       // answer would arrive with nothing listening (see `writeCommentNow`).
       const activeTabId = tabs.list.activeId;
       if (activeTabId !== null) {
         await invoke('tab_activate', { tabId: activeTabId }).catch(logTabIpc('tab_activate'));
       }
-      await reloadComments();
-      return true;
-    }
-    const sent = await commentWriter.run(cardId, async (id) => {
-      try {
-        await commentReply(path, id, text);
-        return true;
-      } catch (err) {
-        reportCommentError(path, err);
-        return false;
-      }
-    });
-    if (!sent) return false;
-    chatDrafts.setReply(path, commentWriter.idFor(cardId), '');
-    toasts.dismissKind('comment-error');
-    if (fileState.filePath !== path) return true;
-    commentFocus = { id: commentWriter.idFor(cardId), at: 0 };
-    await reloadComments();
-    return true;
-  }
-
-  /**
-   * Chat mode's edit: the revision is appended at the end of the thread as
-   * `edited (replaces <at>)`, the thread goes back to `open`, and the original
-   * stays where it was — the agent reads both and checks what changed.
-   */
-  async function editChatMessage(cardId: string, at: string, text: string): Promise<boolean> {
-    const path = fileState.filePath;
-    if (!path || !text.trim()) return false;
-    const written = await commentWriter.run(cardId, async (id) => {
-      try {
-        await commentEdit(path, id, at, text);
-        return true;
-      } catch (err) {
-        reportCommentError(path, err);
-        return false;
-      }
-    });
-    if (!written) return false;
-    chatDrafts.setEdit(path, commentWriter.idFor(cardId), null);
-    toasts.dismissKind('comment-error');
-    if (fileState.filePath === path) await reloadComments();
-    return true;
-  }
+    },
+    // The caret stays in the composer of the card it was typed in — under
+    // the id the file gave the thread, for a new one.
+    focus: (id) => {
+      commentFocus = { id, at: 0 };
+    },
+    reload: reloadComments,
+  });
 
   /**
    * Switch how comment cards take text. Leaving the live box writes whatever

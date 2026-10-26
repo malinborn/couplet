@@ -110,6 +110,14 @@ export interface CommentSpec {
   /** Chat mode: an inline edit to reopen after a rebuild. Excluded from `eq()`
    * for the same reason as `draft`. */
   edit?: CommentEditState;
+  /**
+   * Chat mode: a send or an edit of this card is on its way to the file. A
+   * card rebuilt meanwhile (the agent answered) starts with its composer and
+   * any reopened edit locked, so the text in flight cannot be sent twice.
+   * Part of `eq()`: the app rebuilds the card once the write has landed, and
+   * that rebuild is what unlocks it.
+   */
+  sending?: boolean;
 }
 
 /** Adds a comment-thread widget, anchored at the end of the line containing `pos`. */
@@ -129,6 +137,8 @@ export const addAiComment = StateEffect.define<{
   mode?: CommentMode;
   /** See `CommentSpec.edit`. */
   edit?: CommentEditState;
+  /** See `CommentSpec.sending`. */
+  sending?: boolean;
 }>();
 
 /**
@@ -304,6 +314,7 @@ export class CommentWidget extends WidgetType {
       a.status === b.status &&
       a.quote === b.quote &&
       this.spec.orphaned === other.spec.orphaned &&
+      (this.spec.sending ?? false) === (other.spec.sending ?? false) &&
       mine.length === theirs.length &&
       mine.every(
         (reply, i) =>
@@ -564,7 +575,9 @@ export class CommentWidget extends WidgetType {
     const replies = thread.replies;
     const items: Array<{ item: HTMLElement; reply: CommentReply; body: HTMLElement }> = [];
     /** The one inline edit open in this card, if any. */
-    let openEdit: { close: () => void } | null = null;
+    let openEdit: { close: () => void; at: string; changed: () => boolean } | null = null;
+    /** A send or an edit already in flight when this card was built. */
+    const locked = this.spec.sending === true;
 
     const openEditor = (
       item: HTMLElement,
@@ -591,8 +604,15 @@ export class CommentWidget extends WidgetType {
       box.appendChild(row);
 
       const grow = growTextarea(area, view);
-      let saving = false;
+      let saving = locked;
+      if (locked) {
+        save.disabled = true;
+        area.readOnly = true;
+      }
       const handle = {
+        at: reply.at,
+        // Typed into: the text differs from the message it revises.
+        changed: (): boolean => area.value !== reply.text,
         close: (): void => {
           if (openEdit !== handle) return;
           openEdit = null;
@@ -694,8 +714,20 @@ export class CommentWidget extends WidgetType {
       if (own) {
         item.title = t('editor.ai_comment.edit_title');
         item.addEventListener('dblclick', (event) => {
+          // A double-click inside the open editor selects a word there — it
+          // must not reopen the editor with the original text over the
+          // revision being typed.
+          const target = event.target as Element | null;
+          if (target?.closest?.('.cm-ai-comment-edit')) {
+            event.stopPropagation();
+            return;
+          }
           event.preventDefault();
           event.stopPropagation();
+          // An edit already open stays open: on this same message there is
+          // nothing to do, and a revision typed into another one is not
+          // thrown away by a double-click elsewhere.
+          if (openEdit && (openEdit.at === reply.at || openEdit.changed())) return;
           openEditor(item, body, reply, reply.text, true);
         });
       }
@@ -727,7 +759,10 @@ export class CommentWidget extends WidgetType {
     composeRow.appendChild(send);
     composeRow.appendChild(hint);
 
-    let sending = false;
+    // Locked from the start when a send of this card is still on its way —
+    // the rebuild that comes after it lands unlocks it (`CommentSpec.sending`).
+    let sending = locked;
+    if (locked) input.readOnly = true;
     const refresh = (): void => {
       send.disabled = sending || !input.value.trim();
     };
@@ -845,8 +880,18 @@ export class CommentWidget extends WidgetType {
  * want to carry off into a task, a chat or a commit message (#28).
  */
 function messageBody(reply: CommentReply): HTMLElement {
-  const body = renderCommentMarkdown(reply.text);
-  body.className = `cm-ai-comment-text ${COMMENT_MD_CLASS}`;
+  let body: HTMLElement;
+  try {
+    body = renderCommentMarkdown(reply.text);
+    body.className = `cm-ai-comment-text ${COMMENT_MD_CLASS}`;
+  } catch (err) {
+    // A message the renderer cannot handle must not take the whole card (and
+    // every card rebuilt with it) down: show it as plain text.
+    console.error('Comment markdown render failed:', err);
+    body = document.createElement('div');
+    body.className = 'cm-ai-comment-text';
+    body.textContent = reply.text;
+  }
   makeWidgetTextSelectable(body, { swallowKeys: true });
   return body;
 }
@@ -947,11 +992,21 @@ export const aiCommentField = StateField.define<DecorationSet>({
     deco = deco.map(tr.changes);
     for (const effect of tr.effects) {
       if (effect.is(addAiComment)) {
-        const { thread, pos, to, orphaned, actions, draft, focusAt, mode, edit } = effect.value;
+        const { thread, pos, to, orphaned, actions, draft, focusAt, mode, edit, sending } =
+          effect.value;
         const clamped = Math.max(0, Math.min(pos, tr.state.doc.length));
         const anchor = tr.state.doc.lineAt(clamped).to;
         const widget = Decoration.widget({
-          widget: new CommentWidget({ thread, orphaned, actions, draft, focusAt, mode, edit }),
+          widget: new CommentWidget({
+            thread,
+            orphaned,
+            actions,
+            draft,
+            focusAt,
+            mode,
+            edit,
+            sending,
+          }),
           block: true,
           side: 1,
         });

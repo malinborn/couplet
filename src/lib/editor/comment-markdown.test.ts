@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
-import { renderCommentMarkdown, safeHref, COMMENT_MD_CLASS } from './comment-markdown';
+import { renderCommentMarkdown, safeHref, COMMENT_MD_CLASS, MAX_NESTING } from './comment-markdown';
 
 function render(text: string, openUrl: (url: string) => void = () => {}): HTMLElement {
   return renderCommentMarkdown(text, document, openUrl);
@@ -207,5 +207,28 @@ describe('renderCommentMarkdown — untrusted text stays text', () => {
 
   it('renders an empty message as an empty root', () => {
     expect(render('').children).toHaveLength(0);
+  });
+});
+
+describe('renderCommentMarkdown — pathological nesting', () => {
+  it('survives thousands of nested quotes, showing the deep rest as text', () => {
+    const root = render(`${'>'.repeat(3000)} deep`);
+    expect(root.textContent).toContain('deep');
+    let depth = 0;
+    for (let q = root.querySelector('blockquote'); q; q = q.querySelector(':scope > blockquote')) depth += 1;
+    expect(depth).toBeLessThanOrEqual(MAX_NESTING);
+  });
+
+  it('survives a deeply nested list quickly', () => {
+    const text = Array.from({ length: 400 }, (_, i) => `${'  '.repeat(i)}- item ${i}`).join('\n');
+    const started = performance.now();
+    const root = render(text);
+    expect(performance.now() - started).toBeLessThan(2000);
+    expect(root.textContent).toContain('item 399');
+  });
+
+  it('survives deeply nested emphasis', () => {
+    const text = `${'*_'.repeat(400)}x${'_*'.repeat(400)}`;
+    expect(render(text).textContent).toContain('x');
   });
 });

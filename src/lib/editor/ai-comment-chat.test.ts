@@ -359,6 +359,89 @@ describe('chat mode — editing your own message', () => {
     const { root } = mount({ edit: { at: '2026-08-24 17:00:00 UTC', text: 'полуправка' } });
     expect(editBox(root)?.value).toBe('полуправка');
   });
+
+  // Double-clicking a word in the open editor (to select it) bubbles to the
+  // message — it must not reopen the editor with the original text over the
+  // revision being typed.
+  it('a double-click inside the open editor keeps the revision being typed', () => {
+    const { root, actions } = mount();
+    dblclick(ownMessage(root));
+    type(editBox(root)!, 'Успеем к четвергу?');
+    const area = editBox(root)!;
+    dblclick(area);
+    expect(editBox(root)).toBe(area);
+    expect(area.value).toBe('Успеем к четвергу?');
+    expect(actions.editing).toHaveBeenLastCalledWith('c-aaaaaa', {
+      at: '2026-08-24 17:00:00 UTC',
+      text: 'Успеем к четвергу?',
+    });
+  });
+
+  it('a double-click on another own message does not throw away a changed edit', () => {
+    const { root } = mount({
+      thread: thread({
+        replies: [
+          { author: 'You', at: '17:00', text: 'первое' },
+          { author: 'agent', at: '17:01', text: 'ответ' },
+          { author: 'You', at: '17:02', text: 'второе' },
+        ],
+      }),
+    });
+    const [first, , second] = root.querySelectorAll<HTMLElement>('.cm-ai-comment-reply');
+    dblclick(first);
+    type(editBox(root)!, 'первое, исправленное');
+    dblclick(second);
+    expect(root.querySelectorAll('.cm-ai-comment-edit')).toHaveLength(1);
+    expect(first.querySelector('.cm-ai-comment-edit-input')).not.toBeNull();
+    expect(editBox(root)!.value).toBe('первое, исправленное');
+  });
+
+  it('an unchanged edit gives way to a double-click on another own message', () => {
+    const { root } = mount({
+      thread: thread({
+        replies: [
+          { author: 'You', at: '17:00', text: 'первое' },
+          { author: 'You', at: '17:02', text: 'второе' },
+        ],
+      }),
+    });
+    const [first, second] = root.querySelectorAll<HTMLElement>('.cm-ai-comment-reply');
+    dblclick(first);
+    dblclick(second);
+    expect(first.querySelector('.cm-ai-comment-edit-input')).toBeNull();
+    expect(second.querySelector<HTMLTextAreaElement>('.cm-ai-comment-edit-input')?.value).toBe('второе');
+  });
+});
+
+describe('chat mode — a card rebuilt while its write is in flight', () => {
+  it('starts with the composer locked, so the text in flight cannot be sent twice', () => {
+    const { root, actions } = mount({ sending: true, draft: 'уже отправляется' });
+    expect(composer(root).value).toBe('уже отправляется');
+    expect(composer(root).readOnly).toBe(true);
+    expect(sendButton(root).disabled).toBe(true);
+    key(composer(root), { key: 'Enter' });
+    sendButton(root).click();
+    expect(actions.send).not.toHaveBeenCalled();
+  });
+
+  it('reopens an edit locked as well', () => {
+    const { root, actions } = mount({
+      sending: true,
+      edit: { at: '2026-08-24 17:00:00 UTC', text: 'правка в пути' },
+    });
+    const area = root.querySelector<HTMLTextAreaElement>('.cm-ai-comment-edit-input')!;
+    expect(area.value).toBe('правка в пути');
+    expect(area.readOnly).toBe(true);
+    key(area, { key: 'Enter' });
+    expect(actions.edit).not.toHaveBeenCalled();
+  });
+
+  it('is a different card once the write lands, so the rebuild unlocks it', () => {
+    const actions = makeActions();
+    const locked = new CommentWidget({ thread: thread(), orphaned: false, actions, mode: 'chat', sending: true });
+    const free = new CommentWidget({ thread: thread(), orphaned: false, actions, mode: 'chat' });
+    expect(locked.eq(free)).toBe(false);
+  });
 });
 
 describe('chat mode — eq()', () => {

@@ -17,11 +17,16 @@ function memoryStorage(): Storage & { data: Map<string, string> } {
   };
 }
 
+/** One storage for the store's whole life — the accessor is called on every read. */
+function storageOf(storage: Storage): () => Storage {
+  return () => storage;
+}
+
 const DOC = '/repo/spec.md';
 
 describe('createChatDraftStore', () => {
   it('keeps a reply being composed, per document and thread', () => {
-    const store = createChatDraftStore(() => memoryStorage());
+    const store = createChatDraftStore(storageOf(memoryStorage()));
     store.setReply(DOC, 'c-aaaaaa', 'почти дописал');
     expect(store.reply(DOC, 'c-aaaaaa')).toBe('почти дописал');
     expect(store.reply(DOC, 'c-bbbbbb')).toBeUndefined();
@@ -53,7 +58,7 @@ describe('createChatDraftStore', () => {
   });
 
   it('updates a fresh draft in place and clears it once sent', () => {
-    const store = createChatDraftStore(() => memoryStorage());
+    const store = createChatDraftStore(storageOf(memoryStorage()));
     const anchor = { key: 'k1', line: 1, quote: 'q' };
     store.setFresh(DOC, anchor, 'раз');
     store.setFresh(DOC, anchor, 'раз два');
@@ -64,7 +69,7 @@ describe('createChatDraftStore', () => {
   });
 
   it('forgetThread drops the composer and the edit of one thread only', () => {
-    const store = createChatDraftStore(() => memoryStorage());
+    const store = createChatDraftStore(storageOf(memoryStorage()));
     store.setReply(DOC, 'c-aaaaaa', 'a');
     store.setEdit(DOC, 'c-aaaaaa', { at: '1', text: 'b' });
     store.setReply(DOC, 'c-bbbbbb', 'c');
@@ -107,6 +112,52 @@ describe('createChatDraftStore', () => {
     expect(store.reply(DOC, 'ok')).toBe('текст');
     expect(store.reply(DOC, 'bad')).toBeUndefined();
     expect(store.fresh(DOC)).toEqual([]);
+  });
+
+  // Every window has its own store over the one shared `localStorage`, and a
+  // tab moves between windows. Window A typed in a document, the tab moved
+  // to B, B sent the message; A's next write (any draft of that document)
+  // must neither bring the sent text back nor drop what B holds.
+  it('two windows over one storage never resurrect or delete each other\'s drafts', () => {
+    const shared = memoryStorage();
+    const windowA = createChatDraftStore(() => shared);
+    const windowB = createChatDraftStore(() => shared);
+
+    windowA.setReply(DOC, 'c-aaaaaa', 'отправлю из другого окна');
+    windowA.setFresh(DOC, { key: 'k-a', line: 1, quote: 'q' }, 'новый тред из A');
+    // The tab moves to B, which sees the text and sends it.
+    expect(windowB.reply(DOC, 'c-aaaaaa')).toBe('отправлю из другого окна');
+    windowB.setReply(DOC, 'c-aaaaaa', '');
+    windowB.clearFresh(DOC, 'k-a');
+    windowB.setReply(DOC, 'c-bbbbbb', 'B набирает');
+
+    // A writes something else for the same document afterwards.
+    windowA.setEdit(DOC, 'c-cccccc', { at: '17:00', text: 'правка из A' });
+
+    for (const store of [windowA, windowB, createChatDraftStore(() => shared)]) {
+      expect(store.reply(DOC, 'c-aaaaaa')).toBeUndefined();
+      expect(store.fresh(DOC)).toEqual([]);
+      expect(store.reply(DOC, 'c-bbbbbb')).toBe('B набирает');
+      expect(store.edit(DOC, 'c-cccccc')).toEqual({ at: '17:00', text: 'правка из A' });
+    }
+  });
+
+  it('text a refused write kept in memory is not lost to the next read', () => {
+    const storage = memoryStorage();
+    const store = createChatDraftStore(() => storage);
+    store.setReply(DOC, 'c-aaaaaa', 'раз');
+    const setItem = storage.setItem;
+    storage.setItem = () => {
+      throw new Error('QuotaExceededError');
+    };
+    store.setReply(DOC, 'c-aaaaaa', 'раз два');
+    expect(store.reply(DOC, 'c-aaaaaa')).toBe('раз два');
+    // Storage recovers: the next write carries the memory copy out.
+    storage.setItem = setItem;
+    store.setReply(DOC, 'c-bbbbbb', 'ещё');
+    const fresh = createChatDraftStore(() => storage);
+    expect(fresh.reply(DOC, 'c-aaaaaa')).toBe('раз два');
+    expect(fresh.reply(DOC, 'c-bbbbbb')).toBe('ещё');
   });
 
   it('a fresh-draft key tells two cards on one fragment apart', () => {

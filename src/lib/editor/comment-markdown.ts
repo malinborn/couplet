@@ -33,6 +33,17 @@ export type CommentMarkdownDocument = Pick<Document, 'createElement' | 'createTe
 /** Class on the root the renderer returns. */
 export const COMMENT_MD_CLASS = 'cm-ai-comment-md';
 
+/**
+ * How deep quotes and lists, and inline marks, may nest before the rest is
+ * shown as its source. The walk is recursive, and a message of a few thousand
+ * `>` would otherwise blow the stack — taking down not just this card but
+ * every card rebuilt with it. Nothing a person writes nests this deep.
+ */
+export const MAX_NESTING = 24;
+
+const CONTAINERS = new Set(['Blockquote', 'BulletList', 'OrderedList']);
+const INLINE_CONTAINERS = new Set(['Emphasis', 'StrongEmphasis', 'Strikethrough', 'Link']);
+
 /** Schemes a link may point at. Everything else renders as text. */
 const SAFE_SCHEME = /^(https?:|mailto:)/i;
 
@@ -155,7 +166,30 @@ class Renderer {
     parent.appendChild(p);
   }
 
+  /** Quotes and lists open right now, around the block being rendered. */
+  private depth = 0;
+  /** Inline marks open right now, around the text being rendered. */
+  private inlineDepth = 0;
+
   private block(node: SyntaxNode, parent: HTMLElement): void {
+    if (!CONTAINERS.has(node.name)) return this.blockInner(node, parent);
+    if (this.depth >= MAX_NESTING) return this.raw(node, parent);
+    this.depth += 1;
+    try {
+      this.blockInner(node, parent);
+    } finally {
+      this.depth -= 1;
+    }
+  }
+
+  /** A block shown exactly as written. */
+  private raw(node: SyntaxNode, parent: HTMLElement): void {
+    const p = this.el('p', 'cm-ai-comment-md-raw');
+    this.lines(this.slice(node.from, node.to), p);
+    parent.appendChild(p);
+  }
+
+  private blockInner(node: SyntaxNode, parent: HTMLElement): void {
     const name = node.name;
     if (name === 'Paragraph') {
       const p = this.el('p');
@@ -223,13 +257,10 @@ class Renderer {
       case 'Table':
         parent.appendChild(this.table(node));
         return;
-      default: {
+      default:
         // HTML blocks, link reference definitions, comments, anything new:
         // shown as written, never interpreted, never dropped.
-        const p = this.el('p', 'cm-ai-comment-md-raw');
-        this.lines(this.slice(node.from, node.to), p);
-        parent.appendChild(p);
-      }
+        this.raw(node, parent);
     }
   }
 
@@ -396,6 +427,20 @@ class Renderer {
   }
 
   private inlineNode(node: SyntaxNode, parent: HTMLElement): void {
+    if (!INLINE_CONTAINERS.has(node.name)) return this.inlineLeaf(node, parent);
+    if (this.inlineDepth >= MAX_NESTING) {
+      this.flow(this.slice(node.from, node.to), parent);
+      return;
+    }
+    this.inlineDepth += 1;
+    try {
+      this.inlineLeaf(node, parent);
+    } finally {
+      this.inlineDepth -= 1;
+    }
+  }
+
+  private inlineLeaf(node: SyntaxNode, parent: HTMLElement): void {
     switch (node.name) {
       case 'Emphasis':
         return this.wrap('em', node, parent);

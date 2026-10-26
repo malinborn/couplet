@@ -5,9 +5,9 @@
  * second copy of what is being typed. In chat mode nothing is written until
  * Send — which makes the composer the *only* copy of a message the user has
  * not sent yet. The data-safety rule (CLAUDE.md: user text is never deleted
- * without a second copy) therefore needs a home for it here: kept in memory,
- * so a card rebuild or a tab switch brings it back, and mirrored to
- * `localStorage`, so a restart does too.
+ * without a second copy) therefore needs a home for it here: `localStorage`,
+ * so a card rebuild, a tab switch, a tab moving to another window and a
+ * restart all bring it back — with a memory copy for when storage fails.
  *
  * Three kinds of text, all per document path:
  * - a reply being composed on an existing thread (by thread id);
@@ -133,31 +133,67 @@ export interface ChatDraftStore {
   forgetThread(path: string, id: string): void;
 }
 
+/** A deep copy, so the memory fallback never shares objects with a caller. */
+function structuredCloneDrafts(drafts: PathDrafts): PathDrafts {
+  return {
+    replies: { ...drafts.replies },
+    edits: Object.fromEntries(Object.entries(drafts.edits).map(([id, e]) => [id, { ...e }])),
+    fresh: drafts.fresh.map((d) => ({ ...d })),
+  };
+}
+
 export function createChatDraftStore(storage: () => Storage | null): ChatDraftStore {
-  const cache = new Map<string, PathDrafts>();
+  /**
+   * Fallback only. `localStorage` is shared by every window of the app, and a
+   * document's tab moves between windows — so storage, not a per-window
+   * cache, is the truth: every read goes to it and every change is a
+   * read → modify → write of it. A cache would hand one window's stale copy
+   * back to storage on its next write, bringing back a draft another window
+   * already sent (a duplicate send one Enter away) or deleting text another
+   * window is holding.
+   *
+   * The memory copy answers only when storage cannot: missing, throwing, or
+   * refusing our last write for this path (`unsaved`) — then it is the one
+   * place that text still lives.
+   */
+  const memory = new Map<string, PathDrafts>();
+  const unsaved = new Set<string>();
 
   const load = (path: string): PathDrafts => {
-    const cached = cache.get(path);
-    if (cached) return cached;
+    const fallback = (): PathDrafts => structuredCloneDrafts(memory.get(path) ?? empty());
+    if (unsaved.has(path)) return fallback();
+    let raw: string | null;
+    try {
+      const store = storage();
+      if (!store) return fallback();
+      raw = store.getItem(CHAT_DRAFTS_KEY_PREFIX + path);
+    } catch {
+      return fallback();
+    }
     let drafts = empty();
     try {
-      const raw = storage()?.getItem(CHAT_DRAFTS_KEY_PREFIX + path);
       if (raw) drafts = sanitize(JSON.parse(raw));
     } catch {
-      // Unreadable or corrupt: start from nothing rather than fail the card.
+      // Corrupt: start from nothing rather than fail the card.
     }
-    cache.set(path, drafts);
+    memory.set(path, structuredCloneDrafts(drafts));
     return drafts;
   };
 
   const persist = (path: string, drafts: PathDrafts): void => {
+    memory.set(path, structuredCloneDrafts(drafts));
     try {
       const store = storage();
-      if (!store) return;
+      if (!store) {
+        unsaved.add(path);
+        return;
+      }
       if (isEmpty(drafts)) store.removeItem(CHAT_DRAFTS_KEY_PREFIX + path);
       else store.setItem(CHAT_DRAFTS_KEY_PREFIX + path, JSON.stringify(drafts));
+      unsaved.delete(path);
     } catch {
-      // Full or refused: the in-memory copy still holds it for this run.
+      // Full or refused: the memory copy holds it for this run.
+      unsaved.add(path);
     }
   };
 
