@@ -210,7 +210,27 @@ Nginx on this host was broken, so…
   or the next thread.
 - Statuses are `open` / `paused` / `answered` / `resolved`. Threads are never
   deleted; `resolved` is history.
-- `paused` means **a human is typing in this thread right now**. The comment box
+- **Chat mode — couplet's default.** A comment card is a chat: the user types a
+  message and presses "Send to agent" (or Enter). Each send appends a reply by
+  `You` and sets the thread `open` in the same write; a new thread is born
+  `open` with its first message. Nothing is written while they type, so there is
+  no pause in chat mode — `paused` comes only from the optional live box (AI →
+  "Comments: Live Box (Auto-send)"), described next.
+- **Edits.** Double-clicking one of their own messages lets the user revise it.
+  The revision is appended at the end of the thread — never in place — and the
+  thread goes back to `open`:
+
+  ```markdown
+  **You** · 2026-08-24 17:03:00 UTC · edited (replaces 2026-08-24 17:00:00 UTC)
+  Успеем к четвергу?
+  ```
+
+  `**You** · <at> · edited (replaces <earlier at>)` is the user's revision of
+  their earlier message with that timestamp: read both, the later one is what
+  they mean now, and check what changed. Both parsers read everything after the
+  first `·` as the timestamp, so an older build shows the tail as part of the
+  time and loses nothing — there is no format version bump.
+- `paused` (live box only) means **a human is typing in this thread right now**. The comment box
   saves as you type, and every save used to set `open` — so `watch` woke an agent
   on the first three words of a question. A paused thread carries a deadline,
   `until=<epoch seconds>`, and counts as waiting only once that moment has
@@ -421,6 +441,7 @@ couplet follows markdown links, so a document you write can take the user straig
 - Arm this once at the start of a session: `Monitor({command: "couplet watch", description: "new couplet comments", persistent: true})`. Every line it prints is a new comment, delivered as an interruption in this session — so you answer with the context you already have. `persistent: true` is not optional: without it the monitor dies after five minutes and its silence is indistinguishable from "no comments".
 - A monitor line is an interruption, not a message from the user. Bring the current step to a consistent state first, then answer at that checkpoint — abandoning a half-finished edit to reply is worse for them than replying a minute later.
 - Use the `question` tool to read open threads and `answer` to reply. Also check `question` before asking them something in chat and before reporting that you are done: they may have already answered you in the document.
+- A reply headed `**You** · <at> · edited (replaces <earlier at>)` is the user's revision of their earlier message with that timestamp: read both, the later one is what they mean now, and check what changed.
 - If a comment asks for a change rather than an answer, make it with `edit`, then close the thread with `answer`.
 - Add a `Stop` hook that runs `couplet question` and blocks the turn while anything is still open. This is the backstop that matters: a monitor emitting too much is stopped by the harness, and you will not necessarily notice — without the hook, comments pile up in silence.
 
@@ -471,7 +492,9 @@ The user can also comment on a fragment of a document and expect you to answer. 
 - `echo "reply" | couplet answer <file> --id c-7f3a2c` — append your reply and mark the thread answered.
 - `couplet watch [<dir>]` — long-running; prints one line per newly-open thread.
 
-A thread the user is still typing has `status=paused` and is deliberately invisible to both `question` and `watch` — you are told about it about twenty seconds after they stop typing, or the moment they press "send now". So a comment can exist for half a minute before you hear about it, and that is working as intended, not a delivery failure.
+By default couplet's comment cards are a chat: each message the user sends is appended to the thread and sets it `open` at once. Only in the optional live box (AI menu) is a thread they are still typing `status=paused`, deliberately invisible to both `question` and `watch` — you are told about it about twenty seconds after they stop typing, or the moment they press "send now". So a comment can exist for half a minute before you hear about it, and that is working as intended, not a delivery failure.
+
+A reply headed `**You** · <at> · edited (replaces <earlier at>)` is the user's revision of their earlier message with that timestamp: read both, the later one is what they mean now, and check what changed.
 
 If your harness can react to a stream (Claude Code: `Monitor({command: "couplet watch", description: "new couplet comments", persistent: true})`), arm it once per session and you get woken in this same session, with your context intact, instead of polling. `persistent: true` matters: without it the monitor dies after five minutes and its silence looks exactly like "no comments". Also add a `Stop` hook running `couplet question` that blocks the turn while anything is open — a monitor that emits too much is stopped by the harness without telling you, and the hook is what stops comments piling up unseen.
 

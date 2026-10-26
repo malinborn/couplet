@@ -317,7 +317,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "question",
-            "description": "List open comment threads the user left in documents. Reads .mdmini_comments_*.md files directly — works even when couplet is not running.",
+            "description": "List open comment threads the user left in documents. Reads .mdmini_comments_*.md files directly — works even when couplet is not running. A reply whose timestamp reads `<at> · edited (replaces <earlier at>)` is the user's revision of their earlier message with that timestamp: read both, the later one is what they mean now, and check what changed.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -331,7 +331,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "answer",
-            "description": "Append a reply to a comment thread and mark it answered. If the document itself needs changing, use edit first, then answer to close the thread.",
+            "description": "Append a reply to a comment thread and mark it answered. If the document itself needs changing, use edit first, then answer to close the thread. When the thread holds an `edited (replaces …)` revision, answer what the revision says.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
