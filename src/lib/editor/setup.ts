@@ -12,6 +12,7 @@ import { markdownExtension } from './markdown-language';
 import { markdownKeybindings } from './keybindings';
 import { listContinuation } from './autocomplete';
 import { codeBlockExitKeymap } from './code-block-exit';
+import { codeSelectionHighlight } from './code-selection';
 import { slashCommands } from './slash-commands';
 import type { SlashAction } from './slash-actions';
 import { themeAction, themePickerExtensions, renderThemeSwatch, type ThemeControl } from './slash-theme';
@@ -105,6 +106,9 @@ export function createExtensions(deps: EditorDeps = {}): Extension[] {
     lineGlowCompartment.of([]),
     readOnlyCompartment.of([]),
     drawSelection(),
+    // The selection over code: drawSelection's layer is behind the code's
+    // opaque background (code-selection.ts).
+    codeSelectionHighlight,
     // Prec.highest, and it has to sit outside previewCompartment: the two-Enter
     // exit from a fenced code block applies to every engine (#52).
     codeBlockExitKeymap,

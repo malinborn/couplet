@@ -608,6 +608,40 @@
   padding-left: 1em;
 }
 
+/* The selection over code (editor/code-selection.ts). drawSelection's layer
+ * lies behind `.cm-content`, under the code's opaque background, so the
+ * selected part is painted again from inside. Only inside rendered code: raw
+ * code (caret inside, source mode) has no background and shows the layer. */
+.cm-md-inline-code .cm-md-code-selection,
+.cm-md-code-line .cm-md-code-selection {
+  background-color: var(--color-selection);
+}
+
+/* An inline background covers only the font's content area, so a partly
+ * selected code line would be a band with gaps above and below. Grow it by the
+ * half-leading (code: 0.9em at line-height 1.6; JetBrains Mono's content area
+ * is ~1.32em) — padding on an inline box paints without moving the layout. */
+.cm-md-code-line .cm-md-code-selection {
+  padding-block: 0.13em;
+}
+
+/* A line selected from its start through its line break: filled across the
+ * text column, like CM6's rectangle for a line in the middle of a selection.
+ * Content box only — the block's top/bottom padding and the gutter stay. */
+.cm-line.cm-md-code-line.cm-md-code-line-selected {
+  background-image: linear-gradient(var(--color-selection), var(--color-selection));
+  background-origin: content-box;
+  background-clip: content-box;
+}
+
+/* The block's first line also holds the header widget (language, Copy):
+ * fill only its text row, the bottom one line-height of the content box. */
+.cm-line.cm-md-code-line.cm-md-code-block-start.cm-md-code-line-selected {
+  background-size: 100% 1.6em;
+  background-position: left bottom;
+  background-repeat: no-repeat;
+}
+
 .cm-md-code-block-start {
   border-top-left-radius: 6px;
   border-top-right-radius: 6px;

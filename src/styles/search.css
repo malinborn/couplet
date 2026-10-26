@@ -138,6 +138,17 @@
   visibility: hidden;
 }
 
+/* The same selection where it is painted from inside code (code-selection.ts).
+ * Its span is the innermost node, so over a match it would cover the match's
+ * fill and bar; a match covers the selection, as it does outside code. */
+.cm-content .cm-line .cm-searchMatch .cm-md-code-selection,
+.cm-editor:has(.cm-searchMatch-selected) .cm-md-code-selection {
+  background-color: transparent;
+}
+.cm-editor:has(.cm-searchMatch-selected) .cm-line.cm-md-code-line-selected {
+  background-image: none;
+}
+
 /* ----- Spotlight ---------------------------------------------------------- */
 
 /* The veil: an SVG sheet with holes, plus the current match's halo. The
