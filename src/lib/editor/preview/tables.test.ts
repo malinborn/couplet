@@ -585,6 +585,118 @@ describe('parseInlineMarkdown', () => {
   });
 });
 
+describe('parseInlineMarkdown — a task box opening a cell', () => {
+  it('Checkbox_EmptyBox_ReturnsUncheckedToken', () => {
+    expect(parseInlineMarkdown('[ ]')).toEqual([
+      { type: 'checkbox', checked: false, source: '[ ]', boxAt: 0 },
+    ]);
+  });
+
+  it('Checkbox_LowercaseX_ReturnsCheckedToken', () => {
+    expect(parseInlineMarkdown('[x]')).toEqual([
+      { type: 'checkbox', checked: true, source: '[x]', boxAt: 0 },
+    ]);
+  });
+
+  it('Checkbox_UppercaseX_ReadsAsChecked', () => {
+    expect(parseInlineMarkdown('[X]')).toEqual([
+      { type: 'checkbox', checked: true, source: '[X]', boxAt: 0 },
+    ]);
+  });
+
+  it('Checkbox_DashMarker_HidesMarkerWithTheBox', () => {
+    expect(parseInlineMarkdown('- [ ]')).toEqual([
+      { type: 'checkbox', checked: false, source: '- [ ]', boxAt: 2 },
+    ]);
+  });
+
+  it('Checkbox_StarMarkerAndText_SpaceAfterBoxIsHidden', () => {
+    expect(parseInlineMarkdown('* [x] done')).toEqual([
+      { type: 'checkbox', checked: true, source: '* [x] ', boxAt: 2 },
+      { type: 'text', value: 'done' },
+    ]);
+  });
+
+  it('Checkbox_PlusMarker_IsAListMarkerToo', () => {
+    expect(parseInlineMarkdown('+ [ ] x')[0]).toMatchObject({ type: 'checkbox', boxAt: 2 });
+  });
+
+  it('Checkbox_FollowedByBold_BoldStillRenders', () => {
+    expect(parseInlineMarkdown('[ ] **bold**')).toEqual([
+      { type: 'checkbox', checked: false, source: '[ ] ', boxAt: 0 },
+      { type: 'bold', value: 'bold' },
+    ]);
+  });
+
+  it('Checkbox_StarMarkerBeforeItalic_MarkerIsNotEmphasis', () => {
+    // The `*` of the list marker must not pair with the italic's.
+    expect(parseInlineMarkdown('* [ ] *note*')).toEqual([
+      { type: 'checkbox', checked: false, source: '* [ ] ', boxAt: 2 },
+      { type: 'italic', value: 'note' },
+    ]);
+  });
+
+  it('Checkbox_LeadingWhitespace_IsPartOfTheHiddenSource', () => {
+    expect(parseInlineMarkdown('  - [x] a')).toEqual([
+      { type: 'checkbox', checked: true, source: '  - [x] ', boxAt: 4 },
+      { type: 'text', value: 'a' },
+    ]);
+  });
+
+  it('Checkbox_BoxBeforeUrl_StaysALink', () => {
+    expect(parseInlineMarkdown('[ ](https://example.com)')).toEqual([
+      { type: 'link', text: ' ', url: 'https://example.com' },
+    ]);
+    expect(parseInlineMarkdown('[x](https://example.com) text')[0]).toMatchObject({ type: 'link' });
+  });
+
+  it('Checkbox_MidCell_IsPlainText', () => {
+    expect(parseInlineMarkdown('a [ ] b')).toEqual([{ type: 'text', value: 'a [ ] b' }]);
+    expect(parseInlineMarkdown('a [x]')).toEqual([{ type: 'text', value: 'a [x]' }]);
+  });
+
+  it('Checkbox_BoxGluedToText_IsPlainText', () => {
+    expect(parseInlineMarkdown('[x]y')).toEqual([{ type: 'text', value: '[x]y' }]);
+  });
+
+  it('Checkbox_EmptyBrackets_IsPlainText', () => {
+    expect(parseInlineMarkdown('[]')).toEqual([{ type: 'text', value: '[]' }]);
+    expect(parseInlineMarkdown('- []')).toEqual([{ type: 'text', value: '- []' }]);
+  });
+
+  it('Checkbox_OtherLetterInBox_IsPlainText', () => {
+    expect(parseInlineMarkdown('[o] x')).toEqual([{ type: 'text', value: '[o] x' }]);
+  });
+
+  it('Checkbox_MarkerWithoutSpace_IsPlainText', () => {
+    expect(parseInlineMarkdown('-[ ]')).toEqual([{ type: 'text', value: '-[ ]' }]);
+  });
+
+  it('Checkbox_EmptyCell_NoTokens', () => {
+    expect(parseInlineMarkdown('')).toEqual([]);
+  });
+
+  it('Checkbox_TokensTileTheSource', () => {
+    for (const text of ['- [x] **a** `b` [c](d)', '[ ] сделано', '* [X] ~~s~~ tail']) {
+      const joined = parseInlineMarkdown(text)
+        .map((t) => {
+          switch (t.type) {
+            case 'checkbox': return t.source;
+            case 'text': return t.value;
+            case 'code': return '`' + t.value + '`';
+            case 'bold': return '**' + t.value + '**';
+            case 'boldItalic': return '***' + t.value + '***';
+            case 'italic': return '*' + t.value + '*';
+            case 'strike': return '~~' + t.value + '~~';
+            case 'link': return `[${t.text}](${t.url})`;
+          }
+        })
+        .join('');
+      expect(joined).toBe(text);
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // routeLinkClick
 // ---------------------------------------------------------------------------

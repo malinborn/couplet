@@ -1096,6 +1096,36 @@
   opacity: 0.6;
 }
 
+/* A task box opening a cell (`[ ]`, `- [x] done`). It is drawn instead of
+ * its source, so the gap before the text is a margin, not a space — only
+ * on a box with text after it (`-lead`, set in tables.ts); a box alone in
+ * its cell gets none. The size is restated because `.cm-xl
+ * .cm-md-checkbox` (same specificity, earlier in this file) sizes list boxes
+ * to the explicit-list column, which means nothing inside a table. As a
+ * replaced element the box is never narrower than itself, so a column
+ * headed by a single `✔` stays one box wide instead of wrapping `- [ ]`
+ * one character per line. */
+.cm-md-table .cm-md-table-checkbox {
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  vertical-align: -0.2em;
+  font-size: inherit;
+}
+
+.cm-md-table .cm-md-table-checkbox.cm-md-table-checkbox-lead {
+  margin-right: 0.8ch;
+}
+
+/* `aria-readonly` is CM6's, on the content element, and follows the state
+ * live — unlike a `disabled` attribute, which would go stale when
+ * `readOnlyCompartment` flips without the table being redrawn. */
+.cm-content[aria-readonly='true'] .cm-md-table-checkbox {
+  cursor: default;
+  opacity: 0.6;
+}
+
 /* Table control buttons */
 .cm-md-table-btn {
   all: unset;

@@ -201,7 +201,8 @@ one-cell commit, and 30–40 ms per keystroke above a 300-row markdown table.
   Handlers close over the model plus the cell's (row, col) — stable across a
   compatible update by definition — and resolve the cell when the event fires:
   dblclick, mousedown/mouseup caret parking, the `beforeinput` replay, the ⇔
-  toggle (`model.ctx.nodeFrom`), row −/drag, column −/drag, add row/column.
+  toggle (`model.ctx.nodeFrom`), row −/drag, column −/drag, add row/column,
+  and a cell's task box (`renderCellContent` takes the cell's resolver for it).
   Only *shape* (`colCount > 1`, `dataCount > 1`) is read at build time.
 - **The overlay does not read the DOM at all.** It is a textarea in
   `document.body` that stays open across edits (a click on "+" keeps it
@@ -641,6 +642,38 @@ The plugin has one more CSV-facing knob, outside table code — the `previewRebu
 - Providers combine with OR — any one asking for a rebuild gets it. A new document kind that needs view-driven rebuilds back simply does not opt out.
 
 **Never branch on "is this CSV" inside `tables.ts`** — a CSV need that the facet cannot express is a new facet field with a markdown default, not an `if`. Keeping the buffer one table (no text around it, undo across a reload) is `csv-guard.ts`'s job, outside table code; the ⇔ toggle and the hover "+" gutter are hidden in a CSV tab by CSS (`cm-csv-file-mode`).
+
+### Task Boxes in Cells
+
+A cell whose text *starts* with `[ ]`, `[x]` or `[X]` — optionally after a list
+marker (`- [ ]`, `* [x]`, `+ [ ]`) — draws a real checkbox
+(`cm-md-checkbox cm-md-table-checkbox`) instead of that source. The box must be
+followed by whitespace or the end of the cell, so `[ ](url)` stays a link and
+`[x]y` stays text; `[ ]` anywhere but the start of a cell is ordinary text.
+
+- **One token, zero visible characters.** `parseInlineMarkdown` emits a
+  `checkbox` token whose `source` is everything it hides (marker, box, the
+  whitespace after it) and `boxAt` the `[`'s offset. `cellSpans` counts it as
+  pure lead, so the tokens still tile the cell and comment anchors, caret
+  parking and the toolbar's mapping see the text after the box at visible
+  offset 0. A caret at 0 lands *after* the box in the source; a comment on the
+  box alone highlights nothing. ⌘F skips such a cell like any formatted one.
+- **The document is the only state.** `mousedown` (button 0) commits an open
+  overlay first (like `mkBtn`), resolves the live cell, re-tokenizes *its* text
+  and flips the three characters at `boxAt` (`toggleCellCheckbox`: `[ ]` ↔
+  `[x]`, `[X]` written back as `[ ]`) — one change, its own undo step (`isolateHistory`, so two quick clicks are two steps). The
+  native `click` toggle is cancelled; the box redraws because the cell's text
+  changed. `mousedown` and `dblclick` stop at the box, so a click never parks
+  the caret and two quick clicks never open the overlay; double-click elsewhere
+  in the cell still does.
+- **Read-only is checked at click time**, not baked in as `disabled`:
+  `readOnlyCompartment` flips without redrawing the table. The muted look keys
+  off CM6's live `aria-readonly` on `.cm-content`.
+- **The space after the box is hidden with it**, so the gap before the text is a
+  margin on `.cm-md-table-checkbox-lead`, set only when text follows (`:last-child`
+  cannot tell — it ignores text nodes). A box-only column is one box wide.
+- Same widget in live-preview and live-render. Covered by
+  `table-checkbox.test.ts` (including a box built before an edit moved its cell).
 
 ### Computed Cells Break "the DOM Reads as the Source"
 
