@@ -1,6 +1,6 @@
 {
   "name": "md-mini",
-  "version": "2.4.2",
+  "version": "2.4.3",
   "description": "Minimalist live-preview markdown editor for macOS",
   "type": "module",
   "scripts": {
