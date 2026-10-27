@@ -53,7 +53,7 @@
     "url": "https://couplet.pro/",
     "downloadUrl": "https://github.com/malinborn/couplet/releases",
     "sameAs": ["https://github.com/malinborn/couplet"],
-    "softwareVersion": "2.4.3",
+    "softwareVersion": "2.4.4",
     "license": "https://opensource.org/licenses/GPL-3.0"
   }
   </script>
@@ -457,6 +457,19 @@
       <div class="changelog-list">
 
         <details class="changelog-entry" open>
+          <summary class="changelog-summary">
+            <span class="changelog-version">v2.4.4</span>
+            <span class="changelog-date">2026-10-27</span>
+            <span class="changelog-tag feature">feature</span>
+            <span class="changelog-title">Ticks in the table</span>
+          </summary>
+          <ul class="changelog-body-list">
+            <li><strong>A checkbox in a cell is a checkbox</strong> &mdash; a status column of <code>[ ]</code>, <code>[x]</code> or <code>- [ ]</code> used to show as raw brackets, and in a narrow column it broke into one character per line. Table cells had their own small renderer that knew bold, code and links but not task boxes. Now a cell that starts with one draws a real box, and a click flips <code>[ ]</code> &harr; <code>[x]</code> in the file &mdash; text after the box stays as it was</li>
+            <li><strong>One click, one undo</strong> &mdash; each toggle is its own <kbd>&#8984;Z</kbd> step, even two quick clicks on the same box. Double-click the rest of the cell and you still edit its raw text</li>
+          </ul>
+        </details>
+
+        <details class="changelog-entry">
           <summary class="changelog-summary">
             <span class="changelog-version">v2.4.3</span>
             <span class="changelog-date">2026-10-27</span>
