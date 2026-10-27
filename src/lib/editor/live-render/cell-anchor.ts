@@ -80,6 +80,11 @@ function markerWidths(
     case 'link':
       // `[text](url)`
       return { lead: 1, trail: 3 + token.url.length, visible: token.text };
+    case 'checkbox':
+      // Drawn as an `<input>`, which has no characters: the marker, the box and
+      // the whitespace around them are all lead, and nothing is visible.
+      if (source.slice(at, at + token.source.length) !== token.source) return null;
+      return { lead: token.source.length, trail: 0, visible: '' };
     default:
       return null;
   }

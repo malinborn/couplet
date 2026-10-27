@@ -28,7 +28,9 @@ function quote(source: string, visible: string, occurrence = 0): string | null {
 /** What a cell shows on screen — the same join `renderCellContent` performs. */
 function renderedText(source: string): string {
   return parseInlineMarkdown(source)
-    .map((token) => (token.type === 'link' ? token.text : token.value))
+    .map((token) =>
+      token.type === 'link' ? token.text : token.type === 'checkbox' ? '' : token.value
+    )
     .join('');
 }
 
@@ -131,7 +133,9 @@ describe('visibleRangeForSource', () => {
     // The text the cell puts on screen, built the way `renderCellContent`
     // builds it, so the offsets can be read against something real.
     const visible = parseInlineMarkdown(cell)
-      .map((token) => (token.type === 'link' ? token.text : token.value))
+      .map((token) =>
+      token.type === 'link' ? token.text : token.type === 'checkbox' ? '' : token.value
+    )
       .join('');
     return visible.slice(range.from, range.to);
   }
@@ -226,5 +230,42 @@ describe('sourceOffsetForVisibleCaret', () => {
     // somewhere — the end is the harmless answer.
     const broken = 'a **b';
     expect(sourceOffsetForVisibleCaret(broken, 1)).toBeLessThanOrEqual(broken.length);
+  });
+});
+
+describe('a task box opening the cell', () => {
+  it('occupies no visible characters and tiles the source', () => {
+    expect(cellSpans('- [x] **a**')).toEqual([
+      { visFrom: 0, visTo: 0, srcFrom: 0, srcTextFrom: 6, srcTo: 6, atomic: true },
+      { visFrom: 0, visTo: 1, srcFrom: 6, srcTextFrom: 8, srcTo: 11, atomic: true },
+    ]);
+    expect(renderedText('- [x] **a**')).toBe('a');
+  });
+
+  it('a box alone renders nothing', () => {
+    const spans = cellSpans('[ ]');
+    expect(spans).not.toBeNull();
+    expect(visibleLength(spans!)).toBe(0);
+  });
+
+  it('maps visible text past the box to its source', () => {
+    // "сделано" is visible 0..7; in the source it starts after "[x] ".
+    expect(sourceRangeForVisible('[x] сделано', 0, 7)).toEqual({ from: 4, to: 11 });
+    expect(quote('- [x] **a** tail', 'tail')).toBe('tail');
+    expect(quote('- [x] **a** tail', 'a')).toBe('**a**');
+  });
+
+  it('a comment on the text highlights the text, one on the box alone highlights nothing', () => {
+    expect(visibleRangeForSource('[x] сделано', 4, 11)).toEqual({ from: 0, to: 7 });
+    expect(visibleRangeForSource('[x] сделано', 0, 11)).toEqual({ from: 0, to: 7 });
+    expect(visibleRangeForSource('[x] сделано', 0, 3)).toBeNull();
+  });
+
+  it('a caret before the first glyph lands after the box, never inside it', () => {
+    expect(sourceOffsetForVisibleCaret('- [ ] abc', 0)).toBe(6);
+    expect(sourceOffsetForVisibleCaret('- [ ] abc', 2)).toBe(8);
+    expect(sourceOffsetForVisibleCaret('- [ ] **ab**', 1)).toBe(9);
+    // Nothing visible: the caret appends.
+    expect(sourceOffsetForVisibleCaret('- [ ]', 0)).toBe(5);
   });
 });

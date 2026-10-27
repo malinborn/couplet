@@ -16,12 +16,34 @@ export type InlineToken =
   | { type: 'bold'; value: string }
   | { type: 'italic'; value: string }
   | { type: 'strike'; value: string }
-  | { type: 'link'; text: string; url: string };
+  | { type: 'link'; text: string; url: string }
+  /**
+   * A task box at the very start of a cell: `[ ]`, `[x]`, `[X]`, optionally
+   * after a list marker (`- [ ]`, `* [x]`, `+ [ ]`). Renders as a checkbox and
+   * nothing else — it occupies zero visible characters.
+   *
+   * `source` is every character the token hides: leading whitespace, the list
+   * marker, the box and the whitespace after it, so the tokens still tile the
+   * whole cell text (`live-render/cell-anchor.ts` relies on that). `boxAt` is
+   * where the `[` sits inside `source` — which, since the token only ever
+   * starts a cell, is also its offset in the cell text. Toggling rewrites the
+   * three characters there.
+   */
+  | { type: 'checkbox'; checked: boolean; source: string; boxAt: number };
+
+/**
+ * A task box opening a cell. The box must be followed by whitespace or the end
+ * of the cell: `[ ](url)` stays a link and `[x]y` stays text. Anywhere but the
+ * start of the cell `[ ]` is ordinary text — a status column is the use case,
+ * not checkboxes sprinkled through prose.
+ */
+const CELL_CHECKBOX = /^[ \t]*(?:[-*+][ \t]+)?\[([ xX])\](?:[ \t]+|$)/;
 
 /**
  * Parse a cell's text into inline markdown tokens.
  *
- * Supported: code, bold+italic, bold, italic, strikethrough, links `[text](url)`.
+ * Supported: a leading task box (see the `checkbox` token), code, bold+italic,
+ * bold, italic, strikethrough, links `[text](url)`.
  * Order matters — longer patterns are matched first to avoid emphasis swallowing link
  * brackets. Unmatched text becomes `text` tokens.
  */
@@ -35,6 +57,18 @@ export function parseInlineMarkdown(text: string): InlineToken[] {
   const tokens: InlineToken[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
+
+  const box = CELL_CHECKBOX.exec(text);
+  if (box) {
+    tokens.push({
+      type: 'checkbox',
+      checked: box[1] !== ' ',
+      source: box[0],
+      boxAt: box[0].indexOf('['),
+    });
+    lastIndex = box[0].length;
+    inlineRegex.lastIndex = lastIndex;
+  }
 
   while ((match = inlineRegex.exec(text)) !== null) {
     if (match.index > lastIndex) {

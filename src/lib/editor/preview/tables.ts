@@ -3,6 +3,7 @@ import type { EditorView, ViewUpdate } from '@codemirror/view';
 import { MapMode } from '@codemirror/state';
 import type { ChangeDesc, Text } from '@codemirror/state';
 import { ensureSyntaxTree, syntaxTree } from '@codemirror/language';
+import { isolateHistory } from '@codemirror/commands';
 import type { SyntaxNode } from '@lezer/common';
 import type { DecoSink } from './utils';
 import { markdownTable } from 'markdown-table';
@@ -189,6 +190,11 @@ export function forgetTableUpdates(view: EditorView): void {
 /** The cell at (row, col) as the document has it now — never a copy taken at build time. */
 function liveCell(model: TableDomModel, row: number, col: number): CellInfo | undefined {
   return model.ctx.rows[row]?.cells[col];
+}
+
+/** {@link liveCell} bound to one cell, for handlers that fire later. */
+function cellResolver(model: TableDomModel, row: number, col: number): () => CellInfo | undefined {
+  return () => liveCell(model, row, col);
 }
 
 /**
@@ -748,7 +754,13 @@ class TableWidget extends WidgetType {
         }
         if (rerender) {
           el.textContent = '';
-          renderCellContent(el, cb.text, view, highlights ?? cellHighlights(cb, this.anchors));
+          renderCellContent(
+            el,
+            cb.text,
+            view,
+            highlights ?? cellHighlights(cb, this.anchors),
+            cellResolver(model, r, c)
+          );
         }
       }
     }
@@ -1004,7 +1016,13 @@ function renderCellContent(
   cellEl: HTMLElement,
   text: string,
   view: EditorView,
-  highlights: CellHighlight[] = []
+  highlights: CellHighlight[] = [],
+  /**
+   * The cell as the document has it *now*, for handlers that write to it (the
+   * task box). Never a `CellInfo` captured here: `updateDOM` keeps this
+   * element across edits that move the cell without re-rendering it.
+   */
+  cellAt?: () => CellInfo | undefined
 ): void {
   if (cellEl.classList.contains(COMPUTED_CELL_CLASS)) {
     cellEl.classList.remove(COMPUTED_CELL_CLASS);
@@ -1031,6 +1049,16 @@ function renderCellContent(
 
   for (const token of tokens) {
     switch (token.type) {
+      case 'checkbox': {
+        // Zero visible characters: `vis` does not move.
+        const box = buildCellCheckbox(token.checked, view, cellAt);
+        // The space after the box is hidden with it, so the gap before the
+        // text is a margin — only when there is text. (`:last-child` cannot
+        // say so: it ignores the text node after the box.)
+        if (tokens.length > 1) box.classList.add(TABLE_CHECKBOX_LEAD_CLASS);
+        cellEl.appendChild(box);
+        break;
+      }
       case 'text':
         appendCellText(cellEl, token.value, vis, highlights);
         vis += token.value.length;
@@ -1107,6 +1135,88 @@ function renderCellContent(
       }
     }
   }
+}
+
+/** Class of a task box drawn inside a table cell (beside the shared `cm-md-checkbox`). */
+export const TABLE_CHECKBOX_CLASS = 'cm-md-table-checkbox';
+/** A task box with text after it in the same cell. */
+const TABLE_CHECKBOX_LEAD_CLASS = 'cm-md-table-checkbox-lead';
+
+/**
+ * Flip the task box at the start of a cell: `[ ]` ↔ `[x]` (`[X]` reads as
+ * checked and is written back as `[ ]`). Reads the cell's text from the live
+ * cell, not from what the box was drawn with, so a box drawn before an edit
+ * moved or rewrote the cell still flips the right three characters — or
+ * nothing, if the cell no longer starts with a box. Returns whether it wrote.
+ */
+export function toggleCellCheckbox(view: EditorView, cell: CellInfo): boolean {
+  if (view.state.readOnly) return false;
+  const first = parseInlineMarkdown(cell.text)[0];
+  if (!first || first.type !== 'checkbox') return false;
+  const from = cell.from + first.boxAt;
+  // Belt and braces: the cell range came from the model, the text from the
+  // same snapshot — the document must still say so.
+  if (!/^\[[ xX]\]$/.test(view.state.sliceDoc(from, from + 3))) return false;
+  // Its own undo step: two quick clicks rewrite the same three characters, and
+  // history would merge them into one step that undoes to where it started.
+  view.dispatch({
+    changes: { from, to: from + 3, insert: first.checked ? '[ ]' : '[x]' },
+    annotations: isolateHistory.of('full'),
+  });
+  return true;
+}
+
+/**
+ * The `<input>` for a cell's task box.
+ *
+ * Its state comes from the document only: the native toggle on `click` is
+ * cancelled, and `mousedown` writes the change, which re-renders the cell
+ * (`updateDOM` re-renders a cell whose text changed) with the new box.
+ * `mousedown` is also stopped from reaching the cell, whose own handler would
+ * park the caret, and `dblclick` from opening the edit overlay — two quick
+ * clicks on a box are two toggles. Like `mkBtn`, an open cell edit is
+ * committed first: the toggle writes into the document, and an overlay whose
+ * text is not there yet would be refused once its cell moved.
+ *
+ * Read-only is checked when the box is clicked rather than baked in as
+ * `disabled`: `readOnlyCompartment` can flip without the table being redrawn.
+ * The look follows CM6's `aria-readonly` on the content element (editor.css).
+ */
+function buildCellCheckbox(
+  checked: boolean,
+  view: EditorView,
+  cellAt: (() => CellInfo | undefined) | undefined
+): HTMLInputElement {
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.checked = checked;
+  input.className = `cm-md-checkbox ${TABLE_CHECKBOX_CLASS}`;
+  input.tabIndex = -1;
+  input.contentEditable = 'false';
+  input.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (!cellAt || view.state.readOnly) return;
+    const session = activeCellEditSession();
+    if (session) {
+      session.commit();
+      // The commit rebuilt the table instead of patching it: this box belongs
+      // to a dead DOM, and the click is spent.
+      if (!input.isConnected) return;
+    }
+    const cell = cellAt();
+    if (cell) toggleCellCheckbox(view, cell);
+  });
+  input.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  input.addEventListener('dblclick', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  return input;
 }
 
 /**
@@ -1885,7 +1995,7 @@ function buildCell(
   // Every handler below resolves the cell when it fires, never through `cell`:
   // `TableWidget.updateDOM` keeps this element across edits that move it.
   const place: CellPlace = { row: rowIndex, col: colIndex };
-  const cellAt = (): CellInfo | undefined => liveCell(model, rowIndex, colIndex);
+  const cellAt = cellResolver(model, rowIndex, colIndex);
 
   // The text gets its own element so the nested editing host covers exactly
   // the cell's content and none of the hover controls: a `contenteditable`
@@ -1907,7 +2017,7 @@ function buildCell(
       if (live) handleCellInput(event, view, cellEl, textEl, live, place);
     },
   });
-  renderCellContent(textEl, cell.text, view, cellHighlights(cell, model.anchors));
+  renderCellContent(textEl, cell.text, view, cellHighlights(cell, model.anchors), cellAt);
   cellEl.appendChild(textEl);
   model.textEls[rowIndex].push(textEl);
 
