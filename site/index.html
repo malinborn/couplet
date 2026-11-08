@@ -53,7 +53,7 @@
     "url": "https://couplet.pro/",
     "downloadUrl": "https://github.com/malinborn/couplet/releases",
     "sameAs": ["https://github.com/malinborn/couplet"],
-    "softwareVersion": "2.4.4",
+    "softwareVersion": "2.4.5",
     "license": "https://opensource.org/licenses/GPL-3.0"
   }
   </script>
@@ -457,6 +457,19 @@
       <div class="changelog-list">
 
         <details class="changelog-entry" open>
+          <summary class="changelog-summary">
+            <span class="changelog-version">v2.4.5</span>
+            <span class="changelog-date">2026-11-08</span>
+            <span class="changelog-tag fix">fix</span>
+            <span class="changelog-title">Enter leaves the bold behind</span>
+          </summary>
+          <ul class="changelog-body-list">
+            <li><strong>Enter after a bold line</strong> &mdash; with the caret at the end of a bold line, Enter made the new line below but left the caret where it was, still bold, so the next words were typed into the line above. Only <kbd>Esc</kbd> made Enter work again. A bold span cannot cross a line break, so couplet writes the break after the hidden closing <code>**</code> &mdash; and then forgot to move the caret along with it. Now the caret goes to the start of the new line, plain. The same slip kept the caret on the upper line after Enter in the middle of a bold phrase; it now lands at the start of the bold second half</li>
+            <li><strong>Shift+Enter keeps the format</strong> &mdash; at the end of a bold (italic, struck-through) line, <kbd>&#8679;</kbd>Enter starts a new line whose caret is already bold, and what you type comes out bold. Nothing is written until the first character, so changing your mind leaves no stray asterisks behind; <kbd>Esc</kbd> or <kbd>&#8984;B</kbd> drop the format, <kbd>&#8984;I</kbd> adds italic to it, and a <code>-</code> or <code>#</code> typed first still starts a list or a heading</li>
+          </ul>
+        </details>
+
+        <details class="changelog-entry">
           <summary class="changelog-summary">
             <span class="changelog-version">v2.4.4</span>
             <span class="changelog-date">2026-10-27</span>
