@@ -47,7 +47,7 @@ const MARK_NAME: Record<InlineFormatKind, string> = {
  * (`_x_`, then `__x__`, which is strong, not emphasis). It also keeps the
  * toolbar and the Cmd+I binding in `keybindings.ts` emitting the same markup.
  */
-const MARKER_TEXT: Record<InlineFormatKind, string> = {
+export const MARKER_TEXT: Record<InlineFormatKind, string> = {
   strong: '**',
   emphasis: '*',
   strikethrough: '~~',

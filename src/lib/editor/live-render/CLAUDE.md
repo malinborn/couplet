@@ -27,7 +27,8 @@ The flavour facet decides whether markup is *revealed*; this bundle decides how
 | `markup-delete.ts` | Backspace / Delete at a span edge, expressed as "the character next to the caret on screen" |
 | `markup-word.ts` | Option+arrows / Option+Backspace over the *visible* text, so a marker is never a word (#73) |
 | `block-format.ts` | Backspace at block start strips heading / list / quote formatting |
-| `inline-continuation.ts` | Pending format across a deflected space, the two off switches, `activeFormatsAt`, `isLiveRenderActive` |
+| `inline-continuation.ts` | Pending format across a deflected space, the two off switches, `activeFormatsAt`, `isLiveRenderActive`, Shift+Enter (`newlineKeepingFormat`) |
+| `line-carry.ts` | The format Shift+Enter carries onto a new line, as state until the first character is typed |
 | `heading-input.ts` | Supplies the space that makes a `#` run a heading |
 | `format-commands.ts` | Tree-aware inline toggles used by both the toolbar and the shortcuts |
 | `selection-toolbar.ts` | Floating inline-format toolbar; also the only place that can see a selection inside a widget |
@@ -138,6 +139,49 @@ closes it before the break and reopens it after (`**жир**` ⏎ `**ным**`),
 the *edge* of the content moves outside the span instead — closing and reopening
 there would only produce an empty `****`. A link splits by repeating its target,
 which is verbose but keeps both halves links.
+
+**Moving the break means moving the caret too.** The filter used to drop the
+transaction's selection and map the old one, which is right for deletions and
+wrong for every break it moves: the `\n` is written somewhere other than at the
+caret, so the mapped caret stayed on the old line. Enter at the end of a bold
+line wrote `**жирная строка**\n` and left the caret before the closing `**` —
+bold, on the line above, so the next keystroke typed bold text there and only
+Escape (which steps the caret to the outer edge) made Enter work. Now
+`caretAfterLineBreak` places it after the user's own text: past the reopened
+markers when that text ends in a line break (Enter mid-span lands at the start
+of the bold second half), before them when it does not (a multi-line paste),
+and at the start of the moved content when the break moved left (Enter at the
+content start). Tests that call `repairChange` directly cannot see any of this
+— the selection exists only in the filter, so test it through the filter.
+
+### Shift+Enter carries the format; Enter does not
+
+Plain Enter at the inner edge of a span at the end of a line gives a plain new
+line — the owner's call, and what the repair layer produces anyway. Shift+Enter
+is "keep formatting": `newlineKeepingFormat` runs the ordinary
+`insertNewlineAndIndent` and then, for every format the caret was in and is no
+longer in, records a **carried format** (`line-carry.ts`). It is state, like the
+pending format, and for the same reason: the alternative — `****` on the new
+line with the caret in the middle, which is what ⌘B does on an empty selection
+— is four literal asterisks on screen and in the file the moment the user
+changes their mind. The first character typed is written wrapped (`**т**`,
+caret at the inner edge, so the rest continues the ordinary way); a space first
+stays plain and the carry waits. Escape and the matching format key end it
+without an edit; another format key adds its layer (the ordinary toggle would
+write an empty `**` and drop the carry). Mid-span there is nothing to carry: the
+split already reopens the span. The key is `Prec.highest` — Enter has an
+`inputType` in `PendingKeys`, the Backspace trap below.
+
+A markdown marker typed first (`*_~\`#>+-`) is **not** wrapped and ends the
+carry: `*` under bold would be `*****`, a thematic break, and `-`/`#`/`>` at a
+line start are a list, heading or quote. Known gap: `closeBrackets` handles
+`(`, `[` and `"` before the preview compartment's input handler, so those
+characters end the carry silently instead of coming out bold.
+
+The caret moves to the new line in a multi-cursor Enter as well: once the filter
+rebuilds the selection, a caret after an *untouched* change goes after it too.
+Otherwise the mapping (`assoc -1`) leaves it in front of that cursor's own
+`\n`.
 
 ### `hiddenMarkRanges` and `plugin.ts` must agree, exactly
 

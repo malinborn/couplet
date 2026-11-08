@@ -9,8 +9,18 @@ import {
 } from '@codemirror/state';
 import { EditorView, ViewPlugin, keymap } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
+import { insertNewlineAndIndent } from '@codemirror/commands';
 import type { SyntaxNode } from '@lezer/common';
 import { markupModelField, type MarkupPair } from './atomic';
+import {
+  carriedFormatAt,
+  carryField,
+  planCarryInsert,
+  setCarriedFormat,
+  toggleCarriedKind,
+  type CarryLayer,
+} from './line-carry';
+import { MARKER_TEXT } from './format-commands';
 import { wellFormedMarkup } from './markup-repair';
 import { isDelimiterRunPair } from './markup-whitespace';
 import '../../../styles/live-render-caret.css';
@@ -380,6 +390,7 @@ export function planContinuationInsert(
 export function continuationEscapeSpec(state: EditorState): TransactionSpec | null {
   const sel = state.selection.main;
   if (!sel.empty) return null;
+  if (carriedFormatAt(state, sel.head)) return { effects: setCarriedFormat.of(null) };
   if (pendingFormatAt(state, sel.head)) return { effects: setPendingFormat.of(null) };
   const span = spanAtInnerEdge(state, sel.head);
   if (span) return { selection: EditorSelection.cursor(span.closeTo) };
@@ -415,6 +426,9 @@ export function continuationFormatKeySpec(
   if (!isLiveRenderActive(state)) return null;
   const sel = state.selection.main;
   if (!sel.empty) return null;
+
+  const carry = carriedFormatAt(state, sel.head);
+  if (carry) return toggleCarriedKind(carry, kind, MARKER_TEXT[kind]);
 
   const pending = pendingFormatAt(state, sel.head);
   if (pending) return pending.kind === kind ? { effects: setPendingFormat.of(null) } : null;
@@ -468,6 +482,9 @@ export function activeFormatsAt(state: EditorState): ContinuableKind[] {
   const sel = state.selection.main;
   if (!sel.empty) return [];
 
+  const carry = carriedFormatAt(state, sel.head);
+  if (carry) return carry.layers.map((l) => l.kind);
+
   const pending = pendingFormatAt(state, sel.head);
   if (pending) {
     const boundary = findContinuationBoundary(state, pending.spanEnd);
@@ -480,14 +497,67 @@ export function activeFormatsAt(state: EditorState): ContinuableKind[] {
 /** Kept for the caret affordance's "the user chose this" hint — see the CSS. */
 export function isContinuationActive(state: EditorState): ContinuableKind | null {
   const sel = state.selection.main;
+  const carry = carriedFormatAt(state, sel.head);
+  if (carry) return carry.layers[carry.layers.length - 1].kind;
   const pending = pendingFormatAt(state, sel.head);
   return pending ? pending.kind : null;
 }
 
 function continuationInputHandler(view: EditorView, from: number, to: number, insert: string): boolean {
-  const spec = planContinuationInsert(view.state, from, to, insert);
+  // No wrap mid-composition: the IME owns that text until it commits, and the
+  // plain insertion moves the caret off the carry, which ends it.
+  const carried = view.composing ? null : planCarryInsert(view.state, from, to, insert);
+  const spec = carried ?? planContinuationInsert(view.state, from, to, insert);
   if (!spec) return false;
   view.dispatch(spec);
+  return true;
+}
+
+/**
+ * The markers of every format the next character would carry, outermost first
+ * — what Shift+Enter takes with it to the new line. A pending format answers
+ * for the span it would rejoin, as in `activeFormatsAt`.
+ */
+export function carryLayersAt(state: EditorState): CarryLayer[] {
+  const sel = state.selection;
+  if (sel.ranges.length !== 1 || !sel.main.empty) return [];
+  // A second Shift+Enter on a carried, still empty line carries it on again.
+  const carry = carriedFormatAt(state, sel.main.head);
+  if (carry) return carry.layers;
+  const pending = pendingFormatAt(state, sel.main.head);
+  const pos = pending ? findContinuationBoundary(state, pending.spanEnd)?.insertAt : sel.main.head;
+  if (pos === undefined) return [];
+  return pairsCovering(state, pos)
+    .sort((a, b) => b.closeTo - b.openFrom - (a.closeTo - a.openFrom))
+    .map((p) => ({ kind: p.kind as ContinuableKind, open: p.openText, close: p.closeText }));
+}
+
+/**
+ * Shift+Enter: a line break that keeps the formatting.
+ *
+ * The break itself is the ordinary one (`insertNewlineAndIndent`, CM6's own
+ * Shift+Enter), and the repair layer places it exactly as it places Enter's.
+ * What differs is afterwards: a format the caret was in and is no longer in on
+ * the new line is carried there as state (`line-carry.ts`), so the caret is
+ * bold before anything is typed and the first character comes out bold. In the
+ * middle of a span there is nothing to carry — the split already reopens it.
+ *
+ * Plain Enter is deliberately left alone: the new line after a formatted one is
+ * plain, which is what the owner asked for. Returns `false` (the ordinary
+ * Shift+Enter) where no format is active.
+ */
+export function newlineKeepingFormat(view: EditorView): boolean {
+  if (!isLiveRenderActive(view.state)) return false;
+  const layers = carryLayersAt(view.state);
+  if (layers.length === 0) return false;
+  if (!insertNewlineAndIndent(view)) return false;
+
+  const after = view.state;
+  const kept = activeFormatsAt(after);
+  const missing = layers.filter((l) => !kept.includes(l.kind));
+  if (missing.length === 0) return true;
+  const caret = after.selection.main.head;
+  view.dispatch({ effects: setCarriedFormat.of({ origin: caret, caret, layers: missing }) });
   return true;
 }
 
@@ -558,8 +628,14 @@ const formatCaretPlugin = ViewPlugin.fromClass(
 export function inlineContinuation(): Extension {
   return [
     continuationField,
+    carryField,
     EditorView.inputHandler.of(continuationInputHandler),
     formatCaretPlugin,
     Prec.high(keymap.of([{ key: 'Escape', run: exitContinuationOnEscape }])),
+    // `Prec.highest`, unlike Escape: Enter is in CM6's `PendingKeys` table with
+    // an `inputType`, the same trap as Backspace (`CLAUDE.md`). It answers only
+    // where a format is active, so the code-block and list Enter keys — which do
+    // not bind Shift — are not shadowed anywhere they could have acted.
+    Prec.highest(keymap.of([{ key: 'Shift-Enter', run: newlineKeepingFormat }])),
   ];
 }
