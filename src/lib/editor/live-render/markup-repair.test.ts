@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { EditorSelection, EditorState } from '@codemirror/state';
+import { EditorSelection, EditorState, type Extension } from '@codemirror/state';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
 import { Strikethrough, Table } from '@lezer/markdown';
-import { markupPairs, type MarkupPair } from './atomic';
-import { repairChange, repairChangeSet, type PlainChange } from './markup-repair';
+import { insertNewlineAndIndent } from '@codemirror/commands';
+import { markupModelField, markupPairs, type MarkupPair } from './atomic';
+import { markupRepairFilter, repairChange, repairChangeSet, type PlainChange } from './markup-repair';
 
 function makeState(doc: string): EditorState {
   return EditorState.create({
@@ -244,5 +245,81 @@ describe('selection after a repair', () => {
     expect(after.doc.toString()).toBe('Абзац с **жир**Юловом.');
     // `**жир**` ends at 15, `Ю` occupies 15..16.
     expect(after.selection.main.head).toBe(16);
+  });
+});
+
+describe('the caret after a repaired line break', () => {
+  // Through the filter, not `repairChange`: the selection is the filter's job,
+  // and dropping it is what left the caret behind the moved break — Enter at the
+  // end of a bold line wrote the newline after `**` and left the caret before it.
+  const LINES = 'верх\n**жирная строка**\nниз';
+  // `**` 5..7, `жирная строка` 7..20, `**` 20..22.
+
+  function liveExtensions(): Extension[] {
+    return [
+      markdown({ base: markdownLanguage, codeLanguages: languages, extensions: [Strikethrough, Table] }),
+      markupModelField,
+      markupRepairFilter,
+    ];
+  }
+
+  function liveState(doc: string, cursor: number): EditorState {
+    return EditorState.create({ doc, selection: EditorSelection.cursor(cursor), extensions: liveExtensions() });
+  }
+
+  function withCaret(state: EditorState): string {
+    const head = state.selection.main.head;
+    return state.sliceDoc(0, head) + '|' + state.sliceDoc(head);
+  }
+
+  function enter(doc: string, cursor: number): string {
+    let state = liveState(doc, cursor);
+    insertNewlineAndIndent({ state, dispatch: (tr) => (state = tr.state) });
+    return withCaret(state);
+  }
+
+  it('Enter at the end of a bold line puts the caret on the new line, outside the span', () => {
+    expect(enter(LINES, 20)).toBe('верх\n**жирная строка**\n|\nниз');
+  });
+
+  it('Enter in the middle of a bold line carries the caret into the reopened half', () => {
+    expect(enter(LINES, 10)).toBe('верх\n**жир**\n**|ная строка**\nниз');
+  });
+
+  it('Enter at the start of a bold line keeps the caret at the start of the bold text', () => {
+    expect(enter(LINES, 7)).toBe('верх\n\n**|жирная строка**\nниз');
+  });
+
+  it('Enter at the end of a bold word mid-line moves the rest down, caret before it', () => {
+    expect(enter('**жир** хвост', 5)).toBe('**жир**\n| хвост');
+  });
+
+  it('a multi-line paste leaves the caret after the pasted text, not in the reopened span', () => {
+    const after = liveState(LINES, 10).update({
+      changes: { from: 10, insert: 'АА\nББ' },
+      selection: EditorSelection.cursor(15),
+      userEvent: 'input.paste',
+    }).state;
+    expect(withCaret(after)).toBe('верх\n**жир**АА\nББ|**ная строка**\nниз');
+  });
+
+  it('a multi-line paste at the start of bold text leaves the caret plain, before the span', () => {
+    const after = liveState(LINES, 7).update({
+      changes: { from: 7, insert: 'АА\nББ' },
+      selection: EditorSelection.cursor(12),
+      userEvent: 'input.paste',
+    }).state;
+    expect(withCaret(after)).toBe('верх\nАА\nББ|**жирная строка**\nниз');
+  });
+
+  it('Enter at several cursors moves every one of them, repaired or not', () => {
+    let state = EditorState.create({
+      doc: 'ab\n**cd**',
+      selection: EditorSelection.create([EditorSelection.cursor(1), EditorSelection.cursor(7)]),
+      extensions: [...liveExtensions(), EditorState.allowMultipleSelections.of(true)],
+    });
+    insertNewlineAndIndent({ state, dispatch: (tr) => (state = tr.state) });
+    expect(state.doc.toString()).toBe('a\nb\n**cd**\n');
+    expect(state.selection.ranges.map((r) => r.head)).toEqual([2, 11]);
   });
 });

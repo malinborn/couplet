@@ -1,5 +1,6 @@
 import {
   Annotation,
+  EditorSelection,
   EditorState,
   Transaction,
   type ChangeSet,
@@ -92,6 +93,24 @@ function overlaps(from: number, to: number, a: number, b: number): boolean {
  * inside one span and ends inside another).
  */
 export function repairChange(pairs: readonly MarkupPair[], change: PlainChange): PlainChange | null {
+  const parts = repairParts(pairs, change);
+  return parts && { from: parts.from, to: parts.to, insert: parts.prefix + change.insert + parts.suffix };
+}
+
+/**
+ * A repaired change, kept in pieces: the markers written back before the
+ * inserted text (`prefix`) and after it (`suffix`). The pieces are what lets
+ * the filter put the caret after the *user's* text rather than after the whole
+ * repaired insertion — see `caretAfterLineBreak`.
+ */
+interface RepairParts {
+  from: number;
+  to: number;
+  prefix: string;
+  suffix: string;
+}
+
+function repairParts(pairs: readonly MarkupPair[], change: PlainChange): RepairParts | null {
   const isDeletion = change.to > change.from;
   const splitsLines = change.insert.includes('\n');
   if (!isDeletion && !splitsLines) return null;
@@ -192,9 +211,39 @@ export function repairChange(pairs: readonly MarkupPair[], change: PlainChange):
     suffix = split.suffix + suffix;
   }
 
-  const insert = prefix + change.insert + suffix;
-  if (from === change.from && to === change.to && insert === change.insert) return null;
-  return { from, to, insert };
+  if (from === change.from && to === change.to && !prefix && !suffix) return null;
+  return { from, to, prefix, suffix };
+}
+
+/**
+ * Where the caret goes after a repaired change that carried a line break, as
+ * "map `anchor` (pre-edit, bias left) and add `offset`".
+ *
+ * Dropping the selection and mapping the old one is right for deletions and
+ * wrong for every line break this layer moves or splits: the break is written
+ * somewhere other than at the caret, so the mapped caret stays on the old line.
+ * Enter at the end of a bold line wrote `**жирная строка**\n` and left the caret
+ * before the closing `**` — inside the bold, on the line above the new one, so
+ * the next keystroke typed bold text there.
+ *
+ * The rule is "after the text the user inserted", with two refinements:
+ *
+ * - **Text that ends in a line break** (Enter, with or without indentation)
+ *   takes the caret past the reopened markers too: Enter in the middle of a bold
+ *   line lands at the start of the bold second half, as it would in any editor.
+ *   A paste that ends in text does not — the reopened span is not what was
+ *   pasted.
+ * - **A break moved left** past the opening markers (Enter at the start of the
+ *   content) leaves the caret where it was, at the start of the content that
+ *   moved down — again the start of the bold text.
+ */
+function caretAfterLineBreak(change: PlainChange, parts: RepairParts): { anchor: number; offset: number } {
+  const endsWithBreak = /\n[^\S\n]*$/.test(change.insert);
+  if (parts.to < change.from && endsWithBreak) return { anchor: change.from, offset: 0 };
+  return {
+    anchor: parts.from,
+    offset: parts.prefix.length + change.insert.length + (endsWithBreak ? parts.suffix.length : 0),
+  };
 }
 
 /**
@@ -257,17 +306,74 @@ export function repairChangeSet(
   pairs: readonly MarkupPair[],
   changes: ChangeSet
 ): ChangeSpec[] | null {
+  return repairWithCarets(pairs, changes)?.changes ?? null;
+}
+
+/**
+ * Where a caret goes that the original transaction placed right after one of
+ * its changes, keyed by that spot (`endB`, post-edit coordinates of the
+ * *original* change set). Recorded for repaired line breaks and for every
+ * change left as it was; a repaired deletion keeps the mapped caret.
+ */
+interface MovedBreak {
+  endB: number;
+  caret: { anchor: number; offset: number };
+}
+
+function repairWithCarets(
+  pairs: readonly MarkupPair[],
+  changes: ChangeSet
+): { changes: ChangeSpec[]; breaks: MovedBreak[] } | null {
   const out: ChangeSpec[] = [];
+  const breaks: MovedBreak[] = [];
   let repaired = false;
 
-  changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+  changes.iterChanges((fromA, toA, _fromB, toB, inserted) => {
     const original: PlainChange = { from: fromA, to: toA, insert: inserted.toString() };
-    const fixed = repairChange(pairs, original);
-    if (fixed) repaired = true;
-    out.push(fixed ?? original);
+    const parts = repairParts(pairs, original);
+    if (!parts) {
+      out.push(original);
+      // Untouched, but it shares the transaction with one that was repaired, so
+      // its caret is rebuilt too: the start selection mapped through an
+      // insertion at the caret lands *before* it — Enter at a second cursor
+      // would leave that cursor on the old line.
+      breaks.push({ endB: toB, caret: { anchor: fromA, offset: original.insert.length } });
+      return;
+    }
+    repaired = true;
+    out.push({ from: parts.from, to: parts.to, insert: parts.prefix + original.insert + parts.suffix });
+    if (original.insert.includes('\n')) {
+      breaks.push({ endB: toB, caret: caretAfterLineBreak(original, parts) });
+    }
   });
 
-  return repaired ? out : null;
+  return repaired ? { changes: out, breaks } : null;
+}
+
+/**
+ * The selection of the repaired transaction.
+ *
+ * Mapping the start selection through the new changes is right for deletions
+ * and replacements, whose repaired text still begins where the caret was. A
+ * caret the original transaction put right after a line break it inserted is
+ * placed by `caretAfterLineBreak` instead, because that break may now be
+ * somewhere else; one right after a change left untouched goes after it, as
+ * the original meant. Ranges are matched by index, which holds for every
+ * command that edits at each cursor.
+ */
+function repairedSelection(tr: Transaction, changes: ChangeSet, breaks: readonly MovedBreak[]): EditorSelection {
+  const mapped = tr.startState.selection.map(changes);
+  if (breaks.length === 0) return mapped;
+  const intended = tr.newSelection;
+  if (intended.ranges.length !== mapped.ranges.length) return mapped;
+  return EditorSelection.create(
+    intended.ranges.map((range, i) => {
+      const moved = range.empty ? breaks.find((b) => b.endB === range.head) : undefined;
+      if (!moved) return mapped.ranges[i];
+      return EditorSelection.cursor(changes.mapPos(moved.caret.anchor, -1) + moved.caret.offset);
+    }),
+    intended.mainIndex
+  );
 }
 
 /**
@@ -297,18 +403,17 @@ export const markupRepairFilter = EditorState.transactionFilter.of((tr) => {
   const { pairs } = tr.startState.field(markupModelField);
   if (pairs.length === 0) return tr;
 
-  const changes = repairChangeSet(pairs, tr.changes);
-  if (!changes) return tr;
+  const repaired = repairWithCarets(pairs, tr.changes);
+  if (!repaired) return tr;
 
-  // The selection is dropped on purpose rather than mapped: the repaired change
-  // set has different lengths, so the transaction's own selection would land at
-  // an offset that no longer means what it meant. `changes()` maps the current
-  // selection through the new changes, which for every case here (a deletion, a
-  // replacement, a line split) puts the caret at the end of what was inserted —
-  // the same place the original transaction was aiming for.
+  // The transaction's own selection is not reused: the repaired change set has
+  // different lengths, so it would land at an offset that no longer means what
+  // it meant. `repairedSelection` rebuilds it against the repaired changes.
+  const changes = tr.startState.changes(repaired.changes);
   const userEvent = tr.annotation(Transaction.userEvent);
   return {
-    changes: tr.startState.changes(changes),
+    changes,
+    selection: repairedSelection(tr, changes, repaired.breaks),
     effects: tr.effects,
     scrollIntoView: tr.scrollIntoView,
     userEvent,
